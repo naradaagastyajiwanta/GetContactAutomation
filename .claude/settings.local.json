@@ -1,0 +1,21 @@
+{
+  "permissions": {
+    "allow": [
+      "WebSearch",
+      "WebFetch(domain:github.com)",
+      "WebFetch(domain:baileys.wiki)",
+      "Bash(python:*)",
+      "WebFetch(domain:deepwiki.com)",
+      "WebFetch(domain:ppaolo.substack.com)",
+      "WebFetch(domain:docs.openclaw.ai)",
+      "WebFetch(domain:macaron.im)",
+      "WebFetch(domain:api.github.com)",
+      "WebFetch(domain:raw.githubusercontent.com)",
+      "Bash(curl:*)",
+      "mcp__ide__getDiagnostics",
+      "Bash(npx tsc:*)",
+      "Bash(pip install:*)",
+      "Bash(PYTHONIOENCODING=utf-8 python:*)"
+    ]
+  }
+}

@@ -1,0 +1,46 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+dist/
+build/
+.eggs/
+*.egg
+venv/
+.venv/
+
+# Node.js
+node_modules/
+dist/
+*.js.map
+
+# Environment
+.env
+
+# Database
+data/*.db
+data/*.db-journal
+
+# WhatsApp session
+whatsapp-service/auth_store/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+
+# Instaloader cache
+.instaloader/
+
+# Google Sheets credentials
+credentials.json
+token.json
