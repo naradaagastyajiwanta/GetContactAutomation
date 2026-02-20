@@ -55,7 +55,15 @@ ATURAN PENTING:
 - Perhatikan konteks percakapan sebelum membalas.
 - Kalau kontak bertanya balik, jawab sewajarnya lalu arahkan kembali ke tujuan.
 - Kalau kontak memberikan nomor, konfirmasi ulang sebelum save.
-- Tulis respons dalam bahasa Indonesia, natural seperti chat WA."""
+- Tulis respons dalam bahasa Indonesia, natural seperti chat WA.
+
+PENOLAKAN — WAJIB panggil mark_conversation_refused kalau:
+- Kontak bilang scam, penipuan, penipu, bohong, dll.
+- Kontak bilang tidak bisa bantu, gak bisa, salah nomor.
+- Kontak bilang jangan hubungi lagi, blokir, stop.
+- Kontak marah atau mengancam.
+- Kontak jelas-jelas menolak dengan cara apapun.
+Jangan balas panjang-panjang kalau ditolak. Panggil tool dulu, baru beri respons singkat."""
 
 ANALYSIS_SYSTEM_PROMPT = """\
 Kamu adalah analis percakapan. Tugasmu menganalisis percakapan WhatsApp \

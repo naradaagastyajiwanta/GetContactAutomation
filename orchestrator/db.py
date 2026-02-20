@@ -152,6 +152,8 @@ CREATE INDEX IF NOT EXISTS idx_strategy_metrics_strategy ON strategy_metrics(str
 async def init_db() -> None:
     """Create all tables if they do not already exist."""
     async with aiosqlite.connect(DATABASE_PATH) as db:
+        # Enable WAL mode for concurrent read/write from multiple threads
+        await db.execute("PRAGMA journal_mode=WAL")
         await db.executescript(_DDL)
         await db.executescript(_DDL_AGENT)
         await db.executescript(_DDL_CONFIG)
@@ -189,6 +191,22 @@ async def init_db() -> None:
             await db.commit()
         except Exception:
             pass  # Column already exists
+        # Migration: add has_person_name flag to ig_contacts
+        try:
+            await db.execute(
+                "ALTER TABLE ig_contacts ADD COLUMN has_person_name BOOLEAN DEFAULT 1"
+            )
+            await db.commit()
+        except Exception:
+            pass  # Column already exists
+        # Migration: add last_ig_scraped_at to universities for re-scrape cooldown
+        try:
+            await db.execute(
+                "ALTER TABLE universities ADD COLUMN last_ig_scraped_at TIMESTAMP"
+            )
+            await db.commit()
+        except Exception:
+            pass  # Column already exists
         await db.commit()
     log.info("Database initialised at %s", DATABASE_PATH)
 
@@ -208,10 +226,10 @@ async def get_db():
 
 def validate_phone(number: str) -> str | None:
     """
-    Validate and normalise an Indonesian phone number.
+    Validate and normalise an Indonesian **mobile** phone number.
 
-    Accepts: 08xx…, 628xx…, +628xx…
-    Returns: E.164 string (+62…) or None if the number is invalid.
+    Accepts: 08xx…, 628xx…, +628xx…  (mobile only, not landlines)
+    Returns: E.164 string (+62…) or None if the number is invalid/not mobile.
     """
     if not number:
         return None
@@ -220,8 +238,16 @@ def validate_phone(number: str) -> str | None:
 
     try:
         parsed = phonenumbers.parse(cleaned, "ID")
-        if phonenumbers.is_valid_number(parsed):
-            return phonenumbers.format_number(parsed, phonenumbers.PhoneNumberFormat.E164)
+        if not phonenumbers.is_valid_number(parsed):
+            return None
+        # Only accept mobile numbers (reject landlines, toll-free, etc.)
+        num_type = phonenumbers.number_type(parsed)
+        if num_type not in (
+            phonenumbers.PhoneNumberType.MOBILE,
+            phonenumbers.PhoneNumberType.FIXED_LINE_OR_MOBILE,
+        ):
+            return None
+        return phonenumbers.format_number(parsed, phonenumbers.PhoneNumberFormat.E164)
     except phonenumbers.NumberParseException:
         pass
 
@@ -292,6 +318,15 @@ async def update_university_status(uni_id: int, status: str) -> None:
         await db.commit()
 
 
+async def update_university_website(uni_id: int, website: str) -> None:
+    async with get_db() as db:
+        await db.execute(
+            "UPDATE universities SET website = ? WHERE id = ? AND (website IS NULL OR website = '')",
+            (website, uni_id),
+        )
+        await db.commit()
+
+
 async def update_ig_handle(uni_id: int, handle: str, verified: bool = False) -> None:
     async with get_db() as db:
         await db.execute(
@@ -352,14 +387,16 @@ async def add_ig_contact(
     source_post_url: str | None = None,
     source_image_url: str | None = None,
     contact_name: str | None = None,
+    has_person_name: bool = True,
 ) -> int | None:
     async with get_db() as db:
         cursor = await db.execute(
             """
-            INSERT OR IGNORE INTO ig_contacts (university_id, phone_number, contact_name, source_post_url, source_image_url)
-            VALUES (?, ?, ?, ?, ?)
+            INSERT OR IGNORE INTO ig_contacts
+                (university_id, phone_number, contact_name, source_post_url, source_image_url, has_person_name)
+            VALUES (?, ?, ?, ?, ?, ?)
             """,
-            (university_id, phone_number, contact_name, source_post_url, source_image_url),
+            (university_id, phone_number, contact_name, source_post_url, source_image_url, has_person_name),
         )
         await db.commit()
         return cursor.lastrowid if cursor.rowcount > 0 else None
@@ -443,6 +480,31 @@ async def mark_post_extracted(post_id: int, phones_found: int) -> None:
             (phones_found, post_id),
         )
         await db.commit()
+
+
+async def count_posts_for_university(university_id: int, only_unextracted: bool = False) -> int:
+    """Return total post count (or unextracted count) for a university."""
+    async with get_db() as db:
+        where = "university_id = ?"
+        if only_unextracted:
+            where += " AND phone_extracted = 0"
+        cursor = await db.execute(
+            f"SELECT COUNT(*) FROM ig_posts WHERE {where}",
+            (university_id,),
+        )
+        row = await cursor.fetchone()
+        return row[0] if row else 0
+
+
+async def get_post_urls_for_university(university_id: int) -> set[str]:
+    """Return set of all post_url values already stored for a university."""
+    async with get_db() as db:
+        cursor = await db.execute(
+            "SELECT post_url FROM ig_posts WHERE university_id = ?",
+            (university_id,),
+        )
+        rows = await cursor.fetchall()
+        return {row[0] for row in rows}
 
 
 async def get_pipeline_status() -> dict:
@@ -732,12 +794,31 @@ async def get_dashboard_stats() -> dict:
         row = await cursor.fetchone()
         total_universities = row["total"] if row else 0
 
+        # Universities with IG handle
+        cursor = await db.execute(
+            "SELECT COUNT(*) AS total FROM universities WHERE ig_handle IS NOT NULL AND ig_handle != ''"
+        )
+        row = await cursor.fetchone()
+        universities_with_ig = row["total"] if row else 0
+
+        # Universities with secretariat phone
+        cursor = await db.execute(
+            "SELECT COUNT(*) AS total FROM universities WHERE secretariat_phone IS NOT NULL AND secretariat_phone != ''"
+        )
+        row = await cursor.fetchone()
+        universities_with_phone = row["total"] if row else 0
+
         # Total IG contacts
         cursor = await db.execute("SELECT COUNT(*) AS total FROM ig_contacts")
         row = await cursor.fetchone()
-        total_ig_contacts = row["total"] if row else 0
+        total_contacts = row["total"] if row else 0
 
-        # Active conversations
+        # Total conversations
+        cursor = await db.execute("SELECT COUNT(*) AS total FROM conversations")
+        row = await cursor.fetchone()
+        total_conversations = row["total"] if row else 0
+
+        # Active conversations (non-terminal)
         placeholders = ",".join("?" * len(_TERMINAL_STATES))
         cursor = await db.execute(
             f"SELECT COUNT(*) AS total FROM conversations WHERE state NOT IN ({placeholders})",
@@ -746,14 +827,27 @@ async def get_dashboard_stats() -> dict:
         row = await cursor.fetchone()
         active_conversations = row["total"] if row else 0
 
+        # Successful conversations (GOT_NUMBER)
+        cursor = await db.execute(
+            "SELECT COUNT(*) AS total FROM conversations WHERE state = 'GOT_NUMBER'"
+        )
+        row = await cursor.fetchone()
+        successful_conversations = row["total"] if row else 0
+
     today_quota = await get_today_quota()
 
     return {
         "total_universities": total_universities,
-        "total_ig_contacts": total_ig_contacts,
+        "universities_with_ig": universities_with_ig,
+        "universities_with_phone": universities_with_phone,
+        "total_contacts": total_contacts,
+        "total_conversations": total_conversations,
         "active_conversations": active_conversations,
+        "successful_conversations": successful_conversations,
+        "today_messages_sent": today_quota.get("messages_sent", 0),
+        "today_conversations_started": today_quota.get("conversations_started", 0),
+        "daily_conversation_limit": cfg.MAX_DAILY_CONVERSATIONS,
         "status_counts": status_counts,
-        "today_quota": today_quota,
     }
 
 

@@ -4,12 +4,15 @@ Agent 3: Phone Extractor
 Extracts phone numbers with contact names from ig_posts that haven't been processed yet.
 Uses GPT on captions and GPT Vision OCR on images.
 Only saves contacts that have a real person's name (not generic names).
+Deduplicates by contact name per university to avoid OCR-variant duplicates.
 """
 import asyncio
+import re
 
 from orchestrator.config import is_paused, log
 from orchestrator.db import (
     add_ig_contact,
+    get_contacts_for_university,
     get_unextracted_posts,
     mark_post_extracted,
 )
@@ -18,6 +21,26 @@ from orchestrator.instagram import (
     extract_phone_from_image,
     PhoneContact,
 )
+
+
+def _normalize_name(name: str) -> str:
+    """Normalize a contact name for dedup comparison.
+
+    Strips titles, punctuation, and lowercases so that
+    'Dr. Anindya, S.Psi, K.' and 'dr. Anindya, S.Psi' match.
+    """
+    lower = name.lower().strip()
+    # Remove common titles/degrees
+    lower = re.sub(
+        r'\b(dr|drs|prof|ir|s\.?psi|s\.?pd|s\.?sos|s\.?kom|s\.?e|'
+        r'm\.?pd|m\.?si|m\.?kom|m\.?sc|ph\.?d|s\.?t|s\.?h|m\.?m|'
+        r's\.?kep|ns|apt|k)\b\.?',
+        '', lower,
+    )
+    # Remove punctuation and extra spaces
+    lower = re.sub(r'[,.\-_()]+', ' ', lower)
+    lower = re.sub(r'\s+', ' ', lower).strip()
+    return lower
 
 
 async def run_phone_extraction_batch(limit: int = 50) -> dict:
@@ -39,6 +62,19 @@ async def run_phone_extraction_batch(limit: int = 50) -> dict:
     total_phones = 0
     details: list[dict] = []
 
+    # Build per-university set of already-saved normalized names for dedup
+    saved_names_by_uni: dict[int, set[str]] = {}
+
+    async def _get_saved_names(uni_id: int) -> set[str]:
+        if uni_id not in saved_names_by_uni:
+            existing = await get_contacts_for_university(uni_id)
+            saved_names_by_uni[uni_id] = {
+                _normalize_name(c["contact_name"])
+                for c in existing
+                if c.get("contact_name")
+            }
+        return saved_names_by_uni[uni_id]
+
     for post in posts:
         try:
             contacts: list[PhoneContact] = []
@@ -58,18 +94,37 @@ async def run_phone_extraction_batch(limit: int = 50) -> dict:
                 # No image (e.g. bio): extract named contacts from text only
                 contacts = await extract_named_contacts_from_text(caption)
 
-            # Save contacts (INSERT OR IGNORE handles dedup)
+            uni_id = post["university_id"]
+            saved_names = await _get_saved_names(uni_id)
+
+            # Save contacts (phone dedup via INSERT OR IGNORE, name dedup via set)
             saved = 0
             for contact in contacts:
+                name = contact["name"]
+                has_person_name = bool(name)  # empty string = no person name
+
+                # Dedup by normalized name (only if name is not empty)
+                if name:
+                    norm_name = _normalize_name(name)
+                    if norm_name in saved_names:
+                        log.debug(
+                            "[Agent3] Skipping duplicate name '%s' for uni %d",
+                            name, uni_id,
+                        )
+                        continue
+
                 result = await add_ig_contact(
-                    university_id=post["university_id"],
+                    university_id=uni_id,
                     phone_number=contact["phone"],
                     source_post_url=post.get("post_url"),
                     source_image_url=post.get("image_url"),
-                    contact_name=contact["name"],
+                    contact_name=name or None,
+                    has_person_name=has_person_name,
                 )
                 if result is not None:
                     saved += 1
+                    if name:
+                        saved_names.add(_normalize_name(name))
 
             await mark_post_extracted(post["id"], len(contacts))
             processed += 1
@@ -85,12 +140,16 @@ async def run_phone_extraction_batch(limit: int = 50) -> dict:
                     "new_contacts": saved,
                 })
 
+            named = sum(1 for c in contacts if c["name"])
             log.info(
-                "[Agent3] Post %d: found %d named contacts (%s), %d new",
+                "[Agent3] Post %d: found %d contacts (%d with name), %d new — %s",
                 post["id"],
                 len(contacts),
-                ", ".join(f"{c['name']}={c['phone']}" for c in contacts) or "none",
+                named,
                 saved,
+                ", ".join(
+                    f"{c['name'] or '(no name)'}={c['phone']}" for c in contacts
+                ) or "none",
             )
 
             await asyncio.sleep(1)  # Rate limit Vision API

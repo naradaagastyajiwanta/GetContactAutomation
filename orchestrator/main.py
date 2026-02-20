@@ -51,6 +51,7 @@ from orchestrator.scheduler import (
     scheduler,
     daily_outreach_loop,
     process_followups,
+    run_agent_in_thread,
 )
 from orchestrator.agents.ig_handle_finder import run_handle_search_batch
 from orchestrator.agents.ig_post_scraper import run_post_scrape_batch
@@ -227,17 +228,18 @@ async def get_provinces():
 async def trigger_collect_universities(
     background_tasks: BackgroundTasks,
     province: str | None = None,
+    limit: int | None = None,
 ):
-    """Collect universities from PDDIKTI API. Optionally filter by province."""
+    """Collect universities from PDDIKTI API. Optionally filter by province and limit."""
     from scripts.collect_universities import search_pddikti
 
-    async def _collect(province: str | None):
+    async def _collect(province: str | None, limit: int | None):
         existing = await get_all_universities(limit=10000)
         existing_names = [u["name"] for u in existing]
 
         from scripts.collect_universities import is_duplicate
 
-        universities = await search_pddikti(province)
+        universities = await search_pddikti(province, limit=limit)
         added = 0
         for u in universities:
             if is_duplicate(u["name"], existing_names):
@@ -253,12 +255,14 @@ async def trigger_collect_universities(
                 added += 1
             except Exception as e:
                 log.warning(f"Failed to add '{u['name']}': {e}")
-        log.info(f"[PDDIKTI] Collected {added} new universities (province={province})")
+        log.info(f"[PDDIKTI] Collected {added} new universities (province={province}, limit={limit})")
 
     msg = f"Collecting universities from PDDIKTI"
     if province:
         msg += f" (province: {province})"
-    background_tasks.add_task(_collect, province)
+    if limit:
+        msg += f" (limit: {limit})"
+    background_tasks.add_task(_collect, province, limit)
     return {"status": "started", "message": msg}
 
 
@@ -449,21 +453,21 @@ async def export_csv():
 @app.post("/pipeline/find-ig-handles")
 async def trigger_find_ig_handles(background_tasks: BackgroundTasks, limit: int = 50):
     """Agent 1: Search IG handles for universities in 'pending' status."""
-    background_tasks.add_task(run_handle_search_batch, limit)
+    background_tasks.add_task(run_agent_in_thread, run_handle_search_batch, limit)
     return {"status": "started", "message": f"Agent 1: searching IG handles for up to {limit} universities"}
 
 
 @app.post("/pipeline/scrape-ig-posts")
 async def trigger_scrape_ig_posts(background_tasks: BackgroundTasks, limit: int = 20):
     """Agent 2: Scrape IG posts for universities in 'ig_found' status."""
-    background_tasks.add_task(run_post_scrape_batch, limit)
+    background_tasks.add_task(run_agent_in_thread, run_post_scrape_batch, limit)
     return {"status": "started", "message": f"Agent 2: scraping posts for up to {limit} universities"}
 
 
 @app.post("/pipeline/extract-phones")
 async def trigger_extract_phones(background_tasks: BackgroundTasks, limit: int = 50):
     """Agent 3: Extract phones from unprocessed ig_posts."""
-    background_tasks.add_task(run_phone_extraction_batch, limit)
+    background_tasks.add_task(run_agent_in_thread, run_phone_extraction_batch, limit)
     return {"status": "started", "message": f"Agent 3: extracting phones from up to {limit} posts"}
 
 
@@ -810,6 +814,8 @@ async def reset_config(key: str):
 @app.get("/health")
 async def health():
     """Health check endpoint."""
+    from orchestrator.instagram import get_ig_session_status
+
     # Check WA service connectivity
     wa_status = {"connected": False}
     try:
@@ -822,4 +828,5 @@ async def health():
     return {
         "status": "ok",
         "whatsapp": wa_status,
+        "instagram": get_ig_session_status(),
     }

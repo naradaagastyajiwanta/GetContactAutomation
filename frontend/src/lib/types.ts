@@ -35,6 +35,8 @@ export interface IgContact {
   id: number
   university_id: number
   phone_number: string
+  contact_name: string | null
+  has_person_name: boolean
   source_post_url: string | null
   source_image_url: string | null
   created_at: string
@@ -108,6 +110,10 @@ export interface HealthStatus {
   whatsapp: {
     connected: boolean
     [key: string]: unknown
+  }
+  instagram?: {
+    ok: boolean
+    error: string | null
   }
 }
 

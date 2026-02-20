@@ -39,13 +39,84 @@ class PhoneContact(TypedDict):
 
 GENERIC_CONTACT_NAMES = {
     "admin", "info", "customer service", "hotline", "cs",
-    "informasi", "humas", "operator",
+    "informasi", "humas", "operator", "sekretariat", "panitia",
+    "pendaftaran", "pmb", "admisi",
+    # Common label words GPT mistakenly returns as names
+    "narahubung", "contact person", "contact us", "cp",
+    "hubungi", "kontak", "whatsapp", "call center",
+    "konsultasi", "pendaftaran", "registrasi", "daftar",
+    "more info", "info lebih lanjut",
 }
+
+# Words in a name that indicate it's an institution, not a person
+_INSTITUTION_WORDS = {
+    "universitas", "institut", "sekolah", "politeknik", "akademi",
+    "stikes", "stie", "stkip", "fakultas", "prodi", "program studi",
+    "kampus", "yayasan", "lembaga", "biro", "upt",
+    # Organization-like words
+    "peduli", "indonesia", "foundation", "organisasi", "komunitas",
+    "asosiasi", "perkumpulan", "himpunan", "ikatan",
+}
+
+# Patterns that indicate the "name" is actually a label/heading, not a person
+_LABEL_PATTERNS = re.compile(
+    r"(?i)"
+    r"(?:segera|gratis|sekarang|disini|di sini|klik|link|"
+    r"hubungi kami|contact us|more info|info lengkap|"
+    r"daftar sekarang|konsultasi segera|free)"
+)
 
 
 def _is_generic_name(name: str) -> bool:
     """Return True if the name is generic/institutional (not a person's name)."""
-    return name.strip().lower() in GENERIC_CONTACT_NAMES
+    lower = name.strip().lower()
+    # Remove trailing punctuation for matching
+    cleaned = re.sub(r"[!?.,:]+$", "", lower).strip()
+
+    if cleaned in GENERIC_CONTACT_NAMES:
+        return True
+    # Check if name contains institution words
+    if any(w in lower for w in _INSTITUTION_WORDS):
+        return True
+    # Check if name matches a label/CTA pattern
+    if _LABEL_PATTERNS.search(lower):
+        return True
+    # Names are typically 2-4 words of 2+ chars; reject single-word ALL-CAPS labels
+    # that look like headings (e.g. "KONSULTASI", "REGISTRASI")
+    words = cleaned.split()
+    if len(words) == 1 and len(cleaned) > 3 and cleaned.upper() == name.strip():
+        return True
+    return False
+
+# ---------------------------------------------------------------------------
+# IG session health tracking
+# ---------------------------------------------------------------------------
+_ig_session_status: dict = {"ok": True, "error": None}
+
+
+def get_ig_session_status() -> dict:
+    """Return current IG session health: {"ok": bool, "error": str|None}."""
+    return dict(_ig_session_status)
+
+
+def _check_ig_response(resp: httpx.Response) -> bool:
+    """Check if an IG response indicates a suspended/login-required session.
+    Returns True if response is OK, False if session is broken."""
+    global _ig_session_status
+    url = str(resp.url)
+    if "/accounts/suspended" in url:
+        _ig_session_status = {"ok": False, "error": "suspended"}
+        log.warning("IG session is SUSPENDED — update IG_SESSION_ID in config")
+        return False
+    if "/accounts/login" in url:
+        _ig_session_status = {"ok": False, "error": "login_required"}
+        log.warning("IG session expired (login required) — update IG_SESSION_ID in config")
+        return False
+    # If we get a normal 200 response, mark session as OK
+    if resp.status_code == 200:
+        _ig_session_status = {"ok": True, "error": None}
+    return True
+
 
 # Lazy-initialized clients
 _openai_client: AsyncOpenAI | None = None
@@ -111,18 +182,19 @@ async def _get_website_from_pddikti(university_name: str) -> str | None:
     return None
 
 
-async def search_ig_from_website(university_name: str, website_url: str | None = None) -> dict | None:
+async def search_ig_from_website(university_name: str, website_url: str | None = None, skip_pddikti: bool = False) -> dict | None:
     """
     Scrape a university website for instagram.com links.
     Gets the website URL from PDDIKTI first, then falls back to Google.
     Returns: {"handle": str, "url": str, "confidence": float} or None.
     """
     # Step 1: Get website URL (PDDIKTI → Google fallback)
-    if not website_url:
+    if not website_url and not skip_pddikti:
         website_url = await _get_website_from_pddikti(university_name)
 
     if not website_url and cfg.SERPER_API_KEY:
         name = university_name.strip().title()
+
         async with httpx.AsyncClient(timeout=15) as client:
             try:
                 resp = await client.post(
@@ -133,9 +205,21 @@ async def search_ig_from_website(university_name: str, website_url: str | None =
                 resp.raise_for_status()
                 for r in resp.json().get("organic", []):
                     url = r.get("link", "")
-                    if ".ac.id" in url or ".edu" in url or ".sch.id" in url:
+                    if not (".ac.id" in url or ".edu" in url or ".sch.id" in url):
+                        continue
+                    # Only accept if the URL is the homepage of an .ac.id domain.
+                    # Deep pages on other university domains (articles, news) that
+                    # just *mention* this university must be rejected.
+                    path = urlparse(url).path.rstrip("/")
+                    is_homepage = path == "" or path == "/"
+                    if is_homepage:
                         website_url = url
                         break
+                    else:
+                        log.debug(
+                            "Serper result '%s' rejected — not a homepage (path='%s')",
+                            url, path,
+                        )
             except Exception:
                 pass
 
@@ -161,7 +245,8 @@ async def search_ig_from_website(university_name: str, website_url: str | None =
             except Exception:
                 continue
     if not html:
-        return None
+        # No HTML but we found the website URL — return it without handle
+        return {"handle": None, "website_url": website_url}
 
     handles = _IG_LINK_RE.findall(html)
     # Filter out non-profile paths
@@ -175,7 +260,8 @@ async def search_ig_from_website(university_name: str, website_url: str | None =
             unique.append(h)
 
     if not unique:
-        return None
+        # Website found but no IG handle on it
+        return {"handle": None, "website_url": website_url}
 
     # The first IG handle on a university website is almost always the official one
     handle = unique[0]
@@ -184,6 +270,7 @@ async def search_ig_from_website(university_name: str, website_url: str | None =
         "handle": handle,
         "url": f"https://www.instagram.com/{handle}/",
         "confidence": 0.9,  # Very high — from their own website
+        "website_url": website_url,
     }
 
 
@@ -287,32 +374,78 @@ def _calculate_confidence(
     score = 0.0
     uni_lower = university_name.lower()
     handle_lower = handle.lower()
+    title_lower = title.lower()
+    snippet_lower = snippet.lower()
 
-    # Name appears in handle
+    # Words that are generic institution types or location names — NOT unique to a specific university
+    _GENERIC_WORDS = {
+        # Institution types
+        "universitas", "institut", "sekolah", "tinggi", "politeknik",
+        "akademi", "ilmu", "kesehatan", "teknik", "teknologi",
+        "bisnis", "sains", "pendidikan", "stikes", "stie", "stkip",
+        # Province / location names (too common in handles)
+        "bali", "jakarta", "bandung", "surabaya", "yogyakarta", "semarang",
+        "malang", "medan", "makassar", "denpasar", "lombok", "solo",
+        "aceh", "riau", "jambi", "lampung", "banten", "papua",
+        "kalimantan", "sulawesi", "sumatera", "nusa", "indonesia",
+    }
+
     uni_words = uni_lower.split()
-    matching_words = sum(1 for w in uni_words if len(w) > 3 and w in handle_lower)
-    if matching_words > 0:
-        score += 0.3 * min(matching_words / max(len(uni_words) - 1, 1), 1.0)
+    # "Unique words" = words that identify THIS university specifically
+    unique_words = [
+        w for w in uni_words
+        if len(w) > 3 and w not in _GENERIC_WORDS
+    ]
 
-    # Name appears in title/snippet
-    if uni_lower in title or uni_lower in snippet:
+    # Build abbreviation from university name (e.g. "Institut Ilmu Kesehatan Medika Persada" → "iikmp")
+    # Skip common filler words
+    _SKIP_ABBREV = {"dan", "dan", "di", "the", "of"}
+    abbrev = "".join(
+        w[0] for w in uni_words if len(w) > 1 and w not in _SKIP_ABBREV
+    )
+
+    # Strip separators from handle for matching (e.g. "std_bali" → "stdbali")
+    handle_stripped = re.sub(r'[_.\-]', '', handle_lower)
+
+    # Handle matches unique words (strong signal)
+    unique_in_handle = sum(1 for w in unique_words if w in handle_stripped)
+    # Handle matches abbreviation (e.g. "iikmpbali" contains "iikmp", "std_bali" → "stdbali" contains "stdb")
+    abbrev_match = len(abbrev) >= 3 and abbrev in handle_stripped
+
+    if unique_in_handle > 0 or abbrev_match:
+        word_score = 0.35 * min(unique_in_handle / max(len(unique_words), 1), 1.0)
+        abbrev_score = 0.30 if abbrev_match else 0.0
+        score += max(word_score, abbrev_score)
+    else:
+        # Handle only matches generic words — weak signal
+        generic_in_handle = sum(1 for w in uni_words if len(w) > 3 and w in handle_stripped)
+        if generic_in_handle > 0:
+            score += 0.10
+
+    # Full name appears in title/snippet (very strong signal)
+    if uni_lower in title_lower or uni_lower in snippet_lower:
         score += 0.3
-    elif any(w in title or w in snippet for w in uni_words if len(w) > 4):
+    elif any(w in title_lower or w in snippet_lower for w in unique_words):
         score += 0.15
 
     # Bio keywords in snippet
-    if any(kw in snippet for kw in IG_BIO_KEYWORDS):
-        score += 0.2
-
-    # Handle doesn't look like a personal account
-    if not any(x in handle_lower for x in ["personal", "fan", "meme", "info_"]):
-        score += 0.1
-
-    # Bonus for "official" or "resmi" in title
-    if "official" in title or "resmi" in title:
+    if any(kw in snippet_lower for kw in IG_BIO_KEYWORDS):
         score += 0.15
 
-    return min(score, 1.0)
+    # Handle doesn't look like a personal/org account
+    _NON_INSTITUTION = ["personal", "fan", "meme", "info_", "pers", "himpunan", "bem_", "himapsi"]
+    if any(x in handle_lower for x in _NON_INSTITUTION):
+        score -= 0.15
+
+    # Not a personal account (basic check)
+    if not any(x in handle_lower for x in ["personal", "fan", "meme"]):
+        score += 0.05
+
+    # Bonus for "official" or "resmi" in title
+    if "official" in title_lower or "resmi" in title_lower:
+        score += 0.15
+
+    return max(min(score, 1.0), 0.0)
 
 
 # ---------------------------------------------------------------------------
@@ -362,21 +495,41 @@ _WA_LINK_RE = re.compile(r'(?:wa\.me/|api\.whatsapp\.com/send\?phone=)(\+?62\d{8
 # How many "has_phone" results before we stop scanning more posts
 _ENOUGH_PHONE_RESULTS = 10
 
+# Sub-department handle prefixes — these are NOT the main university account
+_DEPT_HANDLE_KEYWORDS = [
+    "kemahasiswaan", "humas", "pmb", "biro", "upt", "lppm",
+    "perpustakaan", "lpm", "bak", "baak", "alumni", "bem",
+    "hmj", "ormawa", "ukm",
+]
+
 
 def _ig_web_get_user_info(client: httpx.Client, handle: str) -> dict | None:
     """
-    Single request to get user_id, bio, and external_url from IG search API.
+    Get user_id, bio, and external_url for an IG handle.
+
+    Uses two requests:
+      1. Search API → user_id (+ basic info)
+      2. Profile API → bio, external_url, bio_links (search doesn't return these)
+
     Returns {"user_id": int, "bio": str, "external_url": str} or None.
     """
+    # Step 1: Search to get user_id
     resp = client.get(
         "https://www.instagram.com/web/search/topsearch/",
         params={"query": handle, "context": "user"},
     )
+    if not _check_ig_response(resp):
+        return None
     if resp.status_code != 200:
         log.warning("IG web search failed for @%s: HTTP %d", handle, resp.status_code)
         return None
 
-    users = resp.json().get("users", [])
+    try:
+        users = resp.json().get("users", [])
+    except (ValueError, KeyError):
+        body_preview = resp.text[:200] if resp.text else "(empty)"
+        log.warning("IG web search returned invalid JSON for @%s: %s", handle, body_preview)
+        return None
     # Prefer exact username match
     user_data = None
     for u in users:
@@ -388,17 +541,43 @@ def _ig_web_get_user_info(client: httpx.Client, handle: str) -> dict | None:
     if not user_data:
         return None
 
+    user_id = int(user_data["pk"])
+
+    # Step 2: Fetch full profile for bio + external_url
+    # (search API doesn't return these fields)
+    _time.sleep(1)  # Small delay to avoid rate limiting
+    bio = ""
+    external_url = ""
+    profile = _ig_web_fetch_profile(client, handle)
+    if profile:
+        bio = profile.get("bio", "")
+        external_url = profile.get("external_url", "")
+
     return {
-        "user_id": int(user_data["pk"]),
-        "bio": user_data.get("biography", "") or "",
-        "external_url": user_data.get("external_url", "") or "",
+        "user_id": user_id,
+        "bio": bio,
+        "external_url": external_url,
     }
+
+
+_BIO_LINK_HEADERS = {
+    "User-Agent": (
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+        "(KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
+    ),
+    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+    "Accept-Language": "en-US,en;q=0.9",
+    "DNT": "1",
+    "Sec-Fetch-Dest": "document",
+    "Sec-Fetch-Mode": "navigate",
+    "Sec-Fetch-Site": "none",
+}
 
 
 def _scan_bio_link(url: str) -> list[str]:
     """
     Follow a link-in-bio URL and extract WhatsApp numbers.
-    Handles Linktree, beacons, direct wa.me links, etc.
+    Handles Linktree (__NEXT_DATA__ JSON), beacons, direct wa.me links, etc.
     Returns list of phone numbers found.
     """
     if not url:
@@ -406,13 +585,43 @@ def _scan_bio_link(url: str) -> list[str]:
 
     phones: list[str] = []
     try:
-        with httpx.Client(timeout=10, follow_redirects=True) as client:
+        with httpx.Client(
+            timeout=10, follow_redirects=True, headers=_BIO_LINK_HEADERS,
+        ) as client:
             resp = client.get(url)
             if resp.status_code != 200:
                 return []
             text = resp.text
 
-            # Extract wa.me / WhatsApp API links
+            # Linktree: parse __NEXT_DATA__ JSON for link URLs
+            if "linktr.ee" in url or "__NEXT_DATA__" in text:
+                import json as _json
+                m = re.search(
+                    r'<script id="__NEXT_DATA__"[^>]*>(.*?)</script>', text,
+                )
+                if m:
+                    try:
+                        data = _json.loads(m.group(1))
+                        links = (
+                            data.get("props", {})
+                            .get("pageProps", {})
+                            .get("links", [])
+                        )
+                        for link in links:
+                            link_url = link.get("url", "")
+                            if not link_url:
+                                continue
+                            # Direct wa.me link
+                            wa_match = _WA_LINK_RE.search(link_url)
+                            if wa_match:
+                                phones.append(wa_match.group(1))
+                            # Phone in URL
+                            for ph in _PHONE_QUICK_RE.findall(link_url):
+                                phones.append(ph)
+                    except Exception:
+                        pass
+
+            # Also scan raw HTML for wa.me / WhatsApp API links
             for match in _WA_LINK_RE.findall(text):
                 phones.append(match)
 
@@ -426,17 +635,40 @@ def _scan_bio_link(url: str) -> list[str]:
     return list(set(phones))
 
 
-def _ig_web_get_posts(client: httpx.Client, user_id: int, max_posts: int) -> list[dict]:
-    """Fetch recent posts via Instagram Web API feed endpoint."""
+def _ig_web_get_posts(client: httpx.Client, user_id: int, max_posts: int, max_id: str | None = None) -> tuple[list[dict], str | None]:
+    """Fetch posts via Instagram Web API feed endpoint with pagination.
+
+    Args:
+        max_id: Pagination cursor — pass the ``next_max_id`` from a previous
+                call to fetch *older* posts.
+
+    Returns:
+        (posts, next_max_id) — ``next_max_id`` is ``None`` when there are no
+        more pages.
+    """
+    params: dict = {"count": max_posts}
+    if max_id:
+        params["max_id"] = max_id
+
     resp = client.get(
         f"https://www.instagram.com/api/v1/feed/user/{user_id}/",
-        params={"count": max_posts},
+        params=params,
     )
+    if not _check_ig_response(resp):
+        return [], None
     if resp.status_code != 200:
         log.warning("IG web feed failed for user %d: HTTP %d", user_id, resp.status_code)
-        return []
+        return [], None
 
-    items = resp.json().get("items", [])
+    try:
+        body = resp.json()
+        items = body.get("items", [])
+        next_max_id = body.get("next_max_id")
+    except (ValueError, KeyError):
+        body_preview = resp.text[:200] if resp.text else "(empty)"
+        log.warning("IG web feed returned invalid JSON for user %d: %s", user_id, body_preview)
+        return [], None
+
     posts = []
     for item in items:
         code = item.get("code", "")
@@ -462,7 +694,7 @@ def _ig_web_get_posts(client: httpx.Client, user_id: int, max_posts: int) -> lis
                 "timestamp": timestamp,
             })
 
-    return posts
+    return posts, next_max_id
 
 
 def _classify_post(post: dict) -> str:
@@ -484,9 +716,22 @@ def _classify_post(post: dict) -> str:
     return "skip"
 
 
-def scrape_ig_posts_sync(ig_handle: str, max_posts: int | None = None) -> list[dict]:
+def scrape_ig_posts_sync(
+    ig_handle: str,
+    max_posts: int | None = None,
+    deeper: bool = False,
+    known_post_urls: set[str] | None = None,
+) -> list[dict]:
     """
     Smart scrape: find posts most likely to contain phone numbers.
+
+    Args:
+        deeper: If True, paginate through older posts until we find new
+                content (posts not in *known_post_urls*) or run out of pages.
+                Used for re-scraping universities that need more contacts.
+        known_post_urls: Set of post URLs already in the database. When
+                *deeper* is True this is used to skip pages of already-seen
+                posts and continue to older ones.
 
     Strategy:
       1. Check bio text for phone numbers
@@ -503,12 +748,17 @@ def scrape_ig_posts_sync(ig_handle: str, max_posts: int | None = None) -> list[d
     """
     if max_posts is None:
         max_posts = IG_MAX_POSTS_PER_PROFILE
+    if known_post_urls is None:
+        known_post_urls = set()
 
     handle = ig_handle.lstrip("@")
     results: list[dict] = []
     total_scanned = 0
     phone_count = 0
     flyer_count = 0
+
+    # How many extra pages to fetch when going deeper
+    MAX_DEEPER_PAGES = 3
 
     client = _get_ig_web_client()
     try:
@@ -549,32 +799,62 @@ def scrape_ig_posts_sync(ig_handle: str, max_posts: int | None = None) -> list[d
 
         _time.sleep(1)
 
-        # Step 4: Fetch posts and classify (with early stop)
-        posts = _ig_web_get_posts(client, user_id, max_posts)
-        total_scanned = len(posts)
+        # Step 4: Fetch posts and classify (with pagination & early stop)
+        next_max_id: str | None = None
+        pages_fetched = 0
+        max_pages = 1 + (MAX_DEEPER_PAGES if deeper else 0)
 
-        for post in posts:
-            cls = _classify_post(post)
-            if cls == "has_phone":
-                post["source"] = "caption_phone"
-                results.append(post)
-                phone_count += 1
-                # Early stop: enough phone numbers found in captions
-                if phone_count >= _ENOUGH_PHONE_RESULTS:
-                    log.info("@%s: early stop — %d phone posts found", handle, phone_count)
-                    break
-            elif cls == "likely_flyer":
-                post["source"] = "flyer"
-                results.append(post)
-                flyer_count += 1
+        while pages_fetched < max_pages:
+            posts, next_max_id = _ig_web_get_posts(client, user_id, max_posts, max_id=next_max_id)
+            if not posts:
+                break
+            pages_fetched += 1
+            total_scanned += len(posts)
+
+            new_posts_on_page = 0
+            for post in posts:
+                # Skip posts we already have in DB
+                if post["post_url"] in known_post_urls:
+                    continue
+                new_posts_on_page += 1
+
+                cls = _classify_post(post)
+                if cls == "has_phone":
+                    post["source"] = "caption_phone"
+                    results.append(post)
+                    phone_count += 1
+                    if phone_count >= _ENOUGH_PHONE_RESULTS:
+                        log.info("@%s: early stop — %d phone posts found", handle, phone_count)
+                        break
+                elif cls == "likely_flyer":
+                    post["source"] = "flyer"
+                    results.append(post)
+                    flyer_count += 1
+
+            if phone_count >= _ENOUGH_PHONE_RESULTS:
+                break
+
+            # In deeper mode: if the first page was all known posts, continue
+            # to the next page to find older unseen content.
+            # If not in deeper mode or no more pages, stop.
+            if not deeper or not next_max_id:
+                break
+
+            # All posts on this page were new — no need to go deeper, first
+            # scrape already covers this range.
+            if new_posts_on_page == len(posts):
+                break
+
+            log.info("@%s: deeper scrape — fetching page %d", handle, pages_fetched + 1)
+            _time.sleep(2)  # Rate limit between pages
 
     finally:
         client.close()
 
     bio_found = any(r.get("source") in ("bio", "bio_link") for r in results)
     log.info(
-        "@%s: %d posts scanned → %s in bio, %d with phone in caption, %d likely flyers",
-        handle, total_scanned,
+        "@%s: %d posts scanned (%d pages) → %s in bio, %d with phone in caption, %d likely flyers",
+        handle, total_scanned, pages_fetched,
         "YES" if bio_found else "no",
         phone_count, flyer_count,
     )
@@ -630,6 +910,7 @@ def _build_search_queries(university_name: str) -> list[str]:
 def _score_ig_user(user_data: dict, university_name: str) -> float:
     """Score an IG search result against a university name."""
     username = user_data.get("username", "")
+    handle_lower = username.lower()
     full_name = (user_data.get("full_name", "") or "").lower()
     is_verified = user_data.get("is_verified", False)
 
@@ -650,14 +931,20 @@ def _score_ig_user(user_data: dict, university_name: str) -> float:
     if location_word and len(location_word) > 3:
         if location_word in full_name:
             score += 0.35
-        elif location_word in username.lower():
+        elif location_word in handle_lower:
             score += 0.25
 
     # Non-generic word matches
-    unique_words = [w for w in uni_words if w not in generic]
+    unique_words = [w for w in uni_words if w not in generic and w != location_word]
+    unique_matching = 0
     if unique_words:
-        matching = sum(1 for w in unique_words if w in full_name)
-        score += 0.2 * min(matching / len(unique_words), 1.0)
+        unique_matching = sum(1 for w in unique_words if w in full_name or w in handle_lower)
+        score += 0.2 * min(unique_matching / len(unique_words), 1.0)
+
+    # Penalty: if university has distinctive words but NONE match, cap score low
+    # e.g. "Nahdlatul Ulama" should not match random "@idbbali" just because "bali" matches
+    if unique_words and unique_matching == 0:
+        score = min(score, 0.4)
 
     # Generic institution type match (small bonus)
     generic_words = [w for w in uni_words if w in generic]
@@ -673,7 +960,11 @@ def _score_ig_user(user_data: dict, university_name: str) -> float:
     if any(kw in full_name for kw in IG_BIO_KEYWORDS):
         score += 0.1
 
-    return min(score, 1.0)
+    # Penalty: sub-department handles (kemahasiswaan, humas, pmb, etc.)
+    if any(d in handle_lower for d in _DEPT_HANDLE_KEYWORDS):
+        score -= 0.2
+
+    return max(min(score, 1.0), 0.0)
 
 
 def search_ig_handle_via_ig(university_name: str) -> dict | None:
@@ -698,10 +989,17 @@ def search_ig_handle_via_ig(university_name: str) -> dict | None:
                 "https://www.instagram.com/web/search/topsearch/",
                 params={"query": query, "context": "user"},
             )
+            if not _check_ig_response(resp):
+                break  # Session broken, stop all queries
             if resp.status_code != 200:
                 continue
 
-            for u in resp.json().get("users", [])[:10]:
+            try:
+                users = resp.json().get("users", [])[:10]
+            except (ValueError, KeyError):
+                continue
+
+            for u in users:
                 uu = u["user"]
                 score = _score_ig_user(uu, university_name)
                 if score > best_score:
@@ -723,6 +1021,131 @@ def search_ig_handle_via_ig(university_name: str) -> dict | None:
         client.close()
 
     return None
+
+
+def _ig_web_fetch_profile(client: httpx.Client, handle: str) -> dict | None:
+    """
+    Fetch full IG profile directly (not via search).
+    Returns {"bio": str, "full_name": str, "external_url": str, "is_verified": bool} or None.
+    """
+    resp = client.get(
+        "https://www.instagram.com/api/v1/users/web_profile_info/",
+        params={"username": handle},
+    )
+    if not _check_ig_response(resp):
+        return None
+    if resp.status_code != 200:
+        log.debug("IG profile fetch failed for @%s: HTTP %d", handle, resp.status_code)
+        return None
+
+    try:
+        user = resp.json().get("data", {}).get("user", {})
+        if not user:
+            return None
+        return {
+            "bio": user.get("biography", "") or "",
+            "full_name": user.get("full_name", "") or "",
+            "external_url": user.get("external_url", "") or "",
+            "is_verified": user.get("is_verified", False),
+        }
+    except Exception:
+        return None
+
+
+def verify_ig_handle(handle: str, university_name: str) -> dict:
+    """
+    Verify an IG handle by fetching the profile and checking bio content.
+    Returns: {"verified": bool, "confidence_boost": float, "bio": str, "reason": str}
+    Sync function — call from executor in async context.
+    """
+    if not cfg.IG_SESSION_ID:
+        return {"verified": False, "confidence_boost": 0, "bio": "", "reason": "no session"}
+
+    client = _get_ig_web_client()
+    try:
+        profile = _ig_web_fetch_profile(client, handle)
+    finally:
+        client.close()
+
+    if not profile:
+        # Profile fetch failed (likely rate limited) — don't penalize,
+        # let the search-phase confidence stand as-is.
+        return {"verified": True, "confidence_boost": 0, "bio": "", "reason": "profile fetch failed (skipped)"}
+
+    bio = profile["bio"].lower()
+    external_url = profile["external_url"].lower()
+    uni_lower = university_name.lower()
+    all_words = uni_lower.split()
+
+    # Location word (last word, e.g. "malang", "bali")
+    location_word = all_words[-1] if all_words else ""
+
+    # Generic words to exclude
+    generic = {
+        "universitas", "institut", "sekolah", "tinggi", "negeri", "islam",
+        "agama", "politeknik", "akademi", "ilmu", "teknologi", "stie", "stkip",
+        "dan", "yang", "dari",
+    }
+
+    # Unique distinguishing words (len > 3, not generic, not location)
+    unique_words = [w for w in all_words if len(w) > 3 and w not in generic and w != location_word]
+
+    boost = 0.0
+    reasons = []
+
+    # Penalty: sub-department handles (kemahasiswaan, humas, pmb, etc.)
+    handle_lower = handle.lower()
+    dept_match = [d for d in _DEPT_HANDLE_KEYWORDS if d in handle_lower]
+    if dept_match:
+        boost -= 0.25
+        reasons.append(f"sub-department handle ({', '.join(dept_match)})")
+
+    # Penalty: bio is empty → can't verify, inconclusive
+    if not bio.strip():
+        boost -= 0.15
+        reasons.append("empty bio")
+    else:
+        # Check 1: University name / unique words in bio
+        unique_in_bio = sum(1 for w in unique_words if w in bio)
+        if unique_in_bio > 0:
+            boost += 0.15 * min(unique_in_bio / max(len(unique_words), 1), 1.0)
+            reasons.append(f"{unique_in_bio} unique words in bio")
+
+        # Check 2: Location word in bio
+        if location_word and len(location_word) > 3 and location_word in bio:
+            boost += 0.1
+            reasons.append(f"location '{location_word}' in bio")
+
+        # Check 3: IG_BIO_KEYWORDS in bio (resmi, official, kampus, etc.)
+        bio_kw_matches = [kw for kw in IG_BIO_KEYWORDS if kw in bio]
+        if bio_kw_matches:
+            boost += 0.1
+            reasons.append(f"bio keywords: {', '.join(bio_kw_matches)}")
+
+        # Check 4: University website domain in external_url or bio
+        if ".ac.id" in external_url or ".ac.id" in bio or ".sch.id" in external_url:
+            boost += 0.1
+            reasons.append("academic domain in link/bio")
+
+        # Negative: bio clearly unrelated (personal account, shop, etc.)
+        negative_keywords = ["olshop", "online shop", "jualan", "personal", "fan page", "parody"]
+        if any(nk in bio for nk in negative_keywords):
+            boost = -0.3
+            reasons = ["bio indicates non-university account"]
+
+    verified = boost > 0
+    reason_str = "; ".join(reasons) if reasons else "no university signals in bio"
+
+    log.info(
+        "Bio verify @%s for '%s': boost=%.2f (%s) | bio='%s'",
+        handle, university_name[:40], boost, reason_str, bio[:100],
+    )
+    return {
+        "verified": verified,
+        "confidence_boost": boost,
+        "bio": profile["bio"],
+        "reason": reason_str,
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -754,11 +1177,7 @@ async def extract_phone_from_image(image_url: str, caption: str = "") -> list[Ph
     except Exception as e:
         log.error(f"Vision extraction failed for {image_url}: {e}")
 
-    # Final filter: only return entries with non-empty, non-generic names
-    return [
-        c for c in by_phone.values()
-        if c["name"] and not _is_generic_name(c["name"])
-    ]
+    return list(by_phone.values())
 
 
 async def extract_named_contacts_from_text(text: str) -> list[PhoneContact]:
@@ -778,17 +1197,19 @@ async def extract_named_contacts_from_text(text: str) -> list[PhoneContact]:
                 {
                     "role": "system",
                     "content": (
-                        "Kamu adalah asisten yang mengekstrak nomor telepon Indonesia beserta nama pemiliknya dari teks. "
-                        "HANYA ambil nomor yang JELAS memiliki nama orang yang terkait (contoh: 'Salsa 0812xxx', 'CP: Rina 0856xxx'). "
-                        "ABAIKAN nomor tanpa nama orang. "
-                        "ABAIKAN nama generik seperti: Admin, Info, CS, Customer Service, Hotline, Informasi, Humas, Operator. "
-                        "Jawab dalam format JSON array: [{\"phone\": \"08xxx\", \"name\": \"Nama\"}]\n"
-                        "Jika tidak ada nomor dengan nama orang, jawab: []"
+                        "Kamu adalah asisten yang mengekstrak nomor HP/WhatsApp Indonesia dari teks. "
+                        "HANYA ambil nomor HANDPHONE/WHATSAPP (08xx/+628xx). ABAIKAN nomor telepon rumah/kantor (021-xxx, 0361-xxx, dll). "
+                        "Untuk setiap nomor, cari nama orang yang LANGSUNG BERDEKATAN dengan nomor tersebut. "
+                        "Jika tidak ada nama orang di dekat nomor, isi name dengan string kosong \"\". "
+                        "JANGAN pasangkan nama yang jauh dari nomor atau tidak terkait (misal nama mahasiswa, pembicara, rektor). "
+                        "Format: 08xx-xxxx-xxxx atau +62-8xx-xxxx-xxxx. "
+                        "Jawab dalam format JSON array: [{\"phone\": \"08xxx\", \"name\": \"Nama atau kosong\"}]\n"
+                        "Jika tidak ada nomor HP/WA, jawab: []"
                     ),
                 },
                 {
                     "role": "user",
-                    "content": f"Ekstrak nomor telepon beserta nama pemiliknya dari teks ini:\n\n{text}",
+                    "content": f"Ekstrak semua nomor telepon dari teks ini:\n\n{text}",
                 },
             ],
             max_tokens=300,
@@ -839,14 +1260,16 @@ async def _vision_extract_named_contacts(image_b64: str) -> list[PhoneContact]:
                 {
                     "role": "system",
                     "content": (
-                        "Kamu adalah asisten yang mengekstrak nomor telepon Indonesia beserta nama pemiliknya dari gambar flyer/poster. "
-                        "Cari semua nomor HP/WhatsApp yang tertera di gambar. "
-                        "HANYA ambil nomor yang JELAS memiliki nama orang yang terkait (contoh: 'Salsa 0812xxx', 'CP: Rina 0856xxx'). "
-                        "ABAIKAN nomor tanpa nama orang. "
-                        "ABAIKAN nama generik seperti: Admin, Info, CS, Customer Service, Hotline, Informasi, Humas, Operator. "
-                        "Format nomor Indonesia biasanya: 08xx-xxxx-xxxx atau +62-8xx-xxxx-xxxx. "
-                        "Jawab dalam format JSON array: [{\"phone\": \"08xxx\", \"name\": \"Nama\"}]\n"
-                        "Jika tidak ada nomor dengan nama orang, jawab: []"
+                        "Kamu adalah asisten yang mengekstrak nomor HP/WhatsApp Indonesia dari gambar flyer/poster. "
+                        "HANYA ambil nomor HANDPHONE/WHATSAPP (08xx/+628xx). ABAIKAN nomor telepon rumah/kantor (021-xxx, 0361-xxx, dll). "
+                        "ATURAN:\n"
+                        "1. Untuk setiap nomor HP, cari nama orang yang LANGSUNG BERDEKATAN dengan nomor tersebut.\n"
+                        "2. Jika tidak ada nama orang di dekat nomor, isi name dengan string kosong \"\".\n"
+                        "3. JANGAN pasangkan nama yang letaknya JAUH dari nomor.\n"
+                        "4. JANGAN ambil nama dari bagian lain gambar yang tidak terkait (misal: nama mahasiswa, pembicara, rektor).\n"
+                        "5. Format: 08xx-xxxx-xxxx atau +62-8xx-xxxx-xxxx.\n"
+                        "Jawab dalam format JSON array: [{\"phone\": \"08xxx\", \"name\": \"Nama atau kosong\"}]\n"
+                        "Jika tidak ada nomor HP/WA, jawab: []"
                     ),
                 },
                 {
@@ -854,19 +1277,19 @@ async def _vision_extract_named_contacts(image_b64: str) -> list[PhoneContact]:
                     "content": [
                         {
                             "type": "text",
-                            "text": "Ekstrak semua nomor telepon/HP/WhatsApp beserta nama pemiliknya dari gambar ini:",
+                            "text": "Ekstrak semua nomor telepon/HP/WhatsApp dari gambar ini. Sertakan nama orang jika ada di dekat nomor:",
                         },
                         {
                             "type": "image_url",
                             "image_url": {
                                 "url": f"data:image/jpeg;base64,{image_b64}",
-                                "detail": "low",
+                                "detail": "high",
                             },
                         },
                     ],
                 },
             ],
-            max_tokens=300,
+            max_tokens=500,
             temperature=0,
         )
     except Exception as e:
@@ -912,10 +1335,14 @@ def _parse_phone_contacts_json(raw: str) -> list[PhoneContact]:
             continue
         phone = str(item.get("phone", "")).strip()
         name = str(item.get("name", "")).strip()
-        if phone and name and not _is_generic_name(name):
-            validated = validate_phone(phone)
-            if validated:
-                results.append(PhoneContact(phone=validated, name=name))
+        if not phone:
+            continue
+        # Clear generic/label names — treat as no name
+        if name and _is_generic_name(name):
+            name = ""
+        validated = validate_phone(phone)
+        if validated:
+            results.append(PhoneContact(phone=validated, name=name))
 
     return results
 

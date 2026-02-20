@@ -67,7 +67,7 @@ export function useProvinces() {
 export function useTriggerCollectUniversities() {
   const queryClient = useQueryClient()
   return useMutation({
-    mutationFn: (province?: string) => triggerCollectUniversities(province),
+    mutationFn: (params?: { province?: string; limit?: number }) => triggerCollectUniversities(params),
     onSuccess: (data) => {
       toast.success(data.message || 'University collection started')
       queryClient.invalidateQueries({ queryKey: queryKeys.pipeline.status })

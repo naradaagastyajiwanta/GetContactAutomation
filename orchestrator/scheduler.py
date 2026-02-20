@@ -2,8 +2,10 @@
 Scheduler for daily WhatsApp outreach and follow-up management.
 """
 import asyncio
+import concurrent.futures
 import json
 from datetime import datetime, timedelta, timezone
+from functools import partial
 
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 
@@ -38,6 +40,51 @@ from orchestrator.agents.ig_phone_extractor import run_phone_extraction_batch
 WIB = timezone(timedelta(hours=7))
 
 scheduler = AsyncIOScheduler()
+
+# ---------------------------------------------------------------------------
+# Thread pool for heavy agent jobs
+# ---------------------------------------------------------------------------
+# Agent batch jobs (IG handle search, post scraping, phone extraction) can take
+# minutes to complete.  Running them on the main event loop blocks ALL FastAPI
+# HTTP request handling.  We offload them to a dedicated thread pool where each
+# thread gets its own asyncio event loop, keeping the main loop responsive.
+
+_agent_pool = concurrent.futures.ThreadPoolExecutor(
+    max_workers=2, thread_name_prefix="agent"
+)
+
+
+def _run_async_in_new_loop(coro_fn, *args, **kwargs):
+    """Execute an async function in a fresh event loop (for thread pool)."""
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+    try:
+        return loop.run_until_complete(coro_fn(*args, **kwargs))
+    finally:
+        loop.close()
+
+
+async def run_agent_in_thread(coro_fn, *args, **kwargs):
+    """Run an async agent function in a separate thread.
+
+    Returns the result of the agent function once it completes.
+    The main event loop stays free to serve HTTP requests while the
+    agent works in the background thread.
+    """
+    fn = partial(_run_async_in_new_loop, coro_fn, *args, **kwargs)
+    return await asyncio.get_running_loop().run_in_executor(_agent_pool, fn)
+
+
+async def _threaded_handle_search():
+    return await run_agent_in_thread(run_handle_search_batch)
+
+
+async def _threaded_post_scrape():
+    return await run_agent_in_thread(run_post_scrape_batch)
+
+
+async def _threaded_phone_extraction():
+    return await run_agent_in_thread(run_phone_extraction_batch)
 
 
 def is_within_outreach_hours() -> bool:
@@ -277,36 +324,43 @@ def setup_scheduler():
     )
 
     # Agent 1: Find IG handles — every 2 hours during active hours
+    # Uses _threaded_ wrapper to run in a separate thread (keeps event loop free)
     scheduler.add_job(
-        run_handle_search_batch,
+        _threaded_handle_search,
         "cron",
         hour="8-20/2",
         minute="0",
         timezone=WIB,
         id="agent_handle_finder",
         replace_existing=True,
+        max_instances=1,
+        misfire_grace_time=300,  # Skip if more than 5 min late (avoids fire-on-startup)
     )
 
     # Agent 2: Scrape posts — every 3 hours during active hours
     scheduler.add_job(
-        run_post_scrape_batch,
+        _threaded_post_scrape,
         "cron",
         hour="8-20/3",
         minute="10",
         timezone=WIB,
         id="agent_post_scraper",
         replace_existing=True,
+        max_instances=1,
+        misfire_grace_time=300,
     )
 
     # Agent 3: Extract phones — every hour during active hours
     scheduler.add_job(
-        run_phone_extraction_batch,
+        _threaded_phone_extraction,
         "cron",
         hour="8-21",
         minute="30",
         timezone=WIB,
         id="agent_phone_extractor",
         replace_existing=True,
+        max_instances=1,
+        misfire_grace_time=300,
     )
 
     # Learning reflection — 3 times a day

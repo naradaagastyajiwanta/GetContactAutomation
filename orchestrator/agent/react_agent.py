@@ -112,7 +112,10 @@ class ReactAgent:
         await db.update_agent_reasoning(conv_id, reasoning)
 
         # 11. Update conversation state if not already set by a terminal tool
-        if action == AgentAction.need_more:
+        if action == AgentAction.refused and "mark_conversation_refused" not in tool_calls_made:
+            # Fallback refused detected from text — tool wasn't called, so update DB here
+            await db.update_conversation_state(conv_id, "REFUSED")
+        elif action == AgentAction.need_more:
             await db.update_conversation_state(
                 conv_id,
                 "NEED_MORE",
@@ -301,14 +304,51 @@ class ReactAgent:
         )
         return response.choices[0].message.content or "", tool_calls_made
 
+    # Keywords that indicate clear refusal in the contact's message or bot's closing reply
+    _REFUSAL_KEYWORDS = [
+        "scam", "penipuan", "penipu", "tipu", "bohong",
+        "tidak bisa bantu", "tidak bisa membantu", "maaf tidak bisa",
+        "gak bisa", "ga bisa", "nggak bisa",
+        "salah nomor", "salah sambung",
+        "jangan hubungi", "stop", "blokir",
+        "mohon maaf mengganggu",  # bot's own polite close = refused
+    ]
+
+    # Keywords in bot's closing response that indicate it accepted a refusal
+    _BOT_CLOSING_KEYWORDS = [
+        "terima kasih atas waktunya",
+        "mohon maaf mengganggu",
+        "maaf mengganggu",
+        "semoga hari anda",
+        "terima kasih atas tanggapannya",
+    ]
+
     @staticmethod
     def _classify_result(
         tool_calls_made: list[str], response_text: str
     ) -> tuple[AgentAction, str | None]:
-        """Determine AgentAction and conversation state from tool calls."""
+        """Determine AgentAction and conversation state from tool calls.
+
+        Falls back to text analysis when the model doesn't call a terminal tool
+        but the conversation is clearly over (e.g. contact said 'scam').
+        """
         if "save_extracted_number" in tool_calls_made:
             return AgentAction.got_number, "GOT_NUMBER"
         if "mark_conversation_refused" in tool_calls_made:
             return AgentAction.refused, "REFUSED"
+
+        # Fallback: detect refusal from bot's response text
+        # (GPT sometimes writes a polite closing WITHOUT calling the tool)
+        if response_text:
+            text_lower = response_text.lower()
+            is_closing = any(kw in text_lower for kw in ReactAgent._BOT_CLOSING_KEYWORDS)
+            is_refusal = any(kw in text_lower for kw in ReactAgent._REFUSAL_KEYWORDS)
+            if is_closing or is_refusal:
+                log.info(
+                    "ReactAgent: detected refusal from response text (no tool call), "
+                    "overriding to REFUSED"
+                )
+                return AgentAction.refused, "REFUSED"
+
         # Default: the agent wants to continue the conversation
         return AgentAction.need_more, "NEED_MORE"

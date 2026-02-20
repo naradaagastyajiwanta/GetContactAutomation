@@ -11,9 +11,12 @@ export async function getProvinces(): Promise<string[]> {
   return data.provinces
 }
 
-export async function triggerCollectUniversities(province?: string): Promise<{ status: string; message: string }> {
+export async function triggerCollectUniversities(params?: { province?: string; limit?: number }): Promise<{ status: string; message: string }> {
+  const queryParams: Record<string, string | number> = {}
+  if (params?.province) queryParams.province = params.province
+  if (params?.limit != null) queryParams.limit = params.limit
   const { data } = await apiClient.post<{ status: string; message: string }>('/pipeline/collect-universities', null, {
-    params: province ? { province } : undefined,
+    params: Object.keys(queryParams).length > 0 ? queryParams : undefined,
   })
   return data
 }
