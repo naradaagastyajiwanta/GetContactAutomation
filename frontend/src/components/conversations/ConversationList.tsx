@@ -36,9 +36,18 @@ export function ConversationList({ conversations }: ConversationListProps) {
               onClick={() => navigate(`/conversations/${conv.id}`)}
             >
               <TableCell className="font-medium">
-                {conv.university_name ?? `University #${conv.university_id}`}
+                {conv.is_test
+                  ? (conv.university_name || 'Test Conversation')
+                  : (conv.university_name ?? `University #${conv.university_id}`)}
               </TableCell>
-              <TableCell className="font-mono text-xs">{conv.contact_phone}</TableCell>
+              <TableCell className="font-mono text-xs">
+                {conv.contact_phone}
+                {conv.is_test && (
+                  <Badge className="ml-2 bg-purple-100 text-purple-700 dark:bg-purple-900/30 dark:text-purple-300">
+                    Test
+                  </Badge>
+                )}
+              </TableCell>
               <TableCell>
                 <Badge className={`${colors.bg} ${colors.text}`}>
                   {conv.state.replace(/_/g, ' ')}

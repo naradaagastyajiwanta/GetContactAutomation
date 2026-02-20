@@ -3,6 +3,7 @@ import type { Conversation, Message } from '../lib/types'
 
 interface ConversationParams {
   state?: string
+  is_test?: boolean
   limit?: number
   offset?: number
 }
@@ -25,4 +26,17 @@ export async function getConversation(id: number): Promise<Conversation> {
         ? JSON.parse(data.message_history)
         : data.message_history,
   }
+}
+
+export async function startTestConversation(
+  phone: string,
+  universityName?: string,
+  force?: boolean,
+): Promise<{ id: number; phone: string; message: string; state: string }> {
+  const { data } = await apiClient.post('/conversations/test', {
+    phone,
+    university_name: universityName || 'Universitas Test',
+    force: force ?? false,
+  })
+  return data
 }

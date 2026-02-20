@@ -34,6 +34,9 @@ from orchestrator.db import (
     get_unprocessed_analyses,
     upsert_config,
     delete_config as db_delete_config,
+    create_conversation,
+    update_conversation_state,
+    add_message_to_history,
 )
 from orchestrator.config_registry import (
     CONFIG_DEFINITIONS,
@@ -318,11 +321,12 @@ async def get_university_posts(university_id: int):
 async def list_conversations(
     state: str | None = None,
     university_id: int | None = None,
+    is_test: bool | None = None,
     limit: int = 100,
     offset: int = 0,
 ):
     """List conversations with optional filters."""
-    return await get_conversations_filtered(state, university_id, limit, offset)
+    return await get_conversations_filtered(state, university_id, is_test, limit, offset)
 
 
 @app.get("/conversations/{conversation_id}")
@@ -332,6 +336,81 @@ async def get_conversation(conversation_id: int):
     if not conv:
         return JSONResponse(status_code=404, content={"detail": "Conversation not found"})
     return conv
+
+
+class TestConversationPayload(BaseModel):
+    phone: str
+    university_name: str = "Universitas Test"
+    force: bool = False
+
+
+@app.post("/conversations/test")
+async def start_test_conversation(payload: TestConversationPayload):
+    """Start a test conversation for internal roleplay testing.
+
+    Creates a real conversation record so incoming webhook replies
+    are processed through the normal AI pipeline.
+    """
+    phone = validate_phone(payload.phone)
+    if not phone:
+        return JSONResponse(
+            status_code=422,
+            content={"detail": f"Invalid phone number: {payload.phone}"},
+        )
+
+    # Check for existing active conversation on this phone
+    existing = await get_conversation_by_phone(phone)
+    if existing and existing["state"] not in _TERMINAL_STATES:
+        if payload.force:
+            # Abandon the old conversation so we can start fresh
+            await update_conversation_state(existing["id"], ConvState.ABANDONED)
+            log.info("Force-abandoned existing conversation %d for test", existing["id"])
+        else:
+            return JSONResponse(
+                status_code=409,
+                content={
+                    "detail": f"Active conversation already exists for {phone}",
+                    "existing_id": existing["id"],
+                    "existing_state": existing["state"],
+                },
+            )
+
+    # Generate initial message
+    try:
+        message = await conversation_manager.generate_initial_message(
+            university_name=payload.university_name
+        )
+    except Exception as e:
+        log.error("Failed to generate test initial message: %s", e)
+        return JSONResponse(
+            status_code=500,
+            content={"detail": f"Failed to generate message: {e}"},
+        )
+
+    # Create conversation with is_test=True, university_id=None
+    from datetime import datetime as _dt, timezone as _tz
+
+    conv_id = await create_conversation(None, phone, is_test=True)
+
+    # Enqueue via message queue
+    await message_queue.enqueue_send(phone, message)
+
+    # Update state and record message
+    await update_conversation_state(
+        conv_id,
+        ConvState.INITIAL_SENT,
+        last_message_at=_dt.now(_tz.utc).isoformat(),
+    )
+    await add_message_to_history(conv_id, "bot", message)
+
+    log.info("Test conversation %d started for %s (%s)", conv_id, phone, payload.university_name)
+
+    return {
+        "id": conv_id,
+        "phone": phone,
+        "message": message,
+        "state": ConvState.INITIAL_SENT,
+    }
 
 
 # ---------------------------------------------------------------------------

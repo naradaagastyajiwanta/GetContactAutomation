@@ -42,7 +42,7 @@ export interface IgContact {
 
 export interface Conversation {
   id: number
-  university_id: number
+  university_id: number | null
   university_name?: string
   contact_phone: string
   state: ConversationState
@@ -51,6 +51,7 @@ export interface Conversation {
   last_message_at: string | null
   next_action_at: string | null
   attempt_count: number
+  is_test?: boolean
   created_at: string
   agent_reasoning?: string | null
 }

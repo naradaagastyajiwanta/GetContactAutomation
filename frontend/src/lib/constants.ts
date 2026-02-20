@@ -46,4 +46,20 @@ export const CONVERSATION_STATES = [
   'UNDELIVERED',
 ] as const
 
+// Trunk: the main linear path
+export const TIMELINE_TRUNK = [
+  'PENDING', 'INITIAL_SENT', 'WAITING_REPLY', 'REPLIED', 'ANALYZING',
+] as const
+
+// Branches from ANALYZING
+export const TIMELINE_BRANCHES = [
+  { state: 'GOT_NUMBER', color: 'green', label: 'Got Number' },
+  { state: 'NEED_MORE', color: 'orange', label: 'Need More',
+    next: { state: 'FOLLOWUP_SENT', label: 'Follow-up Sent' } },
+  { state: 'REFUSED', color: 'red', label: 'Refused' },
+] as const
+
+// Terminal states (can happen from anywhere)
+export const TIMELINE_TERMINALS = ['ABANDONED', 'NO_REPLY', 'UNDELIVERED'] as const
+
 export const ITEMS_PER_PAGE = 25

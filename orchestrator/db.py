@@ -30,6 +30,7 @@ CREATE TABLE IF NOT EXISTS ig_contacts (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     university_id INTEGER REFERENCES universities(id),
     phone_number TEXT NOT NULL,
+    contact_name TEXT,
     source_post_url TEXT,
     source_image_url TEXT,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
@@ -58,6 +59,8 @@ CREATE TABLE IF NOT EXISTS conversations (
     last_message_at TIMESTAMP,
     next_action_at TIMESTAMP,
     attempt_count INTEGER DEFAULT 0,
+    followup_count INTEGER DEFAULT 0,
+    is_test BOOLEAN DEFAULT 0,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 
@@ -158,6 +161,30 @@ async def init_db() -> None:
         try:
             await db.execute(
                 "ALTER TABLE conversations ADD COLUMN agent_reasoning TEXT"
+            )
+            await db.commit()
+        except Exception:
+            pass  # Column already exists
+        # Migration: add is_test column to conversations (idempotent)
+        try:
+            await db.execute(
+                "ALTER TABLE conversations ADD COLUMN is_test BOOLEAN DEFAULT 0"
+            )
+            await db.commit()
+        except Exception:
+            pass  # Column already exists
+        # Migration: add followup_count column to conversations (idempotent)
+        try:
+            await db.execute(
+                "ALTER TABLE conversations ADD COLUMN followup_count INTEGER DEFAULT 0"
+            )
+            await db.commit()
+        except Exception:
+            pass  # Column already exists
+        # Migration: add contact_name column to ig_contacts (idempotent)
+        try:
+            await db.execute(
+                "ALTER TABLE ig_contacts ADD COLUMN contact_name TEXT"
             )
             await db.commit()
         except Exception:
@@ -324,14 +351,15 @@ async def add_ig_contact(
     phone_number: str,
     source_post_url: str | None = None,
     source_image_url: str | None = None,
+    contact_name: str | None = None,
 ) -> int | None:
     async with get_db() as db:
         cursor = await db.execute(
             """
-            INSERT OR IGNORE INTO ig_contacts (university_id, phone_number, source_post_url, source_image_url)
-            VALUES (?, ?, ?, ?)
+            INSERT OR IGNORE INTO ig_contacts (university_id, phone_number, contact_name, source_post_url, source_image_url)
+            VALUES (?, ?, ?, ?, ?)
             """,
-            (university_id, phone_number, source_post_url, source_image_url),
+            (university_id, phone_number, contact_name, source_post_url, source_image_url),
         )
         await db.commit()
         return cursor.lastrowid if cursor.rowcount > 0 else None
@@ -458,14 +486,16 @@ async def get_pipeline_status() -> dict:
 _TERMINAL_STATES = ("GOT_NUMBER", "REFUSED", "ABANDONED")
 
 
-async def create_conversation(university_id: int, contact_phone: str) -> int:
+async def create_conversation(
+    university_id: int | None, contact_phone: str, is_test: bool = False
+) -> int:
     async with get_db() as db:
         cursor = await db.execute(
             """
-            INSERT INTO conversations (university_id, contact_phone, state, created_at)
-            VALUES (?, ?, 'PENDING', ?)
+            INSERT INTO conversations (university_id, contact_phone, state, is_test, created_at)
+            VALUES (?, ?, 'PENDING', ?, ?)
             """,
-            (university_id, contact_phone, _utcnow()),
+            (university_id, contact_phone, int(is_test), _utcnow()),
         )
         await db.commit()
         return cursor.lastrowid  # type: ignore[return-value]
@@ -483,6 +513,7 @@ async def update_conversation_state(conv_id: int, state: str, **kwargs) -> None:
         "last_message_at",
         "next_action_at",
         "attempt_count",
+        "followup_count",
         "agent_reasoning",
     }
     extra = {k: v for k, v in kwargs.items() if k in allowed_fields}
@@ -502,12 +533,13 @@ async def update_conversation_state(conv_id: int, state: str, **kwargs) -> None:
         await db.commit()
 
 
-async def get_active_conversations() -> list[dict]:
+async def get_active_conversations(include_test: bool = True) -> list[dict]:
     """Return conversations not yet in a terminal state."""
     placeholders = ",".join("?" * len(_TERMINAL_STATES))
+    test_clause = "" if include_test else " AND is_test = 0"
     async with get_db() as db:
         cursor = await db.execute(
-            f"SELECT * FROM conversations WHERE state NOT IN ({placeholders})",
+            f"SELECT * FROM conversations WHERE state NOT IN ({placeholders}){test_clause}",
             _TERMINAL_STATES,
         )
         rows = await cursor.fetchall()
@@ -525,6 +557,7 @@ async def get_conversations_needing_followup(hours_threshold: int) -> list[dict]
             SELECT * FROM conversations
             WHERE state IN ('WAITING_REPLY', 'FOLLOWUP_SENT')
               AND last_message_at IS NOT NULL
+              AND is_test = 0
               AND (
                 (julianday('now') - julianday(last_message_at)) * 24 >= ?
               )
@@ -560,6 +593,7 @@ async def get_posts_for_university(university_id: int) -> list[dict]:
 async def get_conversations_filtered(
     state: str | None = None,
     university_id: int | None = None,
+    is_test: bool | None = None,
     limit: int = 100,
     offset: int = 0,
 ) -> list[dict]:
@@ -573,6 +607,9 @@ async def get_conversations_filtered(
     if university_id:
         conditions.append("c.university_id = ?")
         params.append(university_id)
+    if is_test is not None:
+        conditions.append("c.is_test = ?")
+        params.append(int(is_test))
 
     where = f"WHERE {' AND '.join(conditions)}" if conditions else ""
 

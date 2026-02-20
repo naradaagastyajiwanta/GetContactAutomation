@@ -9,10 +9,12 @@ a browser session cookie.  This avoids the Mobile/Private API IP-blacklist
 issues that plague instagrapi / instaloader.
 """
 import base64
+import json
 import os
 import re
 import time as _time
 from datetime import datetime, timezone
+from typing import TypedDict
 from urllib.parse import urlparse
 
 import httpx
@@ -28,6 +30,22 @@ from orchestrator.config import (
     cfg,
 )
 from orchestrator.db import validate_phone
+
+
+class PhoneContact(TypedDict):
+    phone: str
+    name: str
+
+
+GENERIC_CONTACT_NAMES = {
+    "admin", "info", "customer service", "hotline", "cs",
+    "informasi", "humas", "operator",
+}
+
+
+def _is_generic_name(name: str) -> bool:
+    """Return True if the name is generic/institutional (not a person's name)."""
+    return name.strip().lower() in GENERIC_CONTACT_NAMES
 
 # Lazy-initialized clients
 _openai_client: AsyncOpenAI | None = None
@@ -342,7 +360,7 @@ _PHONE_QUICK_RE = re.compile(r'(?:\+62|62|0)[\s\-.]?8\d[\s\-.]?\d{3,4}[\s\-.]?\d
 _WA_LINK_RE = re.compile(r'(?:wa\.me/|api\.whatsapp\.com/send\?phone=)(\+?62\d{8,13})')
 
 # How many "has_phone" results before we stop scanning more posts
-_ENOUGH_PHONE_RESULTS = 3
+_ENOUGH_PHONE_RESULTS = 10
 
 
 def _ig_web_get_user_info(client: httpx.Client, handle: str) -> dict | None:
@@ -711,33 +729,77 @@ def search_ig_handle_via_ig(university_name: str) -> dict | None:
 # Phase 3b: Extract Phone Numbers from Images (OpenAI Vision)
 # ---------------------------------------------------------------------------
 
-async def extract_phone_from_image(image_url: str, caption: str = "") -> list[str]:
+async def extract_phone_from_image(image_url: str, caption: str = "") -> list[PhoneContact]:
     """
-    Extract Indonesian phone numbers from a flyer/poster image using GPT-4o Vision.
-    Also extracts from caption text. Returns list of validated phone numbers.
+    Extract Indonesian phone numbers with contact names from a flyer/poster image.
+    Uses GPT for both caption text and Vision OCR on images.
+    Only returns contacts that have a real person's name (not generic names).
     """
-    phones: set[str] = set()
+    by_phone: dict[str, PhoneContact] = {}
 
-    # 1. Extract from caption text first (free, no API call needed)
-    caption_phones = extract_phones_from_text(caption)
-    for p in caption_phones:
-        validated = validate_phone(p)
-        if validated:
-            phones.add(validated)
+    # 1. Extract named contacts from caption text via GPT
+    caption_contacts = await extract_named_contacts_from_text(caption)
+    for c in caption_contacts:
+        by_phone[c["phone"]] = c
 
-    # 2. Extract from image via Vision API
+    # 2. Extract named contacts from image via Vision API
     try:
         image_b64 = await _download_image_as_base64(image_url)
         if image_b64:
-            vision_phones = await _vision_extract_phones(image_b64)
-            for p in vision_phones:
-                validated = validate_phone(p)
-                if validated:
-                    phones.add(validated)
+            vision_contacts = await _vision_extract_named_contacts(image_b64)
+            for c in vision_contacts:
+                existing = by_phone.get(c["phone"])
+                if not existing or (not existing["name"] and c["name"]):
+                    by_phone[c["phone"]] = c
     except Exception as e:
         log.error(f"Vision extraction failed for {image_url}: {e}")
 
-    return list(phones)
+    # Final filter: only return entries with non-empty, non-generic names
+    return [
+        c for c in by_phone.values()
+        if c["name"] and not _is_generic_name(c["name"])
+    ]
+
+
+async def extract_named_contacts_from_text(text: str) -> list[PhoneContact]:
+    """
+    Extract phone numbers with contact names from text using GPT-4o-mini.
+    Only returns contacts where a person's name is associated with the number.
+    Skips GPT call if no phone number is detected in the text.
+    """
+    if not text or not _PHONE_QUICK_RE.search(text.replace(" ", "").replace("-", "")):
+        return []
+
+    client = _get_openai()
+    try:
+        response = await client.chat.completions.create(
+            model="gpt-4o-mini",
+            messages=[
+                {
+                    "role": "system",
+                    "content": (
+                        "Kamu adalah asisten yang mengekstrak nomor telepon Indonesia beserta nama pemiliknya dari teks. "
+                        "HANYA ambil nomor yang JELAS memiliki nama orang yang terkait (contoh: 'Salsa 0812xxx', 'CP: Rina 0856xxx'). "
+                        "ABAIKAN nomor tanpa nama orang. "
+                        "ABAIKAN nama generik seperti: Admin, Info, CS, Customer Service, Hotline, Informasi, Humas, Operator. "
+                        "Jawab dalam format JSON array: [{\"phone\": \"08xxx\", \"name\": \"Nama\"}]\n"
+                        "Jika tidak ada nomor dengan nama orang, jawab: []"
+                    ),
+                },
+                {
+                    "role": "user",
+                    "content": f"Ekstrak nomor telepon beserta nama pemiliknya dari teks ini:\n\n{text}",
+                },
+            ],
+            max_tokens=300,
+            temperature=0,
+        )
+    except Exception as e:
+        log.error(f"GPT text extraction error: {e}")
+        return []
+
+    raw = response.choices[0].message.content or ""
+    return _parse_phone_contacts_json(raw)
 
 
 def extract_phones_from_text(text: str) -> list[str]:
@@ -766,8 +828,8 @@ async def _download_image_as_base64(url: str) -> str | None:
             return None
 
 
-async def _vision_extract_phones(image_b64: str) -> list[str]:
-    """Use OpenAI Vision to extract phone numbers from image."""
+async def _vision_extract_named_contacts(image_b64: str) -> list[PhoneContact]:
+    """Use OpenAI Vision to extract phone numbers with contact names from image."""
     client = _get_openai()
 
     try:
@@ -777,11 +839,14 @@ async def _vision_extract_phones(image_b64: str) -> list[str]:
                 {
                     "role": "system",
                     "content": (
-                        "Kamu adalah asisten yang mengekstrak nomor telepon Indonesia dari gambar. "
-                        "Cari semua nomor HP/WhatsApp yang tertera di gambar flyer/poster. "
+                        "Kamu adalah asisten yang mengekstrak nomor telepon Indonesia beserta nama pemiliknya dari gambar flyer/poster. "
+                        "Cari semua nomor HP/WhatsApp yang tertera di gambar. "
+                        "HANYA ambil nomor yang JELAS memiliki nama orang yang terkait (contoh: 'Salsa 0812xxx', 'CP: Rina 0856xxx'). "
+                        "ABAIKAN nomor tanpa nama orang. "
+                        "ABAIKAN nama generik seperti: Admin, Info, CS, Customer Service, Hotline, Informasi, Humas, Operator. "
                         "Format nomor Indonesia biasanya: 08xx-xxxx-xxxx atau +62-8xx-xxxx-xxxx. "
-                        "Jawab HANYA dengan daftar nomor telepon, satu per baris. "
-                        "Jika tidak ada nomor telepon, jawab: NONE"
+                        "Jawab dalam format JSON array: [{\"phone\": \"08xxx\", \"name\": \"Nama\"}]\n"
+                        "Jika tidak ada nomor dengan nama orang, jawab: []"
                     ),
                 },
                 {
@@ -789,7 +854,7 @@ async def _vision_extract_phones(image_b64: str) -> list[str]:
                     "content": [
                         {
                             "type": "text",
-                            "text": "Ekstrak semua nomor telepon/HP/WhatsApp dari gambar ini:",
+                            "text": "Ekstrak semua nomor telepon/HP/WhatsApp beserta nama pemiliknya dari gambar ini:",
                         },
                         {
                             "type": "image_url",
@@ -801,18 +866,57 @@ async def _vision_extract_phones(image_b64: str) -> list[str]:
                     ],
                 },
             ],
-            max_tokens=200,
+            max_tokens=300,
             temperature=0,
         )
     except Exception as e:
         log.error(f"OpenAI Vision API error: {e}")
         return []
 
-    text = response.choices[0].message.content or ""
-    if "NONE" in text.upper():
+    raw = response.choices[0].message.content or ""
+    if "NONE" in raw.upper():
         return []
 
-    # Extract phone numbers from GPT response
-    return extract_phones_from_text(text)
+    return _parse_phone_contacts_json(raw)
+
+
+def _parse_phone_contacts_json(raw: str) -> list[PhoneContact]:
+    """Parse GPT JSON response into validated PhoneContact list."""
+    # Try to extract JSON array from response
+    raw = raw.strip()
+    # Handle markdown code blocks
+    if raw.startswith("```"):
+        raw = re.sub(r"^```(?:json)?\s*", "", raw)
+        raw = re.sub(r"\s*```$", "", raw)
+
+    try:
+        data = json.loads(raw)
+    except json.JSONDecodeError:
+        # Try to find JSON array in the text
+        match = re.search(r"\[.*\]", raw, re.DOTALL)
+        if match:
+            try:
+                data = json.loads(match.group())
+            except json.JSONDecodeError:
+                log.debug("Failed to parse phone contacts JSON: %s", raw[:200])
+                return []
+        else:
+            return []
+
+    if not isinstance(data, list):
+        return []
+
+    results: list[PhoneContact] = []
+    for item in data:
+        if not isinstance(item, dict):
+            continue
+        phone = str(item.get("phone", "")).strip()
+        name = str(item.get("name", "")).strip()
+        if phone and name and not _is_generic_name(name):
+            validated = validate_phone(phone)
+            if validated:
+                results.append(PhoneContact(phone=validated, name=name))
+
+    return results
 
 

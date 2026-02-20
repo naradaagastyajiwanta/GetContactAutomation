@@ -18,6 +18,7 @@ import * as path from 'path';
 const PORT = 3100;
 const AUTH_STORE_DIR = path.join(__dirname, '..', 'auth_store');
 const AUTH_BACKUP_DIR = path.join(__dirname, '..', 'auth_store_backup');
+const WEBHOOK_FILE = path.join(__dirname, '..', 'webhook_url.txt');
 
 const logger = pino({ level: 'info' });
 const baileysLogger = pino({ level: 'silent' }) as any;
@@ -123,6 +124,32 @@ function restoreAuthIfNeeded(): void {
     }
   } catch (err) {
     logger.error({ err }, 'Failed to restore auth store from backup');
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Webhook URL persistence
+// ---------------------------------------------------------------------------
+
+function saveWebhookUrl(url: string): void {
+  try {
+    fs.writeFileSync(WEBHOOK_FILE, url, 'utf-8');
+  } catch (err) {
+    logger.error({ err }, 'Failed to persist webhook URL');
+  }
+}
+
+function loadWebhookUrl(): void {
+  try {
+    if (fs.existsSync(WEBHOOK_FILE)) {
+      const url = fs.readFileSync(WEBHOOK_FILE, 'utf-8').trim();
+      if (url) {
+        webhookUrl = url;
+        logger.info({ webhookUrl }, 'Webhook URL restored from disk');
+      }
+    }
+  } catch (err) {
+    logger.error({ err }, 'Failed to load webhook URL');
   }
 }
 
@@ -326,14 +353,72 @@ async function connectToWhatsApp(): Promise<void> {
         // Skip status broadcast
         if (remoteJid === 'status@broadcast') continue;
 
-        const text =
+        // Log message types for debugging
+        const msgTypes = Object.keys(msg.message).filter((k) => k !== 'messageContextInfo');
+        logger.info({ remoteJid, msgTypes }, 'Incoming message types');
+
+        // Extract text content OR vCard contact(s)
+        let text: string | null =
           msg.message.conversation ??
           msg.message.extendedTextMessage?.text ??
           null;
 
+        // Handle shared contact (vCard) messages
+        if (!text) {
+          const vcards: string[] = [];
+
+          if (msg.message.contactMessage?.vcard) {
+            vcards.push(msg.message.contactMessage.vcard);
+          }
+
+          if (msg.message.contactsArrayMessage?.contacts) {
+            for (const c of msg.message.contactsArrayMessage.contacts) {
+              if (c.vcard) vcards.push(c.vcard);
+            }
+          }
+
+          if (vcards.length > 0) {
+            // Extract phone numbers and display names from vCards
+            const parts: string[] = [];
+            for (const vcard of vcards) {
+              const fnMatch = vcard.match(/FN:(.+)/);
+              const telMatches = [...vcard.matchAll(/TEL[^:]*:([+\d\s\-()]+)/g)];
+              const name = fnMatch?.[1]?.trim() ?? 'Unknown';
+              const phones = telMatches.map((m) => m[1].replace(/[\s\-()]/g, ''));
+              if (phones.length > 0) {
+                parts.push(`[Shared Contact] ${name}: ${phones.join(', ')}`);
+              } else {
+                parts.push(`[Shared Contact] ${name}`);
+              }
+            }
+            text = parts.join('\n');
+            logger.info({ vcardCount: vcards.length, parsed: text }, 'Parsed vCard contact message');
+          }
+        }
+
         if (!text) continue;
 
-        const from = remoteJid.replace('@s.whatsapp.net', '');
+        // Resolve JID to pure phone number digits
+        let from: string;
+        if (remoteJid.endsWith('@lid')) {
+          // LID (Linked Identity) — resolve to phone number via Baileys mapping
+          try {
+            const pn = await newSock.signalRepository.lidMapping.getPNForLID(remoteJid);
+            if (pn) {
+              from = pn.split('@')[0].split(':')[0];
+              logger.info({ lid: remoteJid, resolved: from }, 'Resolved LID to phone number');
+            } else {
+              logger.warn({ remoteJid }, 'Could not resolve LID to phone number, skipping message');
+              continue;
+            }
+          } catch (err) {
+            logger.warn({ err, remoteJid }, 'Failed to resolve LID, skipping message');
+            continue;
+          }
+        } else {
+          // Strip @s.whatsapp.net and any :device suffix (e.g. 628xxx:0)
+          from = remoteJid.split('@')[0].split(':')[0];
+        }
         const timestamp =
           typeof msg.messageTimestamp === 'number'
             ? msg.messageTimestamp
@@ -468,6 +553,7 @@ app.post('/webhook/register', (req: Request, res: Response) => {
   }
 
   webhookUrl = url;
+  saveWebhookUrl(url);
   logger.info({ webhookUrl }, 'Webhook URL registered');
   res.json({ success: true });
 });
@@ -531,6 +617,7 @@ app.post('/restart', async (_req: Request, res: Response) => {
 // Start server and WhatsApp connection
 app.listen(PORT, () => {
   logger.info(`WhatsApp service listening on port ${PORT}`);
+  loadWebhookUrl();
   connectToWhatsApp().catch((err) => {
     logger.error({ err }, 'Failed to start WhatsApp connection');
   });

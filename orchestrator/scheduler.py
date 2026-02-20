@@ -85,11 +85,13 @@ async def daily_outreach_loop():
 
         # Use the first available contact phone that hasn't been contacted yet
         phone = None
+        contact_name = None
         for contact in contacts:
             candidate = validate_phone(contact["phone_number"]) or contact["phone_number"]
             existing = await get_conversation_by_phone(candidate)
             if not existing:
                 phone = contact["phone_number"]
+                contact_name = contact.get("contact_name")
                 break
             else:
                 log.info(f"Skipping {candidate} — already has conversation (uni {uni['name']})")
@@ -101,7 +103,8 @@ async def daily_outreach_loop():
         # Generate initial message
         try:
             message = await conversation_manager.generate_initial_message(
-                university_name=uni["name"]
+                university_name=uni["name"],
+                contact_name=contact_name,
             )
         except Exception as e:
             log.error(f"Failed to generate message for {uni['name']}: {e}")
@@ -142,12 +145,12 @@ async def process_followups():
     if not is_within_outreach_hours():
         return
 
-    conversations = await get_active_conversations()
+    conversations = await get_active_conversations(include_test=True)
     now = datetime.now(timezone.utc)
 
     for conv in conversations:
         state = conv["state"]
-        attempt = conv["attempt_count"]
+        followups = conv.get("followup_count", 0) or 0
         last_msg = conv["last_message_at"]
 
         if not last_msg:
@@ -168,24 +171,24 @@ async def process_followups():
         if state not in (ConvState.INITIAL_SENT, ConvState.WAITING_REPLY, ConvState.FOLLOWUP_SENT, ConvState.NEED_MORE):
             continue
 
-        # Check if max attempts reached
-        if attempt >= MAX_FOLLOWUP_ATTEMPTS:
+        # Check if max scheduled follow-ups reached
+        if followups >= MAX_FOLLOWUP_ATTEMPTS:
             await update_conversation_state(conv["id"], ConvState.ABANDONED)
             await update_university_status(conv["university_id"], "failed")
-            log.info(f"Conversation {conv['id']} abandoned after {attempt} attempts")
+            log.info(f"Conversation {conv['id']} abandoned after {followups} follow-ups")
             continue
 
-        # Determine if follow-up is needed
+        # Determine if follow-up is needed based on scheduled follow-up count
         should_followup = False
-        if attempt == 0 and hours_since >= FOLLOWUP_1_AFTER_HOURS:
+        if followups == 0 and hours_since >= FOLLOWUP_1_AFTER_HOURS:
             should_followup = True
-        elif attempt == 1 and hours_since >= FOLLOWUP_2_AFTER_HOURS:
+        elif followups == 1 and hours_since >= FOLLOWUP_2_AFTER_HOURS:
             should_followup = True
-        elif attempt >= 2 and hours_since >= FOLLOWUP_2_AFTER_HOURS:
+        elif followups >= 2 and hours_since >= FOLLOWUP_2_AFTER_HOURS:
             # Max attempts, mark as abandoned
             await update_conversation_state(conv["id"], ConvState.ABANDONED)
             await update_university_status(conv["university_id"], "failed")
-            log.info(f"Conversation {conv['id']} abandoned (no reply after {attempt} followups)")
+            log.info(f"Conversation {conv['id']} abandoned (no reply after {followups} follow-ups)")
             continue
 
         if not should_followup:
@@ -199,7 +202,7 @@ async def process_followups():
         history = json.loads(conv["message_history"] or "[]")
         try:
             followup_msg = await conversation_manager.generate_followup(
-                history, attempt + 1, conversation=conv
+                history, followups + 1, conversation=conv
             )
         except Exception as e:
             log.error(f"Failed to generate followup for conv {conv['id']}: {e}")
@@ -210,12 +213,12 @@ async def process_followups():
         await update_conversation_state(
             conv["id"],
             ConvState.FOLLOWUP_SENT,
-            attempt_count=attempt + 1,
+            followup_count=followups + 1,
             last_message_at=datetime.now(timezone.utc).isoformat(),
         )
         await add_message_to_history(conv["id"], "bot", followup_msg)
         await increment_quota("messages_sent")
-        log.info(f"Follow-up {attempt + 1} enqueued for conv {conv['id']}")
+        log.info(f"Follow-up {followups + 1} enqueued for conv {conv['id']}")
 
         await asyncio.sleep(cfg.MIN_MESSAGE_GAP_SECONDS)
 

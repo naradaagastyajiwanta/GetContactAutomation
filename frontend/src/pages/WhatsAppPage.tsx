@@ -1,4 +1,5 @@
 import { useState } from 'react'
+import { useNavigate } from 'react-router-dom'
 import {
   Smartphone,
   QrCode,
@@ -7,8 +8,10 @@ import {
   RefreshCw,
   Wifi,
   WifiOff,
+  FlaskConical,
 } from 'lucide-react'
 import { useWaQr, useWaStatus, useSendTestMessage, useWaLogout, useWaRestart } from '../hooks/useWhatsApp'
+import { useStartTestConversation } from '../hooks/useConversations'
 import { Card, CardHeader, CardTitle, CardContent } from '../components/ui/Card'
 import { Button } from '../components/ui/Button'
 import { Spinner } from '../components/ui/Spinner'
@@ -20,9 +23,14 @@ export default function WhatsAppPage() {
   const sendTest = useSendTestMessage()
   const logout = useWaLogout()
   const restart = useWaRestart()
+  const startTestConv = useStartTestConversation()
+  const navigate = useNavigate()
 
   const [testPhone, setTestPhone] = useState('')
   const [testMessage, setTestMessage] = useState('')
+  const [testConvPhone, setTestConvPhone] = useState('')
+  const [testConvUniName, setTestConvUniName] = useState('')
+  const [testConvConflict, setTestConvConflict] = useState<{ id: number; state: string } | null>(null)
   const [showLogoutConfirm, setShowLogoutConfirm] = useState(false)
 
   const connected = qrData?.connected ?? false
@@ -35,6 +43,32 @@ export default function WhatsAppPage() {
     sendTest.mutate(
       { to: testPhone.trim(), message: testMessage.trim() },
       { onSuccess: () => { setTestPhone(''); setTestMessage('') } },
+    )
+  }
+
+  const handleStartTestConv = (force = false) => {
+    if (!testConvPhone.trim()) return
+    setTestConvConflict(null)
+    startTestConv.mutate(
+      {
+        phone: testConvPhone.trim(),
+        universityName: testConvUniName.trim() || undefined,
+        force,
+      },
+      {
+        onSuccess: (data) => {
+          setTestConvPhone('')
+          setTestConvUniName('')
+          setTestConvConflict(null)
+          navigate(`/conversations/${data.id}`)
+        },
+        onError: (error: any) => {
+          if (error?.response?.status === 409) {
+            const { existing_id, existing_state } = error.response.data
+            setTestConvConflict({ id: existing_id, state: existing_state })
+          }
+        },
+      },
     )
   }
 
@@ -231,6 +265,90 @@ export default function WhatsAppPage() {
             {!connected && (
               <p className="text-xs text-gray-400 dark:text-gray-500">
                 Connect WhatsApp first to send messages.
+              </p>
+            )}
+          </div>
+        </CardContent>
+      </Card>
+
+      {/* Test Conversation (AI pipeline) */}
+      <Card>
+        <CardHeader>
+          <div className="flex items-center gap-2">
+            <FlaskConical className="h-5 w-5 text-gray-500 dark:text-gray-400" />
+            <CardTitle>Test Conversation</CardTitle>
+          </div>
+          <p className="text-sm text-gray-500 dark:text-gray-400">
+            Start a real AI conversation for testing. Messages you reply to from your phone will be processed through the full AI pipeline.
+          </p>
+        </CardHeader>
+        <CardContent>
+          <div className="space-y-4">
+            <div>
+              <label className="mb-1 block text-sm font-medium text-gray-700 dark:text-gray-300">
+                Your Phone Number
+              </label>
+              <input
+                type="text"
+                value={testConvPhone}
+                onChange={(e) => setTestConvPhone(e.target.value)}
+                placeholder="e.g. 081234567890 or 6281234567890"
+                className="w-full rounded-lg border border-gray-300 px-3 py-2 text-sm focus:border-indigo-500 focus:outline-none focus:ring-1 focus:ring-indigo-500 dark:border-gray-600 dark:bg-gray-700 dark:text-gray-100 dark:placeholder-gray-400"
+                disabled={!connected}
+              />
+            </div>
+            <div>
+              <label className="mb-1 block text-sm font-medium text-gray-700 dark:text-gray-300">
+                University Name (optional)
+              </label>
+              <input
+                type="text"
+                value={testConvUniName}
+                onChange={(e) => setTestConvUniName(e.target.value)}
+                placeholder="Universitas Test"
+                className="w-full rounded-lg border border-gray-300 px-3 py-2 text-sm focus:border-indigo-500 focus:outline-none focus:ring-1 focus:ring-indigo-500 dark:border-gray-600 dark:bg-gray-700 dark:text-gray-100 dark:placeholder-gray-400"
+                disabled={!connected}
+              />
+            </div>
+            <Button
+              onClick={() => handleStartTestConv(false)}
+              loading={startTestConv.isPending}
+              disabled={!connected || !testConvPhone.trim()}
+              size="sm"
+            >
+              <FlaskConical className="h-4 w-4" />
+              Start Test Conversation
+            </Button>
+            {testConvConflict && (
+              <div className="rounded-lg border border-yellow-300 bg-yellow-50 p-3 dark:border-yellow-700 dark:bg-yellow-900/20">
+                <p className="text-sm text-yellow-800 dark:text-yellow-200">
+                  Active conversation already exists (ID: {testConvConflict.id}, state: {testConvConflict.state})
+                </p>
+                <div className="mt-2 flex gap-2">
+                  <Button
+                    size="sm"
+                    variant="secondary"
+                    onClick={() => {
+                      setTestConvConflict(null)
+                      navigate(`/conversations/${testConvConflict.id}`)
+                    }}
+                  >
+                    View Existing
+                  </Button>
+                  <Button
+                    size="sm"
+                    variant="danger"
+                    onClick={() => handleStartTestConv(true)}
+                    loading={startTestConv.isPending}
+                  >
+                    Force Restart
+                  </Button>
+                </div>
+              </div>
+            )}
+            {!connected && (
+              <p className="text-xs text-gray-400 dark:text-gray-500">
+                Connect WhatsApp first to start a test conversation.
               </p>
             )}
           </div>
