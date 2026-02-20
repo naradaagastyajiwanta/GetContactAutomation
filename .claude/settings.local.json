@@ -15,7 +15,17 @@
       "mcp__ide__getDiagnostics",
       "Bash(npx tsc:*)",
       "Bash(pip install:*)",
-      "Bash(PYTHONIOENCODING=utf-8 python:*)"
+      "Bash(PYTHONIOENCODING=utf-8 python:*)",
+      "Bash(git -C F:/Programming/GetContactAIAgent log --oneline -5)",
+      "Bash(git -C F:/Programming/GetContactAIAgent status)",
+      "Bash(ls:*)",
+      "Bash(echo:*)",
+      "mcp__plugin_context7_context7__resolve-library-id",
+      "mcp__plugin_context7_context7__query-docs",
+      "Bash(npm install:*)",
+      "Bash(npm ls:*)",
+      "Bash(npm info:*)",
+      "Bash(npm view:*)"
     ]
   }
 }

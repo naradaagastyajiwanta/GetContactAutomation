@@ -9,7 +9,7 @@ Three-tier search:
 """
 import asyncio
 
-from orchestrator.config import IG_REQUEST_DELAY_SECONDS, is_paused, log
+from orchestrator.config import is_paused, log, cfg
 from orchestrator.db import (
     get_universities_by_status,
     update_ig_handle,
@@ -83,7 +83,7 @@ async def run_handle_search_batch(limit: int = 50) -> dict:
             else:
                 log.info("[Agent1] No IG handle found for %s", uni["name"])
 
-            await asyncio.sleep(IG_REQUEST_DELAY_SECONDS)
+            await asyncio.sleep(cfg.IG_REQUEST_DELAY_SECONDS)
         except Exception as e:
             log.error("[Agent1] Error searching IG for %s: %s", uni["name"], e)
 

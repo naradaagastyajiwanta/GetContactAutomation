@@ -44,3 +44,6 @@ Thumbs.db
 # Google Sheets credentials
 credentials.json
 token.json
+
+# Git worktrees
+.worktrees/

@@ -2,6 +2,8 @@ import os
 import logging
 import threading
 from pathlib import Path
+from typing import Any
+
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -14,36 +16,21 @@ DATA_DIR.mkdir(exist_ok=True)
 # Database
 DATABASE_PATH = os.getenv("DATABASE_PATH", str(DATA_DIR / "getcontact.db"))
 
-# OpenAI
-OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "")
 VISION_MODEL = "gpt-4o-mini"
-CHAT_MODEL = "gpt-4o-mini"
-
-# Serper.dev (Google Search)
-SERPER_API_KEY = os.getenv("SERPER_API_KEY", "")
-
-# Instagram
-MAX_IG_PROFILES_PER_DAY = int(os.getenv("MAX_IG_PROFILES_PER_DAY", "200"))
-IG_REQUEST_DELAY_SECONDS = int(os.getenv("IG_REQUEST_DELAY_SECONDS", "7"))
-IG_MAX_POSTS_PER_PROFILE = 20
 
 # WhatsApp Service
 WA_SERVICE_URL = os.getenv("WA_SERVICE_URL", "http://localhost:3100")
 WEBHOOK_URL = os.getenv("WEBHOOK_URL", "http://localhost:8000/webhook/incoming")
 
-# Rate Limiting
-MAX_DAILY_CONVERSATIONS = int(os.getenv("MAX_DAILY_CONVERSATIONS", "20"))
-MIN_MESSAGE_GAP_SECONDS = int(os.getenv("MIN_MESSAGE_GAP_SECONDS", "300"))
-
-# Outreach Hours (WIB = UTC+7)
-OUTREACH_START_HOUR = int(os.getenv("OUTREACH_START_HOUR", "7"))
-OUTREACH_END_HOUR = int(os.getenv("OUTREACH_END_HOUR", "22"))
 TIMEZONE_WIB = "Asia/Jakarta"
 
-# Follow-up timing (hours)
+# Follow-up timing (hours) — not dynamically configurable
 FOLLOWUP_1_AFTER_HOURS = 24
 FOLLOWUP_2_AFTER_HOURS = 48
 MAX_FOLLOWUP_ATTEMPTS = 3
+
+# Instagram settings — not dynamically configurable
+IG_MAX_POSTS_PER_PROFILE = 20
 
 # Instagram contact keywords (for filtering relevant posts)
 CONTACT_KEYWORDS = [
@@ -91,6 +78,7 @@ PHONE_PATTERNS = [
     r'(?:\d{3,5})',
 ]
 
+
 # Logging
 def setup_logger(name: str = "getcontact") -> logging.Logger:
     logger = logging.getLogger(name)
@@ -104,9 +92,140 @@ def setup_logger(name: str = "getcontact") -> logging.Logger:
         logger.addHandler(handler)
     return logger
 
-# Concurrency / queue tuning
-MAX_AI_CONCURRENT = int(os.getenv("MAX_AI_CONCURRENT", "3"))
-SEND_INTERVAL_MS = int(os.getenv("SEND_INTERVAL_MS", "3000"))
+
+log = setup_logger()
+
+
+# ---------------------------------------------------------------------------
+# ConfigManager — dynamic, thread-safe configuration store
+# ---------------------------------------------------------------------------
+
+from orchestrator.config_registry import CONFIG_DEFINITIONS_MAP, ConfigType  # noqa: E402
+
+
+def _parse_value(raw: str, cfg_type: ConfigType) -> Any:
+    """Convert a string value to the correct Python type."""
+    if cfg_type == ConfigType.INT:
+        return int(raw)
+    if cfg_type == ConfigType.FLOAT:
+        return float(raw)
+    if cfg_type == ConfigType.BOOL:
+        return raw.lower() in ("true", "1", "yes")
+    return raw
+
+
+class ConfigManager:
+    """Thread-safe dynamic configuration store.
+
+    Precedence: DB value > .env value > registry default.
+
+    All modules importing ``cfg`` share the same object reference,
+    so ``cfg.SETTING`` always returns the latest value.
+    """
+
+    _INTERNAL = {"_store", "_lock"}
+
+    def __init__(self) -> None:
+        object.__setattr__(self, "_store", {})
+        object.__setattr__(self, "_lock", threading.Lock())
+
+    # -- attribute access ------------------------------------------------------
+
+    def __getattr__(self, name: str) -> Any:
+        store: dict = object.__getattribute__(self, "_store")
+        lock: threading.Lock = object.__getattribute__(self, "_lock")
+        with lock:
+            if name in store:
+                return store[name]
+        raise AttributeError(f"ConfigManager has no setting '{name}'")
+
+    def __setattr__(self, name: str, value: Any) -> None:
+        if name in self._INTERNAL:
+            object.__setattr__(self, name, value)
+            return
+        with self._lock:
+            self._store[name] = value
+
+    # -- initialisation -------------------------------------------------------
+
+    def init_from_env(self) -> None:
+        """Populate store from .env / registry defaults (called at import time)."""
+        with self._lock:
+            for key, defn in CONFIG_DEFINITIONS_MAP.items():
+                env_val = os.getenv(key)
+                if env_val is not None:
+                    self._store[key] = _parse_value(env_val, defn.type)
+                else:
+                    self._store[key] = defn.default
+
+    async def init_from_db(self) -> None:
+        """Override store with values persisted in the DB config table.
+
+        Must be called after ``init_db()``.
+        """
+        from orchestrator.db import get_all_config
+
+        rows = await get_all_config()
+        with self._lock:
+            for key, raw_value in rows.items():
+                defn = CONFIG_DEFINITIONS_MAP.get(key)
+                if defn is None:
+                    continue
+                try:
+                    self._store[key] = _parse_value(raw_value, defn.type)
+                except (ValueError, TypeError):
+                    log.warning("Invalid DB config value for %s: %r", key, raw_value)
+
+        log.info("ConfigManager: loaded %d overrides from DB", len(rows))
+
+    # -- get / set / get_all ---------------------------------------------------
+
+    def get(self, key: str, default: Any = None) -> Any:
+        with self._lock:
+            return self._store.get(key, default)
+
+    def set(self, key: str, value: Any) -> None:
+        with self._lock:
+            self._store[key] = value
+
+    def get_all(self) -> dict[str, Any]:
+        with self._lock:
+            return dict(self._store)
+
+
+cfg = ConfigManager()
+cfg.init_from_env()
+
+# ---------------------------------------------------------------------------
+# Backward-compat module-level aliases (snapshot at import time).
+# Modules migrated to ``cfg.X`` will always get the latest value.
+# These aliases exist only for files that still do
+# ``from orchestrator.config import OPENAI_API_KEY`` etc.
+# NOTE: because these are snapshots, the *migrated* ``cfg.X`` path
+# is preferred for any code that should react to runtime changes.
+# ---------------------------------------------------------------------------
+OPENAI_API_KEY = cfg.OPENAI_API_KEY
+SERPER_API_KEY = cfg.SERPER_API_KEY
+CHAT_MODEL = cfg.AGENT_MODEL
+MAX_DAILY_CONVERSATIONS = cfg.MAX_DAILY_CONVERSATIONS
+MIN_MESSAGE_GAP_SECONDS = cfg.MIN_MESSAGE_GAP_SECONDS
+MAX_IG_PROFILES_PER_DAY = cfg.MAX_IG_PROFILES_PER_DAY
+IG_REQUEST_DELAY_SECONDS = cfg.IG_REQUEST_DELAY_SECONDS
+OUTREACH_START_HOUR = cfg.OUTREACH_START_HOUR
+OUTREACH_END_HOUR = cfg.OUTREACH_END_HOUR
+USE_AGENTIC_REPLIES = cfg.USE_AGENTIC_REPLIES
+USE_AGENTIC_INITIAL = cfg.USE_AGENTIC_INITIAL
+USE_AGENTIC_FOLLOWUPS = cfg.USE_AGENTIC_FOLLOWUPS
+LEARNING_ENABLED = cfg.LEARNING_ENABLED
+AGENT_MODEL = cfg.AGENT_MODEL
+AGENT_TEMPERATURE = cfg.AGENT_TEMPERATURE
+AGENT_MAX_TOKENS = cfg.AGENT_MAX_TOKENS
+AGENT_MAX_TOOL_ITERATIONS = cfg.AGENT_MAX_TOOL_ITERATIONS
+MAX_AI_CONCURRENT = cfg.MAX_AI_CONCURRENT
+SEND_INTERVAL_MS = cfg.SEND_INTERVAL_MS
+REFLECTION_INTERVAL_HOURS = int(os.getenv("REFLECTION_INTERVAL_HOURS", "6"))
+MAX_LESSONS_IN_PROMPT = int(os.getenv("MAX_LESSONS_IN_PROMPT", "5"))
+
 
 # Pause state (thread-safe)
 _is_paused = False
@@ -122,6 +241,3 @@ def set_paused(val: bool) -> None:
     global _is_paused
     with _pause_lock:
         _is_paused = val
-
-
-log = setup_logger()

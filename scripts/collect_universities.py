@@ -7,6 +7,7 @@ Usage:
 """
 import argparse
 import asyncio
+import re
 import sys
 from pathlib import Path
 
@@ -28,12 +29,58 @@ def is_duplicate(name: str, existing_names: list[str], threshold: int = 85) -> b
     return False
 
 
+# Province keyword variants for matching (handles abbreviations and alternate names)
+_PROVINCE_KEYWORDS: dict[str, list[str]] = {
+    "DKI Jakarta": ["Jakarta"],
+    "DI Yogyakarta": ["Yogyakarta", "Jogja", "Jogjakarta"],
+    "Kepulauan Bangka Belitung": ["Bangka", "Belitung"],
+    "Kepulauan Riau": ["Kepri", "Kepulauan Riau"],
+    "Nusa Tenggara Barat": ["NTB", "Mataram", "Lombok"],
+    "Nusa Tenggara Timur": ["NTT", "Kupang", "Flores"],
+    "Kalimantan Utara": ["Kaltara"],
+    "Kalimantan Timur": ["Kaltim"],
+    "Kalimantan Selatan": ["Kalsel"],
+    "Kalimantan Tengah": ["Kalteng"],
+    "Kalimantan Barat": ["Kalbar"],
+    "Sulawesi Utara": ["Sulut"],
+    "Sulawesi Selatan": ["Sulsel", "Makassar", "Ujung Pandang"],
+    "Sulawesi Tengah": ["Sulteng"],
+    "Sulawesi Tenggara": ["Sultra", "Kendari"],
+    "Sulawesi Barat": ["Sulbar"],
+    "Sumatera Utara": ["Sumut", "Medan"],
+    "Sumatera Barat": ["Sumbar", "Padang"],
+    "Sumatera Selatan": ["Sumsel", "Palembang"],
+    "Papua Barat": ["Papua Barat"],
+}
+
+
+def _matches_province(uni_name: str, province: str) -> bool:
+    """Check if a university name plausibly belongs to the given province.
+
+    Uses word-boundary matching so 'BALE' won't match province 'Bali',
+    but 'BALI DWIPA' will.
+    """
+    name_upper = uni_name.upper()
+
+    # Build list of keywords to check: the province itself + any variants
+    keywords = [province]
+    keywords.extend(_PROVINCE_KEYWORDS.get(province, []))
+
+    for kw in keywords:
+        # Word-boundary match (case insensitive)
+        if re.search(r'\b' + re.escape(kw.upper()) + r'\b', name_upper):
+            return True
+
+    return False
+
+
 async def search_pddikti(province: str | None = None) -> list[dict]:
     """Search PDDIKTI for universities, optionally filtered by province."""
     pddikti = api()
     all_results = []
     existing_names: list[str] = []
     duplicates_skipped = 0
+    province_filtered = 0
 
     provinces = [province] if province else PROVINCES
 
@@ -52,6 +99,12 @@ async def search_pddikti(province: str | None = None) -> list[dict]:
                     if not name:
                         continue
 
+                    # Filter: only keep results that match the searched province
+                    if not _matches_province(name, prov):
+                        province_filtered += 1
+                        log.debug(f"Filtered out '{name}' — does not match province '{prov}'")
+                        continue
+
                     if is_duplicate(name, existing_names):
                         duplicates_skipped += 1
                         continue
@@ -68,7 +121,10 @@ async def search_pddikti(province: str | None = None) -> list[dict]:
                 log.warning(f"Error searching '{query}': {e}")
                 continue
 
-    log.info(f"Found {len(all_results)} unique universities ({duplicates_skipped} duplicates skipped)")
+    log.info(
+        f"Found {len(all_results)} unique universities "
+        f"({duplicates_skipped} duplicates skipped, {province_filtered} filtered by province)"
+    )
     return all_results
 
 

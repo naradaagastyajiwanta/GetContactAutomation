@@ -1,16 +1,17 @@
 import makeWASocket, {
   DisconnectReason,
   useMultiFileAuthState,
+  makeCacheableSignalKeyStore,
   WASocket,
   Browsers,
   proto,
 } from '@whiskeysockets/baileys';
+import { Boom } from '@hapi/boom';
 import express, { Request, Response } from 'express';
 import cors from 'cors';
 import axios from 'axios';
 import pino from 'pino';
-// @ts-ignore
-import * as qrcode from 'qrcode-terminal';
+import QRCode from 'qrcode';
 import * as fs from 'fs';
 import * as path from 'path';
 
@@ -26,6 +27,9 @@ let isConnected = false;
 let connectedPhone: string | null = null;
 let webhookUrl: string | null = null;
 let reconnectAttempt = 0;
+let latestQr: string | null = null;
+let isConnecting = false; // Guard against concurrent connectToWhatsApp calls
+let hasEverConnected = false; // Track if connection was ever successfully opened
 
 // ---------------------------------------------------------------------------
 // Config constants
@@ -185,143 +189,178 @@ async function forwardToWebhook(payload: {
 // WhatsApp connection
 // ---------------------------------------------------------------------------
 
-async function connectToWhatsApp(): Promise<void> {
-  // Restore auth from backup if primary is missing (Item 3)
-  restoreAuthIfNeeded();
-
-  if (!fs.existsSync(AUTH_STORE_DIR)) {
-    fs.mkdirSync(AUTH_STORE_DIR, { recursive: true });
+async function cleanupSocket(): Promise<void> {
+  if (sock) {
+    try {
+      sock.ev.removeAllListeners('creds.update');
+      sock.ev.removeAllListeners('connection.update');
+      sock.ev.removeAllListeners('messages.upsert');
+    } catch {}
+    try { sock.end(undefined); } catch {}
+    sock = null;
   }
+}
 
-  const { state, saveCreds } = await useMultiFileAuthState(AUTH_STORE_DIR);
+async function connectToWhatsApp(): Promise<void> {
+  // Guard: prevent concurrent connection attempts
+  if (isConnecting) {
+    logger.warn('connectToWhatsApp already in progress, skipping');
+    return;
+  }
+  isConnecting = true;
 
-  sock = makeWASocket({
-    auth: state,
-    logger: baileysLogger,
-    printQRInTerminal: false,
-    browser: Browsers.ubuntu('Chrome'),
-  });
+  try {
+    // Clean up any existing socket first
+    await cleanupSocket();
 
-  // Save creds + backup (Item 3)
-  sock.ev.on('creds.update', async () => {
-    await saveCreds();
-    backupAuthStore();
-  });
+    // Restore auth from backup if primary is missing (Item 3)
+    restoreAuthIfNeeded();
 
-  sock.ev.on('connection.update', async (update) => {
-    const { connection, lastDisconnect, qr } = update;
-
-    if (qr) {
-      logger.info('Scan this QR code to connect WhatsApp:');
-      qrcode.generate(qr, { small: true });
+    if (!fs.existsSync(AUTH_STORE_DIR)) {
+      fs.mkdirSync(AUTH_STORE_DIR, { recursive: true });
     }
 
-    if (connection === 'open') {
-      reconnectAttempt = 0;
-      isConnected = true;
-      const phoneJid = sock?.user?.id ?? null;
-      connectedPhone = phoneJid ? phoneJid.split(':')[0] : null;
-      logger.info({ phone: connectedPhone }, `Connected as ${connectedPhone}`);
+    const { state, saveCreds } = await useMultiFileAuthState(AUTH_STORE_DIR);
 
-      // Set presence to available (Item 1)
-      try {
-        await sock?.sendPresenceUpdate('available');
-      } catch {}
-    }
+    const newSock = makeWASocket({
+      auth: {
+        creds: state.creds,
+        keys: makeCacheableSignalKeyStore(state.keys, baileysLogger),
+      },
+      logger: baileysLogger,
+      printQRInTerminal: false,
+      browser: Browsers.macOS('Desktop'),
+      syncFullHistory: false,
+      markOnlineOnConnect: false,
+    });
 
-    if (connection === 'close') {
-      isConnected = false;
-      connectedPhone = null;
+    sock = newSock;
 
-      // Set presence to unavailable (Item 1)
-      try {
-        await sock?.sendPresenceUpdate('unavailable');
-      } catch {}
+    // Save creds on update; only backup when connection is open
+    newSock.ev.on('creds.update', saveCreds);
 
-      const error = lastDisconnect?.error as any;
-      const statusCode = error?.output?.statusCode;
+    newSock.ev.on('connection.update', async (update) => {
+      const { connection, lastDisconnect, qr } = update;
 
-      logger.warn({ statusCode, attempt: reconnectAttempt }, 'Connection closed');
-
-      if (statusCode === DisconnectReason.loggedOut || statusCode === 401) {
-        logger.warn('Logged out. Clearing auth store and reconnecting...');
-        fs.rmSync(AUTH_STORE_DIR, { recursive: true, force: true });
-        reconnectAttempt = 0;
-        setTimeout(connectToWhatsApp, 2000);
-      } else if (statusCode === 405) {
-        // Method not allowed — clear auth and reconnect (like loggedOut)
-        logger.warn('Status 405: clearing auth store and reconnecting...');
-        fs.rmSync(AUTH_STORE_DIR, { recursive: true, force: true });
-        reconnectAttempt = 0;
-        setTimeout(connectToWhatsApp, 2000);
-      } else if (reconnectAttempt >= MAX_RECONNECT_ATTEMPTS) {
-        // Max attempts reached — stop reconnecting (Item 4)
-        logger.error(
-          { attempt: reconnectAttempt },
-          'Max reconnect attempts reached. Giving up. Restart manually.'
+      if (qr) {
+        latestQr = qr;
+        logger.info('Scan this QR code to connect WhatsApp:');
+        QRCode.toString(qr, { type: 'terminal', small: true }).then(
+          (str) => console.log(str),
+          () => {},
         );
-      } else {
-        // Jittered exponential backoff (Item 4)
-        const delay = calculateBackoff(reconnectAttempt);
-        reconnectAttempt++;
-        logger.warn({ delayMs: delay, attempt: reconnectAttempt }, 'Reconnecting with jittered backoff...');
-        setTimeout(connectToWhatsApp, delay);
       }
-    }
-  });
 
-  // ---------------------------------------------------------------------------
-  // Incoming messages with debouncing (Item 2)
-  // ---------------------------------------------------------------------------
-  sock.ev.on('messages.upsert', async ({ messages, type }) => {
-    if (type !== 'notify') return;
+      if (connection === 'open') {
+        reconnectAttempt = 0;
+        isConnected = true;
+        hasEverConnected = true;
+        latestQr = null;
+        const phoneJid = newSock.user?.id ?? null;
+        connectedPhone = phoneJid ? phoneJid.split(':')[0] : null;
+        logger.info({ phone: connectedPhone }, `Connected as ${connectedPhone}`);
 
-    for (const msg of messages) {
-      if (!msg.message) continue;
-      if (msg.key.fromMe) continue;
+        // Backup credentials now that we have a valid connection
+        backupAuthStore();
 
-      const remoteJid = msg.key.remoteJid ?? '';
-
-      // Skip groups
-      if (remoteJid.endsWith('@g.us')) continue;
-
-      // Skip status broadcast
-      if (remoteJid === 'status@broadcast') continue;
-
-      const text =
-        msg.message.conversation ??
-        msg.message.extendedTextMessage?.text ??
-        null;
-
-      if (!text) continue;
-
-      const from = remoteJid.replace('@s.whatsapp.net', '');
-      const timestamp =
-        typeof msg.messageTimestamp === 'number'
-          ? msg.messageTimestamp
-          : (msg.messageTimestamp as any)?.toNumber?.() ?? Math.floor(Date.now() / 1000);
-
-      // --- Debouncing logic (Item 2) ---
-      const existing = pendingMessages.get(from);
-
-      if (existing) {
-        // Add to existing debounce window
-        existing.messages.push(text);
-        clearTimeout(existing.timer);
-        existing.timer = setTimeout(() => flushToWebhook(from), DEBOUNCE_MS);
-      } else {
-        // Start new debounce window
-        const timer = setTimeout(() => flushToWebhook(from), DEBOUNCE_MS);
-        pendingMessages.set(from, {
-          messages: [text],
-          timer,
-          firstMsgKey: msg.key,
-          pushName: msg.pushName ?? '',
-          firstTimestamp: timestamp,
-        });
+        // Set presence to available
+        try {
+          await newSock.sendPresenceUpdate('available');
+        } catch {}
       }
-    }
-  });
+
+      if (connection === 'close') {
+        isConnected = false;
+        connectedPhone = null;
+
+        const statusCode = (lastDisconnect?.error as Boom)?.output?.statusCode;
+        const shouldReconnect = statusCode !== DisconnectReason.loggedOut;
+
+        logger.warn({ statusCode, shouldReconnect, hasEverConnected, attempt: reconnectAttempt }, 'Connection closed');
+
+        if (!shouldReconnect || statusCode === 401 || statusCode === 405) {
+          // Logged out or auth invalid — clear everything and start fresh
+          logger.warn('Logged out. Clearing auth store + backup...');
+          fs.rmSync(AUTH_STORE_DIR, { recursive: true, force: true });
+          fs.rmSync(AUTH_BACKUP_DIR, { recursive: true, force: true });
+          hasEverConnected = false;
+          reconnectAttempt = 0;
+          setTimeout(connectToWhatsApp, 3000);
+        } else if (!hasEverConnected) {
+          // Never successfully connected — don't reconnect during initial auth
+          // This prevents premature reconnection during QR scanning phase
+          logger.warn('Connection closed before ever connecting. Waiting for fresh start...');
+          hasEverConnected = false;
+          reconnectAttempt = 0;
+          setTimeout(connectToWhatsApp, 5000);
+        } else if (reconnectAttempt >= MAX_RECONNECT_ATTEMPTS) {
+          logger.error(
+            { attempt: reconnectAttempt },
+            'Max reconnect attempts reached. Giving up. Restart manually.'
+          );
+        } else {
+          // Was previously connected, non-auth error — reconnect with backoff
+          const delay = calculateBackoff(reconnectAttempt);
+          reconnectAttempt++;
+          logger.warn({ delayMs: delay, attempt: reconnectAttempt }, 'Reconnecting with backoff...');
+          setTimeout(connectToWhatsApp, delay);
+        }
+      }
+    });
+
+    // ---------------------------------------------------------------------------
+    // Incoming messages with debouncing (Item 2)
+    // ---------------------------------------------------------------------------
+    newSock.ev.on('messages.upsert', async ({ messages, type }) => {
+      if (type !== 'notify') return;
+
+      for (const msg of messages) {
+        if (!msg.message) continue;
+        if (msg.key.fromMe) continue;
+
+        const remoteJid = msg.key.remoteJid ?? '';
+
+        // Skip groups
+        if (remoteJid.endsWith('@g.us')) continue;
+
+        // Skip status broadcast
+        if (remoteJid === 'status@broadcast') continue;
+
+        const text =
+          msg.message.conversation ??
+          msg.message.extendedTextMessage?.text ??
+          null;
+
+        if (!text) continue;
+
+        const from = remoteJid.replace('@s.whatsapp.net', '');
+        const timestamp =
+          typeof msg.messageTimestamp === 'number'
+            ? msg.messageTimestamp
+            : (msg.messageTimestamp as any)?.toNumber?.() ?? Math.floor(Date.now() / 1000);
+
+        // --- Debouncing logic (Item 2) ---
+        const existing = pendingMessages.get(from);
+
+        if (existing) {
+          existing.messages.push(text);
+          clearTimeout(existing.timer);
+          existing.timer = setTimeout(() => flushToWebhook(from), DEBOUNCE_MS);
+        } else {
+          const timer = setTimeout(() => flushToWebhook(from), DEBOUNCE_MS);
+          pendingMessages.set(from, {
+            messages: [text],
+            timer,
+            firstMsgKey: msg.key,
+            pushName: msg.pushName ?? '',
+            firstTimestamp: timestamp,
+          });
+        }
+      }
+    });
+  } finally {
+    isConnecting = false;
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -394,10 +433,29 @@ app.post('/send', async (req: Request, res: Response) => {
   }
 });
 
+app.get('/qr', async (_req: Request, res: Response) => {
+  let dataUrl: string | null = null;
+  if (latestQr) {
+    try {
+      dataUrl = await QRCode.toDataURL(latestQr, { width: 300, margin: 2 });
+    } catch (err) {
+      logger.error({ err }, 'Failed to generate QR data URL');
+    }
+  }
+  res.json({
+    qr: latestQr,
+    dataUrl,
+    connected: isConnected,
+    phoneNumber: connectedPhone,
+  });
+});
+
 app.get('/status', (_req: Request, res: Response) => {
   res.json({
     connected: isConnected,
     phoneNumber: connectedPhone,
+    reconnectAttempt,
+    maxReconnectAttempts: MAX_RECONNECT_ATTEMPTS,
   });
 });
 
@@ -412,6 +470,62 @@ app.post('/webhook/register', (req: Request, res: Response) => {
   webhookUrl = url;
   logger.info({ webhookUrl }, 'Webhook URL registered');
   res.json({ success: true });
+});
+
+app.post('/logout', async (_req: Request, res: Response) => {
+  try {
+    if (sock) {
+      try {
+        await sock.logout();
+      } catch {
+        try { sock.end(undefined); } catch {}
+      }
+    }
+
+    isConnected = false;
+    connectedPhone = null;
+    latestQr = null;
+
+    if (fs.existsSync(AUTH_STORE_DIR)) {
+      fs.rmSync(AUTH_STORE_DIR, { recursive: true, force: true });
+    }
+
+    setTimeout(() => {
+      connectToWhatsApp().catch((err) => {
+        logger.error({ err }, 'Failed to reconnect after logout');
+      });
+    }, 2000);
+
+    res.json({ success: true, message: 'Logged out. Scan new QR code to reconnect.' });
+  } catch (err) {
+    const error = err instanceof Error ? err.message : String(err);
+    logger.error({ err }, 'Logout failed');
+    res.status(500).json({ success: false, error });
+  }
+});
+
+app.post('/restart', async (_req: Request, res: Response) => {
+  try {
+    if (sock) {
+      try { sock.end(undefined); } catch {}
+    }
+    isConnected = false;
+    connectedPhone = null;
+    latestQr = null;
+    reconnectAttempt = 0;
+
+    setTimeout(() => {
+      connectToWhatsApp().catch((err) => {
+        logger.error({ err }, 'Failed to restart connection');
+      });
+    }, 1000);
+
+    res.json({ success: true, message: 'Restarting WhatsApp connection...' });
+  } catch (err) {
+    const error = err instanceof Error ? err.message : String(err);
+    logger.error({ err }, 'Restart failed');
+    res.status(500).json({ success: false, error });
+  }
 });
 
 // Start server and WhatsApp connection

@@ -19,28 +19,27 @@ import httpx
 from openai import AsyncOpenAI
 
 from orchestrator.config import (
-    SERPER_API_KEY,
-    OPENAI_API_KEY,
     IG_MAX_POSTS_PER_PROFILE,
     CONTACT_KEYWORDS,
     IG_BIO_KEYWORDS,
     VISION_MODEL,
     PHONE_PATTERNS,
     log,
+    cfg,
 )
 from orchestrator.db import validate_phone
 
-# Instagram Web API session cookie (set in .env)
-IG_SESSION_ID = os.getenv("IG_SESSION_ID", "")
-
 # Lazy-initialized clients
 _openai_client: AsyncOpenAI | None = None
+_openai_client_key: str = ""
 
 
 def _get_openai() -> AsyncOpenAI:
-    global _openai_client
-    if _openai_client is None:
-        _openai_client = AsyncOpenAI(api_key=OPENAI_API_KEY)
+    global _openai_client, _openai_client_key
+    current_key = cfg.OPENAI_API_KEY
+    if _openai_client is None or current_key != _openai_client_key:
+        _openai_client = AsyncOpenAI(api_key=current_key)
+        _openai_client_key = current_key
     return _openai_client
 
 
@@ -104,13 +103,13 @@ async def search_ig_from_website(university_name: str, website_url: str | None =
     if not website_url:
         website_url = await _get_website_from_pddikti(university_name)
 
-    if not website_url and SERPER_API_KEY:
+    if not website_url and cfg.SERPER_API_KEY:
         name = university_name.strip().title()
         async with httpx.AsyncClient(timeout=15) as client:
             try:
                 resp = await client.post(
                     "https://google.serper.dev/search",
-                    headers={"X-API-KEY": SERPER_API_KEY, "Content-Type": "application/json"},
+                    headers={"X-API-KEY": cfg.SERPER_API_KEY, "Content-Type": "application/json"},
                     json={"q": f'"{name}" site:ac.id OR site:sch.id', "num": 5},
                 )
                 resp.raise_for_status()
@@ -179,8 +178,8 @@ async def search_ig_handle(university_name: str) -> dict | None:
     Search for university's Instagram handle via Serper.dev Google search.
     Returns: {"handle": "@univ_name", "url": "...", "confidence": 0.0-1.0} or None
     """
-    if not SERPER_API_KEY:
-        log.warning("SERPER_API_KEY not set, skipping IG search")
+    if not cfg.SERPER_API_KEY:
+        log.warning("cfg.SERPER_API_KEY not set, skipping IG search")
         return None
 
     # Normalize: PDDIKTI names are ALL CAPS → title case for better Google results
@@ -206,7 +205,7 @@ async def _serper_search_ig(query: str, university_name: str) -> dict | None:
         try:
             resp = await client.post(
                 "https://google.serper.dev/search",
-                headers={"X-API-KEY": SERPER_API_KEY, "Content-Type": "application/json"},
+                headers={"X-API-KEY": cfg.SERPER_API_KEY, "Content-Type": "application/json"},
                 json={"q": query, "num": 5},
             )
             resp.raise_for_status()
@@ -314,12 +313,12 @@ _IG_WEB_HEADERS = {
 
 def _get_ig_web_client() -> httpx.Client:
     """Create an httpx Client with Instagram browser session cookies."""
-    if not IG_SESSION_ID:
+    if not cfg.IG_SESSION_ID:
         raise RuntimeError(
-            "IG_SESSION_ID not set in .env. "
+            "cfg.IG_SESSION_ID not set in .env. "
             "Get it from browser: F12 → Application → Cookies → instagram.com → sessionid"
         )
-    cookies = {"sessionid": IG_SESSION_ID}
+    cookies = {"sessionid": cfg.IG_SESSION_ID}
     return httpx.Client(
         cookies=cookies,
         headers=_IG_WEB_HEADERS,
@@ -666,7 +665,7 @@ def search_ig_handle_via_ig(university_name: str) -> dict | None:
     Returns: {"handle": str, "url": str, "confidence": float} or None.
     Sync function — call from executor in async context.
     """
-    if not IG_SESSION_ID:
+    if not cfg.IG_SESSION_ID:
         return None
 
     queries = _build_search_queries(university_name)

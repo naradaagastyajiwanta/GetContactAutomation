@@ -8,7 +8,7 @@ from enum import Enum
 
 from openai import AsyncOpenAI
 
-from orchestrator.config import OPENAI_API_KEY, CHAT_MODEL, log
+from orchestrator.config import log, cfg
 from orchestrator.db import (
     validate_phone,
     get_conversation_by_phone,
@@ -20,12 +20,15 @@ from orchestrator.db import (
 )
 
 _openai_client: AsyncOpenAI | None = None
+_openai_client_key: str = ""
 
 
 def _get_openai() -> AsyncOpenAI:
-    global _openai_client
-    if _openai_client is None:
-        _openai_client = AsyncOpenAI(api_key=OPENAI_API_KEY)
+    global _openai_client, _openai_client_key
+    current_key = cfg.OPENAI_API_KEY
+    if _openai_client is None or current_key != _openai_client_key:
+        _openai_client = AsyncOpenAI(api_key=current_key)
+        _openai_client_key = current_key
     return _openai_client
 
 
@@ -122,7 +125,14 @@ class ConversationManager:
     async def generate_initial_message(
         self, university_name: str, contact_name: str | None = None
     ) -> str:
-        """Generate the first outreach message using the fixed template."""
+        """Generate the first outreach message, optionally using the agentic system."""
+        if cfg.USE_AGENTIC_INITIAL:
+            try:
+                from orchestrator.agent.react_agent import ReactAgent
+                agent = ReactAgent()
+                return await agent.generate_initial_message(university_name)
+            except Exception as e:
+                log.error("Agentic initial message failed, falling back to legacy: %s", e)
         return INITIAL_MESSAGE_TEMPLATE.format(university_name=university_name)
 
     async def analyze_reply(
@@ -167,7 +177,7 @@ class ConversationManager:
         })
 
         resp = await client.chat.completions.create(
-            model=CHAT_MODEL,
+            model=cfg.AGENT_MODEL,
             messages=messages,
             max_tokens=300,
             temperature=0.1,
@@ -198,9 +208,23 @@ class ConversationManager:
         return result
 
     async def generate_followup(
+        self, conversation_history: list[dict], attempt_number: int,
+        conversation: dict | None = None,
+    ) -> str:
+        """Generate a follow-up message, optionally using the agentic system."""
+        if cfg.USE_AGENTIC_FOLLOWUPS and attempt_number > 1 and conversation:
+            try:
+                from orchestrator.agent.react_agent import ReactAgent
+                agent = ReactAgent()
+                return await agent.generate_followup_message(conversation, attempt_number)
+            except Exception as e:
+                log.error("Agentic followup failed, falling back to legacy: %s", e)
+        return await self._generate_followup_legacy(conversation_history, attempt_number)
+
+    async def _generate_followup_legacy(
         self, conversation_history: list[dict], attempt_number: int
     ) -> str:
-        """Generate a follow-up message. Use fixed template for first followup, AI for subsequent."""
+        """Legacy follow-up generation using fixed template or GPT."""
         if attempt_number <= 1:
             return FOLLOWUP_MESSAGE_TEMPLATE
 
@@ -220,7 +244,7 @@ class ConversationManager:
         })
 
         resp = await client.chat.completions.create(
-            model=CHAT_MODEL,
+            model=cfg.AGENT_MODEL,
             messages=messages,
             max_tokens=200,
             temperature=0.7,
@@ -232,8 +256,28 @@ class ConversationManager:
     ) -> dict:
         """
         Main handler for incoming WhatsApp messages.
+        Delegates to ReactAgent when cfg.USE_AGENTIC_REPLIES is enabled,
+        otherwise falls back to the legacy state-machine approach.
         Returns: {"action": str, "response_message": str|None, "conversation_state": str}
         """
+        if cfg.USE_AGENTIC_REPLIES:
+            try:
+                from orchestrator.agent.react_agent import ReactAgent
+                agent = ReactAgent()
+                result = await agent.process_incoming_message(phone, message, push_name)
+                return {
+                    "action": result.action.value,
+                    "response_message": result.response_message,
+                    "conversation_state": result.conversation_state,
+                }
+            except Exception as e:
+                log.error("Agentic processing failed, falling back to legacy: %s", e)
+        return await self._process_incoming_legacy(phone, message, push_name)
+
+    async def _process_incoming_legacy(
+        self, phone: str, message: str, push_name: str = "",
+    ) -> dict:
+        """Legacy handler using the original state-machine approach."""
         conv = await get_conversation_by_phone(phone)
         if not conv:
             log.info(f"Received message from unknown number {phone}, ignoring")
@@ -295,7 +339,7 @@ class ConversationManager:
         elif action in ("need_followup", "unclear"):
             response = analysis.get("suggested_response")
             if not response:
-                response = await self.generate_followup(history, 1)
+                response = await self._generate_followup_legacy(history, 1)
 
             await update_conversation_state(
                 conv_id,

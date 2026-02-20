@@ -10,7 +10,7 @@ Saves posts to ig_posts table for phone extraction later.
 """
 import asyncio
 
-from orchestrator.config import IG_REQUEST_DELAY_SECONDS, is_paused, log
+from orchestrator.config import is_paused, log, cfg
 from orchestrator.db import (
     add_ig_post,
     get_universities_by_status,
@@ -77,7 +77,7 @@ async def run_post_scrape_batch(limit: int = 20) -> dict:
             )
 
             # Delay between profiles to avoid rate limiting
-            await asyncio.sleep(IG_REQUEST_DELAY_SECONDS)
+            await asyncio.sleep(cfg.IG_REQUEST_DELAY_SECONDS)
         except Exception as e:
             log.error("[Agent2] Error scraping @%s: %s", handle, e)
 

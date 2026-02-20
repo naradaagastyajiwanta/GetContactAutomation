@@ -6,6 +6,7 @@ import asyncio
 import csv
 import io
 from contextlib import asynccontextmanager
+from typing import Any
 
 import httpx
 from fastapi import FastAPI, BackgroundTasks, UploadFile, File as FastAPIFile
@@ -13,7 +14,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel
 
-from orchestrator.config import WA_SERVICE_URL, WEBHOOK_URL, log, is_paused, set_paused
+from orchestrator.config import WA_SERVICE_URL, WEBHOOK_URL, log, is_paused, set_paused, cfg
 from orchestrator.db import (
     init_db,
     get_dashboard_stats,
@@ -29,7 +30,17 @@ from orchestrator.db import (
     add_university,
     search_universities,
     validate_phone,
+    get_all_active_lessons,
+    get_unprocessed_analyses,
+    upsert_config,
+    delete_config as db_delete_config,
 )
+from orchestrator.config_registry import (
+    CONFIG_DEFINITIONS,
+    CONFIG_DEFINITIONS_MAP,
+    ConfigType,
+)
+from orchestrator.agent.learning import LearningSystem
 from orchestrator.conversation import conversation_manager, ConvState
 from orchestrator.message_queue import message_queue
 from orchestrator.scheduler import (
@@ -43,6 +54,10 @@ from orchestrator.agents.ig_post_scraper import run_post_scrape_batch
 from orchestrator.agents.ig_phone_extractor import run_phone_extraction_batch
 from orchestrator.config import PROVINCES
 
+learning_system = LearningSystem()
+
+_TERMINAL_STATES = {"GOT_NUMBER", "REFUSED", "ABANDONED"}
+
 
 # ---------------------------------------------------------------------------
 # Lifespan
@@ -52,6 +67,7 @@ from orchestrator.config import PROVINCES
 async def lifespan(app: FastAPI):
     # Startup
     await init_db()
+    await cfg.init_from_db()
     log.info("Database initialized")
 
     # Register webhook with WA service
@@ -160,6 +176,12 @@ async def _process_incoming(
         await message_queue.enqueue_send(
             raw_phone, result["response_message"], reply_to_msg_key=msg_key,
         )
+
+    # Trigger post-conversation analysis for terminal states
+    if result.get("conversation_state") in _TERMINAL_STATES and cfg.LEARNING_ENABLED:
+        conv = await get_conversation_by_phone(normalized_phone)
+        if conv:
+            asyncio.create_task(learning_system.analyze_completed_conversation(conv["id"]))
 
 
 # ---------------------------------------------------------------------------
@@ -414,6 +436,292 @@ async def resume_bot():
 async def control_status():
     """Return current pause state."""
     return {"paused": is_paused()}
+
+
+# ---------------------------------------------------------------------------
+# Learning endpoints
+# ---------------------------------------------------------------------------
+
+@app.get("/learning/lessons")
+async def list_lessons():
+    """Return all active lessons."""
+    lessons = await get_all_active_lessons()
+    return {"lessons": lessons, "total": len(lessons)}
+
+
+@app.get("/learning/analyses")
+async def list_analyses(limit: int = 50):
+    """Return unprocessed analyses."""
+    analyses = await get_unprocessed_analyses(limit=limit)
+    return {"analyses": analyses, "total": len(analyses)}
+
+
+@app.get("/learning/stats")
+async def learning_stats():
+    """Return summary statistics for the learning system."""
+    lessons = await get_all_active_lessons()
+    analyses = await get_unprocessed_analyses(limit=1000)
+
+    # Count lessons by situation_type
+    situation_counts: dict[str, int] = {}
+    for lesson in lessons:
+        sit = lesson.get("situation_type", "unknown")
+        situation_counts[sit] = situation_counts.get(sit, 0) + 1
+
+    return {
+        "total_active_lessons": len(lessons),
+        "unprocessed_analyses": len(analyses),
+        "lessons_by_situation": situation_counts,
+    }
+
+
+@app.post("/learning/trigger-reflection")
+async def trigger_reflection(background_tasks: BackgroundTasks):
+    """Trigger a reflection cycle in the background."""
+    background_tasks.add_task(learning_system.run_reflection)
+    return {"status": "started", "message": "Reflection triggered"}
+
+
+# ---------------------------------------------------------------------------
+# WhatsApp management endpoints (proxy to WA service)
+# ---------------------------------------------------------------------------
+
+class TestMessagePayload(BaseModel):
+    to: str
+    message: str
+
+
+@app.get("/wa/qr")
+async def wa_qr():
+    """Get current QR code for WhatsApp authentication."""
+    try:
+        async with httpx.AsyncClient(timeout=10) as client:
+            resp = await client.get(f"{WA_SERVICE_URL}/qr")
+            return resp.json()
+    except Exception as e:
+        return JSONResponse(
+            status_code=502,
+            content={"error": f"WA service unavailable: {e}", "connected": False},
+        )
+
+
+@app.get("/wa/status")
+async def wa_status():
+    """Get detailed WhatsApp connection status."""
+    try:
+        async with httpx.AsyncClient(timeout=10) as client:
+            resp = await client.get(f"{WA_SERVICE_URL}/status")
+            return resp.json()
+    except Exception as e:
+        return JSONResponse(
+            status_code=502,
+            content={"error": f"WA service unavailable: {e}", "connected": False},
+        )
+
+
+@app.post("/wa/send-test")
+async def wa_send_test(payload: TestMessagePayload):
+    """Send a test WhatsApp message."""
+    try:
+        async with httpx.AsyncClient(timeout=30) as client:
+            resp = await client.post(
+                f"{WA_SERVICE_URL}/send",
+                json={"to": payload.to, "message": payload.message},
+            )
+            return resp.json()
+    except Exception as e:
+        return JSONResponse(
+            status_code=502,
+            content={"success": False, "error": f"WA service unavailable: {e}"},
+        )
+
+
+@app.post("/wa/logout")
+async def wa_logout():
+    """Logout from WhatsApp and clear auth session."""
+    try:
+        async with httpx.AsyncClient(timeout=15) as client:
+            resp = await client.post(f"{WA_SERVICE_URL}/logout")
+            return resp.json()
+    except Exception as e:
+        return JSONResponse(
+            status_code=502,
+            content={"success": False, "error": f"WA service unavailable: {e}"},
+        )
+
+
+@app.post("/wa/restart")
+async def wa_restart():
+    """Restart WhatsApp connection."""
+    try:
+        async with httpx.AsyncClient(timeout=15) as client:
+            resp = await client.post(f"{WA_SERVICE_URL}/restart")
+            return resp.json()
+    except Exception as e:
+        return JSONResponse(
+            status_code=502,
+            content={"success": False, "error": f"WA service unavailable: {e}"},
+        )
+
+
+# ---------------------------------------------------------------------------
+# Config management
+# ---------------------------------------------------------------------------
+
+
+_CHAT_MODEL_EXCLUDE = {"audio", "realtime", "tts", "transcribe", "image", "instruct", "search", "diarize", "codex", "deep-research"}
+
+
+@app.get("/config/models")
+async def list_openai_models():
+    """Fetch chat-completion-capable models from OpenAI."""
+    from openai import AsyncOpenAI
+
+    api_key = cfg.OPENAI_API_KEY
+    if not api_key:
+        return {"models": []}
+
+    try:
+        client = AsyncOpenAI(api_key=api_key)
+        response = await client.models.list()
+        models: list[str] = []
+        for m in response.data:
+            mid = m.id
+            # Only gpt / o-series models
+            if not (mid.startswith("gpt-") or mid.startswith("o1") or mid.startswith("o3") or mid.startswith("o4")):
+                continue
+            # Skip fine-tuned
+            if mid.startswith("ft:"):
+                continue
+            # Skip non-chat models (audio, image, realtime, etc.)
+            if any(excl in mid for excl in _CHAT_MODEL_EXCLUDE):
+                continue
+            models.append(mid)
+        models.sort()
+        return {"models": models}
+    except Exception as e:
+        log.warning("Failed to list OpenAI models: %s", e)
+        return {"models": [], "error": str(e)}
+
+
+def _mask_value(value: str) -> str:
+    """Mask a sensitive string — short fixed-width prefix + last 4 chars."""
+    s = str(value)
+    if not s:
+        return ""
+    if len(s) <= 8:
+        return "\u2022" * len(s)
+    return "\u2022\u2022\u2022\u2022\u2022\u2022\u2022\u2022" + s[-4:]
+
+
+@app.get("/config")
+async def get_config():
+    """Return all dynamic settings with metadata."""
+    current = cfg.get_all()
+    settings = []
+    for defn in CONFIG_DEFINITIONS:
+        raw_value = current.get(defn.key, defn.default)
+        display_value = _mask_value(raw_value) if defn.sensitive and raw_value else raw_value
+        settings.append({
+            "key": defn.key,
+            "value": display_value,
+            "default": "" if defn.sensitive else defn.default,
+            "type": defn.type.value,
+            "group": defn.group.value,
+            "label": defn.label,
+            "description": defn.description,
+            "min_value": defn.min_value,
+            "max_value": defn.max_value,
+            "sensitive": defn.sensitive,
+            "has_value": bool(raw_value) if defn.sensitive else None,
+        })
+    return {"settings": settings}
+
+
+class ConfigUpdatePayload(BaseModel):
+    settings: dict[str, Any]
+
+
+def _validate_config_value(key: str, value: Any) -> tuple[Any, str | None]:
+    """Validate and coerce a config value. Returns (coerced_value, error_or_None)."""
+    defn = CONFIG_DEFINITIONS_MAP.get(key)
+    if defn is None:
+        return None, f"Unknown config key: {key}"
+
+    try:
+        if defn.type == ConfigType.INT:
+            coerced = int(value)
+        elif defn.type == ConfigType.FLOAT:
+            coerced = float(value)
+        elif defn.type == ConfigType.BOOL:
+            if isinstance(value, bool):
+                coerced = value
+            elif isinstance(value, str):
+                coerced = value.lower() in ("true", "1", "yes")
+            else:
+                coerced = bool(value)
+        else:
+            coerced = str(value)
+    except (ValueError, TypeError):
+        return None, f"Invalid type for {key}: expected {defn.type.value}"
+
+    if defn.min_value is not None and isinstance(coerced, (int, float)):
+        if coerced < defn.min_value:
+            return None, f"{key} must be >= {defn.min_value}"
+    if defn.max_value is not None and isinstance(coerced, (int, float)):
+        if coerced > defn.max_value:
+            return None, f"{key} must be <= {defn.max_value}"
+
+    return coerced, None
+
+
+@app.patch("/config")
+async def update_config(payload: ConfigUpdatePayload):
+    """Update one or more config settings. Validates, persists to DB, and updates in-memory."""
+    errors: dict[str, str] = {}
+    validated: dict[str, Any] = {}
+
+    for key, value in payload.settings.items():
+        coerced, err = _validate_config_value(key, value)
+        if err:
+            errors[key] = err
+        else:
+            validated[key] = coerced
+
+    if errors:
+        return JSONResponse(status_code=422, content={"errors": errors})
+
+    for key, coerced in validated.items():
+        # Persist to DB as string
+        if isinstance(coerced, bool):
+            db_value = "true" if coerced else "false"
+        else:
+            db_value = str(coerced)
+        await upsert_config(key, db_value)
+        cfg.set(key, coerced)
+
+    # Reschedule outreach jobs if hours changed
+    if "OUTREACH_START_HOUR" in validated or "OUTREACH_END_HOUR" in validated:
+        try:
+            from orchestrator.scheduler import reschedule_outreach_jobs
+            reschedule_outreach_jobs()
+        except Exception as e:
+            log.warning("Failed to reschedule outreach jobs: %s", e)
+
+    return {"status": "ok", "updated": list(validated.keys())}
+
+
+@app.delete("/config/{key}")
+async def reset_config(key: str):
+    """Reset a config key to its default value."""
+    defn = CONFIG_DEFINITIONS_MAP.get(key)
+    if defn is None:
+        return JSONResponse(status_code=404, content={"detail": f"Unknown config key: {key}"})
+
+    await db_delete_config(key)
+    cfg.set(key, defn.default)
+
+    return {"status": "ok", "key": key, "value": defn.default}
 
 
 # ---------------------------------------------------------------------------

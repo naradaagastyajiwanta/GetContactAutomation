@@ -17,4 +17,17 @@ export const queryKeys = {
     list: (params: Record<string, unknown>) => ['conversations', 'list', params] as const,
     detail: (id: number) => ['conversations', 'detail', id] as const,
   },
+  learning: {
+    all: ['learning'] as const,
+    lessons: ['learning', 'lessons'] as const,
+    analyses: ['learning', 'analyses'] as const,
+    stats: ['learning', 'stats'] as const,
+  },
+  whatsapp: {
+    all: ['whatsapp'] as const,
+    qr: ['whatsapp', 'qr'] as const,
+    status: ['whatsapp', 'status'] as const,
+  },
+  config: ['config'] as const,
+  models: ['config', 'models'] as const,
 }

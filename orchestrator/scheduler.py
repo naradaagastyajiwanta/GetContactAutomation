@@ -8,15 +8,12 @@ from datetime import datetime, timedelta, timezone
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 
 from orchestrator.config import (
-    MAX_DAILY_CONVERSATIONS,
-    MIN_MESSAGE_GAP_SECONDS,
-    OUTREACH_START_HOUR,
-    OUTREACH_END_HOUR,
     FOLLOWUP_1_AFTER_HOURS,
     FOLLOWUP_2_AFTER_HOURS,
     MAX_FOLLOWUP_ATTEMPTS,
     is_paused,
     log,
+    cfg,
 )
 from orchestrator.conversation import conversation_manager, ConvState
 from orchestrator.message_queue import message_queue
@@ -46,7 +43,7 @@ scheduler = AsyncIOScheduler()
 def is_within_outreach_hours() -> bool:
     """Check if current time is within allowed outreach hours (WIB)."""
     now_wib = datetime.now(WIB)
-    return OUTREACH_START_HOUR <= now_wib.hour < OUTREACH_END_HOUR
+    return cfg.OUTREACH_START_HOUR <= now_wib.hour < cfg.OUTREACH_END_HOUR
 
 
 async def daily_outreach_loop():
@@ -67,7 +64,7 @@ async def daily_outreach_loop():
         return
 
     quota = await get_today_quota()
-    remaining = MAX_DAILY_CONVERSATIONS - quota["conversations_started"]
+    remaining = cfg.MAX_DAILY_CONVERSATIONS - quota["conversations_started"]
     log.info(f"Starting outreach loop. Remaining quota: {remaining}")
 
     # Get universities that have been scraped and have IG contacts ready for outreach
@@ -128,7 +125,7 @@ async def daily_outreach_loop():
         log.info(f"Outreach enqueued for {uni['name']} via {phone}")
 
         # Wait between messages
-        await asyncio.sleep(MIN_MESSAGE_GAP_SECONDS)
+        await asyncio.sleep(cfg.MIN_MESSAGE_GAP_SECONDS)
 
 
 async def process_followups():
@@ -202,7 +199,7 @@ async def process_followups():
         history = json.loads(conv["message_history"] or "[]")
         try:
             followup_msg = await conversation_manager.generate_followup(
-                history, attempt + 1
+                history, attempt + 1, conversation=conv
             )
         except Exception as e:
             log.error(f"Failed to generate followup for conv {conv['id']}: {e}")
@@ -220,16 +217,45 @@ async def process_followups():
         await increment_quota("messages_sent")
         log.info(f"Follow-up {attempt + 1} enqueued for conv {conv['id']}")
 
-        await asyncio.sleep(MIN_MESSAGE_GAP_SECONDS)
+        await asyncio.sleep(cfg.MIN_MESSAGE_GAP_SECONDS)
+
+
+async def run_learning_reflection():
+    """Run periodic learning reflection."""
+    if not cfg.LEARNING_ENABLED:
+        return
+    try:
+        from orchestrator.agent.learning import LearningSystem
+
+        ls = LearningSystem()
+        result = await ls.run_reflection()
+        log.info("Learning reflection completed: %s", result)
+    except Exception as e:
+        log.error("Learning reflection failed: %s", e)
+
+
+def _outreach_hour_range() -> str:
+    """Build the cron hour range string from current cfg values."""
+    return f"{cfg.OUTREACH_START_HOUR}-{cfg.OUTREACH_END_HOUR - 1}"
+
+
+def reschedule_outreach_jobs() -> None:
+    """Re-apply cron expressions for outreach/followup jobs after config change."""
+    hour_range = _outreach_hour_range()
+    scheduler.reschedule_job("daily_outreach", trigger="cron", hour=hour_range, minute="0,30", timezone=WIB)
+    scheduler.reschedule_job("process_followups", trigger="cron", hour=hour_range, minute="15", timezone=WIB)
+    log.info("Rescheduled outreach jobs to hours %s", hour_range)
 
 
 def setup_scheduler():
     """Configure and start the APScheduler."""
+    hour_range = _outreach_hour_range()
+
     # Run outreach every 30 minutes during active hours
     scheduler.add_job(
         daily_outreach_loop,
         "cron",
-        hour=f"{OUTREACH_START_HOUR}-{OUTREACH_END_HOUR - 1}",
+        hour=hour_range,
         minute="0,30",
         timezone=WIB,
         id="daily_outreach",
@@ -240,7 +266,7 @@ def setup_scheduler():
     scheduler.add_job(
         process_followups,
         "cron",
-        hour=f"{OUTREACH_START_HOUR}-{OUTREACH_END_HOUR - 1}",
+        hour=hour_range,
         minute="15",
         timezone=WIB,
         id="process_followups",
@@ -280,8 +306,21 @@ def setup_scheduler():
         replace_existing=True,
     )
 
+    # Learning reflection — 3 times a day
+    if cfg.LEARNING_ENABLED:
+        scheduler.add_job(
+            run_learning_reflection,
+            "cron",
+            hour="8,14,20",
+            minute="45",
+            timezone=WIB,
+            id="learning_reflection",
+            replace_existing=True,
+        )
+
     scheduler.start()
     log.info(
         "Scheduler started: outreach every 30min, followups every hour, "
         "handle finder every 2h, post scraper every 3h, phone extractor every 1h"
+        + (", learning reflection 3x daily" if cfg.LEARNING_ENABLED else "")
     )

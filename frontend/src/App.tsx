@@ -12,6 +12,8 @@ const UniversityDetailPage = lazy(() => import('./pages/UniversityDetailPage'))
 const PipelinePage = lazy(() => import('./pages/PipelinePage'))
 const ConversationsPage = lazy(() => import('./pages/ConversationsPage'))
 const ConversationDetailPage = lazy(() => import('./pages/ConversationDetailPage'))
+const LearningPage = lazy(() => import('./pages/LearningPage'))
+const WhatsAppPage = lazy(() => import('./pages/WhatsAppPage'))
 const SettingsPage = lazy(() => import('./pages/SettingsPage'))
 
 const queryClient = new QueryClient({
@@ -39,6 +41,8 @@ export default function App() {
                   <Route path="pipeline" element={<PipelinePage />} />
                   <Route path="conversations" element={<ConversationsPage />} />
                   <Route path="conversations/:id" element={<ConversationDetailPage />} />
+                  <Route path="learning" element={<LearningPage />} />
+                  <Route path="whatsapp" element={<WhatsAppPage />} />
                   <Route path="settings" element={<SettingsPage />} />
                 </Route>
               </Routes>

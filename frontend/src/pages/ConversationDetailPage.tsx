@@ -1,5 +1,5 @@
 import { useParams, useNavigate } from 'react-router-dom'
-import { ArrowLeft, Phone } from 'lucide-react'
+import { ArrowLeft, Brain, Phone } from 'lucide-react'
 import { useConversation } from '../hooks/useConversations'
 import { ChatBubble } from '../components/conversations/ChatBubble'
 import { StateTimeline } from '../components/conversations/StateTimeline'
@@ -102,6 +102,20 @@ export default function ConversationDetailPage() {
           </div>
         )}
       </Card>
+
+      {conversation.agent_reasoning && (
+        <Card>
+          <div className="flex items-center gap-2 mb-3">
+            <Brain className="h-5 w-5 text-indigo-500 dark:text-indigo-400" />
+            <h2 className="text-lg font-semibold text-gray-900 dark:text-gray-100">
+              Agent Reasoning
+            </h2>
+          </div>
+          <p className="text-sm text-gray-600 dark:text-gray-400 whitespace-pre-wrap">
+            {conversation.agent_reasoning}
+          </p>
+        </Card>
+      )}
 
       <div className="text-sm text-gray-500 dark:text-gray-400">
         Created {formatDate(conversation.created_at)}

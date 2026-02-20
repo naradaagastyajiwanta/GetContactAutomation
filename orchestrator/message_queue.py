@@ -3,20 +3,15 @@ from typing import Any, Coroutine, Optional
 
 import httpx
 
-from orchestrator.config import WA_SERVICE_URL, MAX_AI_CONCURRENT, SEND_INTERVAL_MS, log
+from orchestrator.config import WA_SERVICE_URL, log, cfg
 
 
 class MessageQueue:
     """Controls AI concurrency (semaphore) and serial WA message sending (queue)."""
 
-    def __init__(
-        self,
-        max_ai_concurrent: int = MAX_AI_CONCURRENT,
-        send_interval_ms: int = SEND_INTERVAL_MS,
-    ) -> None:
-        self._ai_semaphore = asyncio.Semaphore(max_ai_concurrent)
+    def __init__(self) -> None:
+        self._ai_semaphore = asyncio.Semaphore(cfg.MAX_AI_CONCURRENT)
         self._send_queue: asyncio.Queue[dict] = asyncio.Queue()
-        self._send_interval_s = send_interval_ms / 1000.0
         self._worker_task: Optional[asyncio.Task] = None
 
     # -- AI concurrency gate --------------------------------------------------
@@ -43,7 +38,7 @@ class MessageQueue:
 
     async def send_worker(self) -> None:
         """Background loop that drains the send queue one message at a time."""
-        log.info("Send-worker started (interval=%.1fs)", self._send_interval_s)
+        log.info("Send-worker started (interval read from cfg.SEND_INTERVAL_MS)")
         async with httpx.AsyncClient(timeout=30) as client:
             while True:
                 payload = await self._send_queue.get()
@@ -62,7 +57,7 @@ class MessageQueue:
                     log.error("Failed to send WA message to %s: %s", payload["to"], exc)
                 finally:
                     self._send_queue.task_done()
-                await asyncio.sleep(self._send_interval_s)
+                await asyncio.sleep(cfg.SEND_INTERVAL_MS / 1000.0)
 
     def start_worker(self) -> None:
         """Spawn the send-worker as a background task on the running loop."""

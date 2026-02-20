@@ -6,7 +6,7 @@ from typing import Any
 import aiosqlite
 import phonenumbers
 
-from orchestrator.config import DATABASE_PATH, MAX_DAILY_CONVERSATIONS, log
+from orchestrator.config import DATABASE_PATH, log, cfg
 
 # ---------------------------------------------------------------------------
 # Schema
@@ -68,6 +68,52 @@ CREATE TABLE IF NOT EXISTS daily_quota (
 );
 """
 
+_DDL_AGENT = """
+CREATE TABLE IF NOT EXISTS conversation_analyses (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    conversation_id INTEGER,
+    outcome TEXT,
+    total_messages INTEGER,
+    total_attempts INTEGER,
+    duration_hours REAL,
+    province TEXT,
+    success_factors TEXT,
+    failure_factors TEXT,
+    contact_personality TEXT,
+    effective_strategies TEXT,
+    recommended_improvements TEXT,
+    summary TEXT,
+    processed INTEGER DEFAULT 0,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS lessons (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    situation_type TEXT,
+    insight TEXT,
+    recommended_strategy TEXT,
+    province TEXT,
+    success_rate REAL DEFAULT 0,
+    example_count INTEGER DEFAULT 0,
+    confidence REAL DEFAULT 0.5,
+    is_active INTEGER DEFAULT 1,
+    source_analysis_ids TEXT,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS strategy_metrics (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    conversation_id INTEGER,
+    strategy_used TEXT,
+    situation_type TEXT,
+    outcome TEXT,
+    province TEXT,
+    response_time_minutes REAL,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+"""
+
 _INDEXES = """
 CREATE UNIQUE INDEX IF NOT EXISTS idx_ig_contacts_unique
     ON ig_contacts(university_id, phone_number);
@@ -76,6 +122,23 @@ CREATE INDEX IF NOT EXISTS idx_ig_posts_extraction ON ig_posts(phone_extracted);
 CREATE INDEX IF NOT EXISTS idx_ig_posts_university ON ig_posts(university_id);
 CREATE INDEX IF NOT EXISTS idx_universities_status ON universities(status);
 CREATE INDEX IF NOT EXISTS idx_conversations_phone ON conversations(contact_phone);
+"""
+
+_DDL_CONFIG = """
+CREATE TABLE IF NOT EXISTS config (
+    key TEXT PRIMARY KEY,
+    value TEXT NOT NULL,
+    updated_at TEXT DEFAULT (datetime('now'))
+);
+"""
+
+_INDEXES_AGENT = """
+CREATE INDEX IF NOT EXISTS idx_conv_analyses_conv_id ON conversation_analyses(conversation_id);
+CREATE INDEX IF NOT EXISTS idx_conv_analyses_processed ON conversation_analyses(processed);
+CREATE INDEX IF NOT EXISTS idx_lessons_situation ON lessons(situation_type);
+CREATE INDEX IF NOT EXISTS idx_lessons_active ON lessons(is_active);
+CREATE INDEX IF NOT EXISTS idx_strategy_metrics_conv ON strategy_metrics(conversation_id);
+CREATE INDEX IF NOT EXISTS idx_strategy_metrics_strategy ON strategy_metrics(strategy_used);
 """
 
 # ---------------------------------------------------------------------------
@@ -87,7 +150,18 @@ async def init_db() -> None:
     """Create all tables if they do not already exist."""
     async with aiosqlite.connect(DATABASE_PATH) as db:
         await db.executescript(_DDL)
+        await db.executescript(_DDL_AGENT)
+        await db.executescript(_DDL_CONFIG)
         await db.executescript(_INDEXES)
+        await db.executescript(_INDEXES_AGENT)
+        # Migration: add agent_reasoning column to conversations (idempotent)
+        try:
+            await db.execute(
+                "ALTER TABLE conversations ADD COLUMN agent_reasoning TEXT"
+            )
+            await db.commit()
+        except Exception:
+            pass  # Column already exists
         await db.commit()
     log.info("Database initialised at %s", DATABASE_PATH)
 
@@ -409,6 +483,7 @@ async def update_conversation_state(conv_id: int, state: str, **kwargs) -> None:
         "last_message_at",
         "next_action_at",
         "attempt_count",
+        "agent_reasoning",
     }
     extra = {k: v for k, v in kwargs.items() if k in allowed_fields}
 
@@ -597,7 +672,7 @@ async def increment_quota(field: str) -> None:
 async def can_send_today() -> bool:
     """Return True if conversations_started is below MAX_DAILY_CONVERSATIONS."""
     quota = await get_today_quota()
-    return quota["conversations_started"] < MAX_DAILY_CONVERSATIONS
+    return quota["conversations_started"] < cfg.MAX_DAILY_CONVERSATIONS
 
 
 # ---------------------------------------------------------------------------
@@ -643,3 +718,333 @@ async def get_dashboard_stats() -> dict:
         "status_counts": status_counts,
         "today_quota": today_quota,
     }
+
+
+# ---------------------------------------------------------------------------
+# Agent reasoning
+# ---------------------------------------------------------------------------
+
+
+async def update_agent_reasoning(conv_id: int, reasoning: str) -> None:
+    """Update the agent_reasoning column for a conversation."""
+    async with get_db() as db:
+        await db.execute(
+            "UPDATE conversations SET agent_reasoning = ? WHERE id = ?",
+            (reasoning, conv_id),
+        )
+        await db.commit()
+
+
+# ---------------------------------------------------------------------------
+# Conversation analyses
+# ---------------------------------------------------------------------------
+
+
+async def search_conversations_for_learning(
+    province: str | None = None,
+    outcome: str | None = None,
+    limit: int = 20,
+) -> list[dict]:
+    """Search completed conversations by province/outcome for learning."""
+    conditions = [f"c.state IN ({','.join('?' * len(_TERMINAL_STATES))})"]
+    params: list[Any] = list(_TERMINAL_STATES)
+
+    if province:
+        conditions.append("u.province = ?")
+        params.append(province)
+    if outcome:
+        conditions.append("c.state = ?")
+        params.append(outcome)
+
+    where = " AND ".join(conditions)
+    params.append(limit)
+
+    async with get_db() as db:
+        cursor = await db.execute(
+            f"""
+            SELECT c.*, u.name AS university_name, u.province
+            FROM conversations c
+            LEFT JOIN universities u ON u.id = c.university_id
+            WHERE {where}
+            ORDER BY c.last_message_at DESC
+            LIMIT ?
+            """,
+            params,
+        )
+        rows = await cursor.fetchall()
+        return _rows_to_dicts(rows)
+
+
+async def save_conversation_analysis(data: dict) -> int:
+    """Insert a row into conversation_analyses and return the new id."""
+    async with get_db() as db:
+        cursor = await db.execute(
+            """
+            INSERT INTO conversation_analyses
+                (conversation_id, outcome, total_messages, total_attempts,
+                 duration_hours, province, success_factors, failure_factors,
+                 contact_personality, effective_strategies,
+                 recommended_improvements, summary, created_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                data.get("conversation_id"),
+                data.get("outcome"),
+                data.get("total_messages"),
+                data.get("total_attempts"),
+                data.get("duration_hours"),
+                data.get("province"),
+                json.dumps(data.get("success_factors")) if data.get("success_factors") else None,
+                json.dumps(data.get("failure_factors")) if data.get("failure_factors") else None,
+                data.get("contact_personality"),
+                json.dumps(data.get("effective_strategies")) if data.get("effective_strategies") else None,
+                data.get("recommended_improvements"),
+                data.get("summary"),
+                _utcnow(),
+            ),
+        )
+        await db.commit()
+        return cursor.lastrowid  # type: ignore[return-value]
+
+
+async def get_unprocessed_analyses(limit: int = 50) -> list[dict]:
+    """Return conversation_analyses rows that haven't been processed yet."""
+    async with get_db() as db:
+        cursor = await db.execute(
+            "SELECT * FROM conversation_analyses WHERE processed = 0 ORDER BY created_at LIMIT ?",
+            (limit,),
+        )
+        rows = await cursor.fetchall()
+        return _rows_to_dicts(rows)
+
+
+async def mark_analyses_processed(ids: list[int]) -> None:
+    """Mark the given conversation_analyses as processed."""
+    if not ids:
+        return
+    placeholders = ",".join("?" * len(ids))
+    async with get_db() as db:
+        await db.execute(
+            f"UPDATE conversation_analyses SET processed = 1 WHERE id IN ({placeholders})",
+            ids,
+        )
+        await db.commit()
+
+
+# ---------------------------------------------------------------------------
+# Lessons CRUD
+# ---------------------------------------------------------------------------
+
+
+async def get_lessons_by_situation(
+    situation_type: str,
+    province: str | None = None,
+    min_confidence: float = 0.3,
+    limit: int = 5,
+) -> list[dict]:
+    """
+    Get active lessons for a situation type.
+
+    Returns province-specific lessons first, then general ones,
+    sorted by confidence * success_rate descending.
+    """
+    params: list[Any] = [situation_type, min_confidence]
+    province_clause = ""
+    if province:
+        province_clause = """
+            CASE WHEN province = ? THEN 0
+                 WHEN province IS NULL THEN 1
+                 ELSE 2
+            END,
+        """
+        params.insert(1, province)
+
+    params.append(limit)
+
+    async with get_db() as db:
+        cursor = await db.execute(
+            f"""
+            SELECT * FROM lessons
+            WHERE situation_type = ?
+              AND is_active = 1
+              AND confidence >= ?
+            ORDER BY
+                {province_clause}
+                (confidence * success_rate) DESC
+            LIMIT ?
+            """,
+            params,
+        )
+        rows = await cursor.fetchall()
+        return _rows_to_dicts(rows)
+
+
+async def get_all_active_lessons() -> list[dict]:
+    """Return all active lessons."""
+    async with get_db() as db:
+        cursor = await db.execute(
+            "SELECT * FROM lessons WHERE is_active = 1 ORDER BY situation_type, confidence DESC"
+        )
+        rows = await cursor.fetchall()
+        return _rows_to_dicts(rows)
+
+
+async def create_lesson(data: dict) -> int:
+    """Insert a new lesson and return its id."""
+    async with get_db() as db:
+        now = _utcnow()
+        cursor = await db.execute(
+            """
+            INSERT INTO lessons
+                (situation_type, insight, recommended_strategy, province,
+                 success_rate, example_count, confidence, is_active,
+                 source_analysis_ids, created_at, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                data.get("situation_type"),
+                data.get("insight"),
+                data.get("recommended_strategy"),
+                data.get("province"),
+                data.get("success_rate", 0),
+                data.get("example_count", 0),
+                data.get("confidence", 0.5),
+                data.get("is_active", 1),
+                json.dumps(data.get("source_analysis_ids")) if data.get("source_analysis_ids") else None,
+                now,
+                now,
+            ),
+        )
+        await db.commit()
+        return cursor.lastrowid  # type: ignore[return-value]
+
+
+async def update_lesson(lesson_id: int, **kwargs) -> None:
+    """Update specific fields of a lesson."""
+    allowed = {
+        "situation_type", "insight", "recommended_strategy", "province",
+        "success_rate", "example_count", "confidence", "is_active",
+        "source_analysis_ids",
+    }
+    updates = {k: v for k, v in kwargs.items() if k in allowed}
+    if not updates:
+        return
+
+    # JSON-encode source_analysis_ids if present
+    if "source_analysis_ids" in updates and isinstance(updates["source_analysis_ids"], (list, dict)):
+        updates["source_analysis_ids"] = json.dumps(updates["source_analysis_ids"])
+
+    updates["updated_at"] = _utcnow()
+
+    set_clauses = [f"{k} = ?" for k in updates]
+    values = list(updates.values())
+    values.append(lesson_id)
+
+    async with get_db() as db:
+        await db.execute(
+            f"UPDATE lessons SET {', '.join(set_clauses)} WHERE id = ?",
+            values,
+        )
+        await db.commit()
+
+
+async def deactivate_lesson(lesson_id: int) -> None:
+    """Set is_active=0 for a lesson."""
+    async with get_db() as db:
+        await db.execute(
+            "UPDATE lessons SET is_active = 0, updated_at = ? WHERE id = ?",
+            (_utcnow(), lesson_id),
+        )
+        await db.commit()
+
+
+# ---------------------------------------------------------------------------
+# Strategy metrics
+# ---------------------------------------------------------------------------
+
+
+async def save_strategy_metric(data: dict) -> int:
+    """Insert a row into strategy_metrics and return the new id."""
+    async with get_db() as db:
+        cursor = await db.execute(
+            """
+            INSERT INTO strategy_metrics
+                (conversation_id, strategy_used, situation_type, outcome,
+                 province, response_time_minutes, created_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                data.get("conversation_id"),
+                data.get("strategy_used"),
+                data.get("situation_type"),
+                data.get("outcome"),
+                data.get("province"),
+                data.get("response_time_minutes"),
+                _utcnow(),
+            ),
+        )
+        await db.commit()
+        return cursor.lastrowid  # type: ignore[return-value]
+
+
+async def get_aggregated_strategy_metrics(since_days: int = 7) -> list[dict]:
+    """
+    Aggregate strategy_metrics grouped by strategy_used and situation_type
+    for the last *since_days* days.
+    """
+    async with get_db() as db:
+        cursor = await db.execute(
+            """
+            SELECT
+                strategy_used,
+                situation_type,
+                COUNT(*) AS total_uses,
+                SUM(CASE WHEN outcome = 'GOT_NUMBER' THEN 1 ELSE 0 END) AS successes,
+                ROUND(AVG(response_time_minutes), 1) AS avg_response_minutes,
+                ROUND(
+                    CAST(SUM(CASE WHEN outcome = 'GOT_NUMBER' THEN 1 ELSE 0 END) AS REAL)
+                    / COUNT(*), 3
+                ) AS success_rate
+            FROM strategy_metrics
+            WHERE created_at >= datetime('now', ?)
+            GROUP BY strategy_used, situation_type
+            ORDER BY total_uses DESC
+            """,
+            (f"-{since_days} days",),
+        )
+        rows = await cursor.fetchall()
+        return _rows_to_dicts(rows)
+
+
+# ---------------------------------------------------------------------------
+# Config CRUD
+# ---------------------------------------------------------------------------
+
+
+async def get_all_config() -> dict[str, str]:
+    """Return all rows from the config table as {key: value}."""
+    async with get_db() as db:
+        cursor = await db.execute("SELECT key, value FROM config")
+        rows = await cursor.fetchall()
+        return {r["key"]: r["value"] for r in rows}
+
+
+async def upsert_config(key: str, value: str) -> None:
+    """Insert or update a config key."""
+    async with get_db() as db:
+        await db.execute(
+            """
+            INSERT INTO config (key, value, updated_at)
+            VALUES (?, ?, datetime('now'))
+            ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = datetime('now')
+            """,
+            (key, value),
+        )
+        await db.commit()
+
+
+async def delete_config(key: str) -> None:
+    """Delete a config key (resets to default)."""
+    async with get_db() as db:
+        await db.execute("DELETE FROM config WHERE key = ?", (key,))
+        await db.commit()

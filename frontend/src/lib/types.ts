@@ -52,6 +52,7 @@ export interface Conversation {
   next_action_at: string | null
   attempt_count: number
   created_at: string
+  agent_reasoning?: string | null
 }
 
 export type ConversationState =
@@ -107,6 +108,44 @@ export interface HealthStatus {
     connected: boolean
     [key: string]: unknown
   }
+}
+
+export interface Lesson {
+  id: number
+  situation_type: string
+  insight: string
+  recommended_strategy: string
+  province: string | null
+  success_rate: number
+  example_count: number
+  confidence: number
+  is_active: boolean
+  created_at: string
+  updated_at: string
+}
+
+export interface LearningStats {
+  total_active_lessons: number
+  unprocessed_analyses: number
+  lessons_by_situation: Record<string, number>
+}
+
+export interface ConversationAnalysis {
+  id: number
+  conversation_id: number
+  outcome: string
+  total_messages: number
+  total_attempts: number
+  duration_hours: number
+  province: string | null
+  success_factors: string | null
+  failure_factors: string | null
+  contact_personality: string | null
+  effective_strategies: string | null
+  recommended_improvements: string | null
+  summary: string | null
+  processed: boolean
+  created_at: string
 }
 
 export interface AgentResult {
