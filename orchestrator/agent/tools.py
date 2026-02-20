@@ -109,6 +109,14 @@ async def _save_extracted_number(arguments: dict, context: AgentContext) -> str:
         await db.update_secretariat_phone(context.university_id, validated)
         await db.update_university_status(context.university_id, "got_number")
 
+    # Auto-queue audiensi conversation
+    try:
+        from orchestrator.audiensi.auto_queue import create_audiensi_from_success
+        import asyncio
+        asyncio.create_task(create_audiensi_from_success(context.conversation_id))
+    except Exception:
+        pass  # Audiensi module may not be available
+
     return json.dumps({
         "success": True,
         "phone_e164": validated,

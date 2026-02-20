@@ -453,7 +453,7 @@ async function connectToWhatsApp(): Promise<void> {
 // ---------------------------------------------------------------------------
 const app = express();
 app.use(cors());
-app.use(express.json());
+app.use(express.json({ limit: '10mb' }));
 
 // POST /send — with human-like behavior (Item 1)
 app.post('/send', async (req: Request, res: Response) => {
@@ -514,6 +514,51 @@ app.post('/send', async (req: Request, res: Response) => {
   } catch (err) {
     const error = err instanceof Error ? err.message : String(err);
     logger.error({ err }, 'Failed to send message');
+    res.status(500).json({ success: false, error });
+  }
+});
+
+// POST /send-document — send a file (PDF, etc.) as a document message
+app.post('/send-document', async (req: Request, res: Response) => {
+  const { to, fileBase64, fileName, mimetype, caption } = req.body as {
+    to?: string;
+    fileBase64?: string;
+    fileName?: string;
+    mimetype?: string;
+    caption?: string;
+  };
+
+  if (!to || !fileBase64 || !fileName || !mimetype) {
+    res.status(400).json({
+      success: false,
+      error: 'Missing required fields: to, fileBase64, fileName, mimetype',
+    });
+    return;
+  }
+
+  if (!sock || !isConnected) {
+    res.status(503).json({ success: false, error: 'WhatsApp not connected' });
+    return;
+  }
+
+  try {
+    const jid = normalizePhone(to);
+
+    // Short delay before sending document
+    await humanDelay(1000, 2000);
+
+    const result = await sock.sendMessage(jid, {
+      document: Buffer.from(fileBase64, 'base64'),
+      fileName: fileName,
+      mimetype: mimetype,
+      ...(caption ? { caption } : {}),
+    });
+
+    logger.info({ to, fileName }, 'Document sent successfully');
+    res.json({ success: true, messageId: result?.key?.id ?? null });
+  } catch (err) {
+    const error = err instanceof Error ? err.message : String(err);
+    logger.error({ err, to, fileName }, 'Failed to send document');
     res.status(500).json({ success: false, error });
   }
 });

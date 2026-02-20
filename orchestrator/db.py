@@ -144,6 +144,36 @@ CREATE INDEX IF NOT EXISTS idx_strategy_metrics_conv ON strategy_metrics(convers
 CREATE INDEX IF NOT EXISTS idx_strategy_metrics_strategy ON strategy_metrics(strategy_used);
 """
 
+_DDL_AUDIENSI = """
+CREATE TABLE IF NOT EXISTS audiensi_conversations (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    university_id INTEGER NOT NULL REFERENCES universities(id),
+    source_conversation_id INTEGER REFERENCES conversations(id),
+    contact_phone TEXT NOT NULL,
+    contact_role TEXT,
+    rector_name TEXT,
+    state TEXT NOT NULL DEFAULT 'QUEUED',
+    message_history TEXT DEFAULT '[]',
+    pdf_path TEXT,
+    initial_message_draft TEXT,
+    scheduled_datetime TEXT,
+    zoom_link TEXT,
+    agent_reasoning TEXT,
+    attempt_count INTEGER DEFAULT 0,
+    followup_count INTEGER DEFAULT 0,
+    last_message_at TIMESTAMP,
+    approved_at TIMESTAMP,
+    approved_by TEXT,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+"""
+
+_INDEXES_AUDIENSI = """
+CREATE INDEX IF NOT EXISTS idx_audiensi_phone ON audiensi_conversations(contact_phone);
+CREATE INDEX IF NOT EXISTS idx_audiensi_state ON audiensi_conversations(state);
+CREATE INDEX IF NOT EXISTS idx_audiensi_university ON audiensi_conversations(university_id);
+"""
+
 # ---------------------------------------------------------------------------
 # Initialization & connection helper
 # ---------------------------------------------------------------------------
@@ -159,6 +189,8 @@ async def init_db() -> None:
         await db.executescript(_DDL_CONFIG)
         await db.executescript(_INDEXES)
         await db.executescript(_INDEXES_AGENT)
+        await db.executescript(_DDL_AUDIENSI)
+        await db.executescript(_INDEXES_AUDIENSI)
         # Migration: add agent_reasoning column to conversations (idempotent)
         try:
             await db.execute(
@@ -203,6 +235,14 @@ async def init_db() -> None:
         try:
             await db.execute(
                 "ALTER TABLE universities ADD COLUMN last_ig_scraped_at TIMESTAMP"
+            )
+            await db.commit()
+        except Exception:
+            pass  # Column already exists
+        # Migration: add rector_name to universities for audiensi
+        try:
+            await db.execute(
+                "ALTER TABLE universities ADD COLUMN rector_name TEXT"
             )
             await db.commit()
         except Exception:
@@ -1179,3 +1219,207 @@ async def delete_config(key: str) -> None:
     async with get_db() as db:
         await db.execute("DELETE FROM config WHERE key = ?", (key,))
         await db.commit()
+
+
+# ---------------------------------------------------------------------------
+# Audiensi Conversations CRUD
+# ---------------------------------------------------------------------------
+
+_AUDIENSI_TERMINAL_STATES = ("ZOOM_SENT", "REFUSED", "ABANDONED")
+
+
+async def create_audiensi_conversation(
+    university_id: int,
+    source_conversation_id: int | None,
+    contact_phone: str,
+    contact_role: str | None = None,
+    rector_name: str | None = None,
+) -> int:
+    """Create audiensi conversation, return new id."""
+    async with get_db() as db:
+        cursor = await db.execute(
+            """INSERT INTO audiensi_conversations
+               (university_id, source_conversation_id, contact_phone, contact_role, rector_name, created_at)
+               VALUES (?, ?, ?, ?, ?, ?)""",
+            (university_id, source_conversation_id, contact_phone, contact_role, rector_name, _utcnow()),
+        )
+        await db.commit()
+        return cursor.lastrowid
+
+
+async def get_audiensi_conversation_by_id(aud_id: int) -> dict | None:
+    """Return a single audiensi conversation by ID with university name."""
+    async with get_db() as db:
+        cursor = await db.execute(
+            """SELECT a.*, u.name AS university_name, u.province
+               FROM audiensi_conversations a
+               LEFT JOIN universities u ON u.id = a.university_id
+               WHERE a.id = ?""",
+            (aud_id,),
+        )
+        row = await cursor.fetchone()
+        return _row_to_dict(row) if row else None
+
+
+async def get_audiensi_conversation_by_phone(phone: str) -> dict | None:
+    """Return latest non-terminal audiensi conversation for a phone."""
+    placeholders = ",".join("?" * len(_AUDIENSI_TERMINAL_STATES))
+    async with get_db() as db:
+        cursor = await db.execute(
+            f"""SELECT a.*, u.name AS university_name
+                FROM audiensi_conversations a
+                LEFT JOIN universities u ON u.id = a.university_id
+                WHERE a.contact_phone = ? AND a.state NOT IN ({placeholders})
+                ORDER BY a.created_at DESC LIMIT 1""",
+            (phone, *_AUDIENSI_TERMINAL_STATES),
+        )
+        row = await cursor.fetchone()
+        return _row_to_dict(row) if row else None
+
+
+async def get_audiensi_conversations_filtered(
+    state: str | None = None,
+    limit: int = 100,
+    offset: int = 0,
+) -> list[dict]:
+    """Return audiensi conversations with optional state filter."""
+    conditions = []
+    params: list = []
+    if state:
+        conditions.append("a.state = ?")
+        params.append(state)
+    where = f"WHERE {' AND '.join(conditions)}" if conditions else ""
+    async with get_db() as db:
+        cursor = await db.execute(
+            f"""SELECT a.*, u.name AS university_name
+                FROM audiensi_conversations a
+                LEFT JOIN universities u ON u.id = a.university_id
+                {where}
+                ORDER BY a.created_at DESC
+                LIMIT ? OFFSET ?""",
+            (*params, limit, offset),
+        )
+        rows = await cursor.fetchall()
+        return _rows_to_dicts(rows)
+
+
+async def update_audiensi_state(aud_id: int, state: str, **kwargs) -> None:
+    """Update state of audiensi conversation plus optional extra fields."""
+    allowed_fields = {
+        "message_history", "pdf_path", "initial_message_draft",
+        "scheduled_datetime", "zoom_link", "agent_reasoning",
+        "attempt_count", "followup_count", "last_message_at",
+        "approved_at", "approved_by", "contact_role", "rector_name",
+    }
+    extra = {k: v for k, v in kwargs.items() if k in allowed_fields}
+    set_clauses = ["state = ?"]
+    values: list[Any] = [state]
+    for field, value in extra.items():
+        set_clauses.append(f"{field} = ?")
+        values.append(value)
+    values.append(aud_id)
+    sql = f"UPDATE audiensi_conversations SET {', '.join(set_clauses)} WHERE id = ?"
+    async with get_db() as db:
+        await db.execute(sql, values)
+        await db.commit()
+
+
+async def add_audiensi_message(aud_id: int, role: str, content: str) -> None:
+    """Append a message to audiensi conversation's message_history JSON."""
+    async with get_db() as db:
+        cursor = await db.execute(
+            "SELECT message_history FROM audiensi_conversations WHERE id = ?",
+            (aud_id,),
+        )
+        row = await cursor.fetchone()
+        if row is None:
+            log.warning("add_audiensi_message: audiensi %d not found", aud_id)
+            return
+        history: list[dict] = json.loads(row["message_history"] or "[]")
+        history.append({"role": role, "content": content, "timestamp": _utcnow()})
+        await db.execute(
+            "UPDATE audiensi_conversations SET message_history = ?, last_message_at = ? WHERE id = ?",
+            (json.dumps(history), _utcnow(), aud_id),
+        )
+        await db.commit()
+
+
+async def get_queued_audiensi() -> list[dict]:
+    """Return audiensi conversations in QUEUED state for approval queue."""
+    async with get_db() as db:
+        cursor = await db.execute(
+            """SELECT a.*, u.name AS university_name, u.province
+               FROM audiensi_conversations a
+               LEFT JOIN universities u ON u.id = a.university_id
+               WHERE a.state = 'QUEUED'
+               ORDER BY a.created_at""",
+        )
+        rows = await cursor.fetchall()
+        return _rows_to_dicts(rows)
+
+
+async def get_active_audiensi() -> list[dict]:
+    """Return non-terminal audiensi conversations."""
+    placeholders = ",".join("?" * len(_AUDIENSI_TERMINAL_STATES))
+    async with get_db() as db:
+        cursor = await db.execute(
+            f"""SELECT a.*, u.name AS university_name
+                FROM audiensi_conversations a
+                LEFT JOIN universities u ON u.id = a.university_id
+                WHERE a.state NOT IN ({placeholders})
+                ORDER BY a.last_message_at DESC NULLS LAST""",
+            _AUDIENSI_TERMINAL_STATES,
+        )
+        rows = await cursor.fetchall()
+        return _rows_to_dicts(rows)
+
+
+async def get_audiensi_stats() -> dict:
+    """Return aggregate counts for audiensi dashboard."""
+    async with get_db() as db:
+        cursor = await db.execute(
+            "SELECT state, COUNT(*) AS count FROM audiensi_conversations GROUP BY state"
+        )
+        rows = await cursor.fetchall()
+        state_counts = {r["state"]: r["count"] for r in rows}
+        cursor = await db.execute("SELECT COUNT(*) AS total FROM audiensi_conversations")
+        row = await cursor.fetchone()
+        total = row["total"] if row else 0
+    return {
+        "total": total,
+        "queued": state_counts.get("QUEUED", 0),
+        "approved": state_counts.get("APPROVED", 0),
+        "in_progress": sum(state_counts.get(s, 0) for s in ("INITIAL_SENT", "WAITING_REPLY", "REPLIED", "ANALYZING", "SCHEDULING", "NEED_MORE", "FOLLOWUP_SENT")),
+        "scheduled": state_counts.get("SCHEDULED", 0),
+        "completed": state_counts.get("ZOOM_SENT", 0),
+        "refused": state_counts.get("REFUSED", 0),
+        "abandoned": state_counts.get("ABANDONED", 0),
+        "state_counts": state_counts,
+    }
+
+
+async def update_university_rector_name(uni_id: int, rector_name: str) -> None:
+    """Update rector_name on universities table."""
+    async with get_db() as db:
+        await db.execute(
+            "UPDATE universities SET rector_name = ? WHERE id = ?",
+            (rector_name, uni_id),
+        )
+        await db.commit()
+
+
+async def get_audiensi_needing_followup(hours_threshold: int) -> list[dict]:
+    """Return audiensi conversations needing follow-up."""
+    async with get_db() as db:
+        cursor = await db.execute(
+            """SELECT a.*, u.name AS university_name
+               FROM audiensi_conversations a
+               LEFT JOIN universities u ON u.id = a.university_id
+               WHERE a.state IN ('WAITING_REPLY', 'FOLLOWUP_SENT')
+                 AND a.last_message_at IS NOT NULL
+                 AND (julianday('now') - julianday(a.last_message_at)) * 24 >= ?
+               ORDER BY a.last_message_at""",
+            (hours_threshold,),
+        )
+        rows = await cursor.fetchall()
+        return _rows_to_dicts(rows)

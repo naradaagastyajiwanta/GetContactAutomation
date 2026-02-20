@@ -164,3 +164,55 @@ export interface AgentResult {
   phones_found?: number
   details?: Array<Record<string, unknown>>
 }
+
+export interface AudiensiConversation {
+  id: number
+  university_id: number
+  university_name?: string
+  province?: string | null
+  source_conversation_id: number | null
+  contact_phone: string
+  contact_role: string | null
+  rector_name: string | null
+  state: AudiensiState
+  message_history: Message[]
+  pdf_path: string | null
+  initial_message_draft: string | null
+  scheduled_datetime: string | null
+  zoom_link: string | null
+  agent_reasoning: string | null
+  attempt_count: number
+  followup_count: number
+  approved_at: string | null
+  approved_by: string | null
+  created_at: string
+  last_message_at: string | null
+}
+
+export type AudiensiState =
+  | 'QUEUED'
+  | 'APPROVED'
+  | 'INITIAL_SENT'
+  | 'WAITING_REPLY'
+  | 'REPLIED'
+  | 'ANALYZING'
+  | 'SCHEDULING'
+  | 'SCHEDULED'
+  | 'ZOOM_SENT'
+  | 'NEED_MORE'
+  | 'FOLLOWUP_SENT'
+  | 'REFUSED'
+  | 'NO_REPLY'
+  | 'ABANDONED'
+
+export interface AudiensiStats {
+  total: number
+  queued: number
+  approved: number
+  in_progress: number
+  scheduled: number
+  completed: number
+  refused: number
+  abandoned: number
+  state_counts: Record<string, number>
+}

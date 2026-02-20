@@ -165,11 +165,39 @@ async def _process_incoming(
     push_name: str = "",
     msg_key: str | None = None,
 ):
-    """Process incoming message and respond if needed."""
+    """Process incoming message and respond if needed.
+
+    Routes to the appropriate handler: chatbot 1 (contact finder) or
+    audiensi chatbot (Zoom scheduling).
+    """
     if is_paused():
         log.info(f"Paused – ignoring incoming message from {raw_phone}")
         return
 
+    # Try audiensi chatbot first (phase 2 conversations)
+    if cfg.AUDIENSI_ENABLED:
+        try:
+            from orchestrator.db import get_audiensi_conversation_by_phone
+            from orchestrator.audiensi.conversation import audiensi_conversation_manager
+            from orchestrator.audiensi.states import AudiensiState
+
+            aud = await get_audiensi_conversation_by_phone(normalized_phone)
+            if aud and aud["state"] not in AudiensiState.terminal_states():
+                log.info(f"Routing to audiensi handler for {raw_phone}")
+                result = await message_queue.process_with_ai(
+                    audiensi_conversation_manager.process_incoming_message(
+                        normalized_phone, message, push_name=push_name,
+                    )
+                )
+                if result.get("response_message"):
+                    await message_queue.enqueue_send(
+                        raw_phone, result["response_message"], reply_to_msg_key=msg_key,
+                    )
+                return
+        except Exception as e:
+            log.warning(f"Audiensi routing check failed: {e}")
+
+    # Default: chatbot 1 (contact finder)
     result = await message_queue.process_with_ai(
         conversation_manager.process_incoming_message(
             normalized_phone, message, push_name=push_name,
@@ -805,6 +833,239 @@ async def reset_config(key: str):
     cfg.set(key, defn.default)
 
     return {"status": "ok", "key": key, "value": defn.default}
+
+
+# ---------------------------------------------------------------------------
+# Audiensi endpoints
+# ---------------------------------------------------------------------------
+
+
+@app.get("/audiensi")
+async def list_audiensi(
+    state: str | None = None,
+    limit: int = 100,
+    offset: int = 0,
+):
+    """List audiensi conversations with optional state filter."""
+    from orchestrator.db import get_audiensi_conversations_filtered
+    return await get_audiensi_conversations_filtered(state, limit, offset)
+
+
+@app.get("/audiensi/queue")
+async def audiensi_queue():
+    """Get pending approval queue."""
+    from orchestrator.db import get_queued_audiensi
+    return await get_queued_audiensi()
+
+
+@app.get("/audiensi/stats")
+async def audiensi_stats():
+    """Get audiensi dashboard stats."""
+    from orchestrator.db import get_audiensi_stats
+    return await get_audiensi_stats()
+
+
+@app.get("/audiensi/{aud_id}")
+async def get_audiensi(aud_id: int):
+    """Get a single audiensi conversation by ID."""
+    from orchestrator.db import get_audiensi_conversation_by_id
+    aud = await get_audiensi_conversation_by_id(aud_id)
+    if not aud:
+        return JSONResponse(status_code=404, content={"detail": "Audiensi not found"})
+    return aud
+
+
+class RectorNamePayload(BaseModel):
+    rector_name: str
+
+
+@app.put("/audiensi/{aud_id}/rector-name")
+async def update_audiensi_rector_name(aud_id: int, payload: RectorNamePayload):
+    """Edit rector name for an audiensi conversation."""
+    from orchestrator.db import get_audiensi_conversation_by_id, update_audiensi_state, update_university_rector_name
+    aud = await get_audiensi_conversation_by_id(aud_id)
+    if not aud:
+        return JSONResponse(status_code=404, content={"detail": "Audiensi not found"})
+    await update_audiensi_state(aud_id, aud["state"], rector_name=payload.rector_name)
+    # Also update university record
+    if aud.get("university_id"):
+        await update_university_rector_name(aud["university_id"], payload.rector_name)
+    return {"status": "ok"}
+
+
+class InitialMessagePayload(BaseModel):
+    message: str
+
+
+@app.put("/audiensi/{aud_id}/initial-message")
+async def update_audiensi_initial_message(aud_id: int, payload: InitialMessagePayload):
+    """Edit initial message draft."""
+    from orchestrator.db import get_audiensi_conversation_by_id, update_audiensi_state
+    aud = await get_audiensi_conversation_by_id(aud_id)
+    if not aud:
+        return JSONResponse(status_code=404, content={"detail": "Audiensi not found"})
+    await update_audiensi_state(aud_id, aud["state"], initial_message_draft=payload.message)
+    return {"status": "ok"}
+
+
+@app.post("/audiensi/{aud_id}/regenerate-pdf")
+async def regenerate_audiensi_pdf(aud_id: int):
+    """Regenerate PDF after edits (rector name, etc.)."""
+    from orchestrator.db import get_audiensi_conversation_by_id, update_audiensi_state
+    aud = await get_audiensi_conversation_by_id(aud_id)
+    if not aud:
+        return JSONResponse(status_code=404, content={"detail": "Audiensi not found"})
+
+    try:
+        from orchestrator.audiensi.pdf_generator import generate_audiensi_document
+        pdf_path = await generate_audiensi_document(
+            audiensi_id=aud_id,
+            university_name=aud.get("university_name", ""),
+            rector_name=aud.get("rector_name"),
+            province=aud.get("province"),
+        )
+        if pdf_path:
+            await update_audiensi_state(aud_id, aud["state"], pdf_path=pdf_path)
+        return {"status": "ok", "pdf_path": pdf_path}
+    except Exception as e:
+        return JSONResponse(status_code=500, content={"detail": f"PDF generation failed: {e}"})
+
+
+@app.get("/audiensi/{aud_id}/pdf")
+async def get_audiensi_pdf(aud_id: int):
+    """Download/preview the generated PDF."""
+    from orchestrator.db import get_audiensi_conversation_by_id
+    import os
+    aud = await get_audiensi_conversation_by_id(aud_id)
+    if not aud or not aud.get("pdf_path"):
+        return JSONResponse(status_code=404, content={"detail": "PDF not found"})
+    pdf_path = aud["pdf_path"]
+    if not os.path.exists(pdf_path):
+        return JSONResponse(status_code=404, content={"detail": "PDF file not found on disk"})
+    from fastapi.responses import FileResponse
+    filename = os.path.basename(pdf_path)
+    return FileResponse(pdf_path, filename=filename, media_type="application/octet-stream")
+
+
+@app.post("/audiensi/{aud_id}/approve")
+async def approve_audiensi(aud_id: int, background_tasks: BackgroundTasks):
+    """Approve audiensi & send initial message + document."""
+    from orchestrator.db import (
+        get_audiensi_conversation_by_id,
+        update_audiensi_state,
+        add_audiensi_message,
+    )
+    from datetime import datetime as _dt, timezone as _tz
+
+    aud = await get_audiensi_conversation_by_id(aud_id)
+    if not aud:
+        return JSONResponse(status_code=404, content={"detail": "Audiensi not found"})
+    if aud["state"] != "QUEUED":
+        return JSONResponse(status_code=400, content={"detail": f"Cannot approve: state is {aud['state']}"})
+
+    # Update state to APPROVED
+    now = _dt.now(_tz.utc).isoformat()
+    await update_audiensi_state(aud_id, "APPROVED", approved_at=now)
+
+    # Send document first (if available), then text message
+    async def _send_messages():
+        phone = aud["contact_phone"]
+        uni_name = aud.get("university_name", "University")
+
+        # 1. Send PDF/document if available
+        if aud.get("pdf_path"):
+            import os
+            if os.path.exists(aud["pdf_path"]):
+                doc_name = f"Undangan_Audiensi_{uni_name.replace(' ', '_')}.docx"
+                await message_queue.enqueue_send_document(
+                    phone, aud["pdf_path"], doc_name,
+                    caption="Surat Undangan Audiensi Daring - Asosiasi AI Indonesia",
+                )
+
+        # 2. Send text message
+        text = aud.get("initial_message_draft") or (
+            f"Selamat pagi,\n\n"
+            f"Saya Ali dari Asosiasi Artificial Intelligence Indonesia.\n"
+            f"Kami telah mengirimkan surat undangan audiensi daring Zoom untuk {uni_name}.\n"
+            f"Mohon kesediaannya untuk menjadwalkan pertemuan ~40 menit.\n\n"
+            f"Terima kasih 🙏🏻"
+        )
+        await message_queue.enqueue_send(phone, text)
+
+        # Update state to INITIAL_SENT
+        await update_audiensi_state(
+            aud_id, "INITIAL_SENT",
+            last_message_at=_dt.now(_tz.utc).isoformat(),
+        )
+        await add_audiensi_message(aud_id, "bot", text)
+
+    background_tasks.add_task(_send_messages)
+    return {"status": "ok", "message": "Audiensi approved, messages being sent"}
+
+
+@app.post("/audiensi/{aud_id}/reject")
+async def reject_audiensi(aud_id: int):
+    """Reject/cancel an audiensi."""
+    from orchestrator.db import get_audiensi_conversation_by_id, update_audiensi_state
+    aud = await get_audiensi_conversation_by_id(aud_id)
+    if not aud:
+        return JSONResponse(status_code=404, content={"detail": "Audiensi not found"})
+    await update_audiensi_state(aud_id, "ABANDONED")
+    return {"status": "ok"}
+
+
+@app.post("/audiensi/{aud_id}/send-zoom")
+async def send_zoom_link(aud_id: int, background_tasks: BackgroundTasks):
+    """Manually send zoom link for a scheduled audiensi."""
+    from orchestrator.db import (
+        get_audiensi_conversation_by_id,
+        update_audiensi_state,
+        add_audiensi_message,
+    )
+    from datetime import datetime as _dt, timezone as _tz
+
+    aud = await get_audiensi_conversation_by_id(aud_id)
+    if not aud:
+        return JSONResponse(status_code=404, content={"detail": "Audiensi not found"})
+
+    zoom_link = cfg.AUDIENSI_ZOOM_LINK_TEMPLATE or "https://zoom.us/j/placeholder"
+
+    async def _send():
+        phone = aud["contact_phone"]
+        msg = f"Berikut link Zoom untuk audiensi:\n\n{zoom_link}\n\nTerima kasih 🙏🏻"
+        await message_queue.enqueue_send(phone, msg)
+        await update_audiensi_state(
+            aud_id, "ZOOM_SENT",
+            zoom_link=zoom_link,
+            last_message_at=_dt.now(_tz.utc).isoformat(),
+        )
+        await add_audiensi_message(aud_id, "bot", msg)
+
+    background_tasks.add_task(_send)
+    return {"status": "ok", "zoom_link": zoom_link}
+
+
+# Audiensi template management
+
+@app.post("/audiensi/template/upload")
+async def upload_audiensi_template(file: UploadFile = FastAPIFile(...)):
+    """Upload a new .docx template for audiensi invitations."""
+    if not file.filename or not file.filename.endswith(".docx"):
+        return JSONResponse(status_code=400, content={"detail": "Only .docx files allowed"})
+    content = await file.read()
+    try:
+        from orchestrator.audiensi.pdf_generator import save_uploaded_template
+        path = await save_uploaded_template(content, file.filename)
+        return {"status": "ok", "path": path}
+    except Exception as e:
+        return JSONResponse(status_code=500, content={"detail": str(e)})
+
+
+@app.get("/audiensi/template/placeholders")
+async def audiensi_template_placeholders():
+    """List available template placeholders."""
+    from orchestrator.audiensi.pdf_generator import get_available_placeholders
+    return {"placeholders": get_available_placeholders()}
 
 
 # ---------------------------------------------------------------------------

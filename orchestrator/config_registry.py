@@ -25,6 +25,7 @@ class ConfigGroup(str, Enum):
     AI_AGENT = "AI Agent"
     MESSAGE_QUEUE = "Message Queue"
     CREDENTIALS = "Credentials"
+    AUDIENSI = "Audiensi"
 
 
 @dataclass(frozen=True)
@@ -174,6 +175,45 @@ CONFIG_DEFINITIONS: list[ConfigDef] = [
         label="Send Interval (ms)",
         description="Milliseconds between serial WA message sends.",
         min_value=500, max_value=30000,
+    ),
+    # --- Audiensi ---
+    ConfigDef(
+        key="AUDIENSI_ENABLED",
+        type=ConfigType.BOOL, default=False, group=ConfigGroup.AUDIENSI,
+        label="Audiensi Enabled",
+        description="Enable audiensi chatbot (Phase 2) features.",
+    ),
+    ConfigDef(
+        key="AUDIENSI_AUTO_APPROVE",
+        type=ConfigType.BOOL, default=False, group=ConfigGroup.AUDIENSI,
+        label="Auto-Approve Audiensi",
+        description="Automatically approve and send audiensi messages when a number is obtained (skip manual review).",
+    ),
+    ConfigDef(
+        key="AUDIENSI_FOLLOWUP_AFTER_HOURS",
+        type=ConfigType.INT, default=48, group=ConfigGroup.AUDIENSI,
+        label="Audiensi Followup After (hours)",
+        description="Hours to wait before sending audiensi follow-up.",
+        min_value=1, max_value=168,
+    ),
+    ConfigDef(
+        key="AUDIENSI_MAX_FOLLOWUPS",
+        type=ConfigType.INT, default=3, group=ConfigGroup.AUDIENSI,
+        label="Audiensi Max Follow-ups",
+        description="Maximum follow-up attempts for audiensi conversations.",
+        min_value=1, max_value=10,
+    ),
+    ConfigDef(
+        key="AUDIENSI_ZOOM_LINK_TEMPLATE",
+        type=ConfigType.STRING, default="", group=ConfigGroup.AUDIENSI,
+        label="Zoom Link Template",
+        description="Default Zoom meeting link (placeholder for integration).",
+    ),
+    ConfigDef(
+        key="AUDIENSI_PDF_TEMPLATE_PATH",
+        type=ConfigType.STRING, default="", group=ConfigGroup.AUDIENSI,
+        label="PDF Template Path",
+        description="Custom path to audiensi surat undangan .docx template.",
     ),
 ]
 

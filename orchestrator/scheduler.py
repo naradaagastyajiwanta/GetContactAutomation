@@ -270,6 +270,63 @@ async def process_followups():
         await asyncio.sleep(cfg.MIN_MESSAGE_GAP_SECONDS)
 
 
+async def process_audiensi_followups():
+    """Process follow-ups for audiensi conversations."""
+    if is_paused():
+        return
+    if not is_within_outreach_hours():
+        return
+    if not cfg.AUDIENSI_ENABLED:
+        return
+
+    from orchestrator.db import (
+        get_audiensi_needing_followup,
+        update_audiensi_state,
+        add_audiensi_message,
+    )
+    from orchestrator.audiensi.states import AudiensiState
+
+    hours = cfg.AUDIENSI_FOLLOWUP_AFTER_HOURS
+    max_followups = cfg.AUDIENSI_MAX_FOLLOWUPS
+
+    conversations = await get_audiensi_needing_followup(hours)
+    now = datetime.now(timezone.utc)
+
+    for aud in conversations:
+        followups = aud.get("followup_count", 0) or 0
+
+        if followups >= max_followups:
+            await update_audiensi_state(aud["id"], AudiensiState.ABANDONED)
+            log.info(f"Audiensi {aud['id']} abandoned after {followups} follow-ups")
+            continue
+
+        try:
+            from orchestrator.audiensi.react_agent import AudiensiReactAgent
+            agent = AudiensiReactAgent()
+            msg = await agent.generate_followup(aud, followups + 1)
+        except Exception as e:
+            log.error(f"Failed to generate audiensi followup for {aud['id']}: {e}")
+            continue
+
+        await message_queue.enqueue_send(aud["contact_phone"], msg)
+        await update_audiensi_state(
+            aud["id"],
+            AudiensiState.FOLLOWUP_SENT,
+            followup_count=followups + 1,
+            last_message_at=datetime.now(timezone.utc).isoformat(),
+        )
+        await add_audiensi_message(aud["id"], "bot", msg)
+        log.info(f"Audiensi follow-up {followups + 1} sent for {aud['id']}")
+
+        await asyncio.sleep(cfg.MIN_MESSAGE_GAP_SECONDS)
+
+
+async def _threaded_audiensi_rector_finder():
+    """Run audiensi rector finder in a thread."""
+    from orchestrator.agents.rector_finder import run_rector_finder_batch
+    return await run_agent_in_thread(run_rector_finder_batch)
+
+
 async def run_learning_reflection():
     """Run periodic learning reflection."""
     if not cfg.LEARNING_ENABLED:
@@ -375,9 +432,35 @@ def setup_scheduler():
             replace_existing=True,
         )
 
+    # Audiensi follow-ups — every hour during active hours
+    if cfg.AUDIENSI_ENABLED:
+        scheduler.add_job(
+            process_audiensi_followups,
+            "cron",
+            hour=hour_range,
+            minute="45",
+            timezone=WIB,
+            id="audiensi_followups",
+            replace_existing=True,
+        )
+
+        # Audiensi rector finder — every 4 hours
+        scheduler.add_job(
+            _threaded_audiensi_rector_finder,
+            "cron",
+            hour="8-20/4",
+            minute="20",
+            timezone=WIB,
+            id="audiensi_rector_finder",
+            replace_existing=True,
+            max_instances=1,
+            misfire_grace_time=300,
+        )
+
     scheduler.start()
     log.info(
         "Scheduler started: outreach every 30min, followups every hour, "
         "handle finder every 2h, post scraper every 3h, phone extractor every 1h"
         + (", learning reflection 3x daily" if cfg.LEARNING_ENABLED else "")
+        + (", audiensi followups + rector finder" if cfg.AUDIENSI_ENABLED else "")
     )

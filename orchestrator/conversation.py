@@ -329,6 +329,14 @@ class ConversationManager:
 
             log.info(f"SUCCESS: Got sekretariat number {analysis['extracted_number']} for university {conv['university_id']}")
 
+            # Auto-queue audiensi conversation
+            try:
+                from orchestrator.audiensi.auto_queue import create_audiensi_from_success
+                import asyncio
+                asyncio.create_task(create_audiensi_from_success(conv_id))
+            except Exception:
+                pass  # Audiensi module may not be available
+
         elif action == "refused":
             await update_conversation_state(conv_id, ConvState.REFUSED)
             polite_close = "Baik, terima kasih atas waktunya. Mohon maaf mengganggu."

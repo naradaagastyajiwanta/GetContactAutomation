@@ -28,6 +28,13 @@ export const queryKeys = {
     qr: ['whatsapp', 'qr'] as const,
     status: ['whatsapp', 'status'] as const,
   },
+  audiensi: {
+    all: ['audiensi'] as const,
+    list: (params: Record<string, unknown>) => ['audiensi', 'list', params] as const,
+    detail: (id: number) => ['audiensi', 'detail', id] as const,
+    queue: ['audiensi', 'queue'] as const,
+    stats: ['audiensi', 'stats'] as const,
+  },
   config: ['config'] as const,
   models: ['config', 'models'] as const,
 }

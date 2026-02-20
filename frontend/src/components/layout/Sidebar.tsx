@@ -8,6 +8,7 @@ import {
   Lightbulb,
   Smartphone,
   Settings,
+  Video,
 } from 'lucide-react'
 import { cn } from '../../lib/utils'
 
@@ -16,6 +17,7 @@ const navItems = [
   { to: '/universities', label: 'Universities', icon: GraduationCap },
   { to: '/pipeline', label: 'Pipeline', icon: GitBranch },
   { to: '/conversations', label: 'Conversations', icon: MessageSquare },
+  { to: '/audiensi', label: 'Audiensi', icon: Video },
   { to: '/learning', label: 'Learning', icon: Lightbulb },
   { to: '/whatsapp', label: 'WhatsApp', icon: Smartphone },
   { to: '/settings', label: 'Settings', icon: Settings },

@@ -62,4 +62,40 @@ export const TIMELINE_BRANCHES = [
 // Terminal states (can happen from anywhere)
 export const TIMELINE_TERMINALS = ['ABANDONED', 'NO_REPLY', 'UNDELIVERED'] as const
 
+export const AUDIENSI_STATE_COLORS: Record<string, { bg: string; text: string }> = {
+  QUEUED: { bg: 'bg-gray-100 dark:bg-gray-700', text: 'text-gray-700 dark:text-gray-300' },
+  APPROVED: { bg: 'bg-blue-100 dark:bg-blue-900/50', text: 'text-blue-700 dark:text-blue-300' },
+  INITIAL_SENT: { bg: 'bg-blue-100 dark:bg-blue-900/50', text: 'text-blue-700 dark:text-blue-300' },
+  WAITING_REPLY: { bg: 'bg-yellow-100 dark:bg-yellow-900/50', text: 'text-yellow-700 dark:text-yellow-300' },
+  REPLIED: { bg: 'bg-indigo-100 dark:bg-indigo-900/50', text: 'text-indigo-700 dark:text-indigo-300' },
+  ANALYZING: { bg: 'bg-purple-100 dark:bg-purple-900/50', text: 'text-purple-700 dark:text-purple-300' },
+  SCHEDULING: { bg: 'bg-teal-100 dark:bg-teal-900/50', text: 'text-teal-700 dark:text-teal-300' },
+  SCHEDULED: { bg: 'bg-emerald-100 dark:bg-emerald-900/50', text: 'text-emerald-700 dark:text-emerald-300' },
+  ZOOM_SENT: { bg: 'bg-green-100 dark:bg-green-900/50', text: 'text-green-700 dark:text-green-300' },
+  NEED_MORE: { bg: 'bg-orange-100 dark:bg-orange-900/50', text: 'text-orange-700 dark:text-orange-300' },
+  FOLLOWUP_SENT: { bg: 'bg-cyan-100 dark:bg-cyan-900/50', text: 'text-cyan-700 dark:text-cyan-300' },
+  REFUSED: { bg: 'bg-red-100 dark:bg-red-900/50', text: 'text-red-700 dark:text-red-300' },
+  NO_REPLY: { bg: 'bg-gray-100 dark:bg-gray-700', text: 'text-gray-500 dark:text-gray-400' },
+  ABANDONED: { bg: 'bg-gray-100 dark:bg-gray-700', text: 'text-gray-500 dark:text-gray-400' },
+}
+
+export const AUDIENSI_STATES = [
+  'QUEUED', 'APPROVED', 'INITIAL_SENT', 'WAITING_REPLY', 'REPLIED',
+  'ANALYZING', 'SCHEDULING', 'SCHEDULED', 'ZOOM_SENT',
+  'NEED_MORE', 'FOLLOWUP_SENT', 'REFUSED', 'NO_REPLY', 'ABANDONED',
+] as const
+
+export const AUDIENSI_TIMELINE_TRUNK = [
+  'QUEUED', 'APPROVED', 'INITIAL_SENT', 'WAITING_REPLY', 'REPLIED', 'ANALYZING',
+] as const
+
+export const AUDIENSI_TIMELINE_BRANCHES = [
+  { state: 'SCHEDULING', color: 'teal', label: 'Scheduling',
+    next: { state: 'SCHEDULED', label: 'Scheduled',
+      next: { state: 'ZOOM_SENT', label: 'Zoom Sent' } } },
+  { state: 'NEED_MORE', color: 'orange', label: 'Need More',
+    next: { state: 'FOLLOWUP_SENT', label: 'Follow-up Sent' } },
+  { state: 'REFUSED', color: 'red', label: 'Refused' },
+] as const
+
 export const ITEMS_PER_PAGE = 25
