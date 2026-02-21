@@ -9,7 +9,7 @@ from contextlib import asynccontextmanager
 from typing import Any
 
 import httpx
-from fastapi import FastAPI, BackgroundTasks, UploadFile, File as FastAPIFile
+from fastapi import FastAPI, BackgroundTasks, UploadFile, File as FastAPIFile, Form
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel
@@ -37,6 +37,10 @@ from orchestrator.db import (
     create_conversation,
     update_conversation_state,
     add_message_to_history,
+    get_knowledge_items,
+    create_knowledge_item,
+    update_knowledge_item,
+    delete_knowledge_item,
 )
 from orchestrator.config_registry import (
     CONFIG_DEFINITIONS,
@@ -61,6 +65,7 @@ from orchestrator.config import PROVINCES
 learning_system = LearningSystem()
 
 _TERMINAL_STATES = {"GOT_NUMBER", "REFUSED", "ABANDONED"}
+_AUDIENSI_TERMINAL_STATES = {"ZOOM_SENT", "REFUSED", "ABANDONED"}
 
 
 # ---------------------------------------------------------------------------
@@ -141,6 +146,7 @@ async def handle_incoming_message(payload: dict, background_tasks: BackgroundTas
     message = payload.get("message", "")
     push_name = payload.get("pushName", "")
     msg_key = payload.get("msgKey")
+    all_msg_keys = payload.get("allMsgKeys")
 
     if not phone or not message:
         return {"status": "ignored", "reason": "empty payload"}
@@ -152,7 +158,7 @@ async def handle_incoming_message(payload: dict, background_tasks: BackgroundTas
 
     # Process in background to respond quickly to webhook
     background_tasks.add_task(
-        _process_incoming, normalized, phone, message, push_name, msg_key,
+        _process_incoming, normalized, phone, message, push_name, msg_key, all_msg_keys,
     )
 
     return {"status": "received"}
@@ -164,6 +170,7 @@ async def _process_incoming(
     message: str,
     push_name: str = "",
     msg_key: str | None = None,
+    all_msg_keys: list | None = None,
 ):
     """Process incoming message and respond if needed.
 
@@ -191,8 +198,12 @@ async def _process_incoming(
                 )
                 if result.get("response_message"):
                     await message_queue.enqueue_send(
-                        raw_phone, result["response_message"], reply_to_msg_key=msg_key,
+                        raw_phone, result["response_message"],
+                        reply_to_msg_key=msg_key, all_msg_keys=all_msg_keys,
                     )
+                # Trigger post-audiensi analysis for terminal states
+                if result.get("conversation_state") in _AUDIENSI_TERMINAL_STATES and cfg.LEARNING_ENABLED:
+                    asyncio.create_task(learning_system.analyze_completed_audiensi(aud["id"]))
                 return
         except Exception as e:
             log.warning(f"Audiensi routing check failed: {e}")
@@ -206,7 +217,8 @@ async def _process_incoming(
 
     if result.get("response_message"):
         await message_queue.enqueue_send(
-            raw_phone, result["response_message"], reply_to_msg_key=msg_key,
+            raw_phone, result["response_message"],
+            reply_to_msg_key=msg_key, all_msg_keys=all_msg_keys,
         )
 
     # Trigger post-conversation analysis for terminal states
@@ -833,6 +845,149 @@ async def reset_config(key: str):
     cfg.set(key, defn.default)
 
     return {"status": "ok", "key": key, "value": defn.default}
+
+
+# ---------------------------------------------------------------------------
+# Knowledge Items CRUD
+# ---------------------------------------------------------------------------
+
+
+class KnowledgeItemPayload(BaseModel):
+    chatbot_type: str  # 'agent' | 'audiensi'
+    title: str
+    content: str
+
+
+class KnowledgeItemUpdatePayload(BaseModel):
+    title: str | None = None
+    content: str | None = None
+    is_active: bool | None = None
+
+
+@app.get("/knowledge-items")
+async def list_knowledge_items(chatbot_type: str | None = None):
+    """List knowledge items, optionally filtered by chatbot_type."""
+    items = await get_knowledge_items(chatbot_type)
+    return {"items": items}
+
+
+@app.post("/knowledge-items")
+async def create_knowledge_item_endpoint(payload: KnowledgeItemPayload):
+    """Create a new knowledge item."""
+    if payload.chatbot_type not in ("agent", "audiensi"):
+        return JSONResponse(
+            status_code=422,
+            content={"detail": "chatbot_type must be 'agent' or 'audiensi'"},
+        )
+    item_id = await create_knowledge_item(
+        payload.chatbot_type, payload.title, payload.content
+    )
+    return {"id": item_id, "status": "ok"}
+
+
+@app.patch("/knowledge-items/{item_id}")
+async def update_knowledge_item_endpoint(item_id: int, payload: KnowledgeItemUpdatePayload):
+    """Update a knowledge item."""
+    updates = {}
+    if payload.title is not None:
+        updates["title"] = payload.title
+    if payload.content is not None:
+        updates["content"] = payload.content
+    if payload.is_active is not None:
+        updates["is_active"] = int(payload.is_active)
+    if not updates:
+        return JSONResponse(status_code=422, content={"detail": "No fields to update"})
+    await update_knowledge_item(item_id, **updates)
+    return {"status": "ok"}
+
+
+@app.delete("/knowledge-items/{item_id}")
+async def delete_knowledge_item_endpoint(item_id: int):
+    """Delete a knowledge item."""
+    await delete_knowledge_item(item_id)
+    return {"status": "ok"}
+
+
+_ALLOWED_KB_EXTENSIONS = {".txt", ".md", ".csv", ".docx", ".pdf"}
+
+
+def _extract_text_from_file(filename: str, content: bytes) -> str:
+    """Extract plain text from an uploaded file."""
+    import os
+    ext = os.path.splitext(filename)[1].lower()
+
+    if ext in (".txt", ".md"):
+        return content.decode("utf-8", errors="replace")
+
+    if ext == ".csv":
+        text = content.decode("utf-8", errors="replace")
+        reader = csv.reader(io.StringIO(text))
+        lines = []
+        for row in reader:
+            lines.append(" | ".join(row))
+        return "\n".join(lines)
+
+    if ext == ".docx":
+        from docx import Document
+        doc = Document(io.BytesIO(content))
+        return "\n".join(p.text for p in doc.paragraphs if p.text.strip())
+
+    if ext == ".pdf":
+        try:
+            from PyPDF2 import PdfReader
+            reader = PdfReader(io.BytesIO(content))
+            pages = []
+            for page in reader.pages:
+                text = page.extract_text()
+                if text:
+                    pages.append(text)
+            return "\n".join(pages)
+        except ImportError:
+            raise ValueError("PDF support requires PyPDF2. Install with: pip install PyPDF2")
+
+    raise ValueError(f"Unsupported file type: {ext}")
+
+
+@app.post("/knowledge-items/upload")
+async def upload_knowledge_item(
+    file: UploadFile = FastAPIFile(...),
+    chatbot_type: str = Form(...),
+):
+    """Upload a file (.txt, .md, .csv, .docx, .pdf) as a knowledge item."""
+    import os
+
+    if chatbot_type not in ("agent", "audiensi"):
+        return JSONResponse(
+            status_code=422,
+            content={"detail": "chatbot_type must be 'agent' or 'audiensi'"},
+        )
+
+    if not file.filename:
+        return JSONResponse(status_code=400, content={"detail": "No filename provided"})
+
+    ext = os.path.splitext(file.filename)[1].lower()
+    if ext not in _ALLOWED_KB_EXTENSIONS:
+        return JSONResponse(
+            status_code=400,
+            content={"detail": f"Unsupported file type: {ext}. Allowed: {', '.join(_ALLOWED_KB_EXTENSIONS)}"},
+        )
+
+    raw = await file.read()
+    if len(raw) > 5 * 1024 * 1024:  # 5MB limit
+        return JSONResponse(status_code=400, content={"detail": "File too large (max 5MB)"})
+
+    try:
+        text = _extract_text_from_file(file.filename, raw)
+    except Exception as e:
+        return JSONResponse(status_code=400, content={"detail": f"Failed to extract text: {e}"})
+
+    if not text.strip():
+        return JSONResponse(status_code=400, content={"detail": "File contains no extractable text"})
+
+    title = os.path.splitext(file.filename)[0]
+    item_id = await create_knowledge_item(chatbot_type, title, text.strip())
+
+    return {"id": item_id, "status": "ok", "title": title, "content_length": len(text.strip())}
 
 
 # ---------------------------------------------------------------------------

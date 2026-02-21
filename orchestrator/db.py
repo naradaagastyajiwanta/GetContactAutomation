@@ -86,6 +86,7 @@ CREATE TABLE IF NOT EXISTS conversation_analyses (
     effective_strategies TEXT,
     recommended_improvements TEXT,
     summary TEXT,
+    source TEXT DEFAULT 'outreach',
     processed INTEGER DEFAULT 0,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
@@ -168,6 +169,23 @@ CREATE TABLE IF NOT EXISTS audiensi_conversations (
 );
 """
 
+_DDL_KNOWLEDGE = """
+CREATE TABLE IF NOT EXISTS knowledge_items (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    chatbot_type TEXT NOT NULL,
+    title TEXT NOT NULL,
+    content TEXT NOT NULL,
+    is_active INTEGER DEFAULT 1,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+"""
+
+_INDEXES_KNOWLEDGE = """
+CREATE INDEX IF NOT EXISTS idx_knowledge_items_type_active
+    ON knowledge_items(chatbot_type, is_active);
+"""
+
 _INDEXES_AUDIENSI = """
 CREATE INDEX IF NOT EXISTS idx_audiensi_phone ON audiensi_conversations(contact_phone);
 CREATE INDEX IF NOT EXISTS idx_audiensi_state ON audiensi_conversations(state);
@@ -191,6 +209,8 @@ async def init_db() -> None:
         await db.executescript(_INDEXES_AGENT)
         await db.executescript(_DDL_AUDIENSI)
         await db.executescript(_INDEXES_AUDIENSI)
+        await db.executescript(_DDL_KNOWLEDGE)
+        await db.executescript(_INDEXES_KNOWLEDGE)
         # Migration: add agent_reasoning column to conversations (idempotent)
         try:
             await db.execute(
@@ -243,6 +263,14 @@ async def init_db() -> None:
         try:
             await db.execute(
                 "ALTER TABLE universities ADD COLUMN rector_name TEXT"
+            )
+            await db.commit()
+        except Exception:
+            pass  # Column already exists
+        # Migration: add source column to conversation_analyses for audiensi learning
+        try:
+            await db.execute(
+                "ALTER TABLE conversation_analyses ADD COLUMN source TEXT DEFAULT 'outreach'"
             )
             await db.commit()
         except Exception:
@@ -955,8 +983,8 @@ async def save_conversation_analysis(data: dict) -> int:
                 (conversation_id, outcome, total_messages, total_attempts,
                  duration_hours, province, success_factors, failure_factors,
                  contact_personality, effective_strategies,
-                 recommended_improvements, summary, created_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                 recommended_improvements, summary, source, created_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 data.get("conversation_id"),
@@ -971,6 +999,7 @@ async def save_conversation_analysis(data: dict) -> int:
                 json.dumps(data.get("effective_strategies")) if data.get("effective_strategies") else None,
                 data.get("recommended_improvements"),
                 data.get("summary"),
+                data.get("source", "outreach"),
                 _utcnow(),
             ),
         )
@@ -1170,10 +1199,10 @@ async def get_aggregated_strategy_metrics(since_days: int = 7) -> list[dict]:
                 strategy_used,
                 situation_type,
                 COUNT(*) AS total_uses,
-                SUM(CASE WHEN outcome = 'GOT_NUMBER' THEN 1 ELSE 0 END) AS successes,
+                SUM(CASE WHEN outcome IN ('GOT_NUMBER', 'ZOOM_SENT', 'SCHEDULED') THEN 1 ELSE 0 END) AS successes,
                 ROUND(AVG(response_time_minutes), 1) AS avg_response_minutes,
                 ROUND(
-                    CAST(SUM(CASE WHEN outcome = 'GOT_NUMBER' THEN 1 ELSE 0 END) AS REAL)
+                    CAST(SUM(CASE WHEN outcome IN ('GOT_NUMBER', 'ZOOM_SENT', 'SCHEDULED') THEN 1 ELSE 0 END) AS REAL)
                     / COUNT(*), 3
                 ) AS success_rate
             FROM strategy_metrics
@@ -1423,3 +1452,79 @@ async def get_audiensi_needing_followup(hours_threshold: int) -> list[dict]:
         )
         rows = await cursor.fetchall()
         return _rows_to_dicts(rows)
+
+
+# ---------------------------------------------------------------------------
+# Knowledge Items CRUD
+# ---------------------------------------------------------------------------
+
+
+async def get_knowledge_items(
+    chatbot_type: str | None = None, active_only: bool = False
+) -> list[dict]:
+    """Return knowledge items, optionally filtered by chatbot_type and active status."""
+    conditions: list[str] = []
+    params: list = []
+    if chatbot_type:
+        conditions.append("chatbot_type = ?")
+        params.append(chatbot_type)
+    if active_only:
+        conditions.append("is_active = 1")
+    where = f"WHERE {' AND '.join(conditions)}" if conditions else ""
+    async with get_db() as db:
+        cursor = await db.execute(
+            f"SELECT * FROM knowledge_items {where} ORDER BY created_at DESC",
+            params,
+        )
+        rows = await cursor.fetchall()
+        return _rows_to_dicts(rows)
+
+
+async def get_knowledge_item_by_id(item_id: int) -> dict | None:
+    """Return a single knowledge item by ID."""
+    async with get_db() as db:
+        cursor = await db.execute(
+            "SELECT * FROM knowledge_items WHERE id = ?", (item_id,)
+        )
+        row = await cursor.fetchone()
+        return _row_to_dict(row) if row else None
+
+
+async def create_knowledge_item(
+    chatbot_type: str, title: str, content: str
+) -> int:
+    """Insert a knowledge item and return its id."""
+    now = _utcnow()
+    async with get_db() as db:
+        cursor = await db.execute(
+            """INSERT INTO knowledge_items (chatbot_type, title, content, created_at, updated_at)
+               VALUES (?, ?, ?, ?, ?)""",
+            (chatbot_type, title, content, now, now),
+        )
+        await db.commit()
+        return cursor.lastrowid  # type: ignore[return-value]
+
+
+async def update_knowledge_item(item_id: int, **kwargs) -> None:
+    """Update specific fields of a knowledge item."""
+    allowed = {"title", "content", "is_active"}
+    updates = {k: v for k, v in kwargs.items() if k in allowed}
+    if not updates:
+        return
+    updates["updated_at"] = _utcnow()
+    set_clauses = [f"{k} = ?" for k in updates]
+    values = list(updates.values())
+    values.append(item_id)
+    async with get_db() as db:
+        await db.execute(
+            f"UPDATE knowledge_items SET {', '.join(set_clauses)} WHERE id = ?",
+            values,
+        )
+        await db.commit()
+
+
+async def delete_knowledge_item(item_id: int) -> None:
+    """Delete a knowledge item."""
+    async with get_db() as db:
+        await db.execute("DELETE FROM knowledge_items WHERE id = ?", (item_id,))
+        await db.commit()

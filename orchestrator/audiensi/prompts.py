@@ -76,6 +76,8 @@ def build_audiensi_system_prompt(
     lessons: list[dict],
     rector_name: str | None = None,
     contact_role: str | None = None,
+    custom_instructions: str = "",
+    knowledge_items: list[dict] | None = None,
 ) -> str:
     """Assemble the full audiensi system prompt with context and lessons."""
     parts: list[str] = [AUDIENSI_SYSTEM_PROMPT]
@@ -108,5 +110,14 @@ def build_audiensi_system_prompt(
         parts.append(
             "\nPELAJARAN DARI PENGALAMAN SEBELUMNYA:\n" + "\n".join(lesson_lines)
         )
+
+    if custom_instructions.strip():
+        parts.append("\nINSTRUKSI TAMBAHAN DARI OPERATOR:\n" + custom_instructions.strip())
+
+    if knowledge_items:
+        kb_lines = []
+        for i, item in enumerate(knowledge_items, 1):
+            kb_lines.append(f"{i}. [{item['title']}]\n   {item['content']}")
+        parts.append("\nBASIS PENGETAHUAN:\n" + "\n".join(kb_lines))
 
     return "\n\n".join(parts)

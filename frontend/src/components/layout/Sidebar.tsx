@@ -9,6 +9,7 @@ import {
   Smartphone,
   Settings,
   Video,
+  BookOpen,
 } from 'lucide-react'
 import { cn } from '../../lib/utils'
 
@@ -19,6 +20,7 @@ const navItems = [
   { to: '/conversations', label: 'Conversations', icon: MessageSquare },
   { to: '/audiensi', label: 'Audiensi', icon: Video },
   { to: '/learning', label: 'Learning', icon: Lightbulb },
+  { to: '/knowledge', label: 'Knowledge Base', icon: BookOpen },
   { to: '/whatsapp', label: 'WhatsApp', icon: Smartphone },
   { to: '/settings', label: 'Settings', icon: Settings },
 ]

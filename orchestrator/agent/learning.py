@@ -15,6 +15,7 @@ from orchestrator.config import MAX_LESSONS_IN_PROMPT, log, cfg
 from orchestrator.db import (
     get_conversation_by_id,
     get_university_by_id,
+    get_audiensi_conversation_by_id,
     save_conversation_analysis,
     get_unprocessed_analyses,
     mark_analyses_processed,
@@ -29,6 +30,7 @@ from orchestrator.db import (
 from orchestrator.agent.prompts import ANALYSIS_SYSTEM_PROMPT, REFLECTION_SYSTEM_PROMPT
 
 _TERMINAL_STATES = {"GOT_NUMBER", "REFUSED", "ABANDONED"}
+_AUDIENSI_TERMINAL_STATES = {"ZOOM_SENT", "REFUSED", "ABANDONED"}
 
 _openai_client: AsyncOpenAI | None = None
 _openai_client_key: str = ""
@@ -181,6 +183,136 @@ class LearningSystem:
         log.info(
             "Analysis saved for conversation %d (outcome=%s, messages=%d)",
             conv_id, outcome, total_messages,
+        )
+
+    # ------------------------------------------------------------------
+    # Post-audiensi analysis
+    # ------------------------------------------------------------------
+
+    async def analyze_completed_audiensi(self, aud_id: int) -> None:
+        """Analyse an audiensi conversation that reached a terminal state.
+
+        Similar to ``analyze_completed_conversation`` but operates on
+        ``audiensi_conversations`` and tags the analysis with
+        ``source='audiensi'``.
+        """
+        aud = await get_audiensi_conversation_by_id(aud_id)
+        if not aud:
+            log.warning("analyze_completed_audiensi: audiensi %d not found", aud_id)
+            return
+
+        state = aud.get("state", "")
+        if state not in _AUDIENSI_TERMINAL_STATES:
+            log.debug(
+                "analyze_completed_audiensi: audiensi %d is in state %s (not terminal), skipping",
+                aud_id, state,
+            )
+            return
+
+        # University info (already joined by get_audiensi_conversation_by_id)
+        uni_name = aud.get("university_name") or "Tidak diketahui"
+        province = aud.get("province")
+
+        # Parse message history
+        history: list[dict] = json.loads(aud.get("message_history") or "[]")
+        total_messages = len(history)
+
+        # Duration (hours between first and last message)
+        duration_hours = 0.0
+        if total_messages >= 2:
+            try:
+                first_ts = history[0].get("timestamp")
+                last_ts = history[-1].get("timestamp")
+                if first_ts and last_ts:
+                    t0 = datetime.fromisoformat(first_ts)
+                    t1 = datetime.fromisoformat(last_ts)
+                    duration_hours = round((t1 - t0).total_seconds() / 3600, 2)
+            except (ValueError, TypeError):
+                pass
+
+        outcome = state  # ZOOM_SENT | REFUSED | ABANDONED
+
+        # Build conversation text for GPT
+        conv_text_parts: list[str] = []
+        for m in history:
+            role_label = "Ali" if m.get("role") == "bot" else "Kontak"
+            conv_text_parts.append(f"{role_label}: {m.get('content', '')}")
+        conv_text = "\n".join(conv_text_parts)
+
+        user_content = (
+            f"Universitas: {uni_name}\n"
+            f"Provinsi: {province or 'Tidak diketahui'}\n"
+            f"Tipe: Audiensi/Penjadwalan Zoom\n"
+            f"Outcome: {outcome}\n"
+            f"Total pesan: {total_messages}\n"
+            f"Durasi: {duration_hours} jam\n\n"
+            f"Percakapan:\n{conv_text}"
+        )
+
+        client = _get_openai()
+        try:
+            resp = await client.chat.completions.create(
+                model=cfg.AGENT_MODEL,
+                messages=[
+                    {"role": "system", "content": ANALYSIS_SYSTEM_PROMPT},
+                    {"role": "user", "content": user_content},
+                ],
+                max_tokens=500,
+                temperature=0.2,
+            )
+            raw = resp.choices[0].message.content.strip()
+            analysis = _parse_json_response(raw)
+        except Exception:
+            log.exception("GPT analysis call failed for audiensi %d", aud_id)
+            return
+
+        if not analysis:
+            log.warning("Failed to parse GPT analysis for audiensi %d", aud_id)
+            return
+
+        # Persist analysis (with source='audiensi')
+        try:
+            await save_conversation_analysis({
+                "conversation_id": aud_id,
+                "outcome": outcome,
+                "total_messages": total_messages,
+                "total_attempts": aud.get("attempt_count", 0),
+                "duration_hours": duration_hours,
+                "province": province,
+                "success_factors": analysis.get("success_factors"),
+                "failure_factors": analysis.get("failure_factors"),
+                "contact_personality": analysis.get("contact_personality"),
+                "effective_strategies": analysis.get("effective_strategies"),
+                "recommended_improvements": analysis.get("recommended_improvements"),
+                "summary": analysis.get("summary"),
+                "source": "audiensi",
+            })
+        except Exception:
+            log.exception("Failed to save analysis for audiensi %d", aud_id)
+            return
+
+        # Save strategy metrics from effective_strategies
+        # Determine situation_type based on whether this was a follow-up
+        followup_count = aud.get("followup_count", 0)
+        situation_type = "audiensi_followup" if followup_count > 0 else "audiensi_scheduling"
+
+        strategies = analysis.get("effective_strategies") or []
+        for strategy in strategies:
+            try:
+                await save_strategy_metric({
+                    "conversation_id": aud_id,
+                    "strategy_used": strategy,
+                    "situation_type": situation_type,
+                    "outcome": outcome,
+                    "province": province,
+                    "response_time_minutes": round(duration_hours * 60, 1) if duration_hours else None,
+                })
+            except Exception:
+                log.warning("Failed to save strategy metric '%s' for audiensi %d", strategy, aud_id)
+
+        log.info(
+            "Analysis saved for audiensi %d (outcome=%s, messages=%d)",
+            aud_id, outcome, total_messages,
         )
 
     # ------------------------------------------------------------------

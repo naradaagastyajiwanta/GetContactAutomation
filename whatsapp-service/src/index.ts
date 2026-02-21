@@ -161,6 +161,7 @@ interface PendingMessage {
   messages: string[];
   timer: ReturnType<typeof setTimeout>;
   firstMsgKey: proto.IMessageKey | null;
+  allMsgKeys: proto.IMessageKey[];
   pushName: string;
   firstTimestamp: number;
 }
@@ -187,6 +188,13 @@ function flushToWebhook(fromPhone: string): void {
           fromMe: entry.firstMsgKey.fromMe ?? false,
         }
       : null,
+    allMsgKeys: entry.allMsgKeys
+      .filter((k) => k.remoteJid && k.id)
+      .map((k) => ({
+        remoteJid: k.remoteJid ?? '',
+        id: k.id ?? '',
+        fromMe: k.fromMe ?? false,
+      })),
   });
 }
 
@@ -201,6 +209,7 @@ async function forwardToWebhook(payload: {
   messageId: string;
   pushName: string;
   msgKey?: { remoteJid: string; id: string; fromMe: boolean } | null;
+  allMsgKeys?: { remoteJid: string; id: string; fromMe: boolean }[];
 }): Promise<void> {
   if (!webhookUrl) return;
 
@@ -429,6 +438,7 @@ async function connectToWhatsApp(): Promise<void> {
 
         if (existing) {
           existing.messages.push(text);
+          existing.allMsgKeys.push(msg.key);
           clearTimeout(existing.timer);
           existing.timer = setTimeout(() => flushToWebhook(from), DEBOUNCE_MS);
         } else {
@@ -437,6 +447,7 @@ async function connectToWhatsApp(): Promise<void> {
             messages: [text],
             timer,
             firstMsgKey: msg.key,
+            allMsgKeys: [msg.key],
             pushName: msg.pushName ?? '',
             firstTimestamp: timestamp,
           });
@@ -457,10 +468,11 @@ app.use(express.json({ limit: '10mb' }));
 
 // POST /send — with human-like behavior (Item 1)
 app.post('/send', async (req: Request, res: Response) => {
-  const { to, message, replyToMsgKey } = req.body as {
+  const { to, message, replyToMsgKey, allMsgKeys } = req.body as {
     to?: string;
     message?: string;
     replyToMsgKey?: { remoteJid: string; id: string; fromMe: boolean };
+    allMsgKeys?: { remoteJid: string; id: string; fromMe: boolean }[];
   };
 
   if (!to || !message) {
@@ -476,16 +488,22 @@ app.post('/send', async (req: Request, res: Response) => {
   try {
     const jid = normalizePhone(to);
 
-    // 1. Read receipt for the message we're replying to (Item 1)
-    if (replyToMsgKey) {
+    // 1. Read receipt for ALL debounced messages (not just the first)
+    const keysToRead = allMsgKeys && allMsgKeys.length > 0
+      ? allMsgKeys
+      : replyToMsgKey
+        ? [replyToMsgKey]
+        : [];
+
+    if (keysToRead.length > 0) {
       try {
-        await sock.readMessages([
-          {
-            remoteJid: replyToMsgKey.remoteJid,
-            id: replyToMsgKey.id,
-            fromMe: replyToMsgKey.fromMe,
-          },
-        ]);
+        await sock.readMessages(
+          keysToRead.map((k) => ({
+            remoteJid: k.remoteJid,
+            id: k.id,
+            fromMe: k.fromMe,
+          })),
+        );
       } catch (err) {
         logger.warn({ err }, 'Failed to send read receipt');
       }

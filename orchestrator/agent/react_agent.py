@@ -89,8 +89,15 @@ class ReactAgent:
             lessons=lessons,
         )
 
+        # 6b. Fetch knowledge base
+        knowledge_items = await db.get_knowledge_items("agent", active_only=True)
+
         # 7. Build prompts
-        system_prompt = build_agent_system_prompt(context, lessons)
+        system_prompt = build_agent_system_prompt(
+            context, lessons,
+            custom_instructions=cfg.AGENT_CUSTOM_INSTRUCTIONS or "",
+            knowledge_items=knowledge_items,
+        )
         conv_messages = build_conversation_messages(history)
 
         messages: list[dict] = [{"role": "system", "content": system_prompt}]
@@ -161,6 +168,15 @@ class ReactAgent:
                 "\nPELAJARAN:\n" + "\n".join(lesson_lines)
             )
 
+        # Knowledge base injection
+        custom_instr = cfg.AGENT_CUSTOM_INSTRUCTIONS or ""
+        if custom_instr.strip():
+            prompt_parts.append("\nINSTRUKSI TAMBAHAN DARI OPERATOR:\n" + custom_instr.strip())
+        knowledge_items = await db.get_knowledge_items("agent", active_only=True)
+        if knowledge_items:
+            kb_lines = [f"{i}. [{item['title']}] {item['content']}" for i, item in enumerate(knowledge_items, 1)]
+            prompt_parts.append("\nBASIS PENGETAHUAN:\n" + "\n".join(kb_lines))
+
         prompt_parts.append(
             "\nBuat pesan WhatsApp pertama untuk mengundang pihak kampus. "
             "HANYA output pesan WA-nya, tanpa penjelasan."
@@ -203,6 +219,15 @@ class ReactAgent:
             prompt_parts.append(
                 "\nPELAJARAN:\n" + "\n".join(lesson_lines)
             )
+
+        # Knowledge base injection
+        custom_instr = cfg.AGENT_CUSTOM_INSTRUCTIONS or ""
+        if custom_instr.strip():
+            prompt_parts.append("\nINSTRUKSI TAMBAHAN DARI OPERATOR:\n" + custom_instr.strip())
+        knowledge_items = await db.get_knowledge_items("agent", active_only=True)
+        if knowledge_items:
+            kb_lines = [f"{i}. [{item['title']}] {item['content']}" for i, item in enumerate(knowledge_items, 1)]
+            prompt_parts.append("\nBASIS PENGETAHUAN:\n" + "\n".join(kb_lines))
 
         messages: list[dict] = [
             {"role": "system", "content": "\n".join(prompt_parts)}
@@ -304,23 +329,20 @@ class ReactAgent:
         )
         return response.choices[0].message.content or "", tool_calls_made
 
-    # Keywords that indicate clear refusal in the contact's message or bot's closing reply
-    _REFUSAL_KEYWORDS = [
+    # Strong refusal indicators — words only the contact (or a closing bot)
+    # would use when the conversation is truly over.
+    _HARD_REFUSAL_KEYWORDS = [
         "scam", "penipuan", "penipu", "tipu", "bohong",
-        "tidak bisa bantu", "tidak bisa membantu", "maaf tidak bisa",
-        "gak bisa", "ga bisa", "nggak bisa",
-        "salah nomor", "salah sambung",
         "jangan hubungi", "stop", "blokir",
-        "mohon maaf mengganggu",  # bot's own polite close = refused
+        "salah nomor", "salah sambung",
     ]
 
-    # Keywords in bot's closing response that indicate it accepted a refusal
+    # Bot's own closing phrases that signal it has given up
     _BOT_CLOSING_KEYWORDS = [
         "terima kasih atas waktunya",
-        "mohon maaf mengganggu",
-        "maaf mengganggu",
         "semoga hari anda",
-        "terima kasih atas tanggapannya",
+        "semoga harinya menyenangkan",
+        "sukses selalu",
     ]
 
     @staticmethod
@@ -331,6 +353,7 @@ class ReactAgent:
 
         Falls back to text analysis when the model doesn't call a terminal tool
         but the conversation is clearly over (e.g. contact said 'scam').
+        Only triggers on strong refusal signals to avoid false positives.
         """
         if "save_extracted_number" in tool_calls_made:
             return AgentAction.got_number, "GOT_NUMBER"
@@ -338,14 +361,30 @@ class ReactAgent:
             return AgentAction.refused, "REFUSED"
 
         # Fallback: detect refusal from bot's response text
-        # (GPT sometimes writes a polite closing WITHOUT calling the tool)
+        # Requires BOTH a closing phrase AND a hard refusal keyword,
+        # OR a hard refusal keyword alone — to avoid false positives
+        # on polite phrases like "mohon maaf mengganggu".
         if response_text:
             text_lower = response_text.lower()
-            is_closing = any(kw in text_lower for kw in ReactAgent._BOT_CLOSING_KEYWORDS)
-            is_refusal = any(kw in text_lower for kw in ReactAgent._REFUSAL_KEYWORDS)
-            if is_closing or is_refusal:
+            has_hard_refusal = any(kw in text_lower for kw in ReactAgent._HARD_REFUSAL_KEYWORDS)
+            has_closing = any(kw in text_lower for kw in ReactAgent._BOT_CLOSING_KEYWORDS)
+
+            if has_hard_refusal:
                 log.info(
-                    "ReactAgent: detected refusal from response text (no tool call), "
+                    "ReactAgent: detected hard refusal keyword in response text, "
+                    "overriding to REFUSED"
+                )
+                return AgentAction.refused, "REFUSED"
+
+            if has_closing and not any(
+                tool in tool_calls_made
+                for tool in ("lookup_university_info", "get_relevant_lessons",
+                             "search_similar_conversations", "check_conversation_history")
+            ):
+                # Bot wrote a closing phrase AND didn't use any info-gathering tools,
+                # meaning it decided to end the conversation on its own
+                log.info(
+                    "ReactAgent: detected closing phrase without info-gathering, "
                     "overriding to REFUSED"
                 )
                 return AgentAction.refused, "REFUSED"

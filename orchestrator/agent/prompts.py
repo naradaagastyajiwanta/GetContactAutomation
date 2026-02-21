@@ -45,8 +45,8 @@ CARA MENGGUNAKAN TOOLS:
 - save_extracted_number: Panggil HANYA setelah validate_phone_number berhasil. \
   Ini menandakan percakapan SELESAI SUKSES. Tool ini terminal — setelah \
   dipanggil, percakapan berakhir.
-- mark_conversation_refused: Panggil kalau kontak jelas-jelas menolak atau \
-  tidak bisa membantu. Ini juga terminal.
+- mark_conversation_refused: Panggil HANYA kalau kontak secara TEGAS dan FINAL \
+  menolak membantu sama sekali. Ini terminal — JANGAN panggil terlalu cepat.
 
 ATURAN PENTING:
 - Selalu validasi nomor telepon sebelum save. Nomor Indonesia harus 10-13 digit \
@@ -57,12 +57,28 @@ ATURAN PENTING:
 - Kalau kontak memberikan nomor, konfirmasi ulang sebelum save.
 - Tulis respons dalam bahasa Indonesia, natural seperti chat WA.
 
-PENOLAKAN — WAJIB panggil mark_conversation_refused kalau:
+STRATEGI BERTAHAN — JANGAN MENYERAH TERLALU CEPAT:
+- Kalau kontak bertanya "untuk apa?" atau "kolaborasi apa?" → jelaskan singkat \
+  tentang audiensi Zoom untuk diskusi kolaborasi AI, lalu arahkan ke tujuan.
+- Kalau kontak bilang "ga bisa kasih nomor rektor" → tanyakan nomor \
+  SEKRETARIAT REKTORAT atau BAGIAN HUMAS atau BAGIAN KERJASAMA sebagai alternatif.
+- Kalau kontak bilang "saya bukan orang yang tepat" → minta tolong arahkan \
+  ke siapa yang tepat, atau minta nomor sekretariat.
+- Kalau kontak bilang sibuk → tawarkan untuk hubungi lain waktu.
+- INTINYA: selalu cari jalan lain sebelum menyerah. Coba minimal 2-3 pendekatan \
+  berbeda sebelum memutuskan bahwa kontak benar-benar menolak.
+- Nomor yang kamu cari TIDAK HARUS nomor rektor — nomor sekretariat, humas, \
+  bagian kerjasama, atau siapapun yang bisa menghubungkan ke pimpinan kampus \
+  sudah cukup baik.
+
+PENOLAKAN — WAJIB panggil mark_conversation_refused HANYA kalau:
 - Kontak bilang scam, penipuan, penipu, bohong, dll.
-- Kontak bilang tidak bisa bantu, gak bisa, salah nomor.
 - Kontak bilang jangan hubungi lagi, blokir, stop.
 - Kontak marah atau mengancam.
-- Kontak jelas-jelas menolak dengan cara apapun.
+- Kontak SUDAH ditanya alternatif (sekretariat/humas) tapi TETAP menolak.
+- Kontak sudah beberapa kali menolak dan jelas tidak mau membantu sama sekali.
+JANGAN mark refused hanya karena kontak bilang "ga bisa kasih nomor rektor" — \
+itu bukan penolakan total, itu kesempatan untuk tanya nomor sekretariat.
 Jangan balas panjang-panjang kalau ditolak. Panggil tool dulu, baru beri respons singkat."""
 
 ANALYSIS_SYSTEM_PROMPT = """\
@@ -119,7 +135,12 @@ HANYA output JSON, tanpa penjelasan lain."""
 # Builders
 # ---------------------------------------------------------------------------
 
-def build_agent_system_prompt(context, lessons: list[dict]) -> str:
+def build_agent_system_prompt(
+    context,
+    lessons: list[dict],
+    custom_instructions: str = "",
+    knowledge_items: list[dict] | None = None,
+) -> str:
     """Assemble the full system prompt with university context and lessons.
 
     Parameters
@@ -128,6 +149,10 @@ def build_agent_system_prompt(context, lessons: list[dict]) -> str:
         Current conversation context (imported from schemas at call-site).
     lessons : list[dict]
         Each dict should have keys: situation_type, insight, recommended_strategy.
+    custom_instructions : str
+        Operator-provided custom instructions injected into the prompt.
+    knowledge_items : list[dict] | None
+        Active knowledge base items (title + content).
     """
     parts: list[str] = [AGENT_BASE_SYSTEM_PROMPT]
 
@@ -160,6 +185,15 @@ def build_agent_system_prompt(context, lessons: list[dict]) -> str:
             "\nPELAJARAN DARI PENGALAMAN SEBELUMNYA:\n"
             + "\n".join(lesson_lines)
         )
+
+    if custom_instructions.strip():
+        parts.append("\nINSTRUKSI TAMBAHAN DARI OPERATOR:\n" + custom_instructions.strip())
+
+    if knowledge_items:
+        kb_lines = []
+        for i, item in enumerate(knowledge_items, 1):
+            kb_lines.append(f"{i}. [{item['title']}]\n   {item['content']}")
+        parts.append("\nBASIS PENGETAHUAN:\n" + "\n".join(kb_lines))
 
     return "\n\n".join(parts)
 

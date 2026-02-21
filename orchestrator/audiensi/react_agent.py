@@ -81,11 +81,16 @@ class AudiensiReactAgent:
             lessons=lessons,
         )
 
+        # 6b. Fetch knowledge base
+        knowledge_items = await db.get_knowledge_items("audiensi", active_only=True)
+
         # 7. Build prompts
         system_prompt = build_audiensi_system_prompt(
             context, lessons,
             rector_name=rector_name,
             contact_role=aud.get("contact_role"),
+            custom_instructions=cfg.AUDIENSI_CUSTOM_INSTRUCTIONS or "",
+            knowledge_items=knowledge_items,
         )
         conv_messages = build_conversation_messages(history)
 
@@ -144,6 +149,15 @@ class AudiensiReactAgent:
         if contact_name:
             prompt_parts.append(f"Kontak yang dihubungi: {contact_name}")
 
+        # Knowledge base injection
+        custom_instr = cfg.AUDIENSI_CUSTOM_INSTRUCTIONS or ""
+        if custom_instr.strip():
+            prompt_parts.append("\nINSTRUKSI TAMBAHAN DARI OPERATOR:\n" + custom_instr.strip())
+        knowledge_items = await db.get_knowledge_items("audiensi", active_only=True)
+        if knowledge_items:
+            kb_lines = [f"{i}. [{item['title']}] {item['content']}" for i, item in enumerate(knowledge_items, 1)]
+            prompt_parts.append("\nBASIS PENGETAHUAN:\n" + "\n".join(kb_lines))
+
         prompt_parts.append(
             "\nBuat pesan WhatsApp pertama untuk audiensi. "
             "Sebutkan bahwa surat undangan PDF sudah dikirim sebelumnya. "
@@ -174,6 +188,15 @@ class AudiensiReactAgent:
             AUDIENSI_SYSTEM_PROMPT,
             f"\nIni follow-up ke-{attempt} untuk audiensi.",
         ]
+
+        # Knowledge base injection
+        custom_instr = cfg.AUDIENSI_CUSTOM_INSTRUCTIONS or ""
+        if custom_instr.strip():
+            prompt_parts.append("\nINSTRUKSI TAMBAHAN DARI OPERATOR:\n" + custom_instr.strip())
+        knowledge_items = await db.get_knowledge_items("audiensi", active_only=True)
+        if knowledge_items:
+            kb_lines = [f"{i}. [{item['title']}] {item['content']}" for i, item in enumerate(knowledge_items, 1)]
+            prompt_parts.append("\nBASIS PENGETAHUAN:\n" + "\n".join(kb_lines))
 
         messages: list[dict] = [
             {"role": "system", "content": "\n".join(prompt_parts)}

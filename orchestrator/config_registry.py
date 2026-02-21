@@ -26,6 +26,7 @@ class ConfigGroup(str, Enum):
     MESSAGE_QUEUE = "Message Queue"
     CREDENTIALS = "Credentials"
     AUDIENSI = "Audiensi"
+    KNOWLEDGE_BASE = "Knowledge Base"
 
 
 @dataclass(frozen=True)
@@ -214,6 +215,19 @@ CONFIG_DEFINITIONS: list[ConfigDef] = [
         type=ConfigType.STRING, default="", group=ConfigGroup.AUDIENSI,
         label="PDF Template Path",
         description="Custom path to audiensi surat undangan .docx template.",
+    ),
+    # --- Knowledge Base ---
+    ConfigDef(
+        key="AGENT_CUSTOM_INSTRUCTIONS",
+        type=ConfigType.STRING, default="", group=ConfigGroup.KNOWLEDGE_BASE,
+        label="Contact Finder Custom Instructions",
+        description="Instruksi/pengetahuan tambahan untuk chatbot contact finder. Di-inject ke system prompt.",
+    ),
+    ConfigDef(
+        key="AUDIENSI_CUSTOM_INSTRUCTIONS",
+        type=ConfigType.STRING, default="", group=ConfigGroup.KNOWLEDGE_BASE,
+        label="Audiensi Custom Instructions",
+        description="Instruksi/pengetahuan tambahan untuk chatbot audiensi. Di-inject ke system prompt.",
     ),
 ]
 

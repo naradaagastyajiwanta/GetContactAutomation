@@ -29,12 +29,15 @@ class MessageQueue:
         self,
         phone: str,
         message: str,
-        reply_to_msg_key: Optional[str] = None,
+        reply_to_msg_key: Optional[Any] = None,
+        all_msg_keys: Optional[list] = None,
     ) -> None:
         """Put an outbound WA message onto the serial send queue."""
         payload: dict = {"to": phone, "message": message, "_type": "text"}
         if reply_to_msg_key is not None:
             payload["replyToMsgKey"] = reply_to_msg_key
+        if all_msg_keys is not None:
+            payload["allMsgKeys"] = all_msg_keys
         await self._send_queue.put(payload)
         log.info("Enqueued WA send to %s (queue size: %d)", phone, self._send_queue.qsize())
 

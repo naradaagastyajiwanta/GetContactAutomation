@@ -35,6 +35,10 @@ export const queryKeys = {
     queue: ['audiensi', 'queue'] as const,
     stats: ['audiensi', 'stats'] as const,
   },
+  knowledge: {
+    all: ['knowledge'] as const,
+    list: (type?: string) => ['knowledge', 'list', type] as const,
+  },
   config: ['config'] as const,
   models: ['config', 'models'] as const,
 }

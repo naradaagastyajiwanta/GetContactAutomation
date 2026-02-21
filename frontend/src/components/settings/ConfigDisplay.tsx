@@ -176,6 +176,17 @@ function SettingInput({
     )
   }
 
+  if (setting.key.endsWith('_CUSTOM_INSTRUCTIONS')) {
+    return (
+      <textarea
+        value={value as string}
+        onChange={(e) => onChange(e.target.value)}
+        rows={4}
+        className="w-72 rounded-md border border-gray-300 bg-white px-3 py-1.5 text-sm text-gray-900 dark:border-gray-600 dark:bg-gray-700 dark:text-gray-100"
+      />
+    )
+  }
+
   if (setting.type === 'int' || setting.type === 'float') {
     return (
       <input
