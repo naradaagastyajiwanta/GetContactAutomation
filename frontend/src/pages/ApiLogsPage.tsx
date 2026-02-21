@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { Fragment, useState } from 'react'
 import { useSearchParams, Link } from 'react-router-dom'
 import { ScrollText, ChevronDown, ChevronRight, Tag, BookOpen, Wrench, MessageSquare, Cpu } from 'lucide-react'
 import { useApiLogs, useApiLog } from '../hooks/useApiLogs'
@@ -281,61 +281,65 @@ export default function ApiLogsPage() {
                 const kbItems = logEntry.knowledge_items_injected ?? []
 
                 return (
-                  <tr key={logEntry.id} className="group">
-                    <td colSpan={9} className="p-0">
-                      <div
-                        className="flex cursor-pointer items-center hover:bg-gray-50 dark:hover:bg-gray-800/50"
-                        onClick={() => setExpandedId(isExpanded ? null : logEntry.id)}
-                      >
-                        <TableCell className="w-8 pr-0">
-                          {isExpanded ? (
-                            <ChevronDown className="h-4 w-4 text-gray-400" />
-                          ) : (
-                            <ChevronRight className="h-4 w-4 text-gray-400" />
-                          )}
-                        </TableCell>
-                        <TableCell className="whitespace-nowrap">
-                          {formatDate(logEntry.created_at)}
-                        </TableCell>
-                        <TableCell>
-                          <Badge className={CHATBOT_BADGE[logEntry.chatbot_type] || ''}>
-                            {logEntry.chatbot_type}
-                          </Badge>
-                        </TableCell>
-                        <TableCell>
-                          <Badge className={CALL_TYPE_BADGE[logEntry.call_type] || ''}>
-                            {logEntry.call_type}
-                          </Badge>
-                        </TableCell>
-                        <TableCell>
-                          {logEntry.conversation_id ? (
-                            <Link
-                              to={`/conversations/${logEntry.conversation_id}`}
-                              className="text-indigo-600 hover:underline dark:text-indigo-400"
-                              onClick={(e) => e.stopPropagation()}
-                            >
-                              #{logEntry.conversation_id}
-                            </Link>
-                          ) : (
-                            <span className="text-gray-400">-</span>
-                          )}
-                        </TableCell>
-                        <TableCell className="font-mono text-xs">
-                          {logEntry.model_used || '-'}
-                        </TableCell>
-                        <TableCell className="font-mono text-xs">
-                          {logEntry.total_tokens}
-                        </TableCell>
-                        <TableCell className="text-xs">
-                          {situationTags.length || '-'}
-                        </TableCell>
-                        <TableCell className="text-xs">
-                          {kbItems.length || '-'}
-                        </TableCell>
-                      </div>
-                      {isExpanded && <LogDetailPanel logId={logEntry.id} />}
-                    </td>
-                  </tr>
+                  <Fragment key={logEntry.id}>
+                    <TableRow
+                      className="cursor-pointer"
+                      onClick={() => setExpandedId(isExpanded ? null : logEntry.id)}
+                    >
+                      <TableCell className="w-8 pr-0">
+                        {isExpanded ? (
+                          <ChevronDown className="h-4 w-4 text-gray-400" />
+                        ) : (
+                          <ChevronRight className="h-4 w-4 text-gray-400" />
+                        )}
+                      </TableCell>
+                      <TableCell className="whitespace-nowrap">
+                        {formatDate(logEntry.created_at)}
+                      </TableCell>
+                      <TableCell>
+                        <Badge className={CHATBOT_BADGE[logEntry.chatbot_type] || ''}>
+                          {logEntry.chatbot_type}
+                        </Badge>
+                      </TableCell>
+                      <TableCell>
+                        <Badge className={CALL_TYPE_BADGE[logEntry.call_type] || ''}>
+                          {logEntry.call_type}
+                        </Badge>
+                      </TableCell>
+                      <TableCell>
+                        {logEntry.conversation_id ? (
+                          <Link
+                            to={`/conversations/${logEntry.conversation_id}`}
+                            className="text-indigo-600 hover:underline dark:text-indigo-400"
+                            onClick={(e) => e.stopPropagation()}
+                          >
+                            #{logEntry.conversation_id}
+                          </Link>
+                        ) : (
+                          <span className="text-gray-400">-</span>
+                        )}
+                      </TableCell>
+                      <TableCell className="font-mono text-xs">
+                        {logEntry.model_used || '-'}
+                      </TableCell>
+                      <TableCell className="font-mono text-xs">
+                        {logEntry.total_tokens}
+                      </TableCell>
+                      <TableCell className="text-xs">
+                        {situationTags.length || '-'}
+                      </TableCell>
+                      <TableCell className="text-xs">
+                        {kbItems.length || '-'}
+                      </TableCell>
+                    </TableRow>
+                    {isExpanded && (
+                      <tr>
+                        <td colSpan={9} className="p-0">
+                          <LogDetailPanel logId={logEntry.id} />
+                        </td>
+                      </tr>
+                    )}
+                  </Fragment>
                 )
               })}
             </TableBody>
