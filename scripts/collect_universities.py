@@ -156,17 +156,36 @@ async def search_pddikti(
         return limit is not None and len(all_results) >= limit
 
     provinces = [province] if province else PROVINCES
+    consecutive_errors = 0
+    MAX_CONSECUTIVE_ERRORS = 3  # Stop if API fails this many times in a row
 
     for prov in provinces:
         if _reached_limit():
             break
+        if consecutive_errors >= MAX_CONSECUTIVE_ERRORS:
+            log.warning(
+                "PDDIKTI API failed %d times in a row — API likely down, stopping search",
+                consecutive_errors,
+            )
+            break
         for prefix in INSTITUTION_PREFIXES:
             if _reached_limit():
+                break
+            if consecutive_errors >= MAX_CONSECUTIVE_ERRORS:
                 break
             query = f"{prefix} {prov}"
             log.info(f"Searching PDDIKTI: '{query}'")
             try:
                 results = pddikti.search_pt(query)
+                if results is None:
+                    # pddiktipy caught an API error internally and returned None
+                    consecutive_errors += 1
+                    log.warning(
+                        "PDDIKTI API error for '%s' (consecutive errors: %d/%d)",
+                        query, consecutive_errors, MAX_CONSECUTIVE_ERRORS,
+                    )
+                    continue
+                consecutive_errors = 0  # Reset only on genuine success
                 if not results:
                     continue
 
@@ -223,7 +242,11 @@ async def search_pddikti(
                     })
 
             except Exception as e:
-                log.warning(f"Error searching '{query}': {e}")
+                consecutive_errors += 1
+                log.warning(
+                    f"Error searching '{query}': {e} "
+                    f"(consecutive errors: {consecutive_errors}/{MAX_CONSECUTIVE_ERRORS})"
+                )
                 continue
 
     log.info(

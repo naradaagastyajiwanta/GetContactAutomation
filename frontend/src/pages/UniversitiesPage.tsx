@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import { Upload, Building2 } from 'lucide-react'
+import { Upload, Building2, Plus } from 'lucide-react'
 import { useUniversities } from '../hooks/useUniversities'
 import { Button } from '../components/ui/Button'
 import { Card } from '../components/ui/Card'
@@ -9,6 +9,7 @@ import { EmptyState } from '../components/ui/EmptyState'
 import { UniversityFilters } from '../components/universities/UniversityFilters'
 import { UniversityTable } from '../components/universities/UniversityTable'
 import { ImportModal } from '../components/universities/ImportModal'
+import { AddUniversityModal } from '../components/universities/AddUniversityModal'
 import { ITEMS_PER_PAGE } from '../lib/constants'
 
 export default function UniversitiesPage() {
@@ -16,6 +17,7 @@ export default function UniversitiesPage() {
   const [status, setStatus] = useState('')
   const [page, setPage] = useState(1)
   const [importOpen, setImportOpen] = useState(false)
+  const [addOpen, setAddOpen] = useState(false)
 
   const params = {
     search: search || undefined,
@@ -46,10 +48,16 @@ export default function UniversitiesPage() {
         <h1 className="text-2xl font-bold text-gray-900 dark:text-gray-100">
           Universities
         </h1>
-        <Button onClick={() => setImportOpen(true)}>
-          <Upload className="h-4 w-4" />
-          Import CSV
-        </Button>
+        <div className="flex items-center gap-2">
+          <Button onClick={() => setAddOpen(true)}>
+            <Plus className="h-4 w-4" />
+            Add University
+          </Button>
+          <Button variant="secondary" onClick={() => setImportOpen(true)}>
+            <Upload className="h-4 w-4" />
+            Import CSV/Excel
+          </Button>
+        </div>
       </div>
 
       <UniversityFilters
@@ -93,6 +101,7 @@ export default function UniversitiesPage() {
       )}
 
       <ImportModal isOpen={importOpen} onClose={() => setImportOpen(false)} />
+      <AddUniversityModal isOpen={addOpen} onClose={() => setAddOpen(false)} />
     </div>
   )
 }

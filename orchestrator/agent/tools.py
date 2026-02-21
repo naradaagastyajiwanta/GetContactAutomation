@@ -91,6 +91,8 @@ async def _save_extracted_number(arguments: dict, context: AgentContext) -> str:
     """TERMINAL: Save a phone number extracted from the conversation."""
     phone_number = arguments.get("phone_number", "")
     notes = arguments.get("notes", "")
+    contact_name = arguments.get("contact_name", "")
+    contact_role = arguments.get("contact_role", "")
 
     validated = db.validate_phone(phone_number)
     if not validated:
@@ -103,6 +105,8 @@ async def _save_extracted_number(arguments: dict, context: AgentContext) -> str:
         context.conversation_id,
         "GOT_NUMBER",
         extracted_number=validated,
+        extracted_contact_name=contact_name or None,
+        extracted_contact_role=contact_role or None,
     )
 
     if context.university_id is not None:
@@ -142,130 +146,124 @@ async def _mark_conversation_refused(arguments: dict, context: AgentContext) -> 
 
 _SCHEMA_LOOKUP_UNIVERSITY_INFO = {
     "type": "function",
-    "function": {
-        "name": "lookup_university_info",
-        "description": "Get university info (name, province, website, IG handle, status, secretariat phone) from the database.",
-        "parameters": {
-            "type": "object",
-            "properties": {},
-            "required": [],
-        },
+    "name": "lookup_university_info",
+    "description": "Get university info (name, province, website, IG handle, status, secretariat phone) from the database.",
+    "parameters": {
+        "type": "object",
+        "properties": {},
+        "required": [],
     },
 }
 
 _SCHEMA_VALIDATE_PHONE_NUMBER = {
     "type": "function",
-    "function": {
-        "name": "validate_phone_number",
-        "description": "Validate an Indonesian phone number and return its E.164 format.",
-        "parameters": {
-            "type": "object",
-            "properties": {
-                "number": {
-                    "type": "string",
-                    "description": "The phone number to validate (e.g. 08123456789, +628123456789).",
-                },
+    "name": "validate_phone_number",
+    "description": "Validate an Indonesian phone number and return its E.164 format.",
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "number": {
+                "type": "string",
+                "description": "The phone number to validate (e.g. 08123456789, +628123456789).",
             },
-            "required": ["number"],
         },
+        "required": ["number"],
     },
 }
 
 _SCHEMA_SEARCH_SIMILAR_CONVERSATIONS = {
     "type": "function",
-    "function": {
-        "name": "search_similar_conversations",
-        "description": "Search past completed conversations by province and/or outcome to find similar situations.",
-        "parameters": {
-            "type": "object",
-            "properties": {
-                "province": {
-                    "type": "string",
-                    "description": "Filter by province name.",
-                },
-                "outcome": {
-                    "type": "string",
-                    "description": "Filter by outcome state (e.g. GOT_NUMBER, REFUSED, ABANDONED).",
-                },
-                "limit": {
-                    "type": "integer",
-                    "description": "Maximum number of results to return.",
-                    "default": 5,
-                },
+    "name": "search_similar_conversations",
+    "description": "Search past completed conversations by province and/or outcome to find similar situations.",
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "province": {
+                "type": "string",
+                "description": "Filter by province name.",
             },
-            "required": [],
+            "outcome": {
+                "type": "string",
+                "description": "Filter by outcome state (e.g. GOT_NUMBER, REFUSED, ABANDONED).",
+            },
+            "limit": {
+                "type": "integer",
+                "description": "Maximum number of results to return.",
+                "default": 5,
+            },
         },
+        "required": [],
     },
 }
 
 _SCHEMA_GET_RELEVANT_LESSONS = {
     "type": "function",
-    "function": {
-        "name": "get_relevant_lessons",
-        "description": "Get lessons learned from past conversations for a given situation type.",
-        "parameters": {
-            "type": "object",
-            "properties": {
-                "situation_type": {
-                    "type": "string",
-                    "description": "The type of situation (e.g. initial_contact, followup, refused, got_number).",
-                },
+    "name": "get_relevant_lessons",
+    "description": "Get lessons learned from past conversations for a given situation type.",
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "situation_type": {
+                "type": "string",
+                "description": "The type of situation (e.g. initial_contact, followup, refused, got_number).",
             },
-            "required": ["situation_type"],
         },
+        "required": ["situation_type"],
     },
 }
 
 _SCHEMA_CHECK_CONVERSATION_HISTORY = {
     "type": "function",
-    "function": {
-        "name": "check_conversation_history",
-        "description": "Get the full message history of the current conversation.",
-        "parameters": {
-            "type": "object",
-            "properties": {},
-            "required": [],
-        },
+    "name": "check_conversation_history",
+    "description": "Get the full message history of the current conversation.",
+    "parameters": {
+        "type": "object",
+        "properties": {},
+        "required": [],
     },
 }
 
 _SCHEMA_SAVE_EXTRACTED_NUMBER = {
     "type": "function",
-    "function": {
-        "name": "save_extracted_number",
-        "description": "Save a phone number extracted from the conversation. This is a TERMINAL action that ends the agent loop.",
-        "parameters": {
-            "type": "object",
-            "properties": {
-                "phone_number": {
-                    "type": "string",
-                    "description": "The phone number to save (Indonesian format).",
-                },
-                "notes": {
-                    "type": "string",
-                    "description": "Optional notes about the extraction.",
-                },
+    "name": "save_extracted_number",
+    "description": "Save a phone number extracted from the conversation. This is a TERMINAL action that ends the agent loop.",
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "phone_number": {
+                "type": "string",
+                "description": "The phone number to save (Indonesian format).",
             },
-            "required": ["phone_number"],
+            "notes": {
+                "type": "string",
+                "description": "Optional notes about the extraction.",
+            },
+            "contact_name": {
+                "type": "string",
+                "description": "Nama orang yang nomornya diberikan (misal: Bu Sari, Pak Andi).",
+            },
+            "contact_role": {
+                "type": "string",
+                "description": "Jabatan/posisi (misal: Sekretariat Rektorat, Humas, Asisten Rektor).",
+            },
         },
+        "required": ["phone_number"],
     },
 }
 
 _SCHEMA_MARK_CONVERSATION_REFUSED = {
     "type": "function",
-    "function": {
-        "name": "mark_conversation_refused",
-        "description": "Mark the current conversation as refused. This is a TERMINAL action that ends the agent loop.",
-        "parameters": {
-            "type": "object",
-            "properties": {
-                "reason": {
-                    "type": "string",
-                    "description": "The reason the contact refused.",
-                },
+    "name": "mark_conversation_refused",
+    "description": "Mark the current conversation as refused. This is a TERMINAL action that ends the agent loop.",
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "reason": {
+                "type": "string",
+                "description": "The reason the contact refused.",
             },
-            "required": [],
         },
+        "required": [],
     },
 }
 

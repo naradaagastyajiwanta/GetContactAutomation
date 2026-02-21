@@ -17,6 +17,7 @@ const WhatsAppPage = lazy(() => import('./pages/WhatsAppPage'))
 const AudiensiQueuePage = lazy(() => import('./pages/AudiensiQueuePage'))
 const AudiensiDetailPage = lazy(() => import('./pages/AudiensiDetailPage'))
 const KnowledgeBasePage = lazy(() => import('./pages/KnowledgeBasePage'))
+const ApiLogsPage = lazy(() => import('./pages/ApiLogsPage'))
 const SettingsPage = lazy(() => import('./pages/SettingsPage'))
 
 const queryClient = new QueryClient({
@@ -49,6 +50,7 @@ export default function App() {
                   <Route path="audiensi" element={<AudiensiQueuePage />} />
                   <Route path="audiensi/:id" element={<AudiensiDetailPage />} />
                   <Route path="knowledge" element={<KnowledgeBasePage />} />
+                  <Route path="api-logs" element={<ApiLogsPage />} />
                   <Route path="settings" element={<SettingsPage />} />
                 </Route>
               </Routes>

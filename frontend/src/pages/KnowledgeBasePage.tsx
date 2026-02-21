@@ -105,6 +105,30 @@ function KnowledgeItemCard({
               {item.is_active ? 'Active' : 'Inactive'}
             </span>
           </div>
+          {item.trigger_keywords && (
+            <div className="mt-1 flex flex-wrap gap-1">
+              {item.trigger_keywords.split(',').map((kw) => kw.trim()).filter(Boolean).map((kw) => (
+                <span
+                  key={kw}
+                  className="inline-flex rounded bg-green-100 px-1.5 py-0.5 text-xs font-medium text-green-700 dark:bg-green-900/30 dark:text-green-400"
+                >
+                  {kw}
+                </span>
+              ))}
+            </div>
+          )}
+          {item.situation_tags && (
+            <div className="mt-1 flex flex-wrap gap-1">
+              {item.situation_tags.split(',').map((tag) => tag.trim()).filter(Boolean).map((tag) => (
+                <span
+                  key={tag}
+                  className="inline-flex rounded bg-indigo-100 px-1.5 py-0.5 text-xs font-medium text-indigo-700 dark:bg-indigo-900/30 dark:text-indigo-400"
+                >
+                  {tag}
+                </span>
+              ))}
+            </div>
+          )}
           <p className="mt-1 text-sm text-gray-600 line-clamp-3 dark:text-gray-400">
             {item.content}
           </p>
@@ -161,6 +185,8 @@ function KnowledgeItemForm({
 }) {
   const [title, setTitle] = useState(editItem?.title ?? '')
   const [content, setContent] = useState(editItem?.content ?? '')
+  const [situationTags, setSituationTags] = useState(editItem?.situation_tags ?? '')
+  const [triggerKeywords, setTriggerKeywords] = useState(editItem?.trigger_keywords ?? '')
   const createMutation = useCreateKnowledgeItem()
   const updateMutation = useUpdateKnowledgeItem()
 
@@ -170,12 +196,12 @@ function KnowledgeItemForm({
 
     if (editItem) {
       updateMutation.mutate(
-        { id: editItem.id, title: title.trim(), content: content.trim() },
+        { id: editItem.id, title: title.trim(), content: content.trim(), situation_tags: situationTags.trim(), trigger_keywords: triggerKeywords.trim() },
         { onSuccess: onClose },
       )
     } else {
       createMutation.mutate(
-        { chatbot_type: chatbotType, title: title.trim(), content: content.trim() },
+        { chatbot_type: chatbotType, title: title.trim(), content: content.trim(), situation_tags: situationTags.trim(), trigger_keywords: triggerKeywords.trim() },
         { onSuccess: onClose },
       )
     }
@@ -201,6 +227,30 @@ function KnowledgeItemForm({
           placeholder="Isi pengetahuan..."
           className="w-full rounded-md border border-gray-300 bg-white px-3 py-2 text-sm text-gray-900 placeholder-gray-400 focus:border-indigo-500 focus:outline-none focus:ring-1 focus:ring-indigo-500 dark:border-gray-600 dark:bg-gray-700 dark:text-gray-100 dark:placeholder-gray-500"
         />
+        <div>
+          <input
+            type="text"
+            value={triggerKeywords}
+            onChange={(e) => setTriggerKeywords(e.target.value)}
+            placeholder="Trigger keywords (pisahkan dengan koma, misal: kolaborasi, seperti apa, program)"
+            className="w-full rounded-md border border-gray-300 bg-white px-3 py-2 text-sm text-gray-900 placeholder-gray-400 focus:border-indigo-500 focus:outline-none focus:ring-1 focus:ring-indigo-500 dark:border-gray-600 dark:bg-gray-700 dark:text-gray-100 dark:placeholder-gray-500"
+          />
+          <p className="mt-1 text-xs text-gray-400 dark:text-gray-500">
+            Kata kunci yang memicu inject item ini. Jika pesan kontak mengandung salah satu keyword, item akan di-inject ke system prompt.
+          </p>
+        </div>
+        <div>
+          <input
+            type="text"
+            value={situationTags}
+            onChange={(e) => setSituationTags(e.target.value)}
+            placeholder="Situation tags (opsional, misal: tone_umum)"
+            className="w-full rounded-md border border-gray-300 bg-white px-3 py-2 text-sm text-gray-900 placeholder-gray-400 focus:border-indigo-500 focus:outline-none focus:ring-1 focus:ring-indigo-500 dark:border-gray-600 dark:bg-gray-700 dark:text-gray-100 dark:placeholder-gray-500"
+          />
+          <p className="mt-1 text-xs text-gray-400 dark:text-gray-500">
+            Tag 'tone_umum' = selalu di-inject tanpa perlu trigger keywords.
+          </p>
+        </div>
         <div className="flex items-center justify-end gap-2">
           <Button type="button" variant="ghost" size="sm" onClick={onClose}>
             <X className="h-3.5 w-3.5" />

@@ -28,11 +28,18 @@ export async function getUniversityPosts(id: number): Promise<IgPost[]> {
   return data
 }
 
-export async function importUniversities(file: File): Promise<{ imported: number }> {
+export async function importUniversities(file: File): Promise<{ imported: number; skipped: number }> {
   const formData = new FormData()
   formData.append('file', file)
-  const { data } = await apiClient.post<{ imported: number }>('/universities/import', formData, {
+  const { data } = await apiClient.post<{ imported: number; skipped: number }>('/universities/import', formData, {
     headers: { 'Content-Type': 'multipart/form-data' },
   })
+  return data
+}
+
+export async function createUniversities(
+  universities: Array<{ name: string; province?: string; website?: string }>
+): Promise<{ added: number; skipped: number }> {
+  const { data } = await apiClient.post<{ added: number; skipped: number }>('/universities', { universities })
   return data
 }

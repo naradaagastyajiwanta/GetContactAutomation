@@ -33,7 +33,7 @@ export function useCreateKnowledgeItem() {
 export function useUpdateKnowledgeItem() {
   const queryClient = useQueryClient()
   return useMutation({
-    mutationFn: ({ id, ...payload }: { id: number; title?: string; content?: string; is_active?: boolean }) =>
+    mutationFn: ({ id, ...payload }: { id: number; title?: string; content?: string; is_active?: boolean; situation_tags?: string; trigger_keywords?: string }) =>
       updateKnowledgeItem(id, payload),
     onSuccess: () => {
       toast.success('Knowledge item updated')

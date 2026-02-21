@@ -50,6 +50,8 @@ export interface Conversation {
   state: ConversationState
   message_history: Message[]
   extracted_number: string | null
+  extracted_contact_name?: string | null
+  extracted_contact_role?: string | null
   last_message_at: string | null
   next_action_at: string | null
   attempt_count: number
@@ -102,6 +104,8 @@ export interface PipelineStatus {
 
 export interface ControlStatus {
   paused: boolean
+  chatbot_enabled: boolean
+  audiensi_enabled: boolean
   reason?: string
 }
 
@@ -204,6 +208,25 @@ export type AudiensiState =
   | 'REFUSED'
   | 'NO_REPLY'
   | 'ABANDONED'
+
+export interface ApiCallLog {
+  id: number
+  conversation_id: number | null
+  chatbot_type: 'agent' | 'audiensi'
+  call_type: 'reply' | 'initial' | 'followup'
+  situation_tags: string[]
+  knowledge_items_injected: Array<{ id: number; title: string; tags: string }>
+  system_prompt: string | null
+  messages_sent: Array<{ role: string; content: string }> | null
+  model_used: string | null
+  tool_calls_made: string[]
+  response_text: string | null
+  prompt_tokens: number
+  completion_tokens: number
+  total_tokens: number
+  cached_tokens: number
+  created_at: string
+}
 
 export interface AudiensiStats {
   total: number

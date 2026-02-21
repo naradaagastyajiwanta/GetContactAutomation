@@ -1,3 +1,4 @@
+from dataclasses import dataclass, field as dc_field
 from enum import Enum
 
 from pydantic import BaseModel, Field
@@ -30,3 +31,14 @@ class AgentContext(BaseModel):
     current_state: str
     attempt_count: int = 0
     lessons: list[dict] = Field(default_factory=list)
+
+
+@dataclass
+class ReactLoopResult:
+    response_text: str
+    tool_calls_made: list[str] = dc_field(default_factory=list)
+    prompt_tokens: int = 0
+    completion_tokens: int = 0
+    total_tokens: int = 0
+    cached_tokens: int = 0
+    last_response_id: str | None = None

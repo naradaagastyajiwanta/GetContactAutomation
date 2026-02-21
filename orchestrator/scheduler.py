@@ -102,6 +102,10 @@ async def daily_outreach_loop():
         log.info("Bot is paused, skipping outreach")
         return
 
+    if not cfg.CHATBOT_ENABLED:
+        log.info("Contact finder chatbot disabled, skipping outreach")
+        return
+
     if not is_within_outreach_hours():
         log.info("Outside outreach hours, skipping")
         return
@@ -187,6 +191,10 @@ async def process_followups():
     """
     if is_paused():
         log.info("Bot is paused, skipping followups")
+        return
+
+    if not cfg.CHATBOT_ENABLED:
+        log.info("Contact finder chatbot disabled, skipping followups")
         return
 
     if not is_within_outreach_hours():

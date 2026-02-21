@@ -1,4 +1,8 @@
-"""Core ReactAgent class — ReAct loop with tool calling for WhatsApp conversations."""
+"""Core ReactAgent class — ReAct loop with tool calling for WhatsApp conversations.
+
+Uses the OpenAI Responses API with session chaining (previous_response_id)
+for efficient multi-turn conversations.
+"""
 
 from __future__ import annotations
 
@@ -7,11 +11,11 @@ import json
 from openai import AsyncOpenAI
 
 from orchestrator.config import log, cfg
-from orchestrator.agent.schemas import AgentAction, AgentContext, AgentResult
+from orchestrator.agent.schemas import AgentAction, AgentContext, AgentResult, ReactLoopResult
 from orchestrator.agent.prompts import (
     AGENT_BASE_SYSTEM_PROMPT,
     build_agent_system_prompt,
-    build_conversation_messages,
+    build_conversation_input_items,
 )
 from orchestrator.agent.tools import TOOL_SCHEMAS, TOOL_IMPLEMENTATIONS, TERMINAL_TOOLS
 from orchestrator import db
@@ -89,24 +93,80 @@ class ReactAgent:
             lessons=lessons,
         )
 
-        # 6b. Fetch knowledge base
-        knowledge_items = await db.get_knowledge_items("agent", active_only=True)
+        # 6b. Fetch situational knowledge base (keyword matching from DB)
+        from orchestrator.agent.situation_detector import detect_situation_tags
+        sit_tags = detect_situation_tags(message, conv["state"], conv.get("attempt_count", 0))
+        knowledge_items = await db.match_knowledge_items_by_message("agent", message)
 
-        # 7. Build prompts
+        # 7. Build system prompt (instructions)
         system_prompt = build_agent_system_prompt(
             context, lessons,
             custom_instructions=cfg.AGENT_CUSTOM_INSTRUCTIONS or "",
             knowledge_items=knowledge_items,
         )
-        conv_messages = build_conversation_messages(history)
 
-        messages: list[dict] = [{"role": "system", "content": system_prompt}]
-        messages.extend(conv_messages)
+        # Load previous_response_id for session chaining
+        previous_response_id = conv.get("last_response_id")
 
-        # 8. Run ReAct loop
-        response_text, tool_calls_made = await self._run_react_loop(
-            messages, list(TOOL_SCHEMAS), context
-        )
+        # Build input items — only new message if session exists
+        if previous_response_id:
+            input_items = [{"role": "user", "content": message}]
+        else:
+            input_items = build_conversation_input_items(history)
+
+        # 8. Run ReAct loop with fallback for expired sessions
+        try:
+            result = await self._run_react_loop(
+                instructions=system_prompt,
+                input_items=input_items,
+                tools=list(TOOL_SCHEMAS),
+                context=context,
+                previous_response_id=previous_response_id,
+            )
+        except Exception as e:
+            if previous_response_id and "previous_response" in str(e).lower():
+                log.warning("Response ID expired, retrying without session: %s", e)
+                await db.clear_last_response_id("conversations", conv_id)
+                input_items = build_conversation_input_items(history)
+                result = await self._run_react_loop(
+                    instructions=system_prompt,
+                    input_items=input_items,
+                    tools=list(TOOL_SCHEMAS),
+                    context=context,
+                )
+            else:
+                raise
+
+        response_text = result.response_text
+        tool_calls_made = result.tool_calls_made
+
+        # Save response_id for next turn
+        if result.last_response_id:
+            await db.update_last_response_id("conversations", conv_id, result.last_response_id)
+
+        # 8b. Log API call (non-blocking)
+        try:
+            await db.save_api_call_log({
+                "conversation_id": conv_id,
+                "chatbot_type": "agent",
+                "call_type": "reply",
+                "situation_tags": sit_tags,
+                "knowledge_items_injected": [
+                    {"id": ki["id"], "title": ki["title"], "tags": ki.get("situation_tags", "")}
+                    for ki in knowledge_items
+                ],
+                "system_prompt": system_prompt,
+                "messages_sent": input_items,
+                "model_used": cfg.AGENT_MODEL,
+                "tool_calls_made": tool_calls_made,
+                "response_text": response_text,
+                "prompt_tokens": result.prompt_tokens,
+                "completion_tokens": result.completion_tokens,
+                "total_tokens": result.total_tokens,
+                "cached_tokens": result.cached_tokens,
+            })
+        except Exception as e:
+            log.warning("Failed to save API call log: %s", e)
 
         # 9. Determine final state from tool calls
         action, new_state = self._classify_result(tool_calls_made, response_text)
@@ -146,7 +206,7 @@ class ReactAgent:
     async def generate_initial_message(
         self, university_name: str, province: str | None = None
     ) -> str:
-        """Generate the first outreach message using GPT with lessons context."""
+        """Generate the first outreach message using Responses API with lessons context."""
         client = _get_openai()
 
         lessons = await db.get_lessons_by_situation("initial_contact", province=province)
@@ -172,23 +232,50 @@ class ReactAgent:
         custom_instr = cfg.AGENT_CUSTOM_INSTRUCTIONS or ""
         if custom_instr.strip():
             prompt_parts.append("\nINSTRUKSI TAMBAHAN DARI OPERATOR:\n" + custom_instr.strip())
-        knowledge_items = await db.get_knowledge_items("agent", active_only=True)
+        knowledge_items = await db.get_knowledge_items_by_tags("agent", ["pembuka", "tone_umum"])
+        # Also include items matched by trigger_keywords for "pembuka" context
+        kw_items = await db.match_knowledge_items_by_message("agent", "pembuka kolaborasi undangan")
+        seen_ids = {ki["id"] for ki in knowledge_items}
+        for ki in kw_items:
+            if ki["id"] not in seen_ids:
+                knowledge_items.append(ki)
+                seen_ids.add(ki["id"])
         if knowledge_items:
             kb_lines = [f"{i}. [{item['title']}] {item['content']}" for i, item in enumerate(knowledge_items, 1)]
             prompt_parts.append("\nBASIS PENGETAHUAN:\n" + "\n".join(kb_lines))
 
-        prompt_parts.append(
-            "\nBuat pesan WhatsApp pertama untuk mengundang pihak kampus. "
-            "HANYA output pesan WA-nya, tanpa penjelasan."
-        )
-
-        resp = await client.chat.completions.create(
+        system_content = "\n".join(prompt_parts)
+        response = await client.responses.create(
             model=cfg.AGENT_MODEL,
-            messages=[{"role": "system", "content": "\n".join(prompt_parts)}],
-            max_tokens=cfg.AGENT_MAX_TOKENS,
+            instructions=system_content,
+            input="Buat pesan WhatsApp pertama untuk mengundang pihak kampus. HANYA output pesan WA-nya, tanpa penjelasan.",
+            max_output_tokens=cfg.AGENT_MAX_TOKENS,
             temperature=cfg.AGENT_TEMPERATURE,
         )
-        return resp.choices[0].message.content.strip()
+        response_text = response.output_text
+
+        # Log API call
+        try:
+            await db.save_api_call_log({
+                "chatbot_type": "agent",
+                "call_type": "initial",
+                "situation_tags": ["pembuka", "tone_umum"],
+                "knowledge_items_injected": [
+                    {"id": ki["id"], "title": ki["title"], "tags": ki.get("situation_tags", "")}
+                    for ki in knowledge_items
+                ],
+                "system_prompt": system_content,
+                "model_used": cfg.AGENT_MODEL,
+                "response_text": response_text,
+                "prompt_tokens": response.usage.input_tokens if response.usage else 0,
+                "completion_tokens": response.usage.output_tokens if response.usage else 0,
+                "total_tokens": (response.usage.input_tokens + response.usage.output_tokens) if response.usage else 0,
+                "cached_tokens": _get_cached_tokens(response),
+            })
+        except Exception as e:
+            log.warning("Failed to save API call log (initial): %s", e)
+
+        return response_text
 
     async def generate_followup_message(
         self, conversation: dict, attempt: int
@@ -224,72 +311,154 @@ class ReactAgent:
         custom_instr = cfg.AGENT_CUSTOM_INSTRUCTIONS or ""
         if custom_instr.strip():
             prompt_parts.append("\nINSTRUKSI TAMBAHAN DARI OPERATOR:\n" + custom_instr.strip())
-        knowledge_items = await db.get_knowledge_items("agent", active_only=True)
+        knowledge_items = await db.get_knowledge_items_by_tags("agent", ["followup", "tone_umum"])
+        kw_items = await db.match_knowledge_items_by_message("agent", "followup tindak lanjut")
+        seen_ids = {ki["id"] for ki in knowledge_items}
+        for ki in kw_items:
+            if ki["id"] not in seen_ids:
+                knowledge_items.append(ki)
+                seen_ids.add(ki["id"])
         if knowledge_items:
             kb_lines = [f"{i}. [{item['title']}] {item['content']}" for i, item in enumerate(knowledge_items, 1)]
             prompt_parts.append("\nBASIS PENGETAHUAN:\n" + "\n".join(kb_lines))
 
-        messages: list[dict] = [
-            {"role": "system", "content": "\n".join(prompt_parts)}
-        ]
+        system_content = "\n".join(prompt_parts)
+        previous_response_id = conversation.get("last_response_id")
 
-        # Add recent conversation history
-        for msg in history[-4:]:
-            role = "assistant" if msg.get("role") == "bot" else "user"
-            messages.append({"role": role, "content": msg.get("content", "")})
-
-        messages.append({
-            "role": "user",
-            "content": f"Buat pesan follow-up ke-{attempt}. Sopan, singkat, dan natural.",
-        })
-
-        resp = await client.chat.completions.create(
-            model=cfg.AGENT_MODEL,
-            messages=messages,
-            max_tokens=cfg.AGENT_MAX_TOKENS,
-            temperature=0.7,
+        followup_instruction = (
+            f"Buat pesan follow-up ke-{attempt}. "
+            "Maksimal 1-2 kalimat pendek, natural tapi tetap sopan. "
+            "HANYA output pesannya."
         )
-        return resp.choices[0].message.content.strip()
+
+        if previous_response_id:
+            # Chain with existing session — only send new instruction
+            try:
+                response = await client.responses.create(
+                    model=cfg.AGENT_MODEL,
+                    instructions=system_content,
+                    input=followup_instruction,
+                    previous_response_id=previous_response_id,
+                    max_output_tokens=cfg.AGENT_MAX_TOKENS,
+                    temperature=0.7,
+                    store=True,
+                )
+            except Exception as e:
+                if "previous_response" in str(e).lower():
+                    log.warning("Followup: response ID expired, sending full context: %s", e)
+                    conv_id = conversation.get("id")
+                    if conv_id:
+                        await db.clear_last_response_id("conversations", conv_id)
+                    previous_response_id = None
+                else:
+                    raise
+
+        if not previous_response_id:
+            # No session or expired — send recent history
+            input_items: list[dict] = []
+            for msg in history[-4:]:
+                role = "assistant" if msg.get("role") == "bot" else "user"
+                input_items.append({"role": role, "content": msg.get("content", "")})
+            input_items.append({"role": "user", "content": followup_instruction})
+
+            response = await client.responses.create(
+                model=cfg.AGENT_MODEL,
+                instructions=system_content,
+                input=input_items,
+                max_output_tokens=cfg.AGENT_MAX_TOKENS,
+                temperature=0.7,
+                store=True,
+            )
+
+        response_text = response.output_text
+
+        # Save response_id for future chaining
+        conv_id = conversation.get("id")
+        if conv_id and response.id:
+            await db.update_last_response_id("conversations", conv_id, response.id)
+
+        # Log API call
+        try:
+            await db.save_api_call_log({
+                "conversation_id": conv_id,
+                "chatbot_type": "agent",
+                "call_type": "followup",
+                "situation_tags": ["followup", "tone_umum"],
+                "knowledge_items_injected": [
+                    {"id": ki["id"], "title": ki["title"], "tags": ki.get("situation_tags", "")}
+                    for ki in knowledge_items
+                ],
+                "system_prompt": system_content,
+                "model_used": cfg.AGENT_MODEL,
+                "response_text": response_text,
+                "prompt_tokens": response.usage.input_tokens if response.usage else 0,
+                "completion_tokens": response.usage.output_tokens if response.usage else 0,
+                "total_tokens": (response.usage.input_tokens + response.usage.output_tokens) if response.usage else 0,
+                "cached_tokens": _get_cached_tokens(response),
+            })
+        except Exception as e:
+            log.warning("Failed to save API call log (followup): %s", e)
+
+        return response_text
 
     async def _run_react_loop(
         self,
-        messages: list[dict],
+        instructions: str,
+        input_items: list[dict],
         tools: list[dict],
         context: AgentContext,
-    ) -> tuple[str, list[str]]:
-        """Core ReAct loop with tool calling.
+        previous_response_id: str | None = None,
+    ) -> ReactLoopResult:
+        """Core ReAct loop using the Responses API with session chaining.
 
-        Returns (final_response_text, list_of_tool_names_called).
+        Returns a ReactLoopResult with response text, tool calls, token usage,
+        and last_response_id for session chaining.
         """
         client = _get_openai()
         tool_calls_made: list[str] = []
         terminal_reached = False
         iterations = 0
+        total_prompt_tokens = 0
+        total_completion_tokens = 0
+        total_cached_tokens = 0
+
+        def _track_usage(resp) -> None:
+            nonlocal total_prompt_tokens, total_completion_tokens, total_cached_tokens
+            if resp.usage:
+                total_prompt_tokens += resp.usage.input_tokens
+                total_completion_tokens += resp.usage.output_tokens
+                total_cached_tokens += _get_cached_tokens(resp)
+
+        # First API call — includes instructions and full input
+        kwargs: dict = {
+            "model": cfg.AGENT_MODEL,
+            "instructions": instructions,
+            "input": input_items,
+            "temperature": cfg.AGENT_TEMPERATURE,
+            "max_output_tokens": cfg.AGENT_MAX_TOKENS,
+            "store": True,
+        }
+        if tools:
+            kwargs["tools"] = tools
+        if previous_response_id:
+            kwargs["previous_response_id"] = previous_response_id
+
+        response = await client.responses.create(**kwargs)
+        _track_usage(response)
 
         while iterations < cfg.AGENT_MAX_TOOL_ITERATIONS:
-            kwargs: dict = {
-                "model": cfg.AGENT_MODEL,
-                "messages": messages,
-                "temperature": cfg.AGENT_TEMPERATURE,
-                "max_tokens": cfg.AGENT_MAX_TOKENS,
-            }
-            if tools:
-                kwargs["tools"] = tools
+            # Check output for function calls
+            function_calls = [item for item in response.output if item.type == "function_call"]
 
-            response = await client.chat.completions.create(**kwargs)
-            choice = response.choices[0]
+            if not function_calls:
+                break
 
-            # If model produced a text-only response (no tool calls), we're done
-            if choice.finish_reason == "stop" or not choice.message.tool_calls:
-                return choice.message.content or "", tool_calls_made
-
-            # Process tool calls
-            messages.append(choice.message)  # type: ignore[arg-type]
-
-            for tool_call in choice.message.tool_calls:
-                name = tool_call.function.name
+            # Execute tools, build function_call_output items
+            function_outputs: list[dict] = []
+            for fc in function_calls:
+                name = fc.name
                 try:
-                    args = json.loads(tool_call.function.arguments)
+                    args = json.loads(fc.arguments)
                 except json.JSONDecodeError:
                     args = {}
 
@@ -302,32 +471,66 @@ class ReactAgent:
                 else:
                     result = await impl(args, context)
 
-                messages.append({
-                    "role": "tool",
-                    "tool_call_id": tool_call.id,
-                    "content": result,
+                function_outputs.append({
+                    "type": "function_call_output",
+                    "call_id": fc.call_id,
+                    "output": result,
                 })
 
                 if name in TERMINAL_TOOLS:
                     terminal_reached = True
 
+            # Feed results back with previous_response_id chaining
+            next_kwargs: dict = {
+                "model": cfg.AGENT_MODEL,
+                "input": function_outputs,
+                "previous_response_id": response.id,
+                "temperature": cfg.AGENT_TEMPERATURE,
+                "max_output_tokens": cfg.AGENT_MAX_TOKENS,
+                "store": True,
+            }
+            # Remove tools after terminal to force text-only closing response
+            if not terminal_reached and tools:
+                next_kwargs["tools"] = tools
+
+            response = await client.responses.create(**next_kwargs)
+            _track_usage(response)
             iterations += 1
 
             if terminal_reached:
-                # One more call without tools to get a closing message
-                tools = []
+                break
 
-        # Max iterations reached — force a final response
-        messages.append({
-            "role": "user",
-            "content": "Berikan respons akhirmu sekarang.",
-        })
-        response = await client.chat.completions.create(
-            model=cfg.AGENT_MODEL,
-            messages=messages,
-            max_tokens=cfg.AGENT_MAX_TOKENS,
+        # Max iterations reached — force a final text response
+        if iterations >= cfg.AGENT_MAX_TOOL_ITERATIONS:
+            has_text = any(
+                getattr(item, "type", None) == "message"
+                for item in response.output
+            )
+            if not has_text:
+                response = await client.responses.create(
+                    model=cfg.AGENT_MODEL,
+                    input=[{"role": "user", "content": "Berikan respons akhirmu sekarang."}],
+                    previous_response_id=response.id,
+                    max_output_tokens=cfg.AGENT_MAX_TOKENS,
+                    store=True,
+                )
+                _track_usage(response)
+
+        # Extract response text
+        try:
+            response_text = response.output_text
+        except (ValueError, AttributeError):
+            response_text = ""
+
+        return ReactLoopResult(
+            response_text=response_text,
+            tool_calls_made=tool_calls_made,
+            prompt_tokens=total_prompt_tokens,
+            completion_tokens=total_completion_tokens,
+            total_tokens=total_prompt_tokens + total_completion_tokens,
+            cached_tokens=total_cached_tokens,
+            last_response_id=response.id,
         )
-        return response.choices[0].message.content or "", tool_calls_made
 
     # Strong refusal indicators — words only the contact (or a closing bot)
     # would use when the conversation is truly over.
@@ -391,3 +594,15 @@ class ReactAgent:
 
         # Default: the agent wants to continue the conversation
         return AgentAction.need_more, "NEED_MORE"
+
+
+def _get_cached_tokens(response) -> int:
+    """Safely extract cached_tokens from a Responses API response."""
+    try:
+        if response.usage and hasattr(response.usage, "input_tokens_details"):
+            details = response.usage.input_tokens_details
+            if details:
+                return getattr(details, "cached_tokens", 0) or 0
+    except (AttributeError, TypeError):
+        pass
+    return 0

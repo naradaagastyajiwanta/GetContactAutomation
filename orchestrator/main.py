@@ -6,7 +6,7 @@ import asyncio
 import csv
 import io
 from contextlib import asynccontextmanager
-from typing import Any
+from typing import Any, Optional
 
 import httpx
 from fastapi import FastAPI, BackgroundTasks, UploadFile, File as FastAPIFile, Form
@@ -38,9 +38,14 @@ from orchestrator.db import (
     update_conversation_state,
     add_message_to_history,
     get_knowledge_items,
+    get_knowledge_items_by_tags,
     create_knowledge_item,
     update_knowledge_item,
     delete_knowledge_item,
+    get_api_call_logs,
+    get_api_call_log_by_id,
+    cleanup_old_api_logs,
+    clear_all_response_ids,
 )
 from orchestrator.config_registry import (
     CONFIG_DEFINITIONS,
@@ -78,6 +83,14 @@ async def lifespan(app: FastAPI):
     await init_db()
     await cfg.init_from_db()
     log.info("Database initialized")
+
+    # Cleanup old API call logs
+    try:
+        deleted = await cleanup_old_api_logs(days=cfg.API_LOG_RETENTION_DAYS)
+        if deleted:
+            log.info("Cleaned up %d old API call logs", deleted)
+    except Exception as e:
+        log.warning("Failed to cleanup old API logs: %s", e)
 
     # Register webhook with WA service
     await register_webhook()
@@ -209,6 +222,10 @@ async def _process_incoming(
             log.warning(f"Audiensi routing check failed: {e}")
 
     # Default: chatbot 1 (contact finder)
+    if not cfg.CHATBOT_ENABLED:
+        log.info(f"Contact finder chatbot disabled – ignoring message from {raw_phone}")
+        return
+
     result = await message_queue.process_with_ai(
         conversation_manager.process_incoming_message(
             normalized_phone, message, push_name=push_name,
@@ -307,29 +324,186 @@ async def trigger_collect_universities(
 
 
 # ---------------------------------------------------------------------------
+# University manual add
+# ---------------------------------------------------------------------------
+
+
+class UniversityInput(BaseModel):
+    name: str
+    province: Optional[str] = None
+    website: Optional[str] = None
+
+
+class UniversityAddPayload(BaseModel):
+    # Single university
+    name: Optional[str] = None
+    province: Optional[str] = None
+    website: Optional[str] = None
+    # Bulk
+    universities: Optional[list[UniversityInput]] = None
+
+
+async def _get_existing_university_names() -> set[str]:
+    """Return a set of lowercased university names already in the database."""
+    from orchestrator.db import get_db
+    async with get_db() as db:
+        cursor = await db.execute("SELECT LOWER(name) AS lname FROM universities")
+        rows = await cursor.fetchall()
+        return {r["lname"] for r in rows}
+
+
+@app.post("/universities")
+async def add_universities_endpoint(payload: UniversityAddPayload):
+    """Add one or many universities via JSON.
+
+    Single: {"name": "Univ X", "province": "...", "website": "..."}
+    Bulk:   {"universities": [{"name": "..."}, ...]}
+    """
+    items: list[UniversityInput] = []
+
+    if payload.universities:
+        items = payload.universities
+    elif payload.name:
+        items = [UniversityInput(name=payload.name, province=payload.province, website=payload.website)]
+    else:
+        return JSONResponse(
+            status_code=422,
+            content={"detail": "Provide 'name' for a single university or 'universities' array for bulk."},
+        )
+
+    existing_names = await _get_existing_university_names()
+    added = 0
+    skipped = 0
+
+    for item in items:
+        name = item.name.strip()
+        if not name:
+            skipped += 1
+            continue
+        if name.lower() in existing_names:
+            skipped += 1
+            continue
+        await add_university(
+            name=name,
+            province=item.province.strip() if item.province else None,
+            website=item.website.strip() if item.website else None,
+        )
+        existing_names.add(name.lower())
+        added += 1
+
+    return {"added": added, "skipped": skipped}
+
+
+# ---------------------------------------------------------------------------
 # University import
 # ---------------------------------------------------------------------------
 
+# Column name aliases — maps various user-facing names to our internal fields.
+_COLUMN_ALIASES: dict[str, str] = {
+    # name
+    "name": "name", "nama": "name", "nama universitas": "name",
+    "nama_universitas": "name", "university": "name", "university name": "name",
+    "university_name": "name", "institusi": "name", "perguruan tinggi": "name",
+    # province
+    "province": "province", "provinsi": "province", "prov": "province",
+    # website
+    "website": "website", "web": "website", "url": "website",
+    "situs": "website", "situs web": "website", "laman": "website",
+}
+
+
+def _normalize_headers(raw_headers: list[str]) -> dict[int, str]:
+    """Map column indices to internal field names using aliases.
+
+    Returns {column_index: internal_field_name} for recognized columns.
+    If no 'name' column is found, assumes the first column is 'name'.
+    """
+    mapping: dict[int, str] = {}
+    found_name = False
+    for i, h in enumerate(raw_headers):
+        key = h.strip().lower()
+        if key in _COLUMN_ALIASES:
+            field = _COLUMN_ALIASES[key]
+            if field not in mapping.values():  # first match wins
+                mapping[i] = field
+                if field == "name":
+                    found_name = True
+    # Fallback: if no name column found, treat column 0 as name
+    if not found_name and raw_headers:
+        mapping[0] = "name"
+    return mapping
+
+
 @app.post("/universities/import")
 async def import_universities(file: UploadFile = FastAPIFile(...)):
-    """Import universities from CSV file. Expected columns: name, province, website"""
-    content = await file.read()
-    text = content.decode("utf-8")
-    reader = csv.DictReader(io.StringIO(text))
+    """Import universities from CSV or Excel (.xlsx) file.
 
+    Recognizes flexible column names (e.g. 'nama', 'provinsi', 'web').
+    If there's only one column or no header match, the first column is treated as university name.
+    """
+    import os
+
+    content = await file.read()
+    filename = file.filename or "upload.csv"
+    ext = os.path.splitext(filename)[1].lower()
+
+    rows_data: list[dict[str, str]] = []
+
+    if ext == ".xlsx":
+        from openpyxl import load_workbook
+        wb = load_workbook(io.BytesIO(content), read_only=True, data_only=True)
+        ws = wb.active
+        if ws is None:
+            return JSONResponse(status_code=400, content={"detail": "Excel file has no active sheet"})
+        header_row = next(ws.iter_rows(min_row=1, max_row=1, values_only=True), None)
+        if not header_row:
+            return JSONResponse(status_code=400, content={"detail": "Excel file has no header row"})
+        raw_headers = [str(h).strip() if h else "" for h in header_row]
+        col_map = _normalize_headers(raw_headers)
+        for row in ws.iter_rows(min_row=2, values_only=True):
+            row_dict: dict[str, str] = {}
+            for i, val in enumerate(row):
+                if i in col_map and val is not None:
+                    row_dict[col_map[i]] = str(val).strip()
+            rows_data.append(row_dict)
+        wb.close()
+    else:
+        # Default: CSV
+        text = content.decode("utf-8")
+        reader = csv.DictReader(io.StringIO(text))
+        # Normalize CSV headers
+        raw_headers = reader.fieldnames or []
+        col_map = _normalize_headers(list(raw_headers))
+        # Build reverse: original_header -> internal_field
+        header_to_field = {raw_headers[i]: field for i, field in col_map.items() if i < len(raw_headers)}
+        for row in reader:
+            row_dict: dict[str, str] = {}
+            for orig_header, field in header_to_field.items():
+                val = row.get(orig_header, "")
+                if val:
+                    row_dict[field] = val.strip()
+            rows_data.append(row_dict)
+
+    existing_names = await _get_existing_university_names()
     imported = 0
-    for row in reader:
+    skipped = 0
+
+    for row in rows_data:
         name = row.get("name", "").strip()
         if not name:
+            continue
+        if name.lower() in existing_names:
+            skipped += 1
             continue
         await add_university(
             name=name,
             province=row.get("province", "").strip() or None,
             website=row.get("website", "").strip() or None,
         )
+        existing_names.add(name.lower())
         imported += 1
 
-    return {"imported": imported}
+    return {"imported": imported, "skipped": skipped}
 
 
 # ---------------------------------------------------------------------------
@@ -557,8 +731,38 @@ async def resume_bot():
 
 @app.get("/control/status")
 async def control_status():
-    """Return current pause state."""
-    return {"paused": is_paused()}
+    """Return current pause state and chatbot toggles."""
+    return {
+        "paused": is_paused(),
+        "chatbot_enabled": cfg.CHATBOT_ENABLED,
+        "audiensi_enabled": cfg.AUDIENSI_ENABLED,
+    }
+
+
+class ChatbotTogglePayload(BaseModel):
+    enabled: bool
+
+
+@app.post("/control/chatbot/{chatbot_type}")
+async def toggle_chatbot(chatbot_type: str, payload: ChatbotTogglePayload):
+    """Toggle a chatbot on/off. Type: 'agent' or 'audiensi'."""
+    if chatbot_type == "agent":
+        cfg.set("CHATBOT_ENABLED", payload.enabled)
+        db_val = "true" if payload.enabled else "false"
+        await upsert_config("CHATBOT_ENABLED", db_val)
+        log.info("Contact finder chatbot %s", "ENABLED" if payload.enabled else "DISABLED")
+        return {"chatbot_enabled": payload.enabled}
+    elif chatbot_type == "audiensi":
+        cfg.set("AUDIENSI_ENABLED", payload.enabled)
+        db_val = "true" if payload.enabled else "false"
+        await upsert_config("AUDIENSI_ENABLED", db_val)
+        log.info("Audiensi chatbot %s", "ENABLED" if payload.enabled else "DISABLED")
+        return {"audiensi_enabled": payload.enabled}
+    else:
+        return JSONResponse(
+            status_code=422,
+            content={"detail": "chatbot_type must be 'agent' or 'audiensi'"},
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -831,6 +1035,12 @@ async def update_config(payload: ConfigUpdatePayload):
         except Exception as e:
             log.warning("Failed to reschedule outreach jobs: %s", e)
 
+    # Invalidate Responses API sessions if custom instructions changed
+    instruction_keys = {"AGENT_CUSTOM_INSTRUCTIONS", "AUDIENSI_CUSTOM_INSTRUCTIONS"}
+    if instruction_keys & set(validated.keys()):
+        await clear_all_response_ids("conversations")
+        await clear_all_response_ids("audiensi_conversations")
+
     return {"status": "ok", "updated": list(validated.keys())}
 
 
@@ -856,12 +1066,16 @@ class KnowledgeItemPayload(BaseModel):
     chatbot_type: str  # 'agent' | 'audiensi'
     title: str
     content: str
+    situation_tags: str = ""
+    trigger_keywords: str = ""
 
 
 class KnowledgeItemUpdatePayload(BaseModel):
     title: str | None = None
     content: str | None = None
     is_active: bool | None = None
+    situation_tags: str | None = None
+    trigger_keywords: str | None = None
 
 
 @app.get("/knowledge-items")
@@ -880,8 +1094,13 @@ async def create_knowledge_item_endpoint(payload: KnowledgeItemPayload):
             content={"detail": "chatbot_type must be 'agent' or 'audiensi'"},
         )
     item_id = await create_knowledge_item(
-        payload.chatbot_type, payload.title, payload.content
+        payload.chatbot_type, payload.title, payload.content,
+        situation_tags=payload.situation_tags,
+        trigger_keywords=payload.trigger_keywords,
     )
+    # Invalidate Responses API sessions — knowledge base changed
+    await clear_all_response_ids("conversations")
+    await clear_all_response_ids("audiensi_conversations")
     return {"id": item_id, "status": "ok"}
 
 
@@ -895,9 +1114,16 @@ async def update_knowledge_item_endpoint(item_id: int, payload: KnowledgeItemUpd
         updates["content"] = payload.content
     if payload.is_active is not None:
         updates["is_active"] = int(payload.is_active)
+    if payload.situation_tags is not None:
+        updates["situation_tags"] = payload.situation_tags
+    if payload.trigger_keywords is not None:
+        updates["trigger_keywords"] = payload.trigger_keywords
     if not updates:
         return JSONResponse(status_code=422, content={"detail": "No fields to update"})
     await update_knowledge_item(item_id, **updates)
+    # Invalidate Responses API sessions — knowledge base changed
+    await clear_all_response_ids("conversations")
+    await clear_all_response_ids("audiensi_conversations")
     return {"status": "ok"}
 
 
@@ -905,6 +1131,9 @@ async def update_knowledge_item_endpoint(item_id: int, payload: KnowledgeItemUpd
 async def delete_knowledge_item_endpoint(item_id: int):
     """Delete a knowledge item."""
     await delete_knowledge_item(item_id)
+    # Invalidate Responses API sessions — knowledge base changed
+    await clear_all_response_ids("conversations")
+    await clear_all_response_ids("audiensi_conversations")
     return {"status": "ok"}
 
 
@@ -988,6 +1217,33 @@ async def upload_knowledge_item(
     item_id = await create_knowledge_item(chatbot_type, title, text.strip())
 
     return {"id": item_id, "status": "ok", "title": title, "content_length": len(text.strip())}
+
+
+# ---------------------------------------------------------------------------
+# API Call Logs
+# ---------------------------------------------------------------------------
+
+
+@app.get("/api-logs")
+async def list_api_logs(
+    chatbot_type: str | None = None,
+    conversation_id: int | None = None,
+    call_type: str | None = None,
+    limit: int = 50,
+    offset: int = 0,
+):
+    """List API call logs with optional filters and pagination."""
+    logs = await get_api_call_logs(chatbot_type, conversation_id, call_type, limit, offset)
+    return {"logs": logs}
+
+
+@app.get("/api-logs/{log_id}")
+async def get_api_log(log_id: int):
+    """Get full detail of a single API call log."""
+    log_entry = await get_api_call_log_by_id(log_id)
+    if not log_entry:
+        return JSONResponse(status_code=404, content={"detail": "API log not found"})
+    return log_entry
 
 
 # ---------------------------------------------------------------------------

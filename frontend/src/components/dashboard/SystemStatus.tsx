@@ -8,6 +8,8 @@ export function SystemStatus() {
 
   const waConnected = health?.whatsapp?.connected ?? false
   const paused = control?.paused ?? false
+  const chatbotEnabled = control?.chatbot_enabled ?? true
+  const audiensiEnabled = control?.audiensi_enabled ?? false
 
   return (
     <Card>
@@ -44,6 +46,38 @@ export function SystemStatus() {
               />
               <span className="text-sm font-medium text-gray-900 dark:text-gray-100">
                 {paused ? 'Paused' : 'Running'}
+              </span>
+            </div>
+          </div>
+
+          <div className="flex items-center justify-between">
+            <span className="text-sm text-gray-600 dark:text-gray-400">
+              Contact Finder
+            </span>
+            <div className="flex items-center gap-2">
+              <span
+                className={`h-2.5 w-2.5 rounded-full ${
+                  chatbotEnabled ? 'bg-green-500' : 'bg-gray-400'
+                }`}
+              />
+              <span className="text-sm font-medium text-gray-900 dark:text-gray-100">
+                {chatbotEnabled ? 'On' : 'Off'}
+              </span>
+            </div>
+          </div>
+
+          <div className="flex items-center justify-between">
+            <span className="text-sm text-gray-600 dark:text-gray-400">
+              Audiensi
+            </span>
+            <div className="flex items-center gap-2">
+              <span
+                className={`h-2.5 w-2.5 rounded-full ${
+                  audiensiEnabled ? 'bg-green-500' : 'bg-gray-400'
+                }`}
+              />
+              <span className="text-sm font-medium text-gray-900 dark:text-gray-100">
+                {audiensiEnabled ? 'On' : 'Off'}
               </span>
             </div>
           </div>

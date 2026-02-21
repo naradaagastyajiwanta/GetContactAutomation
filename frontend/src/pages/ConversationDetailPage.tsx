@@ -1,5 +1,5 @@
-import { useParams, useNavigate } from 'react-router-dom'
-import { ArrowLeft, Brain, Phone } from 'lucide-react'
+import { useParams, useNavigate, Link } from 'react-router-dom'
+import { ArrowLeft, Brain, Phone, ScrollText } from 'lucide-react'
 import { useConversation } from '../hooks/useConversations'
 import { ChatBubble } from '../components/conversations/ChatBubble'
 import { StateTimeline } from '../components/conversations/StateTimeline'
@@ -77,6 +77,13 @@ export default function ConversationDetailPage() {
               <p className="font-mono text-lg font-bold text-green-800 dark:text-green-200">
                 {conversation.extracted_number}
               </p>
+              {(conversation.extracted_contact_name || conversation.extracted_contact_role) && (
+                <p className="text-sm text-green-700 dark:text-green-300">
+                  {conversation.extracted_contact_name}
+                  {conversation.extracted_contact_name && conversation.extracted_contact_role && ' — '}
+                  {conversation.extracted_contact_role}
+                </p>
+              )}
             </div>
           </div>
         )}
@@ -105,11 +112,20 @@ export default function ConversationDetailPage() {
 
       {conversation.agent_reasoning && (
         <Card>
-          <div className="flex items-center gap-2 mb-3">
-            <Brain className="h-5 w-5 text-indigo-500 dark:text-indigo-400" />
-            <h2 className="text-lg font-semibold text-gray-900 dark:text-gray-100">
-              Agent Reasoning
-            </h2>
+          <div className="flex items-center justify-between mb-3">
+            <div className="flex items-center gap-2">
+              <Brain className="h-5 w-5 text-indigo-500 dark:text-indigo-400" />
+              <h2 className="text-lg font-semibold text-gray-900 dark:text-gray-100">
+                Agent Reasoning
+              </h2>
+            </div>
+            <Link
+              to={`/api-logs?conversation_id=${conversation.id}`}
+              className="flex items-center gap-1 text-sm text-indigo-600 hover:text-indigo-800 dark:text-indigo-400 dark:hover:text-indigo-300"
+            >
+              <ScrollText className="h-4 w-4" />
+              View API Logs
+            </Link>
           </div>
           <p className="text-sm text-gray-600 dark:text-gray-400 whitespace-pre-wrap">
             {conversation.agent_reasoning}

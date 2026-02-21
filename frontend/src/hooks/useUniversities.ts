@@ -6,6 +6,7 @@ import {
   getUniversityContacts,
   getUniversityPosts,
   importUniversities,
+  createUniversities,
 } from '../api/universities'
 import { queryKeys } from '../lib/queryKeys'
 
@@ -52,6 +53,21 @@ export function useImportUniversities() {
     },
     onError: () => {
       toast.error('Failed to import universities')
+    },
+  })
+}
+
+export function useCreateUniversities() {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: createUniversities,
+    onSuccess: (data) => {
+      toast.success(`Added ${data.added} universities${data.skipped > 0 ? `, ${data.skipped} skipped (duplicates)` : ''}`)
+      queryClient.invalidateQueries({ queryKey: queryKeys.universities.all })
+      queryClient.invalidateQueries({ queryKey: queryKeys.dashboard })
+    },
+    onError: () => {
+      toast.error('Failed to add universities')
     },
   })
 }

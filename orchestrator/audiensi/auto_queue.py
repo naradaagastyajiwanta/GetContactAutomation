@@ -45,6 +45,8 @@ async def create_audiensi_from_success(conversation_id: int) -> int | None:
         log.warning("auto_queue: conversation %d has no university_id", conversation_id)
         return None
 
+    contact_role = conv.get("extracted_contact_role")
+
     # Check if audiensi already exists for this phone
     existing = await get_audiensi_conversation_by_phone(extracted_number)
     if existing:
@@ -56,6 +58,7 @@ async def create_audiensi_from_success(conversation_id: int) -> int | None:
         university_id=university_id,
         source_conversation_id=conversation_id,
         contact_phone=extracted_number,
+        contact_role=contact_role,
     )
 
     log.info(

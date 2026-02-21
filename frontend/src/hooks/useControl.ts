@@ -1,6 +1,6 @@
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import toast from 'react-hot-toast'
-import { getControlStatus, pauseBot, resumeBot } from '../api/control'
+import { getControlStatus, pauseBot, resumeBot, toggleChatbot } from '../api/control'
 import { queryKeys } from '../lib/queryKeys'
 
 export function useControlStatus() {
@@ -35,6 +35,23 @@ export function useResume() {
     },
     onError: () => {
       toast.error('Failed to resume bot')
+    },
+  })
+}
+
+export function useToggleChatbot() {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: ({ type, enabled }: { type: 'agent' | 'audiensi'; enabled: boolean }) =>
+      toggleChatbot(type, enabled),
+    onSuccess: (_, variables) => {
+      const label = variables.type === 'agent' ? 'Contact Finder' : 'Audiensi'
+      toast.success(`${label} chatbot ${variables.enabled ? 'enabled' : 'disabled'}`)
+      queryClient.invalidateQueries({ queryKey: queryKeys.control })
+      queryClient.invalidateQueries({ queryKey: queryKeys.config })
+    },
+    onError: () => {
+      toast.error('Failed to toggle chatbot')
     },
   })
 }

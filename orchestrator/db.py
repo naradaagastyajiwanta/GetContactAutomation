@@ -56,6 +56,8 @@ CREATE TABLE IF NOT EXISTS conversations (
     state TEXT NOT NULL DEFAULT 'PENDING',
     message_history TEXT DEFAULT '[]',
     extracted_number TEXT,
+    extracted_contact_name TEXT,
+    extracted_contact_role TEXT,
     last_message_at TIMESTAMP,
     next_action_at TIMESTAMP,
     attempt_count INTEGER DEFAULT 0,
@@ -175,6 +177,8 @@ CREATE TABLE IF NOT EXISTS knowledge_items (
     chatbot_type TEXT NOT NULL,
     title TEXT NOT NULL,
     content TEXT NOT NULL,
+    situation_tags TEXT DEFAULT '',
+    trigger_keywords TEXT DEFAULT '',
     is_active INTEGER DEFAULT 1,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
@@ -190,6 +194,33 @@ _INDEXES_AUDIENSI = """
 CREATE INDEX IF NOT EXISTS idx_audiensi_phone ON audiensi_conversations(contact_phone);
 CREATE INDEX IF NOT EXISTS idx_audiensi_state ON audiensi_conversations(state);
 CREATE INDEX IF NOT EXISTS idx_audiensi_university ON audiensi_conversations(university_id);
+"""
+
+_DDL_API_LOGS = """
+CREATE TABLE IF NOT EXISTS api_call_logs (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    conversation_id INTEGER,
+    chatbot_type TEXT NOT NULL,
+    call_type TEXT NOT NULL DEFAULT 'reply',
+    situation_tags TEXT DEFAULT '[]',
+    knowledge_items_injected TEXT DEFAULT '[]',
+    system_prompt TEXT,
+    messages_sent TEXT,
+    model_used TEXT,
+    tool_calls_made TEXT DEFAULT '[]',
+    response_text TEXT,
+    prompt_tokens INTEGER DEFAULT 0,
+    completion_tokens INTEGER DEFAULT 0,
+    total_tokens INTEGER DEFAULT 0,
+    cached_tokens INTEGER DEFAULT 0,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+"""
+
+_INDEXES_API_LOGS = """
+CREATE INDEX IF NOT EXISTS idx_api_logs_conv_id ON api_call_logs(conversation_id);
+CREATE INDEX IF NOT EXISTS idx_api_logs_chatbot_type ON api_call_logs(chatbot_type);
+CREATE INDEX IF NOT EXISTS idx_api_logs_created_at ON api_call_logs(created_at);
 """
 
 # ---------------------------------------------------------------------------
@@ -211,6 +242,8 @@ async def init_db() -> None:
         await db.executescript(_INDEXES_AUDIENSI)
         await db.executescript(_DDL_KNOWLEDGE)
         await db.executescript(_INDEXES_KNOWLEDGE)
+        await db.executescript(_DDL_API_LOGS)
+        await db.executescript(_INDEXES_API_LOGS)
         # Migration: add agent_reasoning column to conversations (idempotent)
         try:
             await db.execute(
@@ -271,6 +304,62 @@ async def init_db() -> None:
         try:
             await db.execute(
                 "ALTER TABLE conversation_analyses ADD COLUMN source TEXT DEFAULT 'outreach'"
+            )
+            await db.commit()
+        except Exception:
+            pass  # Column already exists
+        # Migration: add extracted_contact_name to conversations
+        try:
+            await db.execute(
+                "ALTER TABLE conversations ADD COLUMN extracted_contact_name TEXT"
+            )
+            await db.commit()
+        except Exception:
+            pass  # Column already exists
+        # Migration: add extracted_contact_role to conversations
+        try:
+            await db.execute(
+                "ALTER TABLE conversations ADD COLUMN extracted_contact_role TEXT"
+            )
+            await db.commit()
+        except Exception:
+            pass  # Column already exists
+        # Migration: add situation_tags column to knowledge_items
+        try:
+            await db.execute(
+                "ALTER TABLE knowledge_items ADD COLUMN situation_tags TEXT DEFAULT ''"
+            )
+            await db.commit()
+        except Exception:
+            pass  # Column already exists
+        # Migration: add trigger_keywords column to knowledge_items
+        try:
+            await db.execute(
+                "ALTER TABLE knowledge_items ADD COLUMN trigger_keywords TEXT DEFAULT ''"
+            )
+            await db.commit()
+        except Exception:
+            pass  # Column already exists
+        # Migration: add cached_tokens column to api_call_logs
+        try:
+            await db.execute(
+                "ALTER TABLE api_call_logs ADD COLUMN cached_tokens INTEGER DEFAULT 0"
+            )
+            await db.commit()
+        except Exception:
+            pass  # Column already exists
+        # Migration: add last_response_id to conversations (Responses API session chaining)
+        try:
+            await db.execute(
+                "ALTER TABLE conversations ADD COLUMN last_response_id TEXT"
+            )
+            await db.commit()
+        except Exception:
+            pass  # Column already exists
+        # Migration: add last_response_id to audiensi_conversations (Responses API session chaining)
+        try:
+            await db.execute(
+                "ALTER TABLE audiensi_conversations ADD COLUMN last_response_id TEXT"
             )
             await db.commit()
         except Exception:
@@ -640,6 +729,8 @@ async def update_conversation_state(conv_id: int, state: str, **kwargs) -> None:
     allowed_fields = {
         "message_history",
         "extracted_number",
+        "extracted_contact_name",
+        "extracted_contact_role",
         "last_message_at",
         "next_action_at",
         "attempt_count",
@@ -1480,6 +1571,32 @@ async def get_knowledge_items(
         return _rows_to_dicts(rows)
 
 
+async def get_knowledge_items_by_tags(
+    chatbot_type: str, tags: list[str], active_only: bool = True
+) -> list[dict]:
+    """Fetch knowledge items whose situation_tags overlap with the given tags."""
+    if not tags:
+        return []
+    conditions = ["chatbot_type = ?"]
+    params: list = [chatbot_type]
+    if active_only:
+        conditions.append("is_active = 1")
+    # Match any tag via OR of LIKE clauses
+    tag_clauses = []
+    for tag in tags:
+        tag_clauses.append("situation_tags LIKE ?")
+        params.append(f"%{tag}%")
+    conditions.append(f"({' OR '.join(tag_clauses)})")
+    where = " AND ".join(conditions)
+    async with get_db() as db:
+        cursor = await db.execute(
+            f"SELECT * FROM knowledge_items WHERE {where} ORDER BY created_at DESC",
+            params,
+        )
+        rows = await cursor.fetchall()
+        return _rows_to_dicts(rows)
+
+
 async def get_knowledge_item_by_id(item_id: int) -> dict | None:
     """Return a single knowledge item by ID."""
     async with get_db() as db:
@@ -1491,23 +1608,57 @@ async def get_knowledge_item_by_id(item_id: int) -> dict | None:
 
 
 async def create_knowledge_item(
-    chatbot_type: str, title: str, content: str
+    chatbot_type: str, title: str, content: str,
+    situation_tags: str = "", trigger_keywords: str = "",
 ) -> int:
     """Insert a knowledge item and return its id."""
     now = _utcnow()
     async with get_db() as db:
         cursor = await db.execute(
-            """INSERT INTO knowledge_items (chatbot_type, title, content, created_at, updated_at)
-               VALUES (?, ?, ?, ?, ?)""",
-            (chatbot_type, title, content, now, now),
+            """INSERT INTO knowledge_items (chatbot_type, title, content, situation_tags, trigger_keywords, created_at, updated_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?)""",
+            (chatbot_type, title, content, situation_tags, trigger_keywords, now, now),
         )
         await db.commit()
         return cursor.lastrowid  # type: ignore[return-value]
 
 
+async def match_knowledge_items_by_message(
+    chatbot_type: str, message: str,
+) -> list[dict]:
+    """Match knowledge items against a message using trigger_keywords.
+
+    Matching rules:
+    - Items with trigger_keywords: inject if ANY keyword appears in the message
+    - Items with situation_tags containing 'tone_umum' but no trigger_keywords: always inject
+    - Items with neither trigger_keywords nor 'tone_umum' tag: skip
+
+    This replaces the old flow of hardcoded detector -> tag lookup.
+    """
+    all_items = await get_knowledge_items(chatbot_type, active_only=True)
+    msg_lower = message.lower()
+    matched: list[dict] = []
+
+    for item in all_items:
+        trigger_kw = (item.get("trigger_keywords") or "").strip()
+        sit_tags = (item.get("situation_tags") or "").strip()
+
+        if trigger_kw:
+            # Check if any trigger keyword appears in the message
+            keywords = [kw.strip().lower() for kw in trigger_kw.split(",") if kw.strip()]
+            if any(kw in msg_lower for kw in keywords):
+                matched.append(item)
+        elif "tone_umum" in sit_tags:
+            # Always inject tone_umum items (no keywords needed)
+            matched.append(item)
+        # else: item has no trigger_keywords and no tone_umum tag → skip
+
+    return matched
+
+
 async def update_knowledge_item(item_id: int, **kwargs) -> None:
     """Update specific fields of a knowledge item."""
-    allowed = {"title", "content", "is_active"}
+    allowed = {"title", "content", "is_active", "situation_tags", "trigger_keywords"}
     updates = {k: v for k, v in kwargs.items() if k in allowed}
     if not updates:
         return
@@ -1528,3 +1679,136 @@ async def delete_knowledge_item(item_id: int) -> None:
     async with get_db() as db:
         await db.execute("DELETE FROM knowledge_items WHERE id = ?", (item_id,))
         await db.commit()
+
+
+# ---------------------------------------------------------------------------
+# API Call Logs
+# ---------------------------------------------------------------------------
+
+
+async def save_api_call_log(data: dict) -> int:
+    """Insert a row into api_call_logs and return the new id."""
+    async with get_db() as db:
+        cursor = await db.execute(
+            """
+            INSERT INTO api_call_logs
+                (conversation_id, chatbot_type, call_type, situation_tags,
+                 knowledge_items_injected, system_prompt, messages_sent,
+                 model_used, tool_calls_made, response_text,
+                 prompt_tokens, completion_tokens, total_tokens, cached_tokens, created_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                data.get("conversation_id"),
+                data.get("chatbot_type", "agent"),
+                data.get("call_type", "reply"),
+                json.dumps(data.get("situation_tags", [])),
+                json.dumps(data.get("knowledge_items_injected", [])),
+                data.get("system_prompt"),
+                json.dumps(data.get("messages_sent")) if data.get("messages_sent") else None,
+                data.get("model_used"),
+                json.dumps(data.get("tool_calls_made", [])),
+                data.get("response_text"),
+                data.get("prompt_tokens", 0),
+                data.get("completion_tokens", 0),
+                data.get("total_tokens", 0),
+                data.get("cached_tokens", 0),
+                _utcnow(),
+            ),
+        )
+        await db.commit()
+        return cursor.lastrowid  # type: ignore[return-value]
+
+
+async def get_api_call_logs(
+    chatbot_type: str | None = None,
+    conversation_id: int | None = None,
+    call_type: str | None = None,
+    limit: int = 50,
+    offset: int = 0,
+) -> list[dict]:
+    """Return api_call_logs list (excludes system_prompt and messages_sent for brevity)."""
+    conditions: list[str] = []
+    params: list = []
+    if chatbot_type:
+        conditions.append("chatbot_type = ?")
+        params.append(chatbot_type)
+    if conversation_id is not None:
+        conditions.append("conversation_id = ?")
+        params.append(conversation_id)
+    if call_type:
+        conditions.append("call_type = ?")
+        params.append(call_type)
+    where = f"WHERE {' AND '.join(conditions)}" if conditions else ""
+    async with get_db() as db:
+        cursor = await db.execute(
+            f"""
+            SELECT id, conversation_id, chatbot_type, call_type,
+                   situation_tags, knowledge_items_injected, model_used,
+                   tool_calls_made, response_text,
+                   prompt_tokens, completion_tokens, total_tokens, cached_tokens, created_at
+            FROM api_call_logs
+            {where}
+            ORDER BY created_at DESC
+            LIMIT ? OFFSET ?
+            """,
+            (*params, limit, offset),
+        )
+        rows = await cursor.fetchall()
+        return _rows_to_dicts(rows)
+
+
+async def get_api_call_log_by_id(log_id: int) -> dict | None:
+    """Return a full api_call_log row by ID (including system_prompt & messages_sent)."""
+    async with get_db() as db:
+        cursor = await db.execute(
+            "SELECT * FROM api_call_logs WHERE id = ?", (log_id,)
+        )
+        row = await cursor.fetchone()
+        return _row_to_dict(row) if row else None
+
+
+async def update_last_response_id(table: str, row_id: int, response_id: str) -> None:
+    """Save a Responses API response_id for session chaining."""
+    if table not in ("conversations", "audiensi_conversations"):
+        raise ValueError(f"Invalid table: {table}")
+    async with get_db() as db:
+        await db.execute(
+            f"UPDATE {table} SET last_response_id = ? WHERE id = ?",
+            (response_id, row_id),
+        )
+        await db.commit()
+
+
+async def clear_last_response_id(table: str, row_id: int) -> None:
+    """Clear last_response_id when session needs to be invalidated."""
+    if table not in ("conversations", "audiensi_conversations"):
+        raise ValueError(f"Invalid table: {table}")
+    async with get_db() as db:
+        await db.execute(
+            f"UPDATE {table} SET last_response_id = NULL WHERE id = ?",
+            (row_id,),
+        )
+        await db.commit()
+
+
+async def clear_all_response_ids(table: str) -> None:
+    """Clear all last_response_id values (e.g. when knowledge base changes)."""
+    if table not in ("conversations", "audiensi_conversations"):
+        raise ValueError(f"Invalid table: {table}")
+    async with get_db() as db:
+        await db.execute(
+            f"UPDATE {table} SET last_response_id = NULL WHERE last_response_id IS NOT NULL"
+        )
+        await db.commit()
+
+
+async def cleanup_old_api_logs(days: int = 7) -> int:
+    """Delete api_call_logs older than *days* days. Return count deleted."""
+    async with get_db() as db:
+        cursor = await db.execute(
+            "DELETE FROM api_call_logs WHERE created_at < datetime('now', ?)",
+            (f"-{days} days",),
+        )
+        await db.commit()
+        return cursor.rowcount

@@ -65,6 +65,13 @@ CONFIG_DEFINITIONS: list[ConfigDef] = [
         description="Instagram Web API session cookie for scraping.",
         sensitive=True,
     ),
+    # --- Chatbot Toggles ---
+    ConfigDef(
+        key="CHATBOT_ENABLED",
+        type=ConfigType.BOOL, default=True, group=ConfigGroup.OUTREACH,
+        label="Contact Finder Chatbot",
+        description="Enable/disable the contact finder chatbot (outreach, replies, follow-ups).",
+    ),
     # --- Rate Limiting ---
     ConfigDef(
         key="MAX_DAILY_CONVERSATIONS",
@@ -215,6 +222,13 @@ CONFIG_DEFINITIONS: list[ConfigDef] = [
         type=ConfigType.STRING, default="", group=ConfigGroup.AUDIENSI,
         label="PDF Template Path",
         description="Custom path to audiensi surat undangan .docx template.",
+    ),
+    ConfigDef(
+        key="API_LOG_RETENTION_DAYS",
+        type=ConfigType.INT, default=7, group=ConfigGroup.AI_AGENT,
+        label="API Log Retention (days)",
+        description="Hapus API call logs yang lebih lama dari N hari.",
+        min_value=1, max_value=90,
     ),
     # --- Knowledge Base ---
     ConfigDef(

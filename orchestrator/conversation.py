@@ -132,7 +132,7 @@ class ConversationManager:
                 agent = ReactAgent()
                 return await agent.generate_initial_message(university_name)
             except Exception as e:
-                log.error("Agentic initial message failed, falling back to legacy: %s", e)
+                log.error("Agentic initial message failed, falling back to legacy: %s", e, exc_info=True)
         return INITIAL_MESSAGE_TEMPLATE.format(university_name=university_name)
 
     async def analyze_reply(
@@ -218,7 +218,7 @@ class ConversationManager:
                 agent = ReactAgent()
                 return await agent.generate_followup_message(conversation, attempt_number)
             except Exception as e:
-                log.error("Agentic followup failed, falling back to legacy: %s", e)
+                log.error("Agentic followup failed, falling back to legacy: %s", e, exc_info=True)
         return await self._generate_followup_legacy(conversation_history, attempt_number)
 
     async def _generate_followup_legacy(
@@ -271,7 +271,7 @@ class ConversationManager:
                     "conversation_state": result.conversation_state,
                 }
             except Exception as e:
-                log.error("Agentic processing failed, falling back to legacy: %s", e)
+                log.error("Agentic processing failed, falling back to legacy: %s", e, exc_info=True)
         return await self._process_incoming_legacy(phone, message, push_name)
 
     async def _process_incoming_legacy(

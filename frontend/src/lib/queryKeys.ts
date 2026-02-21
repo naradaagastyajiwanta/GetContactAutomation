@@ -39,6 +39,11 @@ export const queryKeys = {
     all: ['knowledge'] as const,
     list: (type?: string) => ['knowledge', 'list', type] as const,
   },
+  apiLogs: {
+    all: ['api-logs'] as const,
+    list: (params: Record<string, unknown>) => ['api-logs', 'list', params] as const,
+    detail: (id: number) => ['api-logs', 'detail', id] as const,
+  },
   config: ['config'] as const,
   models: ['config', 'models'] as const,
 }

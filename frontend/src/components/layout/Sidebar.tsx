@@ -10,6 +10,7 @@ import {
   Settings,
   Video,
   BookOpen,
+  ScrollText,
 } from 'lucide-react'
 import { cn } from '../../lib/utils'
 
@@ -21,6 +22,7 @@ const navItems = [
   { to: '/audiensi', label: 'Audiensi', icon: Video },
   { to: '/learning', label: 'Learning', icon: Lightbulb },
   { to: '/knowledge', label: 'Knowledge Base', icon: BookOpen },
+  { to: '/api-logs', label: 'API Logs', icon: ScrollText },
   { to: '/whatsapp', label: 'WhatsApp', icon: Smartphone },
   { to: '/settings', label: 'Settings', icon: Settings },
 ]

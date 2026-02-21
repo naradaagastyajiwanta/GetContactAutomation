@@ -5,6 +5,8 @@ export interface KnowledgeItem {
   chatbot_type: string
   title: string
   content: string
+  situation_tags: string
+  trigger_keywords: string
   is_active: number
   created_at: string
   updated_at: string
@@ -23,6 +25,8 @@ export async function createKnowledgeItem(payload: {
   chatbot_type: string
   title: string
   content: string
+  situation_tags?: string
+  trigger_keywords?: string
 }): Promise<{ id: number; status: string }> {
   const { data } = await apiClient.post('/knowledge-items', payload)
   return data
@@ -30,7 +34,7 @@ export async function createKnowledgeItem(payload: {
 
 export async function updateKnowledgeItem(
   id: number,
-  payload: { title?: string; content?: string; is_active?: boolean },
+  payload: { title?: string; content?: string; is_active?: boolean; situation_tags?: string; trigger_keywords?: string },
 ): Promise<{ status: string }> {
   const { data } = await apiClient.patch(`/knowledge-items/${id}`, payload)
   return data

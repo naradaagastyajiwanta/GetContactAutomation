@@ -189,124 +189,106 @@ async def _mark_audiensi_refused(arguments: dict, context: AgentContext) -> str:
 
 _SCHEMA_LOOKUP_UNIVERSITY_INFO = {
     "type": "function",
-    "function": {
-        "name": "lookup_university_info",
-        "description": "Get university info (name, province, website, rector name, status).",
-        "parameters": {"type": "object", "properties": {}, "required": []},
-    },
+    "name": "lookup_university_info",
+    "description": "Get university info (name, province, website, rector name, status).",
+    "parameters": {"type": "object", "properties": {}, "required": []},
 }
 
 _SCHEMA_LOOKUP_AUDIENSI_CONTEXT = {
     "type": "function",
-    "function": {
-        "name": "lookup_audiensi_context",
-        "description": "Get audiensi-specific context (rector name, PDF sent, scheduled datetime, current state).",
-        "parameters": {"type": "object", "properties": {}, "required": []},
-    },
+    "name": "lookup_audiensi_context",
+    "description": "Get audiensi-specific context (rector name, PDF sent, scheduled datetime, current state).",
+    "parameters": {"type": "object", "properties": {}, "required": []},
 }
 
 _SCHEMA_CHECK_CONVERSATION_HISTORY = {
     "type": "function",
-    "function": {
-        "name": "check_conversation_history",
-        "description": "Get the full message history of the current audiensi conversation.",
-        "parameters": {"type": "object", "properties": {}, "required": []},
-    },
+    "name": "check_conversation_history",
+    "description": "Get the full message history of the current audiensi conversation.",
+    "parameters": {"type": "object", "properties": {}, "required": []},
 }
 
 _SCHEMA_GET_RELEVANT_LESSONS = {
     "type": "function",
-    "function": {
-        "name": "get_relevant_lessons",
-        "description": "Get lessons from past audiensi conversations.",
-        "parameters": {
-            "type": "object",
-            "properties": {
-                "situation_type": {
-                    "type": "string",
-                    "description": "Situation type (audiensi_initial, audiensi_scheduling, audiensi_followup).",
-                },
+    "name": "get_relevant_lessons",
+    "description": "Get lessons from past audiensi conversations.",
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "situation_type": {
+                "type": "string",
+                "description": "Situation type (audiensi_initial, audiensi_scheduling, audiensi_followup).",
             },
-            "required": ["situation_type"],
         },
+        "required": ["situation_type"],
     },
 }
 
 _SCHEMA_SEARCH_SIMILAR_AUDIENSI = {
     "type": "function",
-    "function": {
-        "name": "search_similar_audiensi",
-        "description": "Search past audiensi conversations by province or state.",
-        "parameters": {
-            "type": "object",
-            "properties": {
-                "province": {"type": "string", "description": "Filter by province."},
-                "state": {"type": "string", "description": "Filter by audiensi state."},
-                "limit": {"type": "integer", "description": "Max results.", "default": 5},
-            },
-            "required": [],
+    "name": "search_similar_audiensi",
+    "description": "Search past audiensi conversations by province or state.",
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "province": {"type": "string", "description": "Filter by province."},
+            "state": {"type": "string", "description": "Filter by audiensi state."},
+            "limit": {"type": "integer", "description": "Max results.", "default": 5},
         },
+        "required": [],
     },
 }
 
 _SCHEMA_PROPOSE_MEETING_TIMES = {
     "type": "function",
-    "function": {
-        "name": "propose_meeting_times",
-        "description": "Generate 2-3 meeting time proposals for next available weekdays during business hours WIB.",
-        "parameters": {"type": "object", "properties": {}, "required": []},
-    },
+    "name": "propose_meeting_times",
+    "description": "Generate 2-3 meeting time proposals for next available weekdays during business hours WIB.",
+    "parameters": {"type": "object", "properties": {}, "required": []},
 }
 
 _SCHEMA_CONFIRM_SCHEDULE = {
     "type": "function",
-    "function": {
-        "name": "confirm_schedule",
-        "description": "TERMINAL: Save the agreed meeting datetime. Call this when the contact confirms a specific time.",
-        "parameters": {
-            "type": "object",
-            "properties": {
-                "datetime": {
-                    "type": "string",
-                    "description": "The agreed meeting datetime (ISO format or descriptive).",
-                },
-                "notes": {"type": "string", "description": "Optional notes about the agreement."},
+    "name": "confirm_schedule",
+    "description": "TERMINAL: Save the agreed meeting datetime. Call this when the contact confirms a specific time.",
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "datetime": {
+                "type": "string",
+                "description": "The agreed meeting datetime (ISO format or descriptive).",
             },
-            "required": ["datetime"],
+            "notes": {"type": "string", "description": "Optional notes about the agreement."},
         },
+        "required": ["datetime"],
     },
 }
 
 _SCHEMA_SEND_ZOOM_LINK = {
     "type": "function",
-    "function": {
-        "name": "send_zoom_link",
-        "description": "TERMINAL: Send Zoom meeting link after schedule is confirmed.",
-        "parameters": {
-            "type": "object",
-            "properties": {
-                "zoom_link": {
-                    "type": "string",
-                    "description": "The Zoom meeting link to send. Leave empty to use default.",
-                },
+    "name": "send_zoom_link",
+    "description": "TERMINAL: Send Zoom meeting link after schedule is confirmed.",
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "zoom_link": {
+                "type": "string",
+                "description": "The Zoom meeting link to send. Leave empty to use default.",
             },
-            "required": [],
         },
+        "required": [],
     },
 }
 
 _SCHEMA_MARK_AUDIENSI_REFUSED = {
     "type": "function",
-    "function": {
-        "name": "mark_audiensi_refused",
-        "description": "TERMINAL: Mark the audiensi as refused by the contact.",
-        "parameters": {
-            "type": "object",
-            "properties": {
-                "reason": {"type": "string", "description": "Reason for refusal."},
-            },
-            "required": [],
+    "name": "mark_audiensi_refused",
+    "description": "TERMINAL: Mark the audiensi as refused by the contact.",
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "reason": {"type": "string", "description": "Reason for refusal."},
         },
+        "required": [],
     },
 }
 
