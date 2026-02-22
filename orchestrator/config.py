@@ -79,6 +79,73 @@ PHONE_PATTERNS = [
 ]
 
 
+# ---------------------------------------------------------------------------
+# Model compatibility helpers
+# ---------------------------------------------------------------------------
+# Reasoning models (o-series, GPT-5) do NOT support temperature/top_p,
+# use max_completion_tokens instead of max_tokens in Chat Completions API,
+# and need a larger output-token budget because reasoning tokens count
+# towards max_output_tokens / max_completion_tokens.
+
+_NO_TEMPERATURE_PREFIXES = ("o1", "o3", "o4", "gpt-5")
+
+# Minimum output-token budget for reasoning models.  Reasoning tokens are
+# invisible but count towards the limit — if the budget is too small the
+# model spends everything on reasoning and returns no visible message.
+_REASONING_MIN_OUTPUT_TOKENS = 4096
+
+
+def is_reasoning_model(model: str) -> bool:
+    """Return True if *model* does not support temperature/top_p parameters.
+
+    Covers o-series reasoning models and GPT-5 family.
+    """
+    m = model.lower().strip()
+    return any(m.startswith(p) for p in _NO_TEMPERATURE_PREFIXES)
+
+
+def _boost_for_reasoning(model: str, tokens: int) -> int:
+    """Ensure reasoning models have enough output-token budget."""
+    if is_reasoning_model(model):
+        return max(tokens, _REASONING_MIN_OUTPUT_TOKENS)
+    return tokens
+
+
+def chat_kwargs(
+    model: str,
+    *,
+    temperature: float | None = None,
+    max_tokens: int | None = None,
+) -> dict:
+    """Build safe sampling kwargs for ``chat.completions.create()``."""
+    params: dict = {}
+    if not is_reasoning_model(model):
+        if temperature is not None:
+            params["temperature"] = temperature
+    if max_tokens is not None:
+        if is_reasoning_model(model):
+            params["max_completion_tokens"] = _boost_for_reasoning(model, max_tokens)
+        else:
+            params["max_tokens"] = max_tokens
+    return params
+
+
+def responses_kwargs(
+    model: str,
+    *,
+    temperature: float | None = None,
+    max_output_tokens: int | None = None,
+) -> dict:
+    """Build safe sampling kwargs for ``responses.create()``."""
+    params: dict = {}
+    if not is_reasoning_model(model):
+        if temperature is not None:
+            params["temperature"] = temperature
+    if max_output_tokens is not None:
+        params["max_output_tokens"] = _boost_for_reasoning(model, max_output_tokens)
+    return params
+
+
 # Logging
 def setup_logger(name: str = "getcontact") -> logging.Logger:
     logger = logging.getLogger(name)

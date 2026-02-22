@@ -5,6 +5,7 @@ Run: uvicorn orchestrator.main:app --port 8000 --reload
 import asyncio
 import csv
 import io
+from collections import OrderedDict
 from contextlib import asynccontextmanager
 from typing import Any, Optional
 
@@ -46,6 +47,8 @@ from orchestrator.db import (
     get_api_call_log_by_id,
     cleanup_old_api_logs,
     clear_all_response_ids,
+    get_audiensi_conversation_by_phone,
+    update_audiensi_state,
 )
 from orchestrator.config_registry import (
     CONFIG_DEFINITIONS,
@@ -71,6 +74,33 @@ learning_system = LearningSystem()
 
 _TERMINAL_STATES = {"GOT_NUMBER", "REFUSED", "ABANDONED"}
 _AUDIENSI_TERMINAL_STATES = {"ZOOM_SENT", "REFUSED", "ABANDONED"}
+
+# ---------------------------------------------------------------------------
+# Per-phone concurrency lock (prevents race conditions from overlapping
+# debounce windows delivering two messages for the same phone concurrently)
+# ---------------------------------------------------------------------------
+
+_phone_locks: OrderedDict[str, asyncio.Lock] = OrderedDict()
+_phone_locks_guard = asyncio.Lock()
+_MAX_PHONE_LOCKS = 5000
+
+
+async def _get_phone_lock(phone: str) -> asyncio.Lock:
+    """Return an asyncio.Lock for *phone*, creating one if needed.
+
+    Uses an LRU strategy: the most-recently-used lock is moved to the end
+    of the OrderedDict.  When the dict exceeds ``_MAX_PHONE_LOCKS`` entries
+    the oldest (least-recently-used) entry is evicted.
+    """
+    async with _phone_locks_guard:
+        if phone in _phone_locks:
+            _phone_locks.move_to_end(phone)
+            return _phone_locks[phone]
+        if len(_phone_locks) >= _MAX_PHONE_LOCKS:
+            _phone_locks.popitem(last=False)  # evict oldest
+        lock = asyncio.Lock()
+        _phone_locks[phone] = lock
+        return lock
 
 
 # ---------------------------------------------------------------------------
@@ -194,55 +224,66 @@ async def _process_incoming(
         log.info(f"Paused – ignoring incoming message from {raw_phone}")
         return
 
-    # Try audiensi chatbot first (phase 2 conversations)
-    if cfg.AUDIENSI_ENABLED:
+    # Acquire per-phone lock to prevent concurrent processing of messages
+    # from the same phone number (avoids duplicate responses & state corruption).
+    lock = await _get_phone_lock(normalized_phone)
+    async with lock:
+        # Try audiensi chatbot first (phase 2 conversations)
+        if cfg.AUDIENSI_ENABLED:
+            try:
+                from orchestrator.audiensi.conversation import audiensi_conversation_manager
+                from orchestrator.audiensi.states import AudiensiState
+
+                aud = await get_audiensi_conversation_by_phone(normalized_phone)
+                if aud and aud["state"] not in AudiensiState.terminal_states():
+                    log.info(f"Routing to audiensi handler for {raw_phone}")
+                    result = await message_queue.process_with_ai(
+                        audiensi_conversation_manager.process_incoming_message(
+                            normalized_phone, message, push_name=push_name,
+                        )
+                    )
+                    if result.get("response_message"):
+                        await message_queue.enqueue_send(
+                            raw_phone, result["response_message"],
+                            reply_to_msg_key=msg_key, all_msg_keys=all_msg_keys,
+                        )
+                    # Trigger post-audiensi analysis for terminal states
+                    if result.get("conversation_state") in _AUDIENSI_TERMINAL_STATES and cfg.LEARNING_ENABLED:
+                        asyncio.create_task(learning_system.analyze_completed_audiensi(aud["id"]))
+                    return
+            except Exception as e:
+                log.warning(f"Audiensi routing check failed: {e}")
+
+        # Default: chatbot 1 (contact finder)
+        if not cfg.CHATBOT_ENABLED:
+            log.info(f"Contact finder chatbot disabled – ignoring message from {raw_phone}")
+            return
+
         try:
-            from orchestrator.db import get_audiensi_conversation_by_phone
-            from orchestrator.audiensi.conversation import audiensi_conversation_manager
-            from orchestrator.audiensi.states import AudiensiState
-
-            aud = await get_audiensi_conversation_by_phone(normalized_phone)
-            if aud and aud["state"] not in AudiensiState.terminal_states():
-                log.info(f"Routing to audiensi handler for {raw_phone}")
-                result = await message_queue.process_with_ai(
-                    audiensi_conversation_manager.process_incoming_message(
-                        normalized_phone, message, push_name=push_name,
-                    )
+            log.info(f"Processing message from {raw_phone} with AI (model: {cfg.AGENT_MODEL})...")
+            result = await message_queue.process_with_ai(
+                conversation_manager.process_incoming_message(
+                    normalized_phone, message, push_name=push_name,
                 )
-                if result.get("response_message"):
-                    await message_queue.enqueue_send(
-                        raw_phone, result["response_message"],
-                        reply_to_msg_key=msg_key, all_msg_keys=all_msg_keys,
-                    )
-                # Trigger post-audiensi analysis for terminal states
-                if result.get("conversation_state") in _AUDIENSI_TERMINAL_STATES and cfg.LEARNING_ENABLED:
-                    asyncio.create_task(learning_system.analyze_completed_audiensi(aud["id"]))
-                return
+            )
+            log.info(f"AI processing done for {raw_phone}: action={result.get('action')}")
         except Exception as e:
-            log.warning(f"Audiensi routing check failed: {e}")
+            log.error(f"Failed to process message from {raw_phone}: {e}", exc_info=True)
+            return
 
-    # Default: chatbot 1 (contact finder)
-    if not cfg.CHATBOT_ENABLED:
-        log.info(f"Contact finder chatbot disabled – ignoring message from {raw_phone}")
-        return
+        if result.get("response_message"):
+            await message_queue.enqueue_send(
+                raw_phone, result["response_message"],
+                reply_to_msg_key=msg_key, all_msg_keys=all_msg_keys,
+            )
+        else:
+            log.warning(f"No response_message generated for {raw_phone}")
 
-    result = await message_queue.process_with_ai(
-        conversation_manager.process_incoming_message(
-            normalized_phone, message, push_name=push_name,
-        )
-    )
-
-    if result.get("response_message"):
-        await message_queue.enqueue_send(
-            raw_phone, result["response_message"],
-            reply_to_msg_key=msg_key, all_msg_keys=all_msg_keys,
-        )
-
-    # Trigger post-conversation analysis for terminal states
-    if result.get("conversation_state") in _TERMINAL_STATES and cfg.LEARNING_ENABLED:
-        conv = await get_conversation_by_phone(normalized_phone)
-        if conv:
-            asyncio.create_task(learning_system.analyze_completed_conversation(conv["id"]))
+        # Trigger post-conversation analysis for terminal states
+        if result.get("conversation_state") in _TERMINAL_STATES and cfg.LEARNING_ENABLED:
+            conv = await get_conversation_by_phone(normalized_phone)
+            if conv:
+                asyncio.create_task(learning_system.analyze_completed_conversation(conv["id"]))
 
 
 # ---------------------------------------------------------------------------
@@ -550,9 +591,11 @@ async def list_conversations(
 @app.get("/conversations/{conversation_id}")
 async def get_conversation(conversation_id: int):
     """Get a single conversation by ID."""
+    from orchestrator.db import get_audiensi_by_source_conversation_id
     conv = await get_conversation_by_id(conversation_id)
     if not conv:
         return JSONResponse(status_code=404, content={"detail": "Conversation not found"})
+    conv["linked_audiensi"] = await get_audiensi_by_source_conversation_id(conversation_id)
     return conv
 
 
@@ -590,6 +633,24 @@ async def start_test_conversation(payload: TestConversationPayload):
                     "detail": f"Active conversation already exists for {phone}",
                     "existing_id": existing["id"],
                     "existing_state": existing["state"],
+                },
+            )
+
+    # Also abandon any active audiensi conversation for this phone,
+    # otherwise incoming replies get routed to audiensi instead of the test.
+    from orchestrator.audiensi.states import AudiensiState
+    existing_aud = await get_audiensi_conversation_by_phone(phone)
+    if existing_aud and existing_aud["state"] not in AudiensiState.terminal_states():
+        if payload.force:
+            await update_audiensi_state(existing_aud["id"], "REFUSED")
+            log.info("Force-abandoned existing audiensi %d for test", existing_aud["id"])
+        else:
+            return JSONResponse(
+                status_code=409,
+                content={
+                    "detail": f"Active audiensi conversation exists for {phone}",
+                    "existing_audiensi_id": existing_aud["id"],
+                    "existing_state": existing_aud["state"],
                 },
             )
 

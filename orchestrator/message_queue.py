@@ -7,6 +7,9 @@ import httpx
 
 from orchestrator.config import WA_SERVICE_URL, log, cfg
 
+MAX_SEND_RETRIES = 3
+RETRY_DELAYS = [2, 5, 10]  # seconds – exponential backoff
+
 
 class MessageQueue:
     """Controls AI concurrency (semaphore) and serial WA message sending (queue)."""
@@ -81,6 +84,58 @@ class MessageQueue:
         await self._send_queue.put(payload)
         log.info("Enqueued WA document to %s (%s, queue size: %d)", phone, file_name, self._send_queue.qsize())
 
+    async def _send_single(self, client: httpx.AsyncClient, payload: dict) -> bool:
+        """Try to send a single message with retry. Returns True on success."""
+        msg_type = payload.get("_type", "text")
+        endpoint = "/send-document" if msg_type == "document" else "/send"
+        send_payload = {k: v for k, v in payload.items() if k != "_type"}
+
+        for attempt in range(MAX_SEND_RETRIES + 1):
+            try:
+                resp = await client.post(
+                    f"{WA_SERVICE_URL}/{endpoint.lstrip('/')}",
+                    json=send_payload,
+                )
+                resp.raise_for_status()
+                data = resp.json()
+                if data.get("success"):
+                    log.info("Sent WA %s to %s", msg_type, payload["to"])
+                    return True
+                else:
+                    error = data.get("error", "unknown")
+                    # "not connected" is transient — worth retrying
+                    if "not connected" in error.lower():
+                        if attempt < MAX_SEND_RETRIES:
+                            delay = RETRY_DELAYS[attempt]
+                            log.warning(
+                                "WA not connected, retry %d/%d in %ds",
+                                attempt + 1, MAX_SEND_RETRIES, delay,
+                            )
+                            await asyncio.sleep(delay)
+                            continue
+                    # Permanent failure or retries exhausted
+                    log.error("WA send failed for %s: %s", payload["to"], error)
+                    return False
+            except (httpx.ConnectError, httpx.TimeoutException, httpx.HTTPStatusError) as exc:
+                if attempt < MAX_SEND_RETRIES:
+                    delay = RETRY_DELAYS[attempt]
+                    log.warning(
+                        "WA send error (retry %d/%d in %ds): %s",
+                        attempt + 1, MAX_SEND_RETRIES, delay, exc,
+                    )
+                    await asyncio.sleep(delay)
+                else:
+                    log.critical(
+                        "WA send FAILED after %d retries for %s: %s",
+                        MAX_SEND_RETRIES, payload["to"], exc,
+                    )
+                    return False
+            except Exception as exc:
+                # Unexpected / non-retryable error — don't retry
+                log.error("WA send unexpected error for %s: %s", payload["to"], exc)
+                return False
+        return False
+
     async def send_worker(self) -> None:
         """Background loop that drains the send queue one message at a time."""
         log.info("Send-worker started (interval read from cfg.SEND_INTERVAL_MS)")
@@ -88,25 +143,7 @@ class MessageQueue:
             while True:
                 payload = await self._send_queue.get()
                 try:
-                    msg_type = payload.pop("_type", "text")
-                    if msg_type == "document":
-                        resp = await client.post(
-                            f"{WA_SERVICE_URL}/send-document",
-                            json=payload,
-                        )
-                    else:
-                        resp = await client.post(
-                            f"{WA_SERVICE_URL}/send",
-                            json=payload,
-                        )
-                    resp.raise_for_status()
-                    data = resp.json()
-                    if data.get("success"):
-                        log.info("Sent WA %s to %s", msg_type, payload["to"])
-                    else:
-                        log.error("WA send failed for %s: %s", payload["to"], data.get("error", "unknown"))
-                except Exception as exc:
-                    log.error("Failed to send WA message to %s: %s", payload["to"], exc)
+                    await self._send_single(client, payload)
                 finally:
                     self._send_queue.task_done()
                 await asyncio.sleep(cfg.SEND_INTERVAL_MS / 1000.0)

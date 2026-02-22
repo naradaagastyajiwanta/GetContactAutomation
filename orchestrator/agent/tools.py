@@ -8,10 +8,56 @@ Each tool has:
 from __future__ import annotations
 
 import json
+from datetime import datetime, timezone, timedelta
 from typing import Callable, Awaitable
 
 from orchestrator import db
+from orchestrator.config import log, cfg
 from orchestrator.agent.schemas import AgentContext
+
+WIB = timezone(timedelta(hours=7))
+
+_HARI = ["Senin", "Selasa", "Rabu", "Kamis", "Jumat", "Sabtu", "Minggu"]
+_BULAN = ["", "Januari", "Februari", "Maret", "April", "Mei", "Juni",
+          "Juli", "Agustus", "September", "Oktober", "November", "Desember"]
+
+
+def _format_tanggal_id(dt: datetime) -> str:
+    """Format a datetime as Indonesian locale string, e.g. 'Senin, 24 Februari 2026'."""
+    return f"{_HARI[dt.weekday()]}, {dt.day} {_BULAN[dt.month]} {dt.year}"
+
+
+# ---------------------------------------------------------------------------
+# Shared helpers
+# ---------------------------------------------------------------------------
+
+
+async def _resolve_university(
+    context: AgentContext, university_name_arg: str = "",
+) -> tuple[int | None, str, str | None]:
+    """Resolve university_id, name, and province from context or by searching DB.
+
+    Returns (university_id, university_name, province).
+    """
+    # 1. Try context.university_id first
+    if context.university_id:
+        uni = await db.get_university_by_id(context.university_id)
+        if uni:
+            return uni["id"], uni["name"], uni.get("province")
+
+    # 2. Try searching by name
+    name = university_name_arg or context.university_name
+    if name:
+        results = await db.search_universities(name)
+        if results:
+            best = results[0]
+            return best["id"], best["name"], best.get("province")
+        # 3. Create new university record
+        new_id = await db.add_university(name)
+        return new_id, name, None
+
+    return None, "", None
+
 
 # ---------------------------------------------------------------------------
 # Tool implementations
@@ -19,12 +65,19 @@ from orchestrator.agent.schemas import AgentContext
 
 
 async def _lookup_university_info(arguments: dict, context: AgentContext) -> str:
-    """Get university info from DB using the context's university_id."""
-    if context.university_id is None:
-        return json.dumps({"error": "No university_id in context"})
-    uni = await db.get_university_by_id(context.university_id)
+    """Get university info from DB using the context's university_id or name."""
+    uni_id, uni_name, province = await _resolve_university(context)
+
+    if uni_id is None:
+        return json.dumps({
+            "note": "Tidak ada data universitas di database. Gunakan informasi dari percakapan.",
+        })
+
+    uni = await db.get_university_by_id(uni_id)
     if uni is None:
-        return json.dumps({"error": f"University {context.university_id} not found"})
+        return json.dumps({
+            "note": "Tidak ada data universitas di database. Gunakan informasi dari percakapan.",
+        })
     return json.dumps({
         "name": uni.get("name"),
         "province": uni.get("province"),
@@ -40,8 +93,8 @@ async def _validate_phone_number(arguments: dict, context: AgentContext) -> str:
     number = arguments.get("number", "")
     result = db.validate_phone(number)
     if result:
-        return json.dumps({"valid": True, "e164": result})
-    return json.dumps({"valid": False, "reason": "Not a valid Indonesian phone number"})
+        return json.dumps({"valid": True, "formatted": result, "note": "Nomor valid. Langsung save kalau sudah yakin, JANGAN expose format ini ke kontak."})
+    return json.dumps({"valid": False, "reason": "Nomor tidak valid atau tidak lengkap. Minta kontak kirim ulang."})
 
 
 async def _search_similar_conversations(arguments: dict, context: AgentContext) -> str:
@@ -89,10 +142,18 @@ async def _check_conversation_history(arguments: dict, context: AgentContext) ->
 
 async def _save_extracted_number(arguments: dict, context: AgentContext) -> str:
     """TERMINAL: Save a phone number extracted from the conversation."""
-    phone_number = arguments.get("phone_number", "")
-    notes = arguments.get("notes", "")
-    contact_name = arguments.get("contact_name", "")
-    contact_role = arguments.get("contact_role", "")
+    phone_number = arguments.get("phone_number") or ""
+    notes = arguments.get("notes") or ""
+    contact_name = arguments.get("contact_name") or ""
+    contact_role = arguments.get("contact_role") or ""
+
+    # Enforce: must have at least contact_name
+    if not contact_name.strip():
+        return json.dumps({
+            "success": False,
+            "error": "Belum ada nama pemilik nomor. Tanyakan dulu nama kontak sebelum menyimpan.",
+            "hint": "Tanya secara natural: 'Terima kasih! Ini nomornya siapa ya?'"
+        })
 
     validated = db.validate_phone(phone_number)
     if not validated:
@@ -118,13 +179,14 @@ async def _save_extracted_number(arguments: dict, context: AgentContext) -> str:
         from orchestrator.audiensi.auto_queue import create_audiensi_from_success
         import asyncio
         asyncio.create_task(create_audiensi_from_success(context.conversation_id))
-    except Exception:
-        pass  # Audiensi module may not be available
+    except ImportError:
+        pass  # Audiensi module not installed
+    except Exception as e:
+        log.error("Failed to auto-queue audiensi for conversation %d: %s", context.conversation_id, e)
 
     return json.dumps({
         "success": True,
-        "phone_e164": validated,
-        "notes": notes,
+        "note": "Nomor berhasil disimpan. Ucapkan terima kasih secara singkat dan natural. JANGAN sebut nomor atau format teknis.",
     })
 
 
@@ -269,6 +331,235 @@ _SCHEMA_MARK_CONVERSATION_REFUSED = {
 
 
 # ---------------------------------------------------------------------------
+# Audiensi tools (available in chatbot 1 for direct scheduling)
+# ---------------------------------------------------------------------------
+
+
+async def _generate_and_send_invitation(arguments: dict, context: AgentContext) -> str:
+    """Generate invitation document and send it via WhatsApp."""
+    rector_name = arguments.get("rector_name") or ""
+    university_name_arg = arguments.get("university_name") or ""
+
+    # Resolve university dynamically
+    uni_id, uni_name, province = await _resolve_university(context, university_name_arg)
+
+    if not uni_id:
+        return json.dumps({
+            "success": False,
+            "note": "Belum bisa kirim surat sekarang. Tanya nama kampusnya dulu dari kontak supaya bisa disiapkan suratnya.",
+        })
+
+    # Find or create audiensi record
+    aud = await db.get_audiensi_conversation_by_phone(context.contact_phone)
+    if aud:
+        aud_id = aud["id"]
+        # Don't downgrade state if audiensi is already past INITIAL_SENT
+        _NO_DOWNGRADE_STATES = {"SCHEDULING", "SCHEDULED", "ZOOM_SENT"}
+        if aud["state"] in _NO_DOWNGRADE_STATES:
+            return json.dumps({
+                "success": True,
+                "note": f"Surat sudah pernah dikirim sebelumnya dan audiensi sudah dalam proses ({aud['state']}). Lanjutkan jadwalkan meeting.",
+            })
+    else:
+        aud_id = await db.create_audiensi_conversation(
+            university_id=uni_id,
+            source_conversation_id=context.conversation_id,
+            contact_phone=context.contact_phone,
+            rector_name=rector_name or None,
+        )
+        aud = None
+
+    # Update rector name if provided
+    if rector_name:
+        current_state = aud["state"] if aud else "APPROVED"
+        await db.update_audiensi_state(aud_id, current_state, rector_name=rector_name)
+
+    # Generate document
+    from orchestrator.audiensi.pdf_generator import generate_audiensi_document, template_exists
+    if not template_exists():
+        return json.dumps({
+            "success": False,
+            "note": "Template surat sedang dalam persiapan. Sampaikan ke kontak bahwa surat undangan akan segera dikirimkan.",
+        })
+
+    pdf_path = await generate_audiensi_document(
+        audiensi_id=aud_id,
+        university_name=uni_name,
+        rector_name=rector_name or "Rektor",
+        province=province,
+    )
+    if not pdf_path:
+        return json.dumps({
+            "success": False,
+            "note": "Surat sedang diproses, mungkin butuh waktu sebentar. Sampaikan ke kontak bahwa surat akan segera dikirim.",
+        })
+
+    await db.update_audiensi_state(aud_id, "INITIAL_SENT", pdf_path=pdf_path)
+
+    # Send document via WhatsApp
+    from pathlib import Path
+    from orchestrator.message_queue import message_queue
+    file_ext = Path(pdf_path).suffix  # .pdf or .docx
+    await message_queue.enqueue_send_document(
+        phone=context.contact_phone,
+        file_path=pdf_path,
+        file_name=f"Surat_Undangan_Audiensi_{uni_name.replace(' ', '_')}{file_ext}",
+        caption=f"Surat undangan audiensi untuk {uni_name}",
+    )
+
+    return json.dumps({
+        "success": True,
+        "note": "Surat undangan berhasil dikirim. Informasikan ke kontak bahwa surat sudah dikirim.",
+    })
+
+
+async def _propose_meeting_times(arguments: dict, context: AgentContext) -> str:
+    """Generate 2-3 meeting time proposals for next weekdays during business hours WIB."""
+    now = datetime.now(WIB)
+    proposals = []
+    days_checked = 0
+
+    while len(proposals) < 3 and days_checked < 14:
+        days_checked += 1
+        candidate = now + timedelta(days=days_checked)
+        if candidate.weekday() >= 5:
+            continue
+        if len(proposals) < 3:
+            proposals.append({
+                "date": _format_tanggal_id(candidate),
+                "time": "10:00 WIB",
+                "datetime_iso": candidate.replace(hour=10, minute=0).isoformat(),
+            })
+        if len(proposals) < 3:
+            proposals.append({
+                "date": _format_tanggal_id(candidate),
+                "time": "14:00 WIB",
+                "datetime_iso": candidate.replace(hour=14, minute=0).isoformat(),
+            })
+
+    return json.dumps({
+        "proposals": proposals[:3],
+        "note": "Tawarkan waktu-waktu ini secara natural, JANGAN tampilkan format ISO.",
+    })
+
+
+async def _confirm_and_send_zoom(arguments: dict, context: AgentContext) -> str:
+    """TERMINAL: Confirm schedule and send Zoom link in one step."""
+    scheduled_datetime = arguments.get("datetime", "")
+    zoom_link = arguments.get("zoom_link", "")
+    university_name_arg = arguments.get("university_name", "")
+
+    if not zoom_link:
+        zoom_link = cfg.AUDIENSI_ZOOM_LINK_TEMPLATE or "https://zoom.us/j/placeholder"
+
+    # Find or create audiensi record
+    aud = await db.get_audiensi_conversation_by_phone(context.contact_phone)
+    if aud:
+        aud_id = aud["id"]
+    else:
+        # Resolve university dynamically
+        uni_id, uni_name, province = await _resolve_university(context, university_name_arg)
+        if not uni_id:
+            return json.dumps({
+                "success": False,
+                "note": "Belum bisa simpan jadwal. Tanya nama kampusnya dulu dari kontak.",
+            })
+        aud_id = await db.create_audiensi_conversation(
+            university_id=uni_id,
+            source_conversation_id=context.conversation_id,
+            contact_phone=context.contact_phone,
+        )
+
+    # Update schedule and zoom link
+    await db.update_audiensi_state(
+        aud_id, "ZOOM_SENT",
+        scheduled_datetime=scheduled_datetime,
+        zoom_link=zoom_link,
+    )
+
+    # Also update chatbot 1 conversation state
+    if context.conversation_id:
+        await db.update_conversation_state(context.conversation_id, "GOT_NUMBER")
+
+    return json.dumps({
+        "success": True,
+        "zoom_link": zoom_link,
+        "note": "Jadwal dan Zoom link tersimpan. Kirim link Zoom ke kontak dan ucapkan terima kasih.",
+    })
+
+
+# ---------------------------------------------------------------------------
+# Audiensi tool schemas
+# ---------------------------------------------------------------------------
+
+_SCHEMA_GENERATE_AND_SEND_INVITATION = {
+    "type": "function",
+    "name": "generate_and_send_invitation",
+    "description": (
+        "Generate surat undangan audiensi (DOCX) dan kirim ke kontak via WhatsApp. "
+        "Panggil ini kalau kontak mau bantu atur audiensi langsung dan kamu mau kirim surat resmi. "
+        "Isi university_name kalau kampus belum terdata di sistem."
+    ),
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "rector_name": {
+                "type": "string",
+                "description": "Nama rektor universitas (kalau sudah tahu). Kosongkan kalau belum tahu.",
+            },
+            "university_name": {
+                "type": "string",
+                "description": "Nama universitas (wajib kalau kampus belum terdata di sistem, misal percakapan test).",
+            },
+        },
+        "required": [],
+    },
+}
+
+_SCHEMA_PROPOSE_MEETING_TIMES = {
+    "type": "function",
+    "name": "propose_meeting_times",
+    "description": (
+        "Generate 2-3 opsi waktu meeting Zoom di hari kerja jam kantor WIB. "
+        "Panggil ini kalau kontak siap menjadwalkan audiensi."
+    ),
+    "parameters": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+    },
+}
+
+_SCHEMA_CONFIRM_AND_SEND_ZOOM = {
+    "type": "function",
+    "name": "confirm_and_send_zoom",
+    "description": (
+        "TERMINAL: Simpan jadwal meeting dan kirim link Zoom. "
+        "Panggil ini setelah kontak menyetujui waktu audiensi. "
+        "Ini mengakhiri percakapan."
+    ),
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "datetime": {
+                "type": "string",
+                "description": "Waktu meeting yang disepakati (format bebas, misal 'Senin 24 Feb 2026 jam 10 WIB').",
+            },
+            "zoom_link": {
+                "type": "string",
+                "description": "Link Zoom (kosongkan untuk pakai link default dari config).",
+            },
+            "university_name": {
+                "type": "string",
+                "description": "Nama universitas (wajib kalau kampus belum terdata di sistem).",
+            },
+        },
+        "required": ["datetime"],
+    },
+}
+
+
+# ---------------------------------------------------------------------------
 # Exported registries
 # ---------------------------------------------------------------------------
 
@@ -280,6 +571,10 @@ TOOL_SCHEMAS: list[dict] = [
     _SCHEMA_CHECK_CONVERSATION_HISTORY,
     _SCHEMA_SAVE_EXTRACTED_NUMBER,
     _SCHEMA_MARK_CONVERSATION_REFUSED,
+    # Audiensi tools
+    _SCHEMA_GENERATE_AND_SEND_INVITATION,
+    _SCHEMA_PROPOSE_MEETING_TIMES,
+    _SCHEMA_CONFIRM_AND_SEND_ZOOM,
 ]
 
 TOOL_IMPLEMENTATIONS: dict[str, Callable[..., Awaitable[str]]] = {
@@ -290,6 +585,10 @@ TOOL_IMPLEMENTATIONS: dict[str, Callable[..., Awaitable[str]]] = {
     "check_conversation_history": _check_conversation_history,
     "save_extracted_number": _save_extracted_number,
     "mark_conversation_refused": _mark_conversation_refused,
+    # Audiensi tools
+    "generate_and_send_invitation": _generate_and_send_invitation,
+    "propose_meeting_times": _propose_meeting_times,
+    "confirm_and_send_zoom": _confirm_and_send_zoom,
 }
 
-TERMINAL_TOOLS: set[str] = {"save_extracted_number", "mark_conversation_refused"}
+TERMINAL_TOOLS: set[str] = {"save_extracted_number", "mark_conversation_refused", "confirm_and_send_zoom"}

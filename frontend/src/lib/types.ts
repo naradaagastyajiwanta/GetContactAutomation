@@ -58,6 +58,14 @@ export interface Conversation {
   is_test?: boolean
   created_at: string
   agent_reasoning?: string | null
+  linked_audiensi?: {
+    id: number
+    state: AudiensiState
+    university_name?: string
+    scheduled_datetime: string | null
+    zoom_link: string | null
+    created_at: string
+  } | null
 }
 
 export type ConversationState =

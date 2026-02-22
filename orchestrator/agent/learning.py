@@ -11,7 +11,7 @@ from datetime import datetime, timezone
 
 from openai import AsyncOpenAI
 
-from orchestrator.config import MAX_LESSONS_IN_PROMPT, log, cfg
+from orchestrator.config import MAX_LESSONS_IN_PROMPT, log, cfg, chat_kwargs
 from orchestrator.db import (
     get_conversation_by_id,
     get_university_by_id,
@@ -132,8 +132,7 @@ class LearningSystem:
                     {"role": "system", "content": ANALYSIS_SYSTEM_PROMPT},
                     {"role": "user", "content": user_content},
                 ],
-                max_tokens=500,
-                temperature=0.2,
+                **chat_kwargs(cfg.AGENT_MODEL, temperature=0.2, max_tokens=500),
             )
             raw = resp.choices[0].message.content.strip()
             analysis = _parse_json_response(raw)
@@ -257,8 +256,7 @@ class LearningSystem:
                     {"role": "system", "content": ANALYSIS_SYSTEM_PROMPT},
                     {"role": "user", "content": user_content},
                 ],
-                max_tokens=500,
-                temperature=0.2,
+                **chat_kwargs(cfg.AGENT_MODEL, temperature=0.2, max_tokens=500),
             )
             raw = resp.choices[0].message.content.strip()
             analysis = _parse_json_response(raw)
@@ -431,8 +429,7 @@ class LearningSystem:
                     {"role": "system", "content": REFLECTION_SYSTEM_PROMPT},
                     {"role": "user", "content": user_content},
                 ],
-                max_tokens=800,
-                temperature=0.3,
+                **chat_kwargs(cfg.AGENT_MODEL, temperature=0.3, max_tokens=800),
             )
             raw = resp.choices[0].message.content.strip()
             result = _parse_json_response(raw)

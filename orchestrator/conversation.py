@@ -8,7 +8,7 @@ from enum import Enum
 
 from openai import AsyncOpenAI
 
-from orchestrator.config import log, cfg
+from orchestrator.config import log, cfg, chat_kwargs
 from orchestrator.db import (
     validate_phone,
     get_conversation_by_phone,
@@ -179,8 +179,7 @@ class ConversationManager:
         resp = await client.chat.completions.create(
             model=cfg.AGENT_MODEL,
             messages=messages,
-            max_tokens=300,
-            temperature=0.1,
+            **chat_kwargs(cfg.AGENT_MODEL, temperature=0.1, max_tokens=300),
         )
 
         text = resp.choices[0].message.content.strip()
@@ -246,8 +245,7 @@ class ConversationManager:
         resp = await client.chat.completions.create(
             model=cfg.AGENT_MODEL,
             messages=messages,
-            max_tokens=200,
-            temperature=0.7,
+            **chat_kwargs(cfg.AGENT_MODEL, temperature=0.7, max_tokens=200),
         )
         return resp.choices[0].message.content.strip()
 

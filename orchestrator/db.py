@@ -1528,6 +1528,22 @@ async def update_university_rector_name(uni_id: int, rector_name: str) -> None:
         await db.commit()
 
 
+async def get_audiensi_by_source_conversation_id(conv_id: int) -> dict | None:
+    """Return audiensi conversation linked to a source outreach conversation."""
+    async with get_db() as db:
+        cursor = await db.execute(
+            """SELECT a.id, a.state, a.scheduled_datetime, a.zoom_link, a.created_at,
+                      u.name AS university_name
+               FROM audiensi_conversations a
+               LEFT JOIN universities u ON u.id = a.university_id
+               WHERE a.source_conversation_id = ?
+               ORDER BY a.created_at DESC LIMIT 1""",
+            (conv_id,),
+        )
+        row = await cursor.fetchone()
+        return _row_to_dict(row) if row else None
+
+
 async def get_audiensi_needing_followup(hours_threshold: int) -> list[dict]:
     """Return audiensi conversations needing follow-up."""
     async with get_db() as db:

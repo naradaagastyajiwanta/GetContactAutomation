@@ -24,11 +24,12 @@ OUTPUT_DIR = Path("data/audiensi_docs")
 
 # Available placeholders with descriptions
 PLACEHOLDERS = {
-    "nama_universitas": "Nama universitas (e.g. 'Universitas Prisma')",
-    "nama_rektor": "Nama rektor atau 'Rektor' jika belum diketahui",
-    "tanggal_surat": "Tanggal surat (e.g. '20 Februari 2026')",
-    "provinsi": "Provinsi universitas",
+    "nama": "Nama penerima / rektor (e.g. 'Prof. Dr. Budi')",
+    "Tanggal": "Tanggal surat (e.g. '20 Februari 2026')",
     "nomor_surat": "Nomor surat otomatis (e.g. '001/AAI/AUD/II/2026')",
+    "Universitas": "Nama universitas (e.g. 'Universitas Prisma')",
+    "nama_universitas": "Nama universitas (alias)",
+    "provinsi": "Provinsi universitas",
 }
 
 # Indonesian month names
@@ -99,11 +100,16 @@ async def generate_audiensi_document(
         # Prepare replacement values
         now = datetime.now(WIB)
         replacements = {
+            # Placeholders matching the actual template
+            "{{nama}}": rector_name or "Rektor",
+            "{{Tanggal}}": _format_tanggal(now),
+            "{{nomor_surat}}": _generate_nomor_surat(audiensi_id),
+            "{{Universitas}}": university_name or "",
+            # Extra placeholders (for future template updates)
             "{{nama_universitas}}": university_name or "",
             "{{nama_rektor}}": rector_name or "Rektor",
             "{{tanggal_surat}}": _format_tanggal(now),
             "{{provinsi}}": province or "",
-            "{{nomor_surat}}": _generate_nomor_surat(audiensi_id),
         }
 
         # Replace placeholders in all paragraphs
@@ -127,14 +133,35 @@ async def generate_audiensi_document(
         # Ensure output directory exists
         OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 
-        output_path = OUTPUT_DIR / f"{audiensi_id}_surat.docx"
-        doc.save(str(output_path))
+        docx_path = OUTPUT_DIR / f"{audiensi_id}_surat.docx"
+        doc.save(str(docx_path))
 
-        log.info("Generated audiensi document: %s", output_path)
-        return str(output_path)
+        # Convert to PDF
+        pdf_path = _convert_to_pdf(docx_path)
+        if pdf_path:
+            log.info("Generated audiensi PDF: %s", pdf_path)
+            return str(pdf_path)
+
+        log.info("Generated audiensi document (DOCX fallback): %s", docx_path)
+        return str(docx_path)
 
     except Exception as e:
         log.error("Failed to generate audiensi document for ID %d: %s", audiensi_id, e)
+        return None
+
+
+def _convert_to_pdf(docx_path: Path) -> Path | None:
+    """Convert a .docx file to PDF using docx2pdf (Windows/Word COM)."""
+    try:
+        from docx2pdf import convert
+        pdf_path = docx_path.with_suffix(".pdf")
+        convert(str(docx_path), str(pdf_path))
+        return pdf_path
+    except ImportError:
+        log.warning("docx2pdf not installed, skipping PDF conversion")
+        return None
+    except Exception as e:
+        log.warning("PDF conversion failed (will send DOCX): %s", e)
         return None
 
 

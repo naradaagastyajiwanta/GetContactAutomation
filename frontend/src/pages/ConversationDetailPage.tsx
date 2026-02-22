@@ -1,8 +1,9 @@
 import { useParams, useNavigate, Link } from 'react-router-dom'
-import { ArrowLeft, Brain, Phone, ScrollText } from 'lucide-react'
+import { ArrowLeft, Brain, Link2, Phone, ScrollText } from 'lucide-react'
 import { useConversation } from '../hooks/useConversations'
 import { ChatBubble } from '../components/conversations/ChatBubble'
 import { StateTimeline } from '../components/conversations/StateTimeline'
+import { AudiensiStateTimeline } from '../components/audiensi/AudiensiStateTimeline'
 import { Badge } from '../components/ui/Badge'
 import { Button } from '../components/ui/Button'
 import { Card } from '../components/ui/Card'
@@ -92,6 +93,45 @@ export default function ConversationDetailPage() {
           <StateTimeline currentState={conversation.state} />
         </div>
       </Card>
+
+      {conversation.linked_audiensi && (
+        <Card>
+          <div className="flex items-center justify-between mb-3">
+            <div className="flex items-center gap-2">
+              <Link2 className="h-5 w-5 text-teal-500 dark:text-teal-400" />
+              <h2 className="text-lg font-semibold text-gray-900 dark:text-gray-100">
+                Linked Audiensi
+              </h2>
+            </div>
+            <Link
+              to={`/audiensi/${conversation.linked_audiensi.id}`}
+              className="text-sm text-teal-600 hover:text-teal-800 dark:text-teal-400 dark:hover:text-teal-300"
+            >
+              View Detail &rarr;
+            </Link>
+          </div>
+
+          <AudiensiStateTimeline currentState={conversation.linked_audiensi.state} />
+
+          {(conversation.linked_audiensi.scheduled_datetime || conversation.linked_audiensi.zoom_link) && (
+            <div className="mt-3 flex flex-wrap gap-4 text-sm text-gray-600 dark:text-gray-400">
+              {conversation.linked_audiensi.scheduled_datetime && (
+                <span>Scheduled: {formatDate(conversation.linked_audiensi.scheduled_datetime)}</span>
+              )}
+              {conversation.linked_audiensi.zoom_link && (
+                <a
+                  href={conversation.linked_audiensi.zoom_link}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="text-blue-600 hover:underline dark:text-blue-400"
+                >
+                  Zoom Link
+                </a>
+              )}
+            </div>
+          )}
+        </Card>
+      )}
 
       <Card>
         <h2 className="mb-4 text-lg font-semibold text-gray-900 dark:text-gray-100">
