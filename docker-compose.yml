@@ -1,0 +1,70 @@
+services:
+  # ---------------------------------------------------------------
+  # WhatsApp Service (must start first — orchestrator registers webhook)
+  # ---------------------------------------------------------------
+  whatsapp:
+    build:
+      context: .
+      dockerfile: Dockerfile.whatsapp
+    container_name: gc-whatsapp
+    restart: unless-stopped
+    ports:
+      - "3100:3100"
+    volumes:
+      - ./whatsapp-service/auth_store:/app/auth_store
+      - ./whatsapp-service/auth_store_backup:/app/auth_store_backup
+    environment:
+      - NODE_ENV=production
+    networks:
+      - gc-network
+    healthcheck:
+      test: ["CMD", "node", "-e", "require('http').get('http://localhost:3100/status', r => { r.on('data', () => {}); process.exit(r.statusCode === 200 ? 0 : 1) }).on('error', () => process.exit(1))"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+
+  # ---------------------------------------------------------------
+  # Orchestrator (Python FastAPI)
+  # ---------------------------------------------------------------
+  orchestrator:
+    build:
+      context: .
+      dockerfile: Dockerfile.orchestrator
+    container_name: gc-orchestrator
+    restart: unless-stopped
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./data:/app/data
+    env_file:
+      - .env.production
+    environment:
+      - WA_SERVICE_URL=http://whatsapp:3100
+      - WEBHOOK_URL=http://orchestrator:8000/webhook/incoming
+      - DATABASE_PATH=data/getcontact.db
+    depends_on:
+      whatsapp:
+        condition: service_healthy
+    networks:
+      - gc-network
+
+  # ---------------------------------------------------------------
+  # Frontend (React built → served by internal Nginx)
+  # ---------------------------------------------------------------
+  frontend:
+    build:
+      context: .
+      dockerfile: Dockerfile.frontend
+    container_name: gc-frontend
+    restart: unless-stopped
+    ports:
+      - "3200:80"
+    depends_on:
+      - orchestrator
+    networks:
+      - gc-network
+
+networks:
+  gc-network:
+    driver: bridge

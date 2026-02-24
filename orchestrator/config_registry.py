@@ -61,8 +61,13 @@ CONFIG_DEFINITIONS: list[ConfigDef] = [
     ConfigDef(
         key="IG_SESSION_ID",
         type=ConfigType.STRING, default="", group=ConfigGroup.CREDENTIALS,
-        label="IG Session ID",
-        description="Instagram Web API session cookie for scraping.",
+        label="IG Session ID(s)",
+        description=(
+            "Instagram session cookie(s) for scraping. "
+            "Supports multiple sessions separated by commas for automatic rotation — "
+            "when one session gets suspended, the next one is used automatically. "
+            "Get from browser: F12 → Application → Cookies → instagram.com → sessionid"
+        ),
         sensitive=True,
     ),
     # --- Chatbot Toggles ---
@@ -242,6 +247,52 @@ CONFIG_DEFINITIONS: list[ConfigDef] = [
         type=ConfigType.STRING, default="", group=ConfigGroup.KNOWLEDGE_BASE,
         label="Audiensi Custom Instructions",
         description="Instruksi/pengetahuan tambahan untuk chatbot audiensi. Di-inject ke system prompt.",
+    ),
+    # --- Scraping Fallback APIs ---
+    ConfigDef(
+        key="APIFY_API_KEY",
+        type=ConfigType.STRING, default="", group=ConfigGroup.CREDENTIALS,
+        label="Apify API Key",
+        description=(
+            "API key for Apify.com Instagram Scraper (fallback when IG sessions fail). "
+            "Get from: https://console.apify.com/account/integrations"
+        ),
+        sensitive=True,
+    ),
+    ConfigDef(
+        key="SCRAPINGBOT_USERNAME",
+        type=ConfigType.STRING, default="", group=ConfigGroup.CREDENTIALS,
+        label="ScrapingBot Username",
+        description=(
+            "Username for Scraping-Bot.io (Tier 3 fallback). "
+            "Get from: https://www.scraping-bot.io/dashboard/"
+        ),
+        sensitive=True,
+    ),
+    ConfigDef(
+        key="SCRAPINGBOT_API_KEY",
+        type=ConfigType.STRING, default="", group=ConfigGroup.CREDENTIALS,
+        label="ScrapingBot API Key",
+        description=(
+            "API key for Scraping-Bot.io Social Media API (Tier 3 fallback). "
+            "Get from: https://www.scraping-bot.io/dashboard/"
+        ),
+        sensitive=True,
+    ),
+    # --- Agent Rolling Position ---
+    ConfigDef(
+        key="AGENT_LAST_PROCESSED_UNIV_ID",
+        type=ConfigType.INT, default=0, group=ConfigGroup.INSTAGRAM,
+        label="Last Processed University ID",
+        description="ID universitas terakhir yang diproses oleh agents (untuk rolling mechanism).",
+        min_value=0,
+    ),
+    ConfigDef(
+        key="TARGET_POSTS_PER_UNIVERSITY",
+        type=ConfigType.INT, default=100, group=ConfigGroup.INSTAGRAM,
+        label="Target Posts per University",
+        description="Target jumlah posts per universitas (dari gabungan IG utama + related IGs).",
+        min_value=10, max_value=500,
     ),
 ]
 

@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import { ExternalLink, Image, X } from 'lucide-react'
+import { ExternalLink, Image, X, Instagram } from 'lucide-react'
 import { Table, TableHeader, TableBody, TableRow, TableHead, TableCell } from '../ui/Table'
 import { Badge } from '../ui/Badge'
 import { EmptyState } from '../ui/EmptyState'
@@ -8,6 +8,33 @@ import type { IgPost } from '../../lib/types'
 
 interface PostsPanelProps {
   posts: IgPost[]
+}
+
+// Color coding for different IG source types
+const SOURCE_TYPE_COLORS: Record<string, { bg: string; text: string; label: string }> = {
+  main: { bg: 'bg-blue-100 dark:bg-blue-900/30', text: 'text-blue-700 dark:text-blue-300', label: 'Official' },
+  bem: { bg: 'bg-purple-100 dark:bg-purple-900/30', text: 'text-purple-700 dark:text-purple-300', label: 'BEM' },
+  humas: { bg: 'bg-green-100 dark:bg-green-900/30', text: 'text-green-700 dark:text-green-300', label: 'Humas' },
+  pmb: { bg: 'bg-orange-100 dark:bg-orange-900/30', text: 'text-orange-700 dark:text-orange-300', label: 'PMB' },
+  kemahasiswaan: { bg: 'bg-teal-100 dark:bg-teal-900/30', text: 'text-teal-700 dark:text-teal-300', label: 'Kemahasiswaan' },
+  alumni: { bg: 'bg-yellow-100 dark:bg-yellow-900/30', text: 'text-yellow-700 dark:text-yellow-300', label: 'Alumni' },
+}
+
+function getSourceBadge(type: string | null, handle: string | null) {
+  if (!type) return null
+
+  const config = SOURCE_TYPE_COLORS[type] || SOURCE_TYPE_COLORS.main
+  return (
+    <div className="inline-flex items-center gap-1.5" title={`From @${handle || 'unknown'}`}>
+      <Badge className={config.bg + ' ' + config.text}>
+        <Instagram className="h-3 w-3 mr-1" />
+        {config.label}
+      </Badge>
+      {handle && (
+        <span className="text-xs text-gray-500 dark:text-gray-400">@{handle}</span>
+      )}
+    </div>
+  )
 }
 
 export function PostsPanel({ posts }: PostsPanelProps) {
@@ -29,6 +56,7 @@ export function PostsPanel({ posts }: PostsPanelProps) {
         <TableHeader>
           <TableRow>
             <TableHead>Image</TableHead>
+            <TableHead>Source</TableHead>
             <TableHead>Post</TableHead>
             <TableHead>Caption</TableHead>
             <TableHead>Phones Found</TableHead>
@@ -55,6 +83,9 @@ export function PostsPanel({ posts }: PostsPanelProps) {
                     <Image className="h-5 w-5 text-gray-400" />
                   </div>
                 )}
+              </TableCell>
+              <TableCell>
+                {getSourceBadge(post.source_ig_type, post.source_ig_handle)}
               </TableCell>
               <TableCell>
                 <a

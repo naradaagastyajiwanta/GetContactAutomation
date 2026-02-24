@@ -30,7 +30,7 @@ FOLLOWUP_2_AFTER_HOURS = 48
 MAX_FOLLOWUP_ATTEMPTS = 3
 
 # Instagram settings — not dynamically configurable
-IG_MAX_POSTS_PER_PROFILE = 20
+IG_MAX_POSTS_PER_PROFILE = 50
 
 # Instagram contact keywords (for filtering relevant posts)
 CONTACT_KEYWORDS = [
@@ -292,6 +292,8 @@ MAX_AI_CONCURRENT = cfg.MAX_AI_CONCURRENT
 SEND_INTERVAL_MS = cfg.SEND_INTERVAL_MS
 REFLECTION_INTERVAL_HOURS = int(os.getenv("REFLECTION_INTERVAL_HOURS", "6"))
 MAX_LESSONS_IN_PROMPT = int(os.getenv("MAX_LESSONS_IN_PROMPT", "5"))
+MAX_KNOWLEDGE_IN_PROMPT = int(os.getenv("MAX_KNOWLEDGE_IN_PROMPT", "5"))
+MAX_KNOWLEDGE_ITEM_LENGTH = int(os.getenv("MAX_KNOWLEDGE_ITEM_LENGTH", "300"))
 
 
 # Pause state (thread-safe)

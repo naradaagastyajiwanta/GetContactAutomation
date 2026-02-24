@@ -1,16 +1,17 @@
 import { useState } from 'react'
 import { useParams, useNavigate } from 'react-router-dom'
 import { ArrowLeft } from 'lucide-react'
-import { useUniversity, useUniversityContacts, useUniversityPosts } from '../hooks/useUniversities'
+import { useUniversity, useUniversityContacts, useUniversityPosts, useUniversityRelatedIgs } from '../hooks/useUniversities'
 import { Button } from '../components/ui/Button'
 import { Card } from '../components/ui/Card'
 import { Spinner } from '../components/ui/Spinner'
 import { UniversityDetail } from '../components/universities/UniversityDetail'
 import { ContactsPanel } from '../components/universities/ContactsPanel'
 import { PostsPanel } from '../components/universities/PostsPanel'
+import { RelatedIGsPanel } from '../components/universities/RelatedIGsPanel'
 import { cn } from '../lib/utils'
 
-type Tab = 'contacts' | 'posts'
+type Tab = 'contacts' | 'posts' | 'related_igs'
 
 export default function UniversityDetailPage() {
   const { id } = useParams<{ id: string }>()
@@ -21,6 +22,7 @@ export default function UniversityDetailPage() {
   const { data: university, isLoading } = useUniversity(universityId)
   const { data: contacts } = useUniversityContacts(universityId)
   const { data: posts } = useUniversityPosts(universityId)
+  const { data: relatedIgs } = useUniversityRelatedIgs(universityId)
 
   if (isLoading) {
     return (
@@ -41,6 +43,7 @@ export default function UniversityDetailPage() {
   const tabs: { key: Tab; label: string; count?: number }[] = [
     { key: 'contacts', label: 'Contacts', count: contacts?.length },
     { key: 'posts', label: 'Posts', count: posts?.length },
+    { key: 'related_igs', label: 'Related IGs', count: relatedIgs?.length },
   ]
 
   return (
@@ -83,6 +86,9 @@ export default function UniversityDetailPage() {
           )}
           {activeTab === 'posts' && (
             <PostsPanel posts={posts || []} />
+          )}
+          {activeTab === 'related_igs' && (
+            <RelatedIGsPanel relatedIgs={relatedIgs || []} />
           )}
         </Card>
       </div>

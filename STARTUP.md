@@ -88,7 +88,7 @@ Tunggu sampai muncul: `WhatsApp service listening on port 3100`
 ### Terminal 2 - Orchestrator
 
 ```bash
-
+python -m uvicorn orchestrator.main:app --port 8000 --reload
 ```
 
 Tunggu sampai muncul:

@@ -8,7 +8,9 @@ export interface University {
   ig_verified: boolean
   secretariat_phone: string | null
   status: UniversityStatus
+  enabled: boolean | number
   created_at: string
+  updated_at?: string | null
 }
 
 export type UniversityStatus =
@@ -28,6 +30,8 @@ export interface IgPost {
   post_timestamp: string | null
   phone_extracted: boolean
   phones_found: number
+  source_ig_handle: string | null
+  source_ig_type: string | null
   created_at: string
 }
 
@@ -40,6 +44,17 @@ export interface IgContact {
   source_post_url: string | null
   source_image_url: string | null
   created_at: string
+}
+
+export interface RelatedIg {
+  id: number
+  university_id: number
+  ig_handle: string
+  relation_type: string
+  source: string
+  confidence: number
+  posts_scraped: boolean | number
+  discovered_at: string
 }
 
 export interface Conversation {
@@ -101,6 +116,16 @@ export interface DashboardStats {
   daily_conversation_limit: number
 }
 
+export interface RunningAgent {
+  id: number
+  agent_type: PipelineAgentType
+  trigger_type: PipelineTriggerType
+  started_at: string
+  items_processed: number
+  items_success: number
+  target_count?: number
+}
+
 export interface PipelineStatus {
   pending: number
   ig_found: number
@@ -108,6 +133,7 @@ export interface PipelineStatus {
   contacted: number
   got_number: number
   failed: number
+  running_agents?: RunningAgent[]
 }
 
 export interface ControlStatus {
@@ -115,6 +141,12 @@ export interface ControlStatus {
   chatbot_enabled: boolean
   audiensi_enabled: boolean
   reason?: string
+}
+
+export interface ApiKeyInfo {
+  ok: boolean
+  error: string | null
+  configured: boolean
 }
 
 export interface HealthStatus {
@@ -126,6 +158,22 @@ export interface HealthStatus {
   instagram?: {
     ok: boolean
     error: string | null
+    total?: number
+    healthy?: number
+    sessions?: Array<{
+      label: string
+      ok: boolean
+      error: string | null
+    }>
+    fallbacks?: {
+      apify?: { configured: boolean; label: string }
+      scrapingbot?: { configured: boolean; label: string }
+    }
+  }
+  api_keys?: {
+    serper: ApiKeyInfo
+    apify: ApiKeyInfo
+    scrapingbot: ApiKeyInfo
   }
 }
 
@@ -246,4 +294,24 @@ export interface AudiensiStats {
   refused: number
   abandoned: number
   state_counts: Record<string, number>
+}
+
+export type PipelineAgentType = 'find_handles' | 'scrape_posts' | 'extract_phones' | 'collect_universities' | 'discover_bem'
+export type PipelineTriggerType = 'manual' | 'scheduler'
+export type PipelineLogStatus = 'running' | 'completed' | 'failed'
+
+export interface PipelineLog {
+  id: number
+  agent_type: PipelineAgentType
+  trigger_type: PipelineTriggerType
+  status: PipelineLogStatus
+  started_at: string
+  completed_at: string | null
+  duration_seconds: number | null
+  summary: Record<string, unknown> | null
+  details: Array<Record<string, unknown>> | null
+  error: string | null
+  items_processed: number
+  items_success: number
+  items_failed: number
 }

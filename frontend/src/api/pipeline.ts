@@ -1,8 +1,30 @@
 import { apiClient } from './client'
-import type { PipelineStatus } from '../lib/types'
+import type { PipelineStatus, PipelineLog } from '../lib/types'
 
 export async function getPipelineStatus(): Promise<PipelineStatus> {
   const { data } = await apiClient.get<PipelineStatus>('/pipeline/status')
+  return data
+}
+
+export interface PipelineLogsParams {
+  agent_type?: string
+  status?: string
+  limit?: number
+  offset?: number
+}
+
+export interface PipelineLogsResponse {
+  items: PipelineLog[]
+  total: number
+}
+
+export async function getPipelineLogs(params?: PipelineLogsParams): Promise<PipelineLogsResponse> {
+  const { data } = await apiClient.get<PipelineLogsResponse>('/pipeline/logs', { params })
+  return data
+}
+
+export async function getPipelineLogDetail(id: number): Promise<PipelineLog> {
+  const { data } = await apiClient.get<PipelineLog>(`/pipeline/logs/${id}`)
   return data
 }
 
@@ -39,5 +61,25 @@ export async function triggerExtractPhones(limit?: number): Promise<{ status: st
   const { data } = await apiClient.post<{ status: string; message: string }>('/pipeline/extract-phones', null, {
     params: limit != null ? { limit } : undefined,
   })
+  return data
+}
+
+export async function triggerDiscoverBem(limit?: number): Promise<{ status: string; message: string }> {
+  const { data } = await apiClient.post<{ status: string; message: string }>('/pipeline/discover-bem', null, {
+    params: limit != null ? { limit } : undefined,
+  })
+  return data
+}
+
+export type TargetedAgentType = 'find_handles' | 'scrape_posts' | 'extract_phones' | 'discover_bem'
+
+export async function triggerAgentTargeted(
+  agentType: TargetedAgentType,
+  universityIds: number[],
+): Promise<{ status: string; message: string }> {
+  const { data } = await apiClient.post<{ status: string; message: string }>(
+    '/pipeline/run-agent-targeted',
+    { agent_type: agentType, university_ids: universityIds },
+  )
   return data
 }

@@ -1,14 +1,16 @@
-import { Search, Download, Phone } from 'lucide-react'
-import { usePipelineStatus, useTriggerFindHandles, useTriggerScrapePosts, useTriggerExtractPhones } from '../hooks/usePipeline'
+import { Search, Download, Phone, Users } from 'lucide-react'
+import { usePipelineStatus, useTriggerFindHandles, useTriggerDiscoverBem, useTriggerScrapePosts, useTriggerExtractPhones } from '../hooks/usePipeline'
 import { Spinner } from '../components/ui/Spinner'
 import { PipelineOverview } from '../components/pipeline/PipelineOverview'
 import { FunnelChart } from '../components/pipeline/FunnelChart'
 import { AgentTriggerCard } from '../components/pipeline/AgentTriggerCard'
 import { PddiktiTriggerCard } from '../components/pipeline/PddiktiTriggerCard'
+import { PipelineActivityLog } from '../components/pipeline/PipelineActivityLog'
 
 export default function PipelinePage() {
   const { data: status, isLoading } = usePipelineStatus()
   const findHandles = useTriggerFindHandles()
+  const discoverBem = useTriggerDiscoverBem()
   const scrapePosts = useTriggerScrapePosts()
   const extractPhones = useTriggerExtractPhones()
 
@@ -36,7 +38,7 @@ export default function PipelinePage() {
         <h2 className="mb-4 text-lg font-semibold text-gray-900 dark:text-gray-100">
           Trigger Agents
         </h2>
-        <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
+        <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-5">
           <PddiktiTriggerCard />
           <AgentTriggerCard
             title="Find IG Handles"
@@ -44,6 +46,13 @@ export default function PipelinePage() {
             defaultLimit={50}
             mutation={findHandles}
             icon={Search}
+          />
+          <AgentTriggerCard
+            title="Discover BEM"
+            description="Find BEM accounts and scan their following lists."
+            defaultLimit={30}
+            mutation={discoverBem}
+            icon={Users}
           />
           <AgentTriggerCard
             title="Scrape IG Posts"
@@ -61,6 +70,8 @@ export default function PipelinePage() {
           />
         </div>
       </div>
+
+      <PipelineActivityLog />
     </div>
   )
 }

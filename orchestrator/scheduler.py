@@ -32,10 +32,13 @@ from orchestrator.db import (
     can_send_today,
     update_university_status,
     validate_phone,
+    create_pipeline_log,
+    complete_pipeline_log,
 )
 from orchestrator.agents.ig_handle_finder import run_handle_search_batch
 from orchestrator.agents.ig_post_scraper import run_post_scrape_batch
 from orchestrator.agents.ig_phone_extractor import run_phone_extraction_batch
+from orchestrator.agents.bem_finder import run_bem_discovery_batch
 
 WIB = timezone(timedelta(hours=7))
 
@@ -76,15 +79,74 @@ async def run_agent_in_thread(coro_fn, *args, **kwargs):
 
 
 async def _threaded_handle_search():
-    return await run_agent_in_thread(run_handle_search_batch)
+    log_id = await create_pipeline_log("find_handles", "scheduler")
+    try:
+        result = await run_agent_in_thread(run_handle_search_batch)
+        searched = result.get("searched", 0)
+        found = result.get("found", 0)
+        summary = {k: v for k, v in result.items() if k != "details"}
+        await complete_pipeline_log(
+            log_id, status="completed", summary=summary,
+            details=result.get("details", [])[:100],
+            items_processed=searched, items_success=found, items_failed=searched - found,
+        )
+        return result
+    except Exception as e:
+        await complete_pipeline_log(log_id, status="failed", error=str(e))
+        raise
 
 
 async def _threaded_post_scrape():
-    return await run_agent_in_thread(run_post_scrape_batch)
+    log_id = await create_pipeline_log("scrape_posts", "scheduler")
+    try:
+        result = await run_agent_in_thread(run_post_scrape_batch)
+        summary = {k: v for k, v in result.items() if k != "details"}
+        await complete_pipeline_log(
+            log_id, status="completed", summary=summary,
+            details=result.get("details", [])[:100],
+            items_processed=result.get("scraped", 0),
+            items_success=result.get("total_posts", 0),
+        )
+        return result
+    except Exception as e:
+        await complete_pipeline_log(log_id, status="failed", error=str(e))
+        raise
 
 
 async def _threaded_phone_extraction():
-    return await run_agent_in_thread(run_phone_extraction_batch)
+    log_id = await create_pipeline_log("extract_phones", "scheduler")
+    try:
+        result = await run_agent_in_thread(run_phone_extraction_batch)
+        summary = {k: v for k, v in result.items() if k != "details"}
+        await complete_pipeline_log(
+            log_id, status="completed", summary=summary,
+            details=result.get("details", [])[:100],
+            items_processed=result.get("processed", 0),
+            items_success=result.get("phones_found", 0),
+        )
+        return result
+    except Exception as e:
+        await complete_pipeline_log(log_id, status="failed", error=str(e))
+        raise
+
+
+async def _threaded_bem_discovery():
+    log_id = await create_pipeline_log("discover_bem", "scheduler")
+    try:
+        result = await run_agent_in_thread(run_bem_discovery_batch)
+        searched = result.get("searched", 0)
+        found = result.get("found", 0)
+        summary = {k: v for k, v in result.items() if k != "details"}
+        await complete_pipeline_log(
+            log_id, status="completed", summary=summary,
+            details=result.get("details", [])[:100],
+            items_processed=searched, items_success=found,
+            items_failed=searched - found,
+        )
+        return result
+    except Exception as e:
+        await complete_pipeline_log(log_id, status="failed", error=str(e))
+        raise
 
 
 def is_within_outreach_hours() -> bool:
@@ -428,6 +490,19 @@ def setup_scheduler():
         misfire_grace_time=300,
     )
 
+    # Agent 4: BEM discovery — every 4 hours during active hours
+    scheduler.add_job(
+        _threaded_bem_discovery,
+        "cron",
+        hour="9-19/4",
+        minute="40",
+        timezone=WIB,
+        id="agent_bem_discovery",
+        replace_existing=True,
+        max_instances=1,
+        misfire_grace_time=300,
+    )
+
     # Learning reflection — 3 times a day
     if cfg.LEARNING_ENABLED:
         scheduler.add_job(
@@ -468,7 +543,8 @@ def setup_scheduler():
     scheduler.start()
     log.info(
         "Scheduler started: outreach every 30min, followups every hour, "
-        "handle finder every 2h, post scraper every 3h, phone extractor every 1h"
+        "handle finder every 2h, post scraper every 3h, phone extractor every 1h, "
+        "BEM discovery every 4h"
         + (", learning reflection 3x daily" if cfg.LEARNING_ENABLED else "")
         + (", audiensi followups + rector finder" if cfg.AUDIENSI_ENABLED else "")
     )

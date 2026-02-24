@@ -3,7 +3,7 @@ Prompt templates and builders for the agentic conversation system.
 """
 from __future__ import annotations
 
-from orchestrator.config import MAX_LESSONS_IN_PROMPT
+from orchestrator.config import MAX_LESSONS_IN_PROMPT, MAX_KNOWLEDGE_IN_PROMPT, MAX_KNOWLEDGE_ITEM_LENGTH
 
 # ---------------------------------------------------------------------------
 # Lazy import to avoid circular-import issues when schemas.py hasn't been
@@ -233,9 +233,13 @@ def build_agent_system_prompt(
         parts.append("\nINSTRUKSI TAMBAHAN DARI OPERATOR:\n" + custom_instructions.strip())
 
     if knowledge_items:
+        capped_kb = knowledge_items[:MAX_KNOWLEDGE_IN_PROMPT]
         kb_lines = []
-        for i, item in enumerate(knowledge_items, 1):
-            kb_lines.append(f"{i}. [{item['title']}]\n   {item['content']}")
+        for i, item in enumerate(capped_kb, 1):
+            content = item['content']
+            if len(content) > MAX_KNOWLEDGE_ITEM_LENGTH:
+                content = content[:MAX_KNOWLEDGE_ITEM_LENGTH] + "..."
+            kb_lines.append(f"{i}. [{item['title']}]\n   {content}")
         parts.append("\nBASIS PENGETAHUAN:\n" + "\n".join(kb_lines))
 
     return "\n\n".join(parts)

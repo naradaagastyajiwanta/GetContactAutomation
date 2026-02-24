@@ -1,6 +1,7 @@
 import { useState } from 'react'
-import { Upload, Building2, Plus } from 'lucide-react'
+import { Upload, Building2, Plus, Download, ClipboardList } from 'lucide-react'
 import { useUniversities } from '../hooks/useUniversities'
+import { exportUniversitiesExcel } from '../api/universities'
 import { Button } from '../components/ui/Button'
 import { Card } from '../components/ui/Card'
 import { Spinner } from '../components/ui/Spinner'
@@ -8,25 +9,39 @@ import { Pagination } from '../components/ui/Pagination'
 import { EmptyState } from '../components/ui/EmptyState'
 import { UniversityFilters } from '../components/universities/UniversityFilters'
 import { UniversityTable } from '../components/universities/UniversityTable'
+import { RunningAgentsBanner } from '../components/universities/RunningAgentsBanner'
 import { ImportModal } from '../components/universities/ImportModal'
 import { AddUniversityModal } from '../components/universities/AddUniversityModal'
+import { BulkSelectModal } from '../components/universities/BulkSelectModal'
 import { ITEMS_PER_PAGE } from '../lib/constants'
 
 export default function UniversitiesPage() {
   const [search, setSearch] = useState('')
   const [status, setStatus] = useState('')
+  const [province, setProvince] = useState('')
+  const [hasIg, setHasIg] = useState('')
+  const [enabledFilter, setEnabledFilter] = useState('')
   const [page, setPage] = useState(1)
   const [importOpen, setImportOpen] = useState(false)
   const [addOpen, setAddOpen] = useState(false)
+  const [bulkSelectOpen, setBulkSelectOpen] = useState(false)
+  const [selected, setSelected] = useState<Set<number>>(new Set())
 
   const params = {
     search: search || undefined,
     status: status || undefined,
+    province: province || undefined,
+    has_ig: hasIg === 'yes' ? true : hasIg === 'no' ? false : undefined,
+    enabled: enabledFilter === 'yes' ? true : enabledFilter === 'no' ? false : undefined,
     limit: ITEMS_PER_PAGE,
     offset: (page - 1) * ITEMS_PER_PAGE,
   }
 
-  const { data: universities, isLoading } = useUniversities(params)
+  const { data: result, isLoading, isFetching } = useUniversities(params)
+
+  const universities = result?.data ?? []
+  const total = result?.total ?? 0
+  const totalPages = Math.max(1, Math.ceil(total / ITEMS_PER_PAGE))
 
   const handleSearchChange = (value: string) => {
     setSearch(value)
@@ -38,9 +53,37 @@ export default function UniversitiesPage() {
     setPage(1)
   }
 
-  const totalPages = universities
-    ? Math.max(Math.ceil(universities.length < ITEMS_PER_PAGE ? page : (page + 1)), page)
-    : 1
+  const handleProvinceChange = (value: string) => {
+    setProvince(value)
+    setPage(1)
+  }
+
+  const handleHasIgChange = (value: string) => {
+    setHasIg(value)
+    setPage(1)
+  }
+
+  const handleEnabledChange = (value: string) => {
+    setEnabledFilter(value)
+    setPage(1)
+  }
+
+  const handleExport = () => {
+    if (selected.size > 0) {
+      exportUniversitiesExcel({ ids: Array.from(selected) })
+    } else {
+      exportUniversitiesExcel({
+        search: search || undefined,
+        status: status || undefined,
+        province: province || undefined,
+        has_ig: hasIg === 'yes' ? true : hasIg === 'no' ? false : undefined,
+        enabled: enabledFilter === 'yes' ? true : enabledFilter === 'no' ? false : undefined,
+      })
+    }
+  }
+
+  const from = total === 0 ? 0 : (page - 1) * ITEMS_PER_PAGE + 1
+  const to = Math.min(page * ITEMS_PER_PAGE, total)
 
   return (
     <div className="space-y-6">
@@ -52,6 +95,14 @@ export default function UniversitiesPage() {
           <Button onClick={() => setAddOpen(true)}>
             <Plus className="h-4 w-4" />
             Add University
+          </Button>
+          <Button variant="secondary" onClick={() => setBulkSelectOpen(true)}>
+            <ClipboardList className="h-4 w-4" />
+            Bulk Select
+          </Button>
+          <Button variant="secondary" onClick={handleExport}>
+            <Download className="h-4 w-4" />
+            {selected.size > 0 ? `Export Contacts (${selected.size})` : 'Export All Contacts'}
           </Button>
           <Button variant="secondary" onClick={() => setImportOpen(true)}>
             <Upload className="h-4 w-4" />
@@ -65,13 +116,36 @@ export default function UniversitiesPage() {
         onSearchChange={handleSearchChange}
         status={status}
         onStatusChange={handleStatusChange}
+        province={province}
+        onProvinceChange={handleProvinceChange}
+        hasIg={hasIg}
+        onHasIgChange={handleHasIgChange}
+        enabled={enabledFilter}
+        onEnabledChange={handleEnabledChange}
       />
+
+      {/* Running agents indicator */}
+      <RunningAgentsBanner />
+
+      {/* Summary bar */}
+      <div className="flex items-center justify-between text-sm text-gray-500 dark:text-gray-400">
+        <span>
+          {total > 0
+            ? `Showing ${from.toLocaleString()}–${to.toLocaleString()} of ${total.toLocaleString()} universities`
+            : 'No universities found'}
+        </span>
+        {isFetching && !isLoading && (
+          <span className="flex items-center gap-1">
+            <Spinner size="sm" /> Updating…
+          </span>
+        )}
+      </div>
 
       {isLoading ? (
         <div className="flex h-64 items-center justify-center">
           <Spinner size="lg" />
         </div>
-      ) : !universities || universities.length === 0 ? (
+      ) : universities.length === 0 ? (
         <Card>
           <EmptyState
             icon={Building2}
@@ -88,7 +162,11 @@ export default function UniversitiesPage() {
       ) : (
         <>
           <Card padding={false}>
-            <UniversityTable universities={universities} />
+            <UniversityTable
+              universities={universities}
+              selected={selected}
+              onSelectedChange={setSelected}
+            />
           </Card>
           <div className="flex justify-center">
             <Pagination
@@ -102,6 +180,12 @@ export default function UniversitiesPage() {
 
       <ImportModal isOpen={importOpen} onClose={() => setImportOpen(false)} />
       <AddUniversityModal isOpen={addOpen} onClose={() => setAddOpen(false)} />
+      <BulkSelectModal
+        isOpen={bulkSelectOpen}
+        onClose={() => setBulkSelectOpen(false)}
+        currentSelected={selected}
+        onSelect={setSelected}
+      />
     </div>
   )
 }

@@ -1,13 +1,21 @@
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import toast from 'react-hot-toast'
-import { getPipelineStatus, triggerFindHandles, triggerScrapePosts, triggerExtractPhones, getProvinces, triggerCollectUniversities } from '../api/pipeline'
+import { getPipelineStatus, triggerFindHandles, triggerScrapePosts, triggerExtractPhones, triggerDiscoverBem, getProvinces, triggerCollectUniversities, getPipelineLogs, triggerAgentTargeted, type PipelineLogsParams, type TargetedAgentType } from '../api/pipeline'
 import { queryKeys } from '../lib/queryKeys'
 
 export function usePipelineStatus() {
   return useQuery({
     queryKey: queryKeys.pipeline.status,
     queryFn: getPipelineStatus,
-    refetchInterval: 15_000,
+    refetchInterval: 5_000,
+  })
+}
+
+export function usePipelineLogs(params: PipelineLogsParams = {}) {
+  return useQuery({
+    queryKey: queryKeys.pipeline.logs(params as Record<string, unknown>),
+    queryFn: () => getPipelineLogs(params),
+    refetchInterval: 10_000,
   })
 }
 
@@ -56,6 +64,21 @@ export function useTriggerExtractPhones() {
   })
 }
 
+export function useTriggerDiscoverBem() {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: (limit?: number) => triggerDiscoverBem(limit),
+    onSuccess: (data) => {
+      toast.success(data.message || 'BEM discovery started')
+      queryClient.invalidateQueries({ queryKey: queryKeys.pipeline.status })
+      queryClient.invalidateQueries({ queryKey: queryKeys.universities.all })
+    },
+    onError: () => {
+      toast.error('Failed to start BEM discovery')
+    },
+  })
+}
+
 export function useProvinces() {
   return useQuery({
     queryKey: ['provinces'],
@@ -75,6 +98,29 @@ export function useTriggerCollectUniversities() {
     },
     onError: () => {
       toast.error('Failed to start PDDIKTI collection')
+    },
+  })
+}
+
+const AGENT_LABELS: Record<TargetedAgentType, string> = {
+  find_handles: 'Find IG Handles',
+  scrape_posts: 'Scrape IG Posts',
+  extract_phones: 'Extract Phones',
+  discover_bem: 'Discover BEM',
+}
+
+export function useRunAgentTargeted() {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: ({ agentType, universityIds }: { agentType: TargetedAgentType; universityIds: number[] }) =>
+      triggerAgentTargeted(agentType, universityIds),
+    onSuccess: (data, variables) => {
+      toast.success(data.message || `${AGENT_LABELS[variables.agentType]} started`)
+      queryClient.invalidateQueries({ queryKey: queryKeys.pipeline.status })
+      queryClient.invalidateQueries({ queryKey: queryKeys.universities.all })
+    },
+    onError: (_err, variables) => {
+      toast.error(`Failed to start ${AGENT_LABELS[variables.agentType]}`)
     },
   })
 }

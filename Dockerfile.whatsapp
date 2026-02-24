@@ -1,0 +1,23 @@
+FROM node:20-slim
+
+WORKDIR /app
+
+# Install git (required by @whiskeysockets/baileys git deps)
+RUN apt-get update && apt-get install -y --no-install-recommends git \
+    && rm -rf /var/lib/apt/lists/*
+
+# Install deps
+COPY whatsapp-service/package*.json ./
+RUN npm install --legacy-peer-deps
+
+# Build TypeScript
+COPY whatsapp-service/tsconfig.json ./
+COPY whatsapp-service/src/ src/
+RUN npm run build
+
+# Auth store dir (will be mounted as volume)
+RUN mkdir -p auth_store auth_store_backup
+
+EXPOSE 3100
+
+CMD ["node", "dist/index.js"]

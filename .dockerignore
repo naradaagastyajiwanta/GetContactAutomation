@@ -1,0 +1,47 @@
+# Git
+.git
+.gitignore
+
+# IDE
+.vscode
+.idea
+*.swp
+*.swo
+
+# Python cache
+__pycache__
+*.pyc
+*.pyo
+*.egg-info
+.eggs
+venv
+.venv
+
+# Node modules (rebuilt in container)
+node_modules
+frontend/node_modules
+whatsapp-service/node_modules
+
+# Build outputs
+frontend/dist
+whatsapp-service/dist
+
+# Database (will be volume-mounted)
+data/*.db
+data/*.db-journal
+
+# WhatsApp session (will be volume-mounted)
+whatsapp-service/auth_store
+whatsapp-service/auth_store_backup
+
+# Env files
+.env
+.env.production
+
+# Docs & misc
+*.md
+*.sql
+*.log
+.claude
+.superdesign
+=2.1.2

@@ -4,6 +4,8 @@ export const queryKeys = {
   control: ['control'] as const,
   pipeline: {
     status: ['pipeline', 'status'] as const,
+    logs: (params: Record<string, unknown>) => ['pipeline', 'logs', params] as const,
+    logDetail: (id: number) => ['pipeline', 'logs', 'detail', id] as const,
   },
   universities: {
     all: ['universities'] as const,
@@ -11,6 +13,7 @@ export const queryKeys = {
     detail: (id: number) => ['universities', 'detail', id] as const,
     contacts: (id: number) => ['universities', 'contacts', id] as const,
     posts: (id: number) => ['universities', 'posts', id] as const,
+    relatedIgs: (id: number) => ['universities', 'relatedIgs', id] as const,
   },
   conversations: {
     all: ['conversations'] as const,

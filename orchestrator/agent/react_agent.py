@@ -646,8 +646,9 @@ class ReactAgent:
         """Determine AgentAction and conversation state from tool calls.
 
         Relies primarily on terminal tool calls. Text-based fallback only
-        triggers when the bot uses a closing phrase AND did not use any
-        info-gathering tools (meaning it chose to end the conversation).
+        triggers when the bot uses a closing phrase AND no terminal tools
+        and no info-gathering tools were called (meaning the bot chose to
+        end the conversation on its own without completing any action).
         """
         if "save_extracted_number" in tool_calls_made:
             return AgentAction.got_number, "GOT_NUMBER"
@@ -656,8 +657,15 @@ class ReactAgent:
         if "mark_conversation_refused" in tool_calls_made:
             return AgentAction.refused, "REFUSED"
 
-        # Fallback: detect refusal from bot's closing phrases only
-        if response_text and not any(t in ReactAgent._INFO_GATHERING_TOOLS for t in tool_calls_made):
+        # Fallback: detect refusal from bot's closing phrases only.
+        # Skip entirely if any terminal tool was called — the bot is just
+        # wrapping up politely after a successful action.
+        any_terminal = any(t in TERMINAL_TOOLS for t in tool_calls_made)
+        if (
+            response_text
+            and not any_terminal
+            and not any(t in ReactAgent._INFO_GATHERING_TOOLS for t in tool_calls_made)
+        ):
             text_lower = response_text.lower()
             has_closing = any(kw in text_lower for kw in ReactAgent._BOT_CLOSING_KEYWORDS)
             if has_closing:

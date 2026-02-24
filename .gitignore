@@ -38,6 +38,12 @@ Thumbs.db
 # Logs
 *.log
 
+# Production env (contains secrets)
+.env.production
+
+# Certbot certs
+certbot/
+
 # Instaloader cache
 .instaloader/
 

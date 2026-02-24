@@ -23,7 +23,10 @@ CREATE TABLE IF NOT EXISTS universities (
     ig_verified BOOLEAN DEFAULT 0,
     secretariat_phone TEXT,
     status TEXT DEFAULT 'pending',
-    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    enabled BOOLEAN DEFAULT 1,
+    rector_name TEXT,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 
 CREATE TABLE IF NOT EXISTS ig_contacts (
@@ -45,6 +48,8 @@ CREATE TABLE IF NOT EXISTS ig_posts (
     post_timestamp TEXT,
     phone_extracted BOOLEAN DEFAULT 0,
     phones_found INTEGER DEFAULT 0,
+    source_ig_handle TEXT,
+    source_ig_type TEXT,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     UNIQUE(university_id, post_url)
 );
@@ -223,6 +228,50 @@ CREATE INDEX IF NOT EXISTS idx_api_logs_chatbot_type ON api_call_logs(chatbot_ty
 CREATE INDEX IF NOT EXISTS idx_api_logs_created_at ON api_call_logs(created_at);
 """
 
+_DDL_PIPELINE_LOGS = """
+CREATE TABLE IF NOT EXISTS pipeline_logs (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    agent_type TEXT NOT NULL,
+    trigger_type TEXT NOT NULL DEFAULT 'manual',
+    status TEXT NOT NULL DEFAULT 'running',
+    started_at TEXT NOT NULL,
+    completed_at TEXT,
+    duration_seconds REAL,
+    summary TEXT,
+    details TEXT,
+    error TEXT,
+    items_processed INTEGER DEFAULT 0,
+    items_success INTEGER DEFAULT 0,
+    items_failed INTEGER DEFAULT 0
+);
+"""
+
+_INDEXES_PIPELINE_LOGS = """
+CREATE INDEX IF NOT EXISTS idx_pipeline_logs_agent_type ON pipeline_logs(agent_type);
+CREATE INDEX IF NOT EXISTS idx_pipeline_logs_status ON pipeline_logs(status);
+CREATE INDEX IF NOT EXISTS idx_pipeline_logs_started_at ON pipeline_logs(started_at);
+"""
+
+_DDL_RELATED_IGS = """
+CREATE TABLE IF NOT EXISTS university_related_igs (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    university_id INTEGER NOT NULL REFERENCES universities(id),
+    ig_handle TEXT NOT NULL,
+    relation_type TEXT NOT NULL DEFAULT 'bem',
+    source TEXT DEFAULT 'following',
+    confidence REAL DEFAULT 0.0,
+    posts_scraped BOOLEAN DEFAULT 0,
+    discovered_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE(university_id, ig_handle)
+);
+"""
+
+_INDEXES_RELATED_IGS = """
+CREATE INDEX IF NOT EXISTS idx_related_igs_university ON university_related_igs(university_id);
+CREATE INDEX IF NOT EXISTS idx_related_igs_scraped ON university_related_igs(posts_scraped);
+CREATE INDEX IF NOT EXISTS idx_related_igs_type ON university_related_igs(relation_type);
+"""
+
 # ---------------------------------------------------------------------------
 # Initialization & connection helper
 # ---------------------------------------------------------------------------
@@ -244,6 +293,10 @@ async def init_db() -> None:
         await db.executescript(_INDEXES_KNOWLEDGE)
         await db.executescript(_DDL_API_LOGS)
         await db.executescript(_INDEXES_API_LOGS)
+        await db.executescript(_DDL_PIPELINE_LOGS)
+        await db.executescript(_INDEXES_PIPELINE_LOGS)
+        await db.executescript(_DDL_RELATED_IGS)
+        await db.executescript(_INDEXES_RELATED_IGS)
         # Migration: add agent_reasoning column to conversations (idempotent)
         try:
             await db.execute(
@@ -364,6 +417,34 @@ async def init_db() -> None:
             await db.commit()
         except Exception:
             pass  # Column already exists
+        # Migration: add enabled flag to universities (default enabled)
+        try:
+            await db.execute(
+                "ALTER TABLE universities ADD COLUMN enabled BOOLEAN DEFAULT 1"
+            )
+            await db.commit()
+        except Exception:
+            pass  # Column already exists
+        # Index for enabled column
+        await db.executescript(
+            "CREATE INDEX IF NOT EXISTS idx_universities_enabled ON universities(enabled);"
+        )
+        # Migration: add bem_ig_handle to universities for BEM discovery
+        try:
+            await db.execute(
+                "ALTER TABLE universities ADD COLUMN bem_ig_handle TEXT"
+            )
+            await db.commit()
+        except Exception:
+            pass  # Column already exists
+        # Migration: add bem_discovery_status to universities
+        try:
+            await db.execute(
+                "ALTER TABLE universities ADD COLUMN bem_discovery_status TEXT DEFAULT 'pending'"
+            )
+            await db.commit()
+        except Exception:
+            pass  # Column already exists
         await db.commit()
     log.info("Database initialised at %s", DATABASE_PATH)
 
@@ -456,11 +537,79 @@ async def add_university(
         return cursor.lastrowid  # type: ignore[return-value]
 
 
-async def get_universities_by_status(status: str, limit: int = 100, offset: int = 0) -> list[dict]:
+async def get_universities_by_status(
+    status: str,
+    limit: int = 100,
+    offset: int = 0,
+    last_id: int = 0,
+    *,
+    enabled_only: bool = True
+) -> list[dict]:
+    """Return universities by status with optional rolling mechanism.
+
+    Args:
+        status: Status to filter by (e.g., 'pending', 'ig_found')
+        limit: Maximum number of results
+        offset: Offset for pagination (legacy, use last_id for rolling)
+        last_id: Last processed university ID for rolling (gets IDs > last_id)
+        enabled_only: Only return enabled universities
+
+    If last_id > 0, uses rolling mechanism (WHERE id > last_id).
+    Otherwise uses legacy offset mechanism.
+    """
+    enabled_clause = " AND (enabled = 1 OR enabled IS NULL)" if enabled_only else ""
+
+    if last_id > 0:
+        # Rolling mechanism: get universities with ID > last_id
+        async with get_db() as db:
+            cursor = await db.execute(
+                f"SELECT * FROM universities WHERE status = ? AND id > ?{enabled_clause} ORDER BY id LIMIT ?",
+                (status, last_id, limit),
+            )
+            rows = await cursor.fetchall()
+            return _rows_to_dicts(rows)
+    else:
+        # Legacy offset mechanism
+        async with get_db() as db:
+            cursor = await db.execute(
+                f"SELECT * FROM universities WHERE status = ?{enabled_clause} LIMIT ? OFFSET ?",
+                (status, limit, offset),
+            )
+            rows = await cursor.fetchall()
+            return _rows_to_dicts(rows)
+
+
+async def get_universities_by_ids(uni_ids: list[int]) -> list[dict]:
+    """Return universities matching the given IDs (regardless of status/enabled)."""
+    if not uni_ids:
+        return []
+    placeholders = ",".join("?" for _ in uni_ids)
     async with get_db() as db:
         cursor = await db.execute(
-            "SELECT * FROM universities WHERE status = ? LIMIT ? OFFSET ?",
-            (status, limit, offset),
+            f"SELECT * FROM universities WHERE id IN ({placeholders})",
+            tuple(uni_ids),
+        )
+        rows = await cursor.fetchall()
+        return _rows_to_dicts(rows)
+
+
+async def get_unextracted_posts_for_universities(uni_ids: list[int], limit: int = 200) -> list[dict]:
+    """Return unextracted ig_posts for specific universities."""
+    if not uni_ids:
+        return []
+    placeholders = ",".join("?" for _ in uni_ids)
+    async with get_db() as db:
+        cursor = await db.execute(
+            f"""
+            SELECT p.*, u.name AS university_name
+            FROM ig_posts p
+            JOIN universities u ON u.id = p.university_id
+            WHERE p.phone_extracted = 0
+              AND p.university_id IN ({placeholders})
+            ORDER BY p.created_at
+            LIMIT ?
+            """,
+            (*uni_ids, limit),
         )
         rows = await cursor.fetchall()
         return _rows_to_dicts(rows)
@@ -469,7 +618,7 @@ async def get_universities_by_status(status: str, limit: int = 100, offset: int 
 async def update_university_status(uni_id: int, status: str) -> None:
     async with get_db() as db:
         await db.execute(
-            "UPDATE universities SET status = ? WHERE id = ?",
+            "UPDATE universities SET status = ?, updated_at = datetime('now') WHERE id = ?",
             (status, uni_id),
         )
         await db.commit()
@@ -478,7 +627,7 @@ async def update_university_status(uni_id: int, status: str) -> None:
 async def update_university_website(uni_id: int, website: str) -> None:
     async with get_db() as db:
         await db.execute(
-            "UPDATE universities SET website = ? WHERE id = ? AND (website IS NULL OR website = '')",
+            "UPDATE universities SET website = ?, updated_at = datetime('now') WHERE id = ? AND (website IS NULL OR website = '')",
             (website, uni_id),
         )
         await db.commit()
@@ -487,7 +636,7 @@ async def update_university_website(uni_id: int, website: str) -> None:
 async def update_ig_handle(uni_id: int, handle: str, verified: bool = False) -> None:
     async with get_db() as db:
         await db.execute(
-            "UPDATE universities SET ig_handle = ?, ig_verified = ? WHERE id = ?",
+            "UPDATE universities SET ig_handle = ?, ig_verified = ?, updated_at = datetime('now') WHERE id = ?",
             (handle, int(verified), uni_id),
         )
         await db.commit()
@@ -496,8 +645,18 @@ async def update_ig_handle(uni_id: int, handle: str, verified: bool = False) -> 
 async def update_secretariat_phone(uni_id: int, phone: str) -> None:
     async with get_db() as db:
         await db.execute(
-            "UPDATE universities SET secretariat_phone = ? WHERE id = ?",
+            "UPDATE universities SET secretariat_phone = ?, updated_at = datetime('now') WHERE id = ?",
             (phone, uni_id),
+        )
+        await db.commit()
+
+
+async def update_bem_handle(uni_id: int, handle: str) -> None:
+    """Set the BEM IG handle on the university record."""
+    async with get_db() as db:
+        await db.execute(
+            "UPDATE universities SET bem_ig_handle = ?, updated_at = datetime('now') WHERE id = ?",
+            (handle, uni_id),
         )
         await db.commit()
 
@@ -533,6 +692,277 @@ async def get_all_universities(limit: int = 5000, offset: int = 0) -> list[dict]
         return _rows_to_dicts(rows)
 
 
+async def list_universities_paginated(
+    *,
+    search: str | None = None,
+    status: str | None = None,
+    province: str | None = None,
+    has_ig: bool | None = None,
+    enabled: bool | None = None,
+    limit: int = 25,
+    offset: int = 0,
+) -> dict:
+    """Return {data: [...], total: N} with combined filters."""
+    conditions: list[str] = []
+    params: list = []
+
+    if search:
+        conditions.append("(name LIKE ? OR province LIKE ? OR ig_handle LIKE ?)")
+        pattern = f"%{search}%"
+        params.extend([pattern, pattern, pattern])
+    if status:
+        conditions.append("status = ?")
+        params.append(status)
+    if province:
+        conditions.append("province = ?")
+        params.append(province)
+    if has_ig is True:
+        conditions.append("ig_handle IS NOT NULL AND ig_handle != ''")
+    elif has_ig is False:
+        conditions.append("(ig_handle IS NULL OR ig_handle = '')")
+    if enabled is True:
+        conditions.append("(enabled = 1 OR enabled IS NULL)")
+    elif enabled is False:
+        conditions.append("enabled = 0")
+
+    where = ("WHERE " + " AND ".join(conditions)) if conditions else ""
+
+    async with get_db() as db:
+        # Total count
+        cursor = await db.execute(f"SELECT COUNT(*) FROM universities {where}", params)
+        row = await cursor.fetchone()
+        total = row[0] if row else 0
+
+        # Data page - order by updated_at DESC (most recently updated first)
+        cursor = await db.execute(
+            f"SELECT * FROM universities {where} ORDER BY updated_at DESC LIMIT ? OFFSET ?",
+            params + [limit, offset],
+        )
+        rows = await cursor.fetchall()
+        return {"data": _rows_to_dicts(rows), "total": total}
+
+
+async def get_university_provinces() -> list[str]:
+    """Return distinct non-null province values, sorted."""
+    async with get_db() as db:
+        cursor = await db.execute(
+            "SELECT DISTINCT province FROM universities WHERE province IS NOT NULL AND province != '' ORDER BY province"
+        )
+        rows = await cursor.fetchall()
+        return [r[0] for r in rows]
+
+
+async def toggle_university_enabled(uni_id: int, enabled: bool) -> bool:
+    """Set enabled flag for a single university. Returns True if row was found."""
+    async with get_db() as db:
+        cursor = await db.execute(
+            "UPDATE universities SET enabled = ?, updated_at = datetime('now') WHERE id = ?",
+            (int(enabled), uni_id),
+        )
+        await db.commit()
+        return cursor.rowcount > 0
+
+
+async def touch_university_updated(uni_id: int) -> None:
+    """Update the updated_at timestamp for a university (call when any related data changes)."""
+    async with get_db() as db:
+        await db.execute(
+            "UPDATE universities SET updated_at = datetime('now') WHERE id = ?",
+            (uni_id,),
+        )
+        await db.commit()
+
+
+async def bulk_toggle_universities_enabled(uni_ids: list[int], enabled: bool) -> int:
+    """Set enabled flag for multiple universities. Returns number updated."""
+    if not uni_ids:
+        return 0
+    placeholders = ",".join("?" for _ in uni_ids)
+    async with get_db() as db:
+        cursor = await db.execute(
+            f"UPDATE universities SET enabled = ? WHERE id IN ({placeholders})",
+            [int(enabled)] + uni_ids,
+        )
+        await db.commit()
+        return cursor.rowcount
+
+
+async def export_universities_filtered(
+    *,
+    search: str | None = None,
+    status: str | None = None,
+    province: str | None = None,
+    has_ig: bool | None = None,
+    enabled: bool | None = None,
+) -> list[dict]:
+    """Return all universities matching filters (no pagination) for export."""
+    conditions: list[str] = []
+    params: list = []
+
+    if search:
+        conditions.append("(name LIKE ? OR province LIKE ? OR ig_handle LIKE ?)")
+        pattern = f"%{search}%"
+        params.extend([pattern, pattern, pattern])
+    if status:
+        conditions.append("status = ?")
+        params.append(status)
+    if province:
+        conditions.append("province = ?")
+        params.append(province)
+    if has_ig is True:
+        conditions.append("ig_handle IS NOT NULL AND ig_handle != ''")
+    elif has_ig is False:
+        conditions.append("(ig_handle IS NULL OR ig_handle = '')")
+    if enabled is True:
+        conditions.append("(enabled = 1 OR enabled IS NULL)")
+    elif enabled is False:
+        conditions.append("enabled = 0")
+
+    where = ("WHERE " + " AND ".join(conditions)) if conditions else ""
+
+    async with get_db() as db:
+        cursor = await db.execute(
+            f"SELECT * FROM universities {where} ORDER BY id",
+            params,
+        )
+        rows = await cursor.fetchall()
+        return _rows_to_dicts(rows)
+
+
+async def export_universities_by_ids(ids: list[int]) -> list[dict]:
+    """Return universities matching specific IDs for export."""
+    if not ids:
+        return []
+    placeholders = ",".join("?" for _ in ids)
+    async with get_db() as db:
+        cursor = await db.execute(
+            f"SELECT * FROM universities WHERE id IN ({placeholders}) ORDER BY id",
+            ids,
+        )
+        rows = await cursor.fetchall()
+        return _rows_to_dicts(rows)
+
+
+async def export_contacts_filtered(
+    *,
+    search: str | None = None,
+    status: str | None = None,
+    province: str | None = None,
+    has_ig: bool | None = None,
+    enabled: bool | None = None,
+    university_ids: list[int] | None = None,
+) -> list[dict]:
+    """Return contacts for export with filters.
+
+    Returns a list of dict with: university_name, contact_name, phone_number
+    """
+    conditions: list[str] = []
+    params: list = []
+
+    if university_ids:
+        placeholders = ",".join("?" for _ in university_ids)
+        conditions.append(f"u.id IN ({placeholders})")
+        params.extend(university_ids)
+    else:
+        # Apply filters only if not using specific IDs
+        if search:
+            conditions.append("(u.name LIKE ? OR u.province LIKE ? OR u.ig_handle LIKE ?)")
+            pattern = f"%{search}%"
+            params.extend([pattern, pattern, pattern])
+        if status:
+            conditions.append("u.status = ?")
+            params.append(status)
+        if province:
+            conditions.append("u.province = ?")
+            params.append(province)
+        if has_ig is True:
+            conditions.append("u.ig_handle IS NOT NULL AND u.ig_handle != ''")
+        elif has_ig is False:
+            conditions.append("(u.ig_handle IS NULL OR u.ig_handle = '')")
+        if enabled is True:
+            conditions.append("(u.enabled = 1 OR u.enabled IS NULL)")
+        elif enabled is False:
+            conditions.append("u.enabled = 0")
+
+    where_clause = f"WHERE {' AND '.join(conditions)}" if conditions else ""
+
+    async with get_db() as db:
+        cursor = await db.execute(
+            f"""
+            SELECT
+                u.name as university_name,
+                c.contact_name,
+                c.phone_number
+            FROM ig_contacts c
+            JOIN universities u ON u.id = c.university_id
+            {where_clause}
+            ORDER BY u.name, c.contact_name
+            """,
+            params,
+        )
+        rows = await cursor.fetchall()
+        return _rows_to_dicts(rows)
+
+
+async def match_university_names(names: list[str]) -> list[dict]:
+    """Fuzzy-match a list of university name queries against the database.
+
+    Uses LIKE matching: each query is searched as a substring (case-insensitive).
+    Returns one match per query (best = exact match, then shortest name match).
+    """
+    results: list[dict] = []
+    seen_ids: set[int] = set()
+
+    async with get_db() as db:
+        for query_name in names:
+            query_name = query_name.strip()
+            if not query_name:
+                continue
+
+            # Try exact match first (case-insensitive)
+            cursor = await db.execute(
+                "SELECT id, name, province, status, ig_handle FROM universities WHERE LOWER(name) = LOWER(?)",
+                (query_name,),
+            )
+            row = await cursor.fetchone()
+
+            if row:
+                if row["id"] not in seen_ids:
+                    seen_ids.add(row["id"])
+                    results.append({
+                        "id": row["id"],
+                        "name": row["name"],
+                        "province": row["province"],
+                        "status": row["status"],
+                        "ig_handle": row["ig_handle"],
+                        "matched_query": query_name,
+                        "match_type": "exact",
+                    })
+                continue
+
+            # Fallback to LIKE (substring) match — pick shortest name (most specific)
+            cursor = await db.execute(
+                "SELECT id, name, province, status, ig_handle FROM universities WHERE LOWER(name) LIKE LOWER(?) ORDER BY LENGTH(name) ASC LIMIT 5",
+                (f"%{query_name}%",),
+            )
+            like_rows = await cursor.fetchall()
+            for r in like_rows:
+                if r["id"] not in seen_ids:
+                    seen_ids.add(r["id"])
+                    results.append({
+                        "id": r["id"],
+                        "name": r["name"],
+                        "province": r["province"],
+                        "status": r["status"],
+                        "ig_handle": r["ig_handle"],
+                        "matched_query": query_name,
+                        "match_type": "partial",
+                    })
+                    break  # one match per query
+
+    return results
+
+
 # ---------------------------------------------------------------------------
 # IG Contacts CRUD
 # ---------------------------------------------------------------------------
@@ -546,6 +976,7 @@ async def add_ig_contact(
     contact_name: str | None = None,
     has_person_name: bool = True,
 ) -> int | None:
+    """Add a contact and update university's updated_at timestamp."""
     async with get_db() as db:
         cursor = await db.execute(
             """
@@ -556,6 +987,9 @@ async def add_ig_contact(
             (university_id, phone_number, contact_name, source_post_url, source_image_url, has_person_name),
         )
         await db.commit()
+        # Touch university updated_at when a new contact is added
+        if cursor.rowcount > 0:
+            await touch_university_updated(university_id)
         return cursor.lastrowid if cursor.rowcount > 0 else None
 
 
@@ -596,23 +1030,38 @@ async def add_ig_post(
     image_url: str | None = None,
     caption: str | None = None,
     post_timestamp: str | None = None,
+    source_ig_handle: str | None = None,
+    source_ig_type: str | None = None,
 ) -> int | None:
-    """Insert a scraped post row (INSERT OR IGNORE for dedup)."""
+    """Insert a scraped post row (INSERT OR IGNORE for dedup).
+
+    Args:
+        university_id: Parent university ID
+        post_url: URL of the Instagram post
+        image_url: URL of the post image
+        caption: Post caption text
+        post_timestamp: When the post was made
+        source_ig_handle: Which IG account this came from (e.g., 'bem.umj', 'univ_official')
+        source_ig_type: Type of IG account ('main' for official, or 'bem', 'humas', 'pmb', etc.)
+    """
     async with get_db() as db:
         cursor = await db.execute(
             """
             INSERT OR IGNORE INTO ig_posts
-                (university_id, post_url, image_url, caption, post_timestamp)
-            VALUES (?, ?, ?, ?, ?)
+                (university_id, post_url, image_url, caption, post_timestamp, source_ig_handle, source_ig_type)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
             """,
-            (university_id, post_url, image_url, caption, post_timestamp),
+            (university_id, post_url, image_url, caption, post_timestamp, source_ig_handle, source_ig_type),
         )
         await db.commit()
+        # Touch university updated_at when a new post is added
+        if cursor.rowcount > 0:
+            await touch_university_updated(university_id)
         return cursor.lastrowid if cursor.rowcount > 0 else None
 
 
 async def get_unextracted_posts(limit: int = 50) -> list[dict]:
-    """Return ig_posts rows that haven't been processed for phone extraction."""
+    """Return ig_posts rows that haven't been processed for phone extraction (enabled universities only)."""
     async with get_db() as db:
         cursor = await db.execute(
             """
@@ -620,6 +1069,7 @@ async def get_unextracted_posts(limit: int = 50) -> list[dict]:
             FROM ig_posts p
             JOIN universities u ON u.id = p.university_id
             WHERE p.phone_extracted = 0
+              AND (u.enabled = 1 OR u.enabled IS NULL)
             ORDER BY p.created_at
             LIMIT ?
             """,
@@ -664,6 +1114,152 @@ async def get_post_urls_for_university(university_id: int) -> set[str]:
         return {row[0] for row in rows}
 
 
+# ---------------------------------------------------------------------------
+# University Related IGs CRUD (BEM discovery)
+# ---------------------------------------------------------------------------
+
+
+async def add_related_ig(
+    university_id: int,
+    ig_handle: str,
+    relation_type: str = "bem",
+    source: str = "following",
+    confidence: float = 0.0,
+) -> int | None:
+    """Insert a related IG account for a university (INSERT OR IGNORE for dedup).
+
+    Updates the university's updated_at timestamp when a new related IG is added.
+    """
+    async with get_db() as db:
+        cursor = await db.execute(
+            """
+            INSERT OR IGNORE INTO university_related_igs
+                (university_id, ig_handle, relation_type, source, confidence)
+            VALUES (?, ?, ?, ?, ?)
+            """,
+            (university_id, ig_handle, relation_type, source, confidence),
+        )
+        await db.commit()
+        # Touch university updated_at when a new related IG is added
+        if cursor.rowcount > 0:
+            await touch_university_updated(university_id)
+        return cursor.lastrowid if cursor.rowcount > 0 else None
+
+
+async def get_related_igs_for_university(
+    university_id: int, relation_type: str | None = None
+) -> list[dict]:
+    """Return all related IG accounts for a university."""
+    async with get_db() as db:
+        if relation_type:
+            cursor = await db.execute(
+                "SELECT * FROM university_related_igs WHERE university_id = ? AND relation_type = ?",
+                (university_id, relation_type),
+            )
+        else:
+            cursor = await db.execute(
+                "SELECT * FROM university_related_igs WHERE university_id = ?",
+                (university_id,),
+            )
+        rows = await cursor.fetchall()
+        return _rows_to_dicts(rows)
+
+
+async def get_unscraped_related_igs(limit: int = 50) -> list[dict]:
+    """Return related IG accounts that haven't had their posts scraped yet (enabled universities only)."""
+    async with get_db() as db:
+        cursor = await db.execute(
+            """
+            SELECT r.*, u.name AS university_name
+            FROM university_related_igs r
+            JOIN universities u ON u.id = r.university_id
+            WHERE r.posts_scraped = 0
+              AND (u.enabled = 1 OR u.enabled IS NULL)
+            ORDER BY r.discovered_at
+            LIMIT ?
+            """,
+            (limit,),
+        )
+        rows = await cursor.fetchall()
+        return _rows_to_dicts(rows)
+
+
+async def mark_related_ig_scraped(related_ig_id: int) -> None:
+    """Mark a related IG account as having had its posts scraped."""
+    async with get_db() as db:
+        await db.execute(
+            "UPDATE university_related_igs SET posts_scraped = 1 WHERE id = ?",
+            (related_ig_id,),
+        )
+        await db.commit()
+
+
+async def update_bem_handle(uni_id: int, handle: str) -> None:
+    """Set the BEM IG handle on the university record."""
+    async with get_db() as db:
+        await db.execute(
+            "UPDATE universities SET bem_ig_handle = ? WHERE id = ?",
+            (handle, uni_id),
+        )
+        await db.commit()
+
+
+async def update_bem_discovery_status(uni_id: int, status: str) -> None:
+    """Update the BEM discovery status on the university record."""
+    async with get_db() as db:
+        await db.execute(
+            "UPDATE universities SET bem_discovery_status = ? WHERE id = ?",
+            (status, uni_id),
+        )
+        await db.commit()
+
+
+async def get_universities_for_bem_discovery(
+    limit: int = 50,
+    last_id: int = 0,
+) -> list[dict]:
+    """Return universities that are ready for BEM discovery.
+
+    Requires: ig_handle is set (ig_found or later), BEM not yet discovered,
+    and university is enabled.
+
+    Uses rolling mechanism when last_id > 0.
+    """
+    if last_id > 0:
+        # Rolling mechanism
+        async with get_db() as db:
+            cursor = await db.execute(
+                """
+                SELECT * FROM universities
+                WHERE ig_handle IS NOT NULL AND ig_handle != ''
+                  AND (bem_discovery_status IS NULL OR bem_discovery_status = 'pending')
+                  AND id > ?
+                  AND (enabled = 1 OR enabled IS NULL)
+                ORDER BY id
+                LIMIT ?
+                """,
+                (last_id, limit),
+            )
+            rows = await cursor.fetchall()
+            return _rows_to_dicts(rows)
+    else:
+        # Legacy order by created_at
+        async with get_db() as db:
+            cursor = await db.execute(
+                """
+                SELECT * FROM universities
+                WHERE ig_handle IS NOT NULL AND ig_handle != ''
+                  AND (bem_discovery_status IS NULL OR bem_discovery_status = 'pending')
+                  AND (enabled = 1 OR enabled IS NULL)
+                ORDER BY created_at
+                LIMIT ?
+                """,
+                (limit,),
+            )
+            rows = await cursor.fetchall()
+            return _rows_to_dicts(rows)
+
+
 async def get_pipeline_status() -> dict:
     """Return a breakdown of pipeline stages for /pipeline/status."""
     async with get_db() as db:
@@ -686,6 +1282,36 @@ async def get_pipeline_status() -> dict:
         row = await cursor.fetchone()
         total_contacts = row["total"] if row else 0
 
+        # Currently running agents
+        cursor = await db.execute(
+            """SELECT id, agent_type, trigger_type, started_at,
+                      items_processed, items_success, summary
+               FROM pipeline_logs
+               WHERE status = 'running'
+               ORDER BY started_at DESC"""
+        )
+        running_rows = await cursor.fetchall()
+        running_agents = []
+        for r in running_rows:
+            entry: dict = {
+                "id": r["id"],
+                "agent_type": r["agent_type"],
+                "trigger_type": r["trigger_type"],
+                "started_at": r["started_at"],
+                "items_processed": r["items_processed"] or 0,
+                "items_success": r["items_success"] or 0,
+            }
+            # Parse summary to get targeted_university_ids count
+            if r["summary"]:
+                import json as _json
+                try:
+                    s = _json.loads(r["summary"]) if isinstance(r["summary"], str) else r["summary"]
+                    if isinstance(s, dict) and "targeted_university_ids" in s:
+                        entry["target_count"] = len(s["targeted_university_ids"])
+                except Exception:
+                    pass
+            running_agents.append(entry)
+
     return {
         "pending": status_counts.get("pending", 0),
         "ig_found": status_counts.get("ig_found", 0),
@@ -695,6 +1321,7 @@ async def get_pipeline_status() -> dict:
         "failed": status_counts.get("failed", 0),
         "posts_unprocessed": posts_unprocessed,
         "total_contacts": total_contacts,
+        "running_agents": running_agents,
     }
 
 
@@ -809,6 +1436,17 @@ async def get_posts_for_university(university_id: int) -> list[dict]:
         )
         rows = await cursor.fetchall()
         return _rows_to_dicts(rows)
+
+
+async def get_post_count_for_university(university_id: int) -> int:
+    """Return the total number of posts for a given university."""
+    async with get_db() as db:
+        cursor = await db.execute(
+            "SELECT COUNT(*) as count FROM ig_posts WHERE university_id = ?",
+            (university_id,),
+        )
+        row = await cursor.fetchone()
+        return row["count"] if row else 0
 
 
 async def get_conversations_filtered(
@@ -1824,6 +2462,160 @@ async def cleanup_old_api_logs(days: int = 7) -> int:
     async with get_db() as db:
         cursor = await db.execute(
             "DELETE FROM api_call_logs WHERE created_at < datetime('now', ?)",
+            (f"-{days} days",),
+        )
+        await db.commit()
+        return cursor.rowcount
+
+
+# ---------------------------------------------------------------------------
+# Pipeline activity logs
+# ---------------------------------------------------------------------------
+
+
+async def create_pipeline_log(
+    agent_type: str,
+    trigger_type: str = "manual",
+) -> int:
+    """Create a new 'running' pipeline log entry. Return its id."""
+    now = datetime.now(timezone.utc).isoformat()
+    async with get_db() as db:
+        cursor = await db.execute(
+            """INSERT INTO pipeline_logs (agent_type, trigger_type, status, started_at)
+               VALUES (?, ?, 'running', ?)""",
+            (agent_type, trigger_type, now),
+        )
+        await db.commit()
+        return cursor.lastrowid
+
+
+async def complete_pipeline_log(
+    log_id: int,
+    *,
+    status: str = "completed",
+    summary: dict | None = None,
+    details: list | None = None,
+    error: str | None = None,
+    items_processed: int = 0,
+    items_success: int = 0,
+    items_failed: int = 0,
+) -> None:
+    """Mark a pipeline log entry as completed (or failed)."""
+    now = datetime.now(timezone.utc).isoformat()
+    async with get_db() as db:
+        # Fetch started_at to compute duration
+        cursor = await db.execute(
+            "SELECT started_at FROM pipeline_logs WHERE id = ?", (log_id,)
+        )
+        row = await cursor.fetchone()
+        duration = None
+        if row:
+            try:
+                started = datetime.fromisoformat(row[0])
+                ended = datetime.fromisoformat(now)
+                # Make both offset-aware for subtraction
+                if started.tzinfo is None:
+                    started = started.replace(tzinfo=timezone.utc)
+                if ended.tzinfo is None:
+                    ended = ended.replace(tzinfo=timezone.utc)
+                duration = (ended - started).total_seconds()
+            except Exception:
+                pass
+
+        await db.execute(
+            """UPDATE pipeline_logs
+               SET status = ?, completed_at = ?, duration_seconds = ?,
+                   summary = ?, details = ?, error = ?,
+                   items_processed = ?, items_success = ?, items_failed = ?
+               WHERE id = ?""",
+            (
+                status,
+                now,
+                duration,
+                json.dumps(summary) if summary else None,
+                json.dumps(details) if details else None,
+                error,
+                items_processed,
+                items_success,
+                items_failed,
+                log_id,
+            ),
+        )
+        await db.commit()
+
+
+async def get_pipeline_logs(
+    agent_type: str | None = None,
+    status: str | None = None,
+    limit: int = 50,
+    offset: int = 0,
+) -> dict:
+    """Return paginated pipeline logs with optional filters."""
+    async with get_db() as db:
+        conditions = []
+        params: list[Any] = []
+        if agent_type:
+            conditions.append("agent_type = ?")
+            params.append(agent_type)
+        if status:
+            conditions.append("status = ?")
+            params.append(status)
+
+        where = ("WHERE " + " AND ".join(conditions)) if conditions else ""
+
+        # Count
+        count_row = await (
+            await db.execute(f"SELECT COUNT(*) FROM pipeline_logs {where}", params)
+        ).fetchone()
+        total = count_row[0] if count_row else 0
+
+        # Data
+        params_data = params + [limit, offset]
+        cursor = await db.execute(
+            f"""SELECT * FROM pipeline_logs {where}
+                ORDER BY started_at DESC LIMIT ? OFFSET ?""",
+            params_data,
+        )
+        rows = await cursor.fetchall()
+        items = []
+        for r in rows:
+            d = _row_to_dict(r)
+            # Parse JSON fields
+            for field in ("summary", "details"):
+                if d.get(field) and isinstance(d[field], str):
+                    try:
+                        d[field] = json.loads(d[field])
+                    except Exception:
+                        pass
+            items.append(d)
+
+        return {"items": items, "total": total}
+
+
+async def get_pipeline_log_by_id(log_id: int) -> dict | None:
+    """Return a single pipeline log entry by id."""
+    async with get_db() as db:
+        cursor = await db.execute(
+            "SELECT * FROM pipeline_logs WHERE id = ?", (log_id,)
+        )
+        row = await cursor.fetchone()
+        if not row:
+            return None
+        d = _row_to_dict(row)
+        for field in ("summary", "details"):
+            if d.get(field) and isinstance(d[field], str):
+                try:
+                    d[field] = json.loads(d[field])
+                except Exception:
+                    pass
+        return d
+
+
+async def cleanup_old_pipeline_logs(days: int = 30) -> int:
+    """Delete pipeline_logs older than *days* days. Return count deleted."""
+    async with get_db() as db:
+        cursor = await db.execute(
+            "DELETE FROM pipeline_logs WHERE started_at < datetime('now', ?)",
             (f"-{days} days",),
         )
         await db.commit()

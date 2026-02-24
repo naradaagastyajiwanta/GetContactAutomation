@@ -7,6 +7,7 @@ import csv
 import io
 from collections import OrderedDict
 from contextlib import asynccontextmanager
+from datetime import datetime
 from typing import Any, Optional
 
 import httpx
@@ -21,6 +22,14 @@ from orchestrator.db import (
     get_dashboard_stats,
     get_universities_by_status,
     get_all_universities,
+    list_universities_paginated,
+    export_universities_filtered,
+    export_universities_by_ids,
+    export_contacts_filtered,
+    match_university_names,
+    get_university_provinces,
+    toggle_university_enabled,
+    bulk_toggle_universities_enabled,
     get_pipeline_status,
     get_conversation_by_phone,
     get_university_by_id,
@@ -49,6 +58,11 @@ from orchestrator.db import (
     clear_all_response_ids,
     get_audiensi_conversation_by_phone,
     update_audiensi_state,
+    create_pipeline_log,
+    complete_pipeline_log,
+    get_pipeline_logs,
+    get_pipeline_log_by_id,
+    cleanup_old_pipeline_logs,
 )
 from orchestrator.config_registry import (
     CONFIG_DEFINITIONS,
@@ -65,9 +79,10 @@ from orchestrator.scheduler import (
     process_followups,
     run_agent_in_thread,
 )
-from orchestrator.agents.ig_handle_finder import run_handle_search_batch
-from orchestrator.agents.ig_post_scraper import run_post_scrape_batch
-from orchestrator.agents.ig_phone_extractor import run_phone_extraction_batch
+from orchestrator.agents.ig_handle_finder import run_handle_search_batch, run_handle_search_for_universities
+from orchestrator.agents.ig_post_scraper import run_post_scrape_batch, run_post_scrape_for_universities
+from orchestrator.agents.ig_phone_extractor import run_phone_extraction_batch, run_phone_extraction_for_universities
+from orchestrator.agents.bem_finder import run_bem_discovery_batch, run_bem_discovery_for_universities
 from orchestrator.config import PROVINCES
 
 learning_system = LearningSystem()
@@ -121,6 +136,14 @@ async def lifespan(app: FastAPI):
             log.info("Cleaned up %d old API call logs", deleted)
     except Exception as e:
         log.warning("Failed to cleanup old API logs: %s", e)
+
+    # Cleanup old pipeline logs (keep 30 days)
+    try:
+        deleted = await cleanup_old_pipeline_logs(days=30)
+        if deleted:
+            log.info("Cleaned up %d old pipeline logs", deleted)
+    except Exception as e:
+        log.warning("Failed to cleanup old pipeline logs: %s", e)
 
     # Register webhook with WA service
     await register_webhook()
@@ -253,6 +276,13 @@ async def _process_incoming(
                     return
             except Exception as e:
                 log.warning(f"Audiensi routing check failed: {e}")
+                # Send error message to the contact instead of falling through to chatbot 1
+                await message_queue.enqueue_send(
+                    raw_phone,
+                    "Mohon maaf, ada kendala teknis. Kami akan menghubungi Anda kembali.",
+                    reply_to_msg_key=msg_key, all_msg_keys=all_msg_keys,
+                )
+                return
 
         # Default: chatbot 1 (contact finder)
         if not cfg.CHATBOT_ENABLED:
@@ -301,15 +331,159 @@ async def dashboard():
 async def list_universities(
     status: str | None = None,
     search: str | None = None,
-    limit: int = 100,
+    province: str | None = None,
+    has_ig: bool | None = None,
+    enabled: bool | None = None,
+    limit: int = 25,
     offset: int = 0,
 ):
-    """List universities with optional status filter, search, and pagination."""
-    if search:
-        return await search_universities(search)
-    if status:
-        return await get_universities_by_status(status, limit=limit, offset=offset)
-    return await get_all_universities(limit=limit, offset=offset)
+    """List universities with combined filters and proper pagination."""
+    return await list_universities_paginated(
+        search=search,
+        status=status,
+        province=province,
+        has_ig=has_ig,
+        enabled=enabled,
+        limit=limit,
+        offset=offset,
+    )
+
+
+@app.get("/universities/export-excel")
+async def export_universities_excel(
+    status: str | None = None,
+    search: str | None = None,
+    province: str | None = None,
+    has_ig: bool | None = None,
+    enabled: bool | None = None,
+    ids: str | None = None,
+):
+    """Export contacts (university name, contact name, phone) as Excel (.xlsx) file.
+
+    Simple format with only 3 columns:
+    - University Name
+    - Contact Name
+    - Phone Number
+
+    Pass `ids` as comma-separated IDs to export only specific universities.
+    When ids is provided, other filters are ignored.
+    """
+    from openpyxl import Workbook
+    from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
+
+    # Parse IDs if provided
+    university_ids = None
+    if ids:
+        university_ids = [int(x.strip()) for x in ids.split(",") if x.strip().isdigit()]
+
+    # Get contacts data
+    rows = await export_contacts_filtered(
+        search=search,
+        status=status,
+        province=province,
+        has_ig=has_ig,
+        enabled=enabled,
+        university_ids=university_ids,
+    )
+
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "Contacts"
+
+    # -- Header style --
+    header_font = Font(bold=True, color="FFFFFF", size=12)
+    header_fill = PatternFill(start_color="10B981", end_color="10B981", fill_type="solid")  # Green
+    header_alignment = Alignment(horizontal="center", vertical="center")
+    thin_border = Border(
+        left=Side(style="thin"),
+        right=Side(style="thin"),
+        top=Side(style="thin"),
+        bottom=Side(style="thin"),
+    )
+
+    headers = [
+        ("Nama Universitas", 50),
+        ("Nama Contact", 30),
+        ("No. WhatsApp", 20),
+    ]
+
+    for col_idx, (title, width) in enumerate(headers, 1):
+        cell = ws.cell(row=1, column=col_idx, value=title)
+        cell.font = header_font
+        cell.fill = header_fill
+        cell.alignment = header_alignment
+        cell.border = thin_border
+        ws.column_dimensions[cell.column_letter].width = width
+
+    # -- Data rows --
+    for row_idx, row in enumerate(rows, 2):
+        values = [
+            row.get("university_name", ""),
+            row.get("contact_name", ""),
+            row.get("phone_number", ""),
+        ]
+        for col_idx, val in enumerate(values, 1):
+            cell = ws.cell(row=row_idx, column=col_idx, value=val or "")
+            cell.alignment = Alignment(vertical="top", wrap_text=True)
+            cell.border = thin_border
+
+    # -- Auto-filter --
+    ws.auto_filter.ref = f"A1:C{len(rows) + 1}"
+
+    # -- Freeze header row --
+    ws.freeze_panes = "A2"
+
+    # Write to bytes
+    buf = io.BytesIO()
+    wb.save(buf)
+    buf.seek(0)
+
+    filename = f"contacts_export_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx"
+    return StreamingResponse(
+        buf,
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
+
+
+@app.post("/universities/match-names")
+async def match_names_endpoint(body: dict):
+    """Match a list of university names to existing records.
+
+    Body: {"names": ["Universitas Indonesia", "ITB", ...]}
+    Returns: [{"id": 1, "name": "Universitas Indonesia", "matched_query": "Universitas Indonesia"}, ...]
+    """
+    names = body.get("names", [])
+    if not names or not isinstance(names, list):
+        return JSONResponse({"error": "names must be a non-empty list"}, status_code=400)
+    results = await match_university_names(names)
+    return {"matches": results, "total_queries": len(names), "total_matched": len(results)}
+
+
+@app.get("/universities/provinces")
+async def universities_provinces():
+    """Return distinct province values for filter dropdown."""
+    return await get_university_provinces()
+
+
+@app.patch("/universities/{university_id}/toggle-enabled")
+async def toggle_enabled(university_id: int, enabled: bool = True):
+    """Enable or disable a single university for pipeline processing."""
+    ok = await toggle_university_enabled(university_id, enabled)
+    if not ok:
+        return JSONResponse({"error": "University not found"}, status_code=404)
+    return {"id": university_id, "enabled": enabled}
+
+
+@app.patch("/universities/bulk-toggle")
+async def bulk_toggle(payload: dict):
+    """Enable or disable multiple universities. Body: {ids: [1,2,3], enabled: true/false}"""
+    ids = payload.get("ids", [])
+    enabled = payload.get("enabled", True)
+    if not ids:
+        return JSONResponse({"error": "ids list required"}, status_code=400)
+    updated = await bulk_toggle_universities_enabled(ids, enabled)
+    return {"updated": updated, "enabled": enabled}
 
 
 # ---------------------------------------------------------------------------
@@ -332,35 +506,53 @@ async def trigger_collect_universities(
     from scripts.collect_universities import search_pddikti
 
     async def _collect(province: str | None, limit: int | None):
-        existing = await get_all_universities(limit=10000)
-        existing_names = [u["name"] for u in existing]
+        log_id = await create_pipeline_log("collect_universities", "manual")
+        try:
+            existing = await get_all_universities(limit=10000)
+            existing_names = [u["name"] for u in existing]
 
-        from scripts.collect_universities import is_duplicate
+            from scripts.collect_universities import is_duplicate
 
-        universities = await search_pddikti(province, limit=limit)
-        added = 0
-        for u in universities:
-            if is_duplicate(u["name"], existing_names):
-                continue
-            try:
-                await add_university(
-                    name=u["name"],
-                    pddikti_id=u.get("pddikti_id"),
-                    province=u.get("province"),
-                    website=u.get("website"),
-                )
-                existing_names.append(u["name"])
-                added += 1
-            except Exception as e:
-                log.warning(f"Failed to add '{u['name']}': {e}")
-        log.info(f"[PDDIKTI] Collected {added} new universities (province={province}, limit={limit})")
+            universities = await search_pddikti(province, limit=limit)
+            added = 0
+            failed = 0
+            details = []
+            for u in universities:
+                if is_duplicate(u["name"], existing_names):
+                    continue
+                try:
+                    await add_university(
+                        name=u["name"],
+                        pddikti_id=u.get("pddikti_id"),
+                        province=u.get("province"),
+                        website=u.get("website"),
+                    )
+                    existing_names.append(u["name"])
+                    added += 1
+                    details.append({"name": u["name"], "province": u.get("province"), "status": "added"})
+                except Exception as e:
+                    failed += 1
+                    log.warning(f"Failed to add '{u['name']}': {e}")
+            log.info(f"[PDDIKTI] Collected {added} new universities (province={province}, limit={limit})")
+            await complete_pipeline_log(
+                log_id,
+                status="completed",
+                summary={"added": added, "total_found": len(universities), "province": province},
+                details=details[:100],  # Limit details to 100 entries
+                items_processed=len(universities),
+                items_success=added,
+                items_failed=failed,
+            )
+        except Exception as e:
+            log.error(f"[PDDIKTI] Collection failed: {e}")
+            await complete_pipeline_log(log_id, status="failed", error=str(e))
 
     msg = f"Collecting universities from PDDIKTI"
     if province:
         msg += f" (province: {province})"
     if limit:
         msg += f" (limit: {limit})"
-    background_tasks.add_task(_collect, province, limit)
+    background_tasks.add_task(run_agent_in_thread, _collect, province, limit)
     return {"status": "started", "message": msg}
 
 
@@ -572,6 +764,13 @@ async def get_university_posts(university_id: int):
     return await get_posts_for_university(university_id)
 
 
+@app.get("/universities/{university_id}/related-igs")
+async def get_university_related_igs(university_id: int, relation_type: str | None = None):
+    """Get related IG accounts (BEM, humas, etc.) for a university."""
+    from orchestrator.db import get_related_igs_for_university
+    return await get_related_igs_for_university(university_id, relation_type)
+
+
 # ---------------------------------------------------------------------------
 # Conversations endpoints
 # ---------------------------------------------------------------------------
@@ -725,31 +924,210 @@ async def export_csv():
 # Pipeline triggers (manual) — 3 independent agents
 # ---------------------------------------------------------------------------
 
+async def _run_agent_with_log(agent_fn, agent_type: str, trigger_type: str, limit: int):
+    """Wrapper that creates a pipeline log, runs the agent, and records results."""
+    log_id = await create_pipeline_log(agent_type, trigger_type)
+    try:
+        result = await agent_fn(limit)
+        # Determine counts from agent result dict
+        processed = 0
+        success = 0
+        failed = 0
+        details = result.get("details", [])
+
+        if agent_type == "find_handles":
+            processed = result.get("searched", 0)
+            success = result.get("found", 0)
+            failed = processed - success
+        elif agent_type == "scrape_posts":
+            processed = result.get("scraped", 0)
+            success = result.get("total_posts", 0)
+            failed = 0
+        elif agent_type == "extract_phones":
+            processed = result.get("processed", 0)
+            success = result.get("phones_found", 0)
+            failed = 0
+
+        summary = {k: v for k, v in result.items() if k != "details"}
+        await complete_pipeline_log(
+            log_id,
+            status="completed",
+            summary=summary,
+            details=details[:100],
+            items_processed=processed,
+            items_success=success,
+            items_failed=failed,
+        )
+        return result
+    except Exception as e:
+        log.error(f"[{agent_type}] Agent failed: {e}")
+        await complete_pipeline_log(log_id, status="failed", error=str(e))
+        raise
+
+
 @app.post("/pipeline/find-ig-handles")
 async def trigger_find_ig_handles(background_tasks: BackgroundTasks, limit: int = 50):
     """Agent 1: Search IG handles for universities in 'pending' status."""
-    background_tasks.add_task(run_agent_in_thread, run_handle_search_batch, limit)
+    background_tasks.add_task(
+        run_agent_in_thread, _run_agent_with_log,
+        run_handle_search_batch, "find_handles", "manual", limit,
+    )
     return {"status": "started", "message": f"Agent 1: searching IG handles for up to {limit} universities"}
 
 
 @app.post("/pipeline/scrape-ig-posts")
 async def trigger_scrape_ig_posts(background_tasks: BackgroundTasks, limit: int = 20):
     """Agent 2: Scrape IG posts for universities in 'ig_found' status."""
-    background_tasks.add_task(run_agent_in_thread, run_post_scrape_batch, limit)
+    background_tasks.add_task(
+        run_agent_in_thread, _run_agent_with_log,
+        run_post_scrape_batch, "scrape_posts", "manual", limit,
+    )
     return {"status": "started", "message": f"Agent 2: scraping posts for up to {limit} universities"}
 
 
 @app.post("/pipeline/extract-phones")
 async def trigger_extract_phones(background_tasks: BackgroundTasks, limit: int = 50):
     """Agent 3: Extract phones from unprocessed ig_posts."""
-    background_tasks.add_task(run_agent_in_thread, run_phone_extraction_batch, limit)
+    background_tasks.add_task(
+        run_agent_in_thread, _run_agent_with_log,
+        run_phone_extraction_batch, "extract_phones", "manual", limit,
+    )
     return {"status": "started", "message": f"Agent 3: extracting phones from up to {limit} posts"}
+
+
+@app.post("/pipeline/discover-bem")
+async def trigger_discover_bem(background_tasks: BackgroundTasks, limit: int = 30):
+    """Agent 4: Discover BEM handles and scan their following lists."""
+    background_tasks.add_task(
+        run_agent_in_thread, _run_agent_with_log,
+        run_bem_discovery_batch, "discover_bem", "manual", limit,
+    )
+    return {"status": "started", "message": f"Agent 4: discovering BEM for up to {limit} universities"}
+
+
+# ---------------------------------------------------------------------------
+# Targeted agent triggers (per-university / bulk)
+# ---------------------------------------------------------------------------
+
+_TARGETED_AGENT_MAP = {
+    "find_handles": run_handle_search_for_universities,
+    "scrape_posts": run_post_scrape_for_universities,
+    "extract_phones": run_phone_extraction_for_universities,
+    "discover_bem": run_bem_discovery_for_universities,
+}
+
+
+async def _run_targeted_agent_with_log(agent_fn, agent_type: str, university_ids: list[int]):
+    """Wrapper that creates a pipeline log, runs targeted agent, and records results."""
+    log_id = await create_pipeline_log(agent_type, "manual")
+    try:
+        result = await agent_fn(university_ids)
+        processed = 0
+        success = 0
+        failed = 0
+        details = result.get("details", [])
+
+        if agent_type == "find_handles":
+            processed = result.get("searched", 0)
+            success = result.get("found", 0)
+            failed = processed - success
+        elif agent_type == "scrape_posts":
+            processed = result.get("scraped", 0)
+            success = result.get("total_posts", 0)
+        elif agent_type == "extract_phones":
+            processed = result.get("processed", 0)
+            success = result.get("phones_found", 0)
+        elif agent_type == "discover_bem":
+            processed = result.get("searched", 0)
+            success = result.get("found", 0)
+            failed = processed - success
+
+        summary = {k: v for k, v in result.items() if k != "details"}
+        summary["targeted_university_ids"] = university_ids
+        await complete_pipeline_log(
+            log_id,
+            status="completed",
+            summary=summary,
+            details=details[:100],
+            items_processed=processed,
+            items_success=success,
+            items_failed=failed,
+        )
+        return result
+    except Exception as e:
+        log.error(f"[{agent_type}] Targeted agent failed: {e}")
+        await complete_pipeline_log(log_id, status="failed", error=str(e))
+        raise
+
+
+@app.post("/pipeline/run-agent-targeted")
+async def trigger_targeted_agent(
+    background_tasks: BackgroundTasks,
+    body: dict,
+):
+    """Run a pipeline agent on specific universities.
+
+    Body: {"agent_type": "find_handles"|"scrape_posts"|"extract_phones", "university_ids": [1,2,3]}
+    """
+    agent_type = body.get("agent_type")
+    university_ids = body.get("university_ids", [])
+
+    if agent_type not in _TARGETED_AGENT_MAP:
+        return JSONResponse(
+            {"error": f"Invalid agent_type. Must be one of: {list(_TARGETED_AGENT_MAP.keys())}"},
+            status_code=400,
+        )
+    if not university_ids or not isinstance(university_ids, list):
+        return JSONResponse(
+            {"error": "university_ids must be a non-empty list of integers"},
+            status_code=400,
+        )
+
+    agent_fn = _TARGETED_AGENT_MAP[agent_type]
+    background_tasks.add_task(
+        run_agent_in_thread,
+        _run_targeted_agent_with_log,
+        agent_fn, agent_type, university_ids,
+    )
+
+    agent_labels = {
+        "find_handles": "Find IG Handles",
+        "scrape_posts": "Scrape IG Posts",
+        "extract_phones": "Extract Phones",
+        "discover_bem": "Discover BEM",
+    }
+    return {
+        "status": "started",
+        "message": f"{agent_labels[agent_type]}: processing {len(university_ids)} universities",
+    }
 
 
 @app.get("/pipeline/status")
 async def pipeline_status():
     """Return a breakdown of all pipeline stages."""
     return await get_pipeline_status()
+
+
+@app.get("/pipeline/logs")
+async def get_pipeline_logs_endpoint(
+    agent_type: str | None = None,
+    status: str | None = None,
+    limit: int = 50,
+    offset: int = 0,
+):
+    """Return paginated pipeline activity logs."""
+    return await get_pipeline_logs(
+        agent_type=agent_type, status=status, limit=limit, offset=offset
+    )
+
+
+@app.get("/pipeline/logs/{log_id}")
+async def get_pipeline_log_detail(log_id: int):
+    """Return a single pipeline log entry with full details."""
+    entry = await get_pipeline_log_by_id(log_id)
+    if not entry:
+        return JSONResponse({"error": "Log not found"}, status_code=404)
+    return entry
 
 
 # ---------------------------------------------------------------------------
@@ -1547,7 +1925,8 @@ async def audiensi_template_placeholders():
 @app.get("/health")
 async def health():
     """Health check endpoint."""
-    from orchestrator.instagram import get_ig_session_status
+    from orchestrator.instagram import get_ig_session_status, get_serper_status
+    from orchestrator import apify_client, scrapingbot_client
 
     # Check WA service connectivity
     wa_status = {"connected": False}
@@ -1562,4 +1941,17 @@ async def health():
         "status": "ok",
         "whatsapp": wa_status,
         "instagram": get_ig_session_status(),
+        "api_keys": {
+            "serper": get_serper_status(),
+            "apify": apify_client.get_status(),
+            "scrapingbot": scrapingbot_client.get_status(),
+        },
     }
+
+
+@app.post("/instagram/reset-sessions")
+async def reset_ig_sessions():
+    """Reset all IG sessions to healthy state (e.g. after updating session IDs)."""
+    from orchestrator.instagram import _ig_pool
+    _ig_pool.reset_all()
+    return {"success": True, "message": "All IG sessions reset to healthy", "status": _ig_pool.get_status()}

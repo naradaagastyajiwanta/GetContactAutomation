@@ -2,19 +2,41 @@ import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import toast from 'react-hot-toast'
 import {
   getUniversities,
+  getProvinces,
   getUniversity,
   getUniversityContacts,
   getUniversityPosts,
+  getUniversityRelatedIgs,
   importUniversities,
   createUniversities,
+  toggleUniversityEnabled,
+  bulkToggleUniversities,
 } from '../api/universities'
+import type { PaginatedUniversities } from '../api/universities'
 import { queryKeys } from '../lib/queryKeys'
 
 export function useUniversities(params: Record<string, unknown> = {}) {
-  return useQuery({
+  return useQuery<PaginatedUniversities>({
     queryKey: queryKeys.universities.list(params),
     queryFn: () =>
-      getUniversities(params as { status?: string; search?: string; limit?: number; offset?: number }),
+      getUniversities(params as {
+        status?: string
+        search?: string
+        province?: string
+        has_ig?: boolean
+        enabled?: boolean
+        limit?: number
+        offset?: number
+      }),
+    placeholderData: (prev) => prev, // keep previous data while loading next page
+  })
+}
+
+export function useProvinces() {
+  return useQuery<string[]>({
+    queryKey: ['universities', 'provinces'],
+    queryFn: getProvinces,
+    staleTime: 5 * 60 * 1000, // cache for 5 min
   })
 }
 
@@ -38,6 +60,14 @@ export function useUniversityPosts(id: number) {
   return useQuery({
     queryKey: queryKeys.universities.posts(id),
     queryFn: () => getUniversityPosts(id),
+    enabled: id > 0,
+  })
+}
+
+export function useUniversityRelatedIgs(id: number) {
+  return useQuery({
+    queryKey: queryKeys.universities.relatedIgs(id),
+    queryFn: () => getUniversityRelatedIgs(id),
     enabled: id > 0,
   })
 }
@@ -68,6 +98,38 @@ export function useCreateUniversities() {
     },
     onError: () => {
       toast.error('Failed to add universities')
+    },
+  })
+}
+
+export function useToggleEnabled() {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: ({ id, enabled }: { id: number; enabled: boolean }) =>
+      toggleUniversityEnabled(id, enabled),
+    onSuccess: (_data, variables) => {
+      queryClient.invalidateQueries({ queryKey: queryKeys.universities.all })
+      toast.success(variables.enabled ? 'University enabled' : 'University disabled')
+    },
+    onError: () => {
+      toast.error('Failed to toggle university')
+    },
+  })
+}
+
+export function useBulkToggle() {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: ({ ids, enabled }: { ids: number[]; enabled: boolean }) =>
+      bulkToggleUniversities(ids, enabled),
+    onSuccess: (data, variables) => {
+      queryClient.invalidateQueries({ queryKey: queryKeys.universities.all })
+      toast.success(
+        `${data.updated} universities ${variables.enabled ? 'enabled' : 'disabled'}`
+      )
+    },
+    onError: () => {
+      toast.error('Failed to update universities')
     },
   })
 }

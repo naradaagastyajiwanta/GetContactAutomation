@@ -428,13 +428,13 @@ async def _propose_meeting_times(arguments: dict, context: AgentContext) -> str:
             proposals.append({
                 "date": _format_tanggal_id(candidate),
                 "time": "10:00 WIB",
-                "datetime_iso": candidate.replace(hour=10, minute=0).isoformat(),
+                "datetime_iso": candidate.replace(hour=10, minute=0, second=0, microsecond=0).isoformat(),
             })
         if len(proposals) < 3:
             proposals.append({
                 "date": _format_tanggal_id(candidate),
                 "time": "14:00 WIB",
-                "datetime_iso": candidate.replace(hour=14, minute=0).isoformat(),
+                "datetime_iso": candidate.replace(hour=14, minute=0, second=0, microsecond=0).isoformat(),
             })
 
     return json.dumps({
@@ -449,8 +449,36 @@ async def _confirm_and_send_zoom(arguments: dict, context: AgentContext) -> str:
     zoom_link = arguments.get("zoom_link", "")
     university_name_arg = arguments.get("university_name", "")
 
+    # --- Validate datetime format (must be valid ISO and in the future) ---
+    try:
+        parsed_dt = datetime.fromisoformat(scheduled_datetime)
+    except (ValueError, TypeError):
+        return json.dumps({
+            "success": False,
+            "error": "Format tanggal tidak valid. Gunakan format ISO seperti 2025-03-15T10:00:00",
+        })
+
+    # Compare as aware datetimes; treat naive parsed_dt as WIB
+    now_utc = datetime.now(timezone.utc)
+    if parsed_dt.tzinfo is None:
+        compare_dt = parsed_dt.replace(tzinfo=WIB)
+    else:
+        compare_dt = parsed_dt
+    if compare_dt <= now_utc:
+        return json.dumps({
+            "success": False,
+            "error": "Tanggal harus di masa depan",
+        })
+
+    # --- Validate Zoom link ---
     if not zoom_link:
-        zoom_link = cfg.AUDIENSI_ZOOM_LINK_TEMPLATE or "https://zoom.us/j/placeholder"
+        zoom_link = cfg.AUDIENSI_ZOOM_LINK_TEMPLATE or ""
+
+    if not zoom_link or "placeholder" in zoom_link or not zoom_link.startswith("https://"):
+        return json.dumps({
+            "success": False,
+            "note": "Zoom link belum dikonfigurasi. Hubungi admin untuk setup Zoom link.",
+        })
 
     # Find or create audiensi record
     aud = await db.get_audiensi_conversation_by_phone(context.contact_phone)
@@ -543,7 +571,7 @@ _SCHEMA_CONFIRM_AND_SEND_ZOOM = {
         "properties": {
             "datetime": {
                 "type": "string",
-                "description": "Waktu meeting yang disepakati (format bebas, misal 'Senin 24 Feb 2026 jam 10 WIB').",
+                "description": "Waktu meeting yang disepakati dalam format ISO (misal '2026-02-24T10:00:00').",
             },
             "zoom_link": {
                 "type": "string",

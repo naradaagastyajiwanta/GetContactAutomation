@@ -15,6 +15,15 @@ import QRCode from 'qrcode';
 import * as fs from 'fs';
 import * as path from 'path';
 
+/** Clear directory contents without removing the directory itself (Docker-safe). */
+function clearDir(dir: string): void {
+  if (!fs.existsSync(dir)) return;
+  for (const entry of fs.readdirSync(dir)) {
+    const full = path.join(dir, entry);
+    fs.rmSync(full, { recursive: true, force: true });
+  }
+}
+
 const PORT = 3100;
 const AUTH_STORE_DIR = path.join(__dirname, '..', 'auth_store');
 const AUTH_BACKUP_DIR = path.join(__dirname, '..', 'auth_store_backup');
@@ -317,8 +326,8 @@ async function connectToWhatsApp(): Promise<void> {
         if (!shouldReconnect || statusCode === 401 || statusCode === 405) {
           // Logged out or auth invalid — clear everything and start fresh
           logger.warn('Logged out. Clearing auth store + backup...');
-          fs.rmSync(AUTH_STORE_DIR, { recursive: true, force: true });
-          fs.rmSync(AUTH_BACKUP_DIR, { recursive: true, force: true });
+          clearDir(AUTH_STORE_DIR);
+          clearDir(AUTH_BACKUP_DIR);
           hasEverConnected = false;
           reconnectAttempt = 0;
           setTimeout(connectToWhatsApp, 3000);
@@ -635,9 +644,7 @@ app.post('/logout', async (_req: Request, res: Response) => {
     connectedPhone = null;
     latestQr = null;
 
-    if (fs.existsSync(AUTH_STORE_DIR)) {
-      fs.rmSync(AUTH_STORE_DIR, { recursive: true, force: true });
-    }
+    clearDir(AUTH_STORE_DIR);
 
     setTimeout(() => {
       connectToWhatsApp().catch((err) => {
