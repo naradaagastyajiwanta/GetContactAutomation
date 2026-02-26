@@ -11,7 +11,7 @@ from datetime import datetime
 from typing import Any, Optional
 
 import httpx
-from fastapi import FastAPI, BackgroundTasks, UploadFile, File as FastAPIFile, Form
+from fastapi import FastAPI, BackgroundTasks, UploadFile, File as FastAPIFile, Form, Query
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel
@@ -1955,3 +1955,165 @@ async def reset_ig_sessions():
     from orchestrator.instagram import _ig_pool
     _ig_pool.reset_all()
     return {"success": True, "message": "All IG sessions reset to healthy", "status": _ig_pool.get_status()}
+
+
+# ---------------------------------------------------------------------------
+# Image Proxy Endpoint - Bypass Instagram hotlinking protection
+# ---------------------------------------------------------------------------
+
+@app.get("/api/v1/test-endpoint")
+async def test_endpoint():
+    """Test endpoint to verify routing works"""
+    log.info("[TEST] Test endpoint called!")
+    return {"status": "ok", "message": "Test endpoint works"}
+
+@app.get("/api/v1/proxy-image")
+async def proxy_image(url: str = Query(..., description="Instagram image URL to proxy")):
+    """
+    Proxy Instagram images to bypass hotlinking protection.
+
+    Downloads image from Instagram and serves it directly.
+    Returns original image content-type and caches for 1 hour.
+    """
+    import httpx
+    from fastapi.responses import Response
+
+    # Validate URL - only allow Instagram domains
+    from urllib.parse import urlparse
+    parsed = urlparse(url)
+    netloc_lower = parsed.netloc.lower()
+
+    allowed_domains = ["instagram.com", "cdninstagram.com", "fbcdn.net",
+                       "scontent.cdninstagram.com", "scontent-*.cdninstagram.com"]
+
+    if not any(domain in netloc_lower or netloc_lower.endswith("." + domain) for domain in allowed_domains):
+        return JSONResponse(
+            {"detail": "Only Instagram images are allowed"},
+            status_code=400
+        )
+
+    # Download image with proper headers
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+        "Accept": "image/webp,image/apng,image/*,*/*;q=0.8",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "https://www.instagram.com/",
+    }
+
+    async with httpx.AsyncClient(timeout=10.0) as client:
+        try:
+            log.info(f"[Proxy] Fetching image from: {url[:100]}...")
+            response = await client.get(url, headers=headers, follow_redirects=True)
+            response.raise_for_status()
+
+            # Determine content type
+            content_type = response.headers.get("content-type", "image/jpeg")
+
+            log.info(f"[Proxy] Successfully fetched image: {len(response.content)} bytes, {content_type}")
+
+            # Return image directly
+            return Response(
+                content=response.content,
+                media_type=content_type,
+                headers={
+                    "Cache-Control": "public, max-age=3600",  # Cache for 1 hour
+                    "X-Image-URL": url,  # For debugging
+                }
+            )
+        except httpx.HTTPStatusError as e:
+            log.error(f"Failed to proxy image from {url}: {e}")
+            return JSONResponse(
+                {"detail": "Failed to fetch image from Instagram"},
+                status_code=502
+            )
+        except Exception as e:
+            log.error(f"Unexpected error proxying image from {url}: {e}")
+            return JSONResponse(
+                {"detail": "Failed to fetch image"},
+                status_code=500
+            )
+
+
+# ---------------------------------------------------------------------------
+# Instagram Image URL Scraper - Get fresh image URLs from post pages
+# ---------------------------------------------------------------------------
+
+@app.get("/api/v1/instagram-image")
+async def get_instagram_image_url(post_url: str = Query(..., description="Instagram post URL")):
+    """
+    Get fresh image URL using Instagram oEmbed API.
+
+    Instagram's oEmbed API returns valid image URLs that work.
+    This is more reliable than scraping HTML.
+
+    Returns: {"image_url": "...", "post_url": "..."}
+    """
+    import httpx
+    import re
+
+    log.info(f"[IG oEmbed] Fetching image URL from: {post_url}")
+
+    # Extract short code from URL
+    # https://www.instagram.com/p/DPvdidrkYGi/ -> DPvdidrkYGi
+    short_code_match = re.search(r'/p/([^/]+)', post_url)
+    if not short_code_match:
+        return JSONResponse(
+            {"detail": "Invalid Instagram post URL"},
+            status_code=400
+        )
+
+    short_code = short_code_match.group(1)
+
+    # Method 1: Try Instagram oEmbed API (no auth required for public posts)
+    oembed_url = f"https://www.instagram.com/p/{short_code}/embed/captioned/"
+
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+    }
+
+    try:
+        async with httpx.AsyncClient(timeout=15.0, follow_redirects=True) as client:
+            # Fetch embed page (simpler than full page)
+            response = await client.get(oembed_url, headers=headers)
+
+            if response.status_code == 200:
+                html = response.text
+
+                # Extract image URL from embed page
+                og_image_match = re.search(r'<meta[^>]+property=["\']og:image["\'][^>]+content=["\']([^"\']+)["\']', html)
+                if og_image_match:
+                    image_url = og_image_match.group(1).replace('&amp;', '&')
+                    log.info(f"[IG oEmbed] Found image URL ({len(image_url)} chars)")
+                    return {
+                        "image_url": image_url,
+                        "post_url": post_url,
+                        "source": "oembed"
+                    }
+
+            # Fallback: Try full post page
+            response = await client.get(post_url, headers=headers)
+            if response.status_code == 200:
+                html = response.text
+
+                og_image_match = re.search(r'<meta[^>]+property=["\']og:image["\'][^>]+content=["\']([^"\']+)["\']', html)
+                if og_image_match:
+                    image_url = og_image_match.group(1).replace('&amp;', '&')
+                    log.info(f"[IG Direct] Found image URL ({len(image_url)} chars)")
+                    return {
+                        "image_url": image_url,
+                        "post_url": post_url,
+                        "source": "direct"
+                    }
+
+            log.warning(f"[IG] Could not find image URL")
+            return JSONResponse(
+                {"detail": "Could not find image in Instagram page"},
+                status_code=404
+            )
+
+    except Exception as e:
+        log.error(f"[IG] Error: {e}")
+        return JSONResponse(
+            {"detail": "Failed to fetch image URL"},
+            status_code=500
+        )

@@ -1,0 +1,54 @@
+# Briefs Folder
+
+Tempat menyimpan file brief (dokumen requirements) dari PM/User.
+
+## Format Brief yang Didukung
+
+- `.md` - Markdown
+- `.docx` - Microsoft Word
+- `.txt` - Plain text
+
+## Naming Convention
+
+```
+brief-001.md
+brief-002.docx
+brief-003.txt
+```
+
+## Contoh Format Brief
+
+### brief-example.md
+```markdown
+# Brief: University Management System
+
+## Latar Belakang
+Saat ini data universitas hanya disimpan di database tanpa UI untuk mengelolanya.
+
+## Tujuan
+Menambahkan fitur CRUD untuk manajemen data universitas.
+
+## Requirements
+1. List semua universitas dengan pagination
+2. Tambah universitas baru
+3. Edit data universitas
+4. Hapus universitas (soft delete)
+5. Filter by provinsi
+6. Search by nama/kode
+
+## Constraints
+- Menggunakan existing schema `universities` table
+- Backend di port 8000, Frontend di port 5173
+- Tidak boleh mengubah flow yang sudah ada
+```
+
+## Cara Penggunaan
+
+```bash
+# Melalui orchestrator
+/start briefs/brief-001.md
+
+# Atau langsung panggil brief-reader
+@brief-reader
+Baca file briefs/brief-001.md dan ekstrak seluruh isinya.
+```

@@ -1,3 +1,4 @@
+import { useEffect, useRef } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import toast from 'react-hot-toast'
 import {
@@ -15,8 +16,8 @@ import {
 import type { PaginatedUniversities } from '../api/universities'
 import { queryKeys } from '../lib/queryKeys'
 
-export function useUniversities(params: Record<string, unknown> = {}) {
-  return useQuery<PaginatedUniversities>({
+export function useUniversities(params: Record<string, unknown> = {}, autoRefresh = true) {
+  const query = useQuery<PaginatedUniversities>({
     queryKey: queryKeys.universities.list(params),
     queryFn: () =>
       getUniversities(params as {
@@ -29,7 +30,22 @@ export function useUniversities(params: Record<string, unknown> = {}) {
         offset?: number
       }),
     placeholderData: (prev) => prev, // keep previous data while loading next page
+    refetchInterval: autoRefresh ? 30000 : false, // Auto-refresh every 30 seconds
   })
+
+  // Refetch when tab/window gains focus
+  useEffect(() => {
+    if (!autoRefresh) return
+
+    const handleFocus = () => {
+      query.refetch()
+    }
+
+    window.addEventListener('focus', handleFocus)
+    return () => window.removeEventListener('focus', handleFocus)
+  }, [query, autoRefresh])
+
+  return query
 }
 
 export function useProvinces() {

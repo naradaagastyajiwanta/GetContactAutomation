@@ -445,6 +445,35 @@ async def init_db() -> None:
             await db.commit()
         except Exception:
             pass  # Column already exists
+        # Migration: add updated_at to universities (older DBs may lack it)
+        # Note: SQLite ALTER TABLE doesn't allow DEFAULT CURRENT_TIMESTAMP, so we add without default then backfill
+        try:
+            await db.execute(
+                "ALTER TABLE universities ADD COLUMN updated_at TIMESTAMP"
+            )
+            await db.execute(
+                "UPDATE universities SET updated_at = created_at WHERE updated_at IS NULL"
+            )
+            await db.commit()
+        except Exception:
+            pass  # Column already exists
+
+        # Migration: add source_ig_handle and source_ig_type to ig_posts (older DBs may lack them)
+        try:
+            await db.execute("ALTER TABLE ig_posts ADD COLUMN source_ig_handle TEXT")
+            await db.commit()
+        except Exception:
+            pass  # Column already exists
+        try:
+            await db.execute("ALTER TABLE ig_posts ADD COLUMN source_ig_type TEXT")
+            await db.commit()
+        except Exception:
+            pass  # Column already exists
+
+        # Cleanup: mark any orphaned 'running' pipeline_logs as failed (from previous crash/restart)
+        await db.execute(
+            "UPDATE pipeline_logs SET status='failed', summary='Stale: cleaned up after restart' WHERE status='running'"
+        )
         await db.commit()
     log.info("Database initialised at %s", DATABASE_PATH)
 
@@ -733,9 +762,9 @@ async def list_universities_paginated(
         row = await cursor.fetchone()
         total = row[0] if row else 0
 
-        # Data page - order by updated_at DESC (most recently updated first)
+        # Data page - order by updated_at DESC (most recently updated first), fallback to id
         cursor = await db.execute(
-            f"SELECT * FROM universities {where} ORDER BY updated_at DESC LIMIT ? OFFSET ?",
+            f"SELECT * FROM universities {where} ORDER BY COALESCE(updated_at, created_at) DESC LIMIT ? OFFSET ?",
             params + [limit, offset],
         )
         rows = await cursor.fetchall()

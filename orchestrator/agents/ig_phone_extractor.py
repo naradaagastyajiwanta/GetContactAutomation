@@ -77,6 +77,10 @@ async def run_phone_extraction_batch(limit: int = 50) -> dict:
         return saved_names_by_uni[uni_id]
 
     for post in posts:
+        # Check pause again inside loop to allow graceful interruption
+        if is_paused():
+            log.info("[Agent3] Bot paused during batch, stopping early")
+            break
         try:
             contacts: list[PhoneContact] = []
             caption = post.get("caption") or ""

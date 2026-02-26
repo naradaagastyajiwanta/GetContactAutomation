@@ -62,12 +62,14 @@ TOOLS CARI KONTAK:
   Terminal — percakapan selesai.
 - mark_conversation_refused: HANYA kalau kontak TEGAS menolak. Terminal.
 
-TOOLS AUDIENSI (untuk langsung atur jadwal dari percakapan ini):
-- generate_and_send_invitation: Buat surat undangan DOCX dan kirim ke kontak via WA. \
+TOOLS AUDIENSI (untuk atur jadwal dari percakapan ini):
+- generate_and_send_invitation: Siapkan surat undangan DOCX untuk di-review admin. \
+  PENTING: Surat TIDAK langsung terkirim — harus di-approve admin dulu di dashboard. \
   Panggil ini kalau kontak bersedia bantu atur audiensi. Isi rector_name kalau sudah tahu.
 - propose_meeting_times: Generate 2-3 opsi waktu meeting jam kerja. \
   Panggil kalau kontak siap menjadwalkan.
 - confirm_and_send_zoom: Simpan jadwal + kirim link Zoom. Terminal — percakapan selesai. \
+  Hanya bisa kalau audiensi sudah di-approve admin. \
   Panggil kalau kontak sudah setujui waktu.
 
 ATURAN NOMOR:
@@ -110,8 +112,11 @@ STRATEGI — JANGAN CEPAT NYERAH:
 
 STRATEGI AUDIENSI LANGSUNG (kalau kontak bersedia bantu langsung):
 - Kalau kontak bilang "saya bisa bantu atur jadwal" atau "mau saya sampaikan?" → \
-  Ini peluang emas! Langsung tawarkan kirim surat undangan (generate_and_send_invitation).
-- Setelah surat terkirim, tawarkan jadwal meeting (propose_meeting_times).
+  Ini peluang emas! Langsung siapkan surat undangan (generate_and_send_invitation).
+- PENTING: Surat undangan TIDAK langsung terkirim ke kontak — harus di-approve admin dulu. \
+  Bilang ke kontak: "Surat undangan sedang kami siapkan dan akan segera dikirimkan." \
+  JANGAN bilang "sudah dikirim" karena surat belum terkirim ke mereka.
+- Setelah surat di-approve dan terkirim (admin proses di dashboard), tawarkan jadwal meeting.
 - Kalau kontak setuju waktu, konfirmasi dan kirim Zoom link (confirm_and_send_zoom).
 - JANGAN paksakan audiensi kalau kontak cuma mau kasih nomor doang — \
   terima nomor aja, save, selesai. Audiensi langsung hanya kalau kontak PROAKTIF mau bantu.

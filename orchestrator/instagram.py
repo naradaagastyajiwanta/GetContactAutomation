@@ -1719,18 +1719,34 @@ def extract_phones_from_text(text: str) -> list[str]:
 
 async def _download_image_as_base64(url: str) -> str | None:
     """Download image and return as base64 string."""
-    async with httpx.AsyncClient(timeout=30, follow_redirects=True) as client:
+    from orchestrator.config import is_paused
+
+    if is_paused():
+        return None
+
+    async with httpx.AsyncClient(timeout=10, follow_redirects=True) as client:
         try:
             resp = await client.get(url)
             resp.raise_for_status()
             return base64.b64encode(resp.content).decode("utf-8")
+        except asyncio.CancelledError:
+            log.warning(f"Image download cancelled (shutdown/pause): {url[:80]}...")
+            return None
         except Exception as e:
-            log.error(f"Failed to download image {url}: {e}")
+            # Only log error if not a shutdown-related error
+            error_msg = str(e)
+            if "cannot schedule new futures" not in error_msg and "interpreter shutdown" not in error_msg:
+                log.error(f"Failed to download image {url[:80]}...: {e}")
             return None
 
 
 async def _vision_extract_named_contacts(image_b64: str) -> list[PhoneContact]:
     """Use OpenAI Vision to extract phone numbers with contact names from image."""
+    from orchestrator.config import is_paused
+
+    if is_paused():
+        return []
+
     client = _get_openai()
 
     try:
@@ -1772,8 +1788,13 @@ async def _vision_extract_named_contacts(image_b64: str) -> list[PhoneContact]:
             max_tokens=500,
             temperature=0,
         )
+    except asyncio.CancelledError:
+        log.warning("GPT Vision extraction cancelled (shutdown/pause)")
+        return []
     except Exception as e:
-        log.error(f"OpenAI Vision API error: {e}")
+        error_msg = str(e)
+        if "cannot schedule new futures" not in error_msg and "interpreter shutdown" not in error_msg:
+            log.error(f"OpenAI Vision API error: {e}")
         return []
 
     raw = response.choices[0].message.content or ""

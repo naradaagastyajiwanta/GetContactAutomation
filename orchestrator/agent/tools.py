@@ -336,7 +336,7 @@ _SCHEMA_MARK_CONVERSATION_REFUSED = {
 
 
 async def _generate_and_send_invitation(arguments: dict, context: AgentContext) -> str:
-    """Generate invitation document and send it via WhatsApp."""
+    """Generate invitation document and queue for admin approval (NOT sent directly)."""
     rector_name = arguments.get("rector_name") or ""
     university_name_arg = arguments.get("university_name") or ""
 
@@ -346,19 +346,19 @@ async def _generate_and_send_invitation(arguments: dict, context: AgentContext) 
     if not uni_id:
         return json.dumps({
             "success": False,
-            "note": "Belum bisa kirim surat sekarang. Tanya nama kampusnya dulu dari kontak supaya bisa disiapkan suratnya.",
+            "note": "Belum bisa siapkan surat sekarang. Tanya nama kampusnya dulu dari kontak supaya bisa disiapkan suratnya.",
         })
 
     # Find or create audiensi record
     aud = await db.get_audiensi_conversation_by_phone(context.contact_phone)
     if aud:
         aud_id = aud["id"]
-        # Don't downgrade state if audiensi is already past INITIAL_SENT
-        _NO_DOWNGRADE_STATES = {"SCHEDULING", "SCHEDULED", "ZOOM_SENT"}
+        # Don't downgrade state if audiensi is already past QUEUED
+        _NO_DOWNGRADE_STATES = {"APPROVED", "INITIAL_SENT", "WAITING_REPLY", "REPLIED", "ANALYZING", "SCHEDULING", "SCHEDULED", "ZOOM_SENT"}
         if aud["state"] in _NO_DOWNGRADE_STATES:
             return json.dumps({
                 "success": True,
-                "note": f"Surat sudah pernah dikirim sebelumnya dan audiensi sudah dalam proses ({aud['state']}). Lanjutkan jadwalkan meeting.",
+                "note": f"Surat sudah pernah disiapkan dan audiensi sudah dalam proses ({aud['state']}). Lanjutkan jadwalkan meeting.",
             })
     else:
         aud_id = await db.create_audiensi_conversation(
@@ -371,7 +371,7 @@ async def _generate_and_send_invitation(arguments: dict, context: AgentContext) 
 
     # Update rector name if provided
     if rector_name:
-        current_state = aud["state"] if aud else "APPROVED"
+        current_state = aud["state"] if aud else "QUEUED"
         await db.update_audiensi_state(aud_id, current_state, rector_name=rector_name)
 
     # Generate document
@@ -379,7 +379,7 @@ async def _generate_and_send_invitation(arguments: dict, context: AgentContext) 
     if not template_exists():
         return json.dumps({
             "success": False,
-            "note": "Template surat sedang dalam persiapan. Sampaikan ke kontak bahwa surat undangan akan segera dikirimkan.",
+            "note": "Template surat sedang dalam persiapan. Sampaikan ke kontak bahwa surat undangan akan segera dikirimkan setelah diproses tim kami.",
         })
 
     pdf_path = await generate_audiensi_document(
@@ -391,25 +391,28 @@ async def _generate_and_send_invitation(arguments: dict, context: AgentContext) 
     if not pdf_path:
         return json.dumps({
             "success": False,
-            "note": "Surat sedang diproses, mungkin butuh waktu sebentar. Sampaikan ke kontak bahwa surat akan segera dikirim.",
+            "note": "Surat sedang diproses. Sampaikan ke kontak bahwa surat akan segera dikirimkan setelah diproses tim kami.",
         })
 
-    await db.update_audiensi_state(aud_id, "INITIAL_SENT", pdf_path=pdf_path)
+    # Save PDF path and keep state as QUEUED — waiting for admin approval
+    await db.update_audiensi_state(aud_id, "QUEUED", pdf_path=pdf_path)
 
-    # Send document via WhatsApp
-    from pathlib import Path
-    from orchestrator.message_queue import message_queue
-    file_ext = Path(pdf_path).suffix  # .pdf or .docx
-    await message_queue.enqueue_send_document(
-        phone=context.contact_phone,
-        file_path=pdf_path,
-        file_name=f"Surat_Undangan_Audiensi_{uni_name.replace(' ', '_')}{file_ext}",
-        caption=f"Surat undangan audiensi untuk {uni_name}",
-    )
+    # Generate initial message draft for admin review
+    try:
+        from orchestrator.audiensi.react_agent import AudiensiReactAgent
+        agent = AudiensiReactAgent()
+        draft = await agent.generate_initial_message(
+            uni_name, rector_name=rector_name,
+        )
+        await db.update_audiensi_state(aud_id, "QUEUED", initial_message_draft=draft)
+    except Exception:
+        pass  # Draft generation is best-effort
 
     return json.dumps({
         "success": True,
-        "note": "Surat undangan berhasil dikirim. Informasikan ke kontak bahwa surat sudah dikirim.",
+        "note": "Surat undangan sudah disiapkan dan menunggu approval admin. "
+                "Sampaikan ke kontak bahwa surat sedang diproses dan akan segera dikirimkan. "
+                "JANGAN bilang 'sudah dikirim' karena surat belum terkirim.",
     })
 
 
@@ -447,7 +450,6 @@ async def _confirm_and_send_zoom(arguments: dict, context: AgentContext) -> str:
     """TERMINAL: Confirm schedule and send Zoom link in one step."""
     scheduled_datetime = arguments.get("datetime", "")
     zoom_link = arguments.get("zoom_link", "")
-    university_name_arg = arguments.get("university_name", "")
 
     # --- Validate datetime format (must be valid ISO and in the future) ---
     try:
@@ -480,23 +482,26 @@ async def _confirm_and_send_zoom(arguments: dict, context: AgentContext) -> str:
             "note": "Zoom link belum dikonfigurasi. Hubungi admin untuk setup Zoom link.",
         })
 
-    # Find or create audiensi record
+    # Find existing audiensi record — do NOT create new ones without approval
     aud = await db.get_audiensi_conversation_by_phone(context.contact_phone)
-    if aud:
-        aud_id = aud["id"]
-    else:
-        # Resolve university dynamically
-        uni_id, uni_name, province = await _resolve_university(context, university_name_arg)
-        if not uni_id:
-            return json.dumps({
-                "success": False,
-                "note": "Belum bisa simpan jadwal. Tanya nama kampusnya dulu dari kontak.",
-            })
-        aud_id = await db.create_audiensi_conversation(
-            university_id=uni_id,
-            source_conversation_id=context.conversation_id,
-            contact_phone=context.contact_phone,
-        )
+    if not aud:
+        return json.dumps({
+            "success": False,
+            "note": "Belum ada audiensi record untuk kontak ini. "
+                    "Gunakan generate_and_send_invitation dulu untuk menyiapkan surat undangan, "
+                    "lalu tunggu approval admin.",
+        })
+
+    # Block if audiensi is still waiting for approval
+    if aud["state"] == "QUEUED":
+        return json.dumps({
+            "success": False,
+            "note": "Audiensi masih menunggu approval admin di dashboard. "
+                    "Belum bisa simpan jadwal sekarang. "
+                    "Sampaikan ke kontak bahwa jadwal akan dikonfirmasi setelah surat diproses.",
+        })
+
+    aud_id = aud["id"]
 
     # Update schedule and zoom link
     await db.update_audiensi_state(
@@ -524,8 +529,9 @@ _SCHEMA_GENERATE_AND_SEND_INVITATION = {
     "type": "function",
     "name": "generate_and_send_invitation",
     "description": (
-        "Generate surat undangan audiensi (DOCX) dan kirim ke kontak via WhatsApp. "
-        "Panggil ini kalau kontak mau bantu atur audiensi langsung dan kamu mau kirim surat resmi. "
+        "Siapkan surat undangan audiensi (DOCX) untuk di-review dan di-approve admin. "
+        "Surat TIDAK langsung terkirim — harus di-approve admin dulu di dashboard. "
+        "Panggil ini kalau kontak mau bantu atur audiensi langsung. "
         "Isi university_name kalau kampus belum terdata di sistem."
     ),
     "parameters": {
@@ -564,6 +570,7 @@ _SCHEMA_CONFIRM_AND_SEND_ZOOM = {
     "description": (
         "TERMINAL: Simpan jadwal meeting dan kirim link Zoom. "
         "Panggil ini setelah kontak menyetujui waktu audiensi. "
+        "Hanya bisa dipanggil kalau audiensi sudah di-approve admin (bukan QUEUED). "
         "Ini mengakhiri percakapan."
     ),
     "parameters": {
@@ -576,10 +583,6 @@ _SCHEMA_CONFIRM_AND_SEND_ZOOM = {
             "zoom_link": {
                 "type": "string",
                 "description": "Link Zoom (kosongkan untuk pakai link default dari config).",
-            },
-            "university_name": {
-                "type": "string",
-                "description": "Nama universitas (wajib kalau kampus belum terdata di sistem).",
             },
         },
         "required": ["datetime"],

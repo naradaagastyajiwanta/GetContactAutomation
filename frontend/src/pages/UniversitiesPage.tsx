@@ -1,5 +1,6 @@
-import { useState } from 'react'
-import { Upload, Building2, Plus, Download, ClipboardList } from 'lucide-react'
+import { useState, useEffect } from 'react'
+import { Upload, Building2, Plus, Download, ClipboardList, RefreshCw } from 'lucide-react'
+import { formatDistanceToNow } from 'date-fns'
 import { useUniversities } from '../hooks/useUniversities'
 import { exportUniversitiesExcel } from '../api/universities'
 import { Button } from '../components/ui/Button'
@@ -26,6 +27,8 @@ export default function UniversitiesPage() {
   const [addOpen, setAddOpen] = useState(false)
   const [bulkSelectOpen, setBulkSelectOpen] = useState(false)
   const [selected, setSelected] = useState<Set<number>>(new Set())
+  const [lastUpdated, setLastUpdated] = useState<Date>(new Date())
+  const [isAutoRefreshing, setIsAutoRefreshing] = useState(true)
 
   const params = {
     search: search || undefined,
@@ -37,7 +40,14 @@ export default function UniversitiesPage() {
     offset: (page - 1) * ITEMS_PER_PAGE,
   }
 
-  const { data: result, isLoading, isFetching } = useUniversities(params)
+  const { data: result, isLoading, isFetching, refetch } = useUniversities(params, isAutoRefreshing)
+
+  // Track last update time
+  useEffect(() => {
+    if (isFetching && !isLoading) {
+      setLastUpdated(new Date())
+    }
+  }, [isFetching, isLoading])
 
   const universities = result?.data ?? []
   const total = result?.total ?? 0
@@ -127,18 +137,48 @@ export default function UniversitiesPage() {
       {/* Running agents indicator */}
       <RunningAgentsBanner />
 
-      {/* Summary bar */}
+      {/* Summary bar with auto-refresh indicator */}
       <div className="flex items-center justify-between text-sm text-gray-500 dark:text-gray-400">
         <span>
           {total > 0
             ? `Showing ${from.toLocaleString()}–${to.toLocaleString()} of ${total.toLocaleString()} universities`
             : 'No universities found'}
         </span>
-        {isFetching && !isLoading && (
-          <span className="flex items-center gap-1">
-            <Spinner size="sm" /> Updating…
-          </span>
-        )}
+        <div className="flex items-center gap-3">
+          {/* Auto-refresh indicator */}
+          <div className="flex items-center gap-1.5">
+            <button
+              onClick={() => refetch()}
+              className="rounded p-1 text-gray-500 hover:bg-gray-100 dark:text-gray-400 dark:hover:bg-gray-700 transition-colors"
+              title="Manually refresh"
+            >
+              <RefreshCw className="h-3.5 w-3.5" />
+            </button>
+            <button
+              onClick={() => setIsAutoRefreshing(!isAutoRefreshing)}
+              className={`flex items-center gap-1 rounded px-2 py-0.5 text-xs transition-colors ${
+                isAutoRefreshing
+                  ? 'bg-emerald-100 text-emerald-700 dark:bg-emerald-900/30 dark:text-emerald-300'
+                  : 'bg-gray-100 text-gray-600 hover:bg-gray-200 dark:bg-gray-700 dark:text-gray-300 dark:hover:bg-gray-600'
+              }`}
+              title={isAutoRefreshing ? 'Auto-refresh on (30s)' : 'Auto-refresh off'}
+            >
+              <span className={`w-1.5 h-1.5 rounded-full ${
+                isAutoRefreshing ? 'bg-emerald-500' : 'bg-gray-400'
+              }`}></span>
+              <span>{isAutoRefreshing ? 'Auto' : 'Off'}</span>
+            </button>
+            {isFetching && !isLoading ? (
+              <span className="flex items-center gap-1 text-xs text-gray-500">
+                <Spinner size="sm" /> Updating…
+              </span>
+            ) : (
+              <span className="text-xs text-gray-400">
+                Updated {formatDistanceToNow(lastUpdated)}
+              </span>
+            )}
+          </div>
+        </div>
       </div>
 
       {isLoading ? (
