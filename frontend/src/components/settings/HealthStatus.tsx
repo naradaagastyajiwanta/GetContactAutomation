@@ -10,6 +10,8 @@ import type { ApiKeyInfo } from '../../lib/types'
 // Step-by-step guides for each free-tier API key
 // ---------------------------------------------------------------------------
 
+const TEMP_MAIL_URL = 'https://temp-mail.org/'
+
 const API_GUIDES: Record<string, {
   name: string
   url: string
@@ -21,8 +23,10 @@ const API_GUIDES: Record<string, {
     url: 'https://serper.dev',
     configKey: 'SERPER_API_KEY',
     steps: [
-      'Buka serper.dev dan klik "Sign Up" — gunakan email baru (Gmail/Outlook).',
-      'Verifikasi email, lalu login ke dashboard.',
+      'Buka temp-mail.org → salin alamat email sementara yang sudah dibuat otomatis.',
+      'Buka serper.dev dan klik "Sign Up" → gunakan email dari temp-mail tadi.',
+      'Buka kembali temp-mail.org → klik email verifikasi dari Serper → klik link konfirmasi.',
+      'Login ke dashboard Serper.',
       'Di dashboard, salin API Key yang muncul di halaman utama.',
       'Di aplikasi ini, buka Settings → Config → cari SERPER_API_KEY.',
       'Klik Edit, tempel API Key baru, lalu klik Confirm.',
@@ -34,8 +38,10 @@ const API_GUIDES: Record<string, {
     url: 'https://apify.com',
     configKey: 'APIFY_API_KEY',
     steps: [
-      'Buka apify.com dan klik "Sign up for free" — gunakan email baru.',
-      'Verifikasi email, lalu login ke Apify Console.',
+      'Buka temp-mail.org → salin alamat email sementara yang sudah dibuat otomatis.',
+      'Buka apify.com dan klik "Sign up for free" → gunakan email dari temp-mail tadi.',
+      'Buka kembali temp-mail.org → klik email verifikasi dari Apify → konfirmasi akun.',
+      'Login ke Apify Console.',
       'Di sidebar kiri, klik nama akun → Settings → Integrations.',
       'Di bagian "Personal API tokens", klik "Create new token".',
       'Beri nama token (misal: "getcontact"), lalu klik Create — salin tokennya.',
@@ -48,8 +54,10 @@ const API_GUIDES: Record<string, {
     url: 'https://www.scraping-bot.io',
     configKey: ['SCRAPINGBOT_USERNAME', 'SCRAPINGBOT_API_KEY'],
     steps: [
-      'Buka scraping-bot.io dan klik "Start for Free" — gunakan email baru.',
-      'Verifikasi email, lalu login ke dashboard ScrapingBot.',
+      'Buka temp-mail.org → salin alamat email sementara yang sudah dibuat otomatis.',
+      'Buka scraping-bot.io dan klik "Start for Free" → gunakan email dari temp-mail tadi.',
+      'Buka kembali temp-mail.org → klik email verifikasi dari ScrapingBot → konfirmasi akun.',
+      'Login ke dashboard ScrapingBot.',
       'Di dashboard, temukan bagian "API Credentials" atau "API Keys".',
       'Salin Username dan API Key yang tertera.',
       'Di aplikasi ini, buka Settings → Config.',
@@ -97,6 +105,15 @@ function ApiKeyGuide({ serviceKey }: { serviceKey: string }) {
           </ol>
 
           <div className="flex flex-wrap items-center gap-2 pt-1">
+            <a
+              href={TEMP_MAIL_URL}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="inline-flex items-center gap-1 rounded bg-sky-600 px-2.5 py-1 text-xs font-medium text-white hover:bg-sky-700 dark:bg-sky-700 dark:hover:bg-sky-600"
+            >
+              <ExternalLink className="h-3 w-3" />
+              Buka Temp Mail
+            </a>
             <a
               href={guide.url}
               target="_blank"

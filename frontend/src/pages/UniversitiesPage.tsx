@@ -1,5 +1,6 @@
-import { useState, useEffect } from 'react'
-import { Upload, Building2, Plus, Download, ClipboardList, RefreshCw } from 'lucide-react'
+import { useState, useEffect, useMemo } from 'react'
+import { useSearchParams } from 'react-router-dom'
+import { Upload, Building2, Plus, Download, ClipboardList, RefreshCw, X } from 'lucide-react'
 import { formatDistanceToNow } from 'date-fns'
 import { useUniversities } from '../hooks/useUniversities'
 import { exportUniversitiesExcel } from '../api/universities'
@@ -17,18 +18,64 @@ import { BulkSelectModal } from '../components/universities/BulkSelectModal'
 import { ITEMS_PER_PAGE } from '../lib/constants'
 
 export default function UniversitiesPage() {
-  const [search, setSearch] = useState('')
-  const [status, setStatus] = useState('')
-  const [province, setProvince] = useState('')
-  const [hasIg, setHasIg] = useState('')
-  const [enabledFilter, setEnabledFilter] = useState('')
-  const [page, setPage] = useState(1)
+  const [searchParams, setSearchParams] = useSearchParams()
+
+  // Initialize state from URL params
+  const initialSearch = searchParams.get('search') || ''
+  const initialStatus = searchParams.get('status') || ''
+  const initialProvince = searchParams.get('province') || ''
+  const initialHasIg = searchParams.get('has_ig') || ''
+  const initialEnabled = searchParams.get('enabled') || ''
+  const initialPage = Math.max(1, parseInt(searchParams.get('page') || '1'))
+
+  const [search, setSearch] = useState(initialSearch)
+  const [status, setStatus] = useState(initialStatus)
+  const [province, setProvince] = useState(initialProvince)
+  const [hasIg, setHasIg] = useState(initialHasIg)
+  const [enabledFilter, setEnabledFilter] = useState(initialEnabled)
+  const [page, setPage] = useState(initialPage)
   const [importOpen, setImportOpen] = useState(false)
   const [addOpen, setAddOpen] = useState(false)
   const [bulkSelectOpen, setBulkSelectOpen] = useState(false)
   const [selected, setSelected] = useState<Set<number>>(new Set())
   const [lastUpdated, setLastUpdated] = useState<Date>(new Date())
   const [isAutoRefreshing, setIsAutoRefreshing] = useState(true)
+
+  // Helper to update URL params
+  const updateUrlParams = (updates: Record<string, string | null | number>) => {
+    const newParams = new URLSearchParams(searchParams)
+
+    Object.entries(updates).forEach(([key, value]) => {
+      if (value === null || value === '') {
+        newParams.delete(key)
+      } else if (key === 'page' && value === 1) {
+        newParams.delete('page')
+      } else {
+        newParams.set(key, String(value))
+      }
+    })
+
+    setSearchParams(newParams)
+  }
+
+  // Check if any filters are active
+  const hasActiveFilters = useMemo(() => {
+    return !!(search || status || province || hasIg || enabledFilter)
+  }, [search, status, province, hasIg, enabledFilter])
+
+  // Clear all filters
+  const clearFilters = () => {
+    setSearch('')
+    setStatus('')
+    setProvince('')
+    setHasIg('')
+    setEnabledFilter('')
+    setPage(1)
+    setSelected(new Set())
+
+    // Clear all URL params
+    setSearchParams({})
+  }
 
   const params = {
     search: search || undefined,
@@ -56,26 +103,36 @@ export default function UniversitiesPage() {
   const handleSearchChange = (value: string) => {
     setSearch(value)
     setPage(1)
+    updateUrlParams({ search: value || null, page: 1 })
   }
 
   const handleStatusChange = (value: string) => {
     setStatus(value)
     setPage(1)
+    updateUrlParams({ status: value || null, page: 1 })
   }
 
   const handleProvinceChange = (value: string) => {
     setProvince(value)
     setPage(1)
+    updateUrlParams({ province: value || null, page: 1 })
   }
 
   const handleHasIgChange = (value: string) => {
     setHasIg(value)
     setPage(1)
+    updateUrlParams({ has_ig: value || null, page: 1 })
   }
 
   const handleEnabledChange = (value: string) => {
     setEnabledFilter(value)
     setPage(1)
+    updateUrlParams({ enabled: value || null, page: 1 })
+  }
+
+  const handlePageChange = (newPage: number) => {
+    setPage(newPage)
+    updateUrlParams({ page: newPage })
   }
 
   const handleExport = () => {
@@ -133,6 +190,76 @@ export default function UniversitiesPage() {
         enabled={enabledFilter}
         onEnabledChange={handleEnabledChange}
       />
+
+      {/* Active filters bar */}
+      {hasActiveFilters && (
+        <div className="flex items-center justify-between rounded-lg bg-indigo-50 px-4 py-2 dark:bg-indigo-950/30">
+          <div className="flex flex-wrap items-center gap-2 text-sm">
+            <span className="font-medium text-indigo-700 dark:text-indigo-300">Active filters:</span>
+            {search && (
+              <span className="flex items-center gap-1 rounded-full bg-white px-2 py-0.5 text-xs text-gray-700 dark:bg-gray-700 dark:text-gray-200">
+                Search: "{search}"
+                <button
+                  onClick={() => handleSearchChange('')}
+                  className="ml-1 rounded-full p-0.5 hover:bg-gray-200 dark:hover:bg-gray-600"
+                >
+                  <X className="h-3 w-3" />
+                </button>
+              </span>
+            )}
+            {status && (
+              <span className="flex items-center gap-1 rounded-full bg-white px-2 py-0.5 text-xs text-gray-700 dark:bg-gray-700 dark:text-gray-200">
+                Status: {status}
+                <button
+                  onClick={() => handleStatusChange('')}
+                  className="ml-1 rounded-full p-0.5 hover:bg-gray-200 dark:hover:bg-gray-600"
+                >
+                  <X className="h-3 w-3" />
+                </button>
+              </span>
+            )}
+            {province && (
+              <span className="flex items-center gap-1 rounded-full bg-white px-2 py-0.5 text-xs text-gray-700 dark:bg-gray-700 dark:text-gray-200">
+                Province: {province}
+                <button
+                  onClick={() => handleProvinceChange('')}
+                  className="ml-1 rounded-full p-0.5 hover:bg-gray-200 dark:hover:bg-gray-600"
+                >
+                  <X className="h-3 w-3" />
+                </button>
+              </span>
+            )}
+            {hasIg && (
+              <span className="flex items-center gap-1 rounded-full bg-white px-2 py-0.5 text-xs text-gray-700 dark:bg-gray-700 dark:text-gray-200">
+                IG: {hasIg === 'yes' ? 'Has IG' : 'No IG'}
+                <button
+                  onClick={() => handleHasIgChange('')}
+                  className="ml-1 rounded-full p-0.5 hover:bg-gray-200 dark:hover:bg-gray-600"
+                >
+                  <X className="h-3 w-3" />
+                </button>
+              </span>
+            )}
+            {enabledFilter && (
+              <span className="flex items-center gap-1 rounded-full bg-white px-2 py-0.5 text-xs text-gray-700 dark:bg-gray-700 dark:text-gray-200">
+                Enabled: {enabledFilter === 'yes' ? 'Yes' : 'No'}
+                <button
+                  onClick={() => handleEnabledChange('')}
+                  className="ml-1 rounded-full p-0.5 hover:bg-gray-200 dark:hover:bg-gray-600"
+                >
+                  <X className="h-3 w-3" />
+                </button>
+              </span>
+            )}
+          </div>
+          <button
+            onClick={clearFilters}
+            className="rounded px-3 py-1 text-xs font-medium text-indigo-700 hover:bg-indigo-100 dark:text-indigo-300 dark:hover:bg-indigo-900/50"
+          >
+            Clear All
+          </button>
+        </div>
+      )}
 
       {/* Running agents indicator */}
       <RunningAgentsBanner />
@@ -212,7 +339,7 @@ export default function UniversitiesPage() {
             <Pagination
               currentPage={page}
               totalPages={totalPages}
-              onPageChange={setPage}
+              onPageChange={handlePageChange}
             />
           </div>
         </>

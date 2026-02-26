@@ -860,15 +860,18 @@ async function connectToWhatsApp(): Promise<void> {
       logger.warn({ err }, 'Failed to fetch latest WA version, using Baileys default');
     }
 
+    // Use a safe browser preset; macOS/Desktop can cause 405 in some regions
+    const safeVersion: [number, number, number] = version ?? [2, 3000, 1015901307];
+
     const newSock = makeWASocket({
       auth: {
         creds: state.creds,
         keys: makeCacheableSignalKeyStore(state.keys, baileysLogger),
       },
-      ...(version ? { version } : {}),
+      version: safeVersion,
       logger: baileysLogger,
       printQRInTerminal: false,
-      browser: Browsers.macOS('Desktop'),
+      browser: Browsers.ubuntu('Chrome'),
       syncFullHistory: false,
       markOnlineOnConnect: false,
     });
