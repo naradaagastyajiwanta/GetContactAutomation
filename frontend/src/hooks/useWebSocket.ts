@@ -18,7 +18,7 @@ let wsConnectionCount = 0
 export function useWebSocket() {
   const wsRef = useRef<WebSocket | null>(null)
   const queryClient = useQueryClient()
-  const reconnectTimeoutRef = useRef<NodeJS.Timeout>()
+  const reconnectTimeoutRef = useRef<ReturnType<typeof setTimeout>>()
   const connectionIdRef = useRef<number>(++wsConnectionCount)
   const [connected, setConnected] = useState(false)
 
