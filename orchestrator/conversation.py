@@ -9,6 +9,7 @@ from enum import Enum
 from openai import AsyncOpenAI
 
 from orchestrator.config import log, cfg, chat_kwargs
+from orchestrator.websocket import manager as ws_manager
 from orchestrator.db import (
     validate_phone,
     get_conversation_by_phone,
@@ -291,6 +292,13 @@ class ConversationManager:
 
         # Update state to analyzing
         await update_conversation_state(conv_id, ConvState.ANALYZING)
+        # Broadcast state change
+        await ws_manager.broadcast_type(
+            "conversation_changed",
+            conv_id=conv_id,
+            state=ConvState.ANALYZING,
+            phone=phone,
+        )
 
         # Lookup university name for AI context
         uni = await get_university_by_id(conv["university_id"]) if conv.get("university_id") else None
@@ -312,6 +320,13 @@ class ConversationManager:
                 conv_id,
                 ConvState.GOT_NUMBER,
                 extracted_number=analysis["extracted_number"],
+            )
+            # Broadcast state change
+            await ws_manager.broadcast_type(
+                "conversation_changed",
+                conv_id=conv_id,
+                state=ConvState.GOT_NUMBER,
+                phone=phone,
             )
             # Update university record
             uni = await get_university_by_id(conv["university_id"])
@@ -337,6 +352,13 @@ class ConversationManager:
 
         elif action == "refused":
             await update_conversation_state(conv_id, ConvState.REFUSED)
+            # Broadcast state change
+            await ws_manager.broadcast_type(
+                "conversation_changed",
+                conv_id=conv_id,
+                state=ConvState.REFUSED,
+                phone=phone,
+            )
             polite_close = "Baik, terima kasih atas waktunya. Mohon maaf mengganggu."
             result["response_message"] = polite_close
             result["conversation_state"] = ConvState.REFUSED
@@ -351,6 +373,13 @@ class ConversationManager:
                 conv_id,
                 ConvState.NEED_MORE,
                 attempt_count=conv["attempt_count"] + 1,
+            )
+            # Broadcast state change
+            await ws_manager.broadcast_type(
+                "conversation_changed",
+                conv_id=conv_id,
+                state=ConvState.NEED_MORE,
+                phone=phone,
             )
             result["response_message"] = response
             result["conversation_state"] = ConvState.NEED_MORE

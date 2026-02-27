@@ -7,6 +7,7 @@ import aiosqlite
 import phonenumbers
 
 from orchestrator.config import DATABASE_PATH, log, cfg
+from orchestrator.websocket import manager as ws_manager
 
 # ---------------------------------------------------------------------------
 # Schema
@@ -651,6 +652,8 @@ async def update_university_status(uni_id: int, status: str) -> None:
             (status, uni_id),
         )
         await db.commit()
+    # Broadcast university updated event
+    await ws_manager.broadcast_type("university_updated", uni_id=uni_id, status=status)
 
 
 async def update_university_website(uni_id: int, website: str) -> None:
@@ -678,6 +681,8 @@ async def update_secretariat_phone(uni_id: int, phone: str) -> None:
             (phone, uni_id),
         )
         await db.commit()
+    # Broadcast got_number event
+    await ws_manager.broadcast_type("got_number", uni_id=uni_id, phone=phone)
 
 
 async def update_bem_handle(uni_id: int, handle: str) -> None:

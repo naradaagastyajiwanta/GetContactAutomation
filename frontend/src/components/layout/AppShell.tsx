@@ -4,6 +4,7 @@ import { Sidebar } from './Sidebar'
 import { TopBar } from './TopBar'
 import { MobileNav } from './MobileNav'
 import { IgSessionBanner } from './IgSessionBanner'
+import { NotificationCenter } from '../notifications/NotificationCenter'
 
 export function AppShell() {
   const [mobileNavOpen, setMobileNavOpen] = useState(false)

@@ -11,12 +11,13 @@ from datetime import datetime
 from typing import Any, Optional
 
 import httpx
-from fastapi import FastAPI, BackgroundTasks, UploadFile, File as FastAPIFile, Form, Query
+from fastapi import FastAPI, BackgroundTasks, UploadFile, File as FastAPIFile, Form, Query, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel
 
 from orchestrator.config import WA_SERVICE_URL, WEBHOOK_URL, log, is_paused, set_paused, cfg
+from orchestrator.websocket import manager as ws_manager
 from orchestrator.db import (
     init_db,
     get_dashboard_stats,
@@ -228,6 +229,27 @@ async def handle_incoming_message(payload: dict, background_tasks: BackgroundTas
     )
 
     return {"status": "received"}
+
+
+# ---------------------------------------------------------------------------
+# WebSocket endpoint for real-time notifications
+# ---------------------------------------------------------------------------
+
+@app.websocket("/ws")
+async def websocket_endpoint(websocket: WebSocket):
+    """WebSocket endpoint for real-time updates to the frontend."""
+    await ws_manager.connect(websocket)
+    try:
+        while True:
+            # Keep connection alive with heartbeat
+            data = await websocket.receive_text()
+            if data == "ping":
+                await websocket.send_text("pong")
+    except WebSocketDisconnect:
+        ws_manager.disconnect(websocket)
+    except Exception as e:
+        log.warning(f"WebSocket error: {e}")
+        ws_manager.disconnect(websocket)
 
 
 async def _process_incoming(
@@ -543,9 +565,21 @@ async def trigger_collect_universities(
                 items_success=added,
                 items_failed=failed,
             )
+            # Broadcast agent completion to frontend
+            await ws_manager.broadcast_type(
+                "agent_completed",
+                agent="collect_universities",
+                stats={"added": added, "total_found": len(universities)},
+            )
         except Exception as e:
             log.error(f"[PDDIKTI] Collection failed: {e}")
             await complete_pipeline_log(log_id, status="failed", error=str(e))
+            # Broadcast agent failure to frontend
+            await ws_manager.broadcast_type(
+                "agent_completed",
+                agent="collect_universities",
+                stats={"error": str(e)},
+            )
 
     msg = f"Collecting universities from PDDIKTI"
     if province:
@@ -958,10 +992,22 @@ async def _run_agent_with_log(agent_fn, agent_type: str, trigger_type: str, limi
             items_success=success,
             items_failed=failed,
         )
+        # Broadcast agent completion to frontend
+        await ws_manager.broadcast_type(
+            "agent_completed",
+            agent=agent_type,
+            stats={"processed": processed, "success": success, "failed": failed},
+        )
         return result
     except Exception as e:
         log.error(f"[{agent_type}] Agent failed: {e}")
         await complete_pipeline_log(log_id, status="failed", error=str(e))
+        # Broadcast agent failure to frontend
+        await ws_manager.broadcast_type(
+            "agent_completed",
+            agent=agent_type,
+            stats={"error": str(e)},
+        )
         raise
 
 
@@ -1053,10 +1099,22 @@ async def _run_targeted_agent_with_log(agent_fn, agent_type: str, university_ids
             items_success=success,
             items_failed=failed,
         )
+        # Broadcast agent completion to frontend
+        await ws_manager.broadcast_type(
+            "agent_completed",
+            agent=agent_type,
+            stats={"processed": processed, "success": success, "failed": failed, "targeted": len(university_ids)},
+        )
         return result
     except Exception as e:
         log.error(f"[{agent_type}] Targeted agent failed: {e}")
         await complete_pipeline_log(log_id, status="failed", error=str(e))
+        # Broadcast agent failure to frontend
+        await ws_manager.broadcast_type(
+            "agent_completed",
+            agent=agent_type,
+            stats={"error": str(e)},
+        )
         raise
 
 

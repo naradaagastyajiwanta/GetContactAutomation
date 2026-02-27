@@ -2,20 +2,23 @@ import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import toast from 'react-hot-toast'
 import { getPipelineStatus, triggerFindHandles, triggerScrapePosts, triggerExtractPhones, triggerDiscoverBem, getProvinces, triggerCollectUniversities, getPipelineLogs, triggerAgentTargeted, type PipelineLogsParams, type TargetedAgentType } from '../api/pipeline'
 import { queryKeys } from '../lib/queryKeys'
+import { useWebSocketContext } from '../context/WebSocketContext'
 
 export function usePipelineStatus() {
+  const { connected } = useWebSocketContext()
   return useQuery({
     queryKey: queryKeys.pipeline.status,
     queryFn: getPipelineStatus,
-    refetchInterval: 5_000,
+    refetchInterval: connected ? false : 5_000,
   })
 }
 
 export function usePipelineLogs(params: PipelineLogsParams = {}) {
+  const { connected } = useWebSocketContext()
   return useQuery({
     queryKey: queryKeys.pipeline.logs(params as Record<string, unknown>),
     queryFn: () => getPipelineLogs(params),
-    refetchInterval: 10_000,
+    refetchInterval: connected ? false : 10_000,
   })
 }
 

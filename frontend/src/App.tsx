@@ -2,6 +2,7 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { BrowserRouter, Routes, Route } from 'react-router-dom'
 import { ThemeProvider } from './context/ThemeContext'
 import { ToastProvider } from './context/ToastContext'
+import { WebSocketProvider } from './context/WebSocketContext'
 import { AppShell } from './components/layout/AppShell'
 import { lazy, Suspense } from 'react'
 import { Spinner } from './components/ui/Spinner'
@@ -29,7 +30,8 @@ export default function App() {
     <QueryClientProvider client={queryClient}>
       <ThemeProvider>
         <ToastProvider>
-          <BrowserRouter>
+          <WebSocketProvider>
+            <BrowserRouter>
             <Suspense
               fallback={
                 <div className="flex h-screen items-center justify-center">
@@ -55,7 +57,8 @@ export default function App() {
                 </Route>
               </Routes>
             </Suspense>
-          </BrowserRouter>
+            </BrowserRouter>
+          </WebSocketProvider>
         </ToastProvider>
       </ThemeProvider>
     </QueryClientProvider>

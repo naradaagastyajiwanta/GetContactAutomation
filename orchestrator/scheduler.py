@@ -39,6 +39,7 @@ from orchestrator.agents.ig_handle_finder import run_handle_search_batch
 from orchestrator.agents.ig_post_scraper import run_post_scrape_batch
 from orchestrator.agents.ig_phone_extractor import run_phone_extraction_batch
 from orchestrator.agents.bem_finder import run_bem_discovery_batch
+from orchestrator.websocket import manager as ws_manager
 
 WIB = timezone(timedelta(hours=7))
 
@@ -90,6 +91,12 @@ async def _threaded_handle_search():
             details=result.get("details", [])[:100],
             items_processed=searched, items_success=found, items_failed=searched - found,
         )
+        # Broadcast agent completion
+        await ws_manager.broadcast_type(
+            "agent_completed",
+            agent="find_handles",
+            stats={"searched": searched, "found": found},
+        )
         return result
     except Exception as e:
         await complete_pipeline_log(log_id, status="failed", error=str(e))
@@ -107,6 +114,12 @@ async def _threaded_post_scrape():
             items_processed=result.get("scraped", 0),
             items_success=result.get("total_posts", 0),
         )
+        # Broadcast agent completion
+        await ws_manager.broadcast_type(
+            "agent_completed",
+            agent="scrape_posts",
+            stats={"scraped": result.get("scraped", 0), "total_posts": result.get("total_posts", 0)},
+        )
         return result
     except Exception as e:
         await complete_pipeline_log(log_id, status="failed", error=str(e))
@@ -123,6 +136,12 @@ async def _threaded_phone_extraction():
             details=result.get("details", [])[:100],
             items_processed=result.get("processed", 0),
             items_success=result.get("phones_found", 0),
+        )
+        # Broadcast agent completion
+        await ws_manager.broadcast_type(
+            "agent_completed",
+            agent="extract_phones",
+            stats={"processed": result.get("processed", 0), "phones_found": result.get("phones_found", 0)},
         )
         return result
     except Exception as e:
@@ -142,6 +161,12 @@ async def _threaded_bem_discovery():
             details=result.get("details", [])[:100],
             items_processed=searched, items_success=found,
             items_failed=searched - found,
+        )
+        # Broadcast agent completion
+        await ws_manager.broadcast_type(
+            "agent_completed",
+            agent="discover_bem",
+            stats={"searched": searched, "found": found},
         )
         return result
     except Exception as e:
@@ -174,6 +199,8 @@ async def daily_outreach_loop():
 
     if not await can_send_today():
         log.info("Daily quota reached, skipping outreach")
+        # Broadcast quota reached event
+        await ws_manager.broadcast_type("quota_reached", remaining=0)
         return
 
     quota = await get_today_quota()
@@ -186,6 +213,7 @@ async def daily_outreach_loop():
     for uni in universities:
         if not await can_send_today():
             log.info("Quota reached during outreach loop")
+            await ws_manager.broadcast_type("quota_reached", remaining=0)
             break
 
         if not is_within_outreach_hours():
