@@ -1226,10 +1226,57 @@ def _headless_login_impl(username: str, password: str) -> dict:
                     return {"status": "failed", "message": f"Could not fill login form: {e}",
                             "session_id": None, "screenshot": None, "details": details}
 
-            # Evaluate result
+            # Evaluate result — retry cookie check a few times (IG sometimes sets them with delay)
             url = browser.page.url.lower()
-            details["cookies"] = browser._get_ig_cookies()
+            cookies_found = False
+            for _retry in range(4):
+                details["cookies"] = browser._get_ig_cookies()
+                if details["cookies"].get("ds_user_id"):
+                    cookies_found = True
+                    log.info("[HeadlessLogin] ds_user_id found on retry %d", _retry)
+                    break
+                if _retry < 3:
+                    log.info("[HeadlessLogin] No ds_user_id yet (attempt %d/4), waiting 3s...", _retry + 1)
+                    _time.sleep(3)
+                    # Re-read URL in case of redirect
+                    url = browser.page.url.lower()
             details["final_url"] = browser.page.url
+
+            # Capture body text for diagnosis (always, helps debugging)
+            try:
+                body_text = browser.page.locator("body").inner_text(timeout=3000)
+                details["page_text"] = body_text[:2000]
+                log.info("[HeadlessLogin] Page body (first 200): %s", body_text[:200].replace("\n", " | "))
+            except Exception:
+                pass
+
+            # Check for suspicious login / unusual activity text on the page itself
+            page_text_lower = details.get("page_text", "").lower()
+            suspicious_keywords = ["suspicious", "unusual", "we detected", "confirm your identity",
+                                   "verify your identity", "security code", "aktivitas mencurigakan",
+                                   "konfirmasi identitas"]
+            if any(kw in page_text_lower for kw in suspicious_keywords):
+                log.warning("[HeadlessLogin] Suspicious login activity detected on page text!")
+                screenshot_b64 = None
+                try:
+                    raw = browser.page.screenshot(type="jpeg", quality=60)
+                    screenshot_b64 = _b64.b64encode(raw).decode("ascii")
+                except Exception:
+                    pass
+                session_id = str(_uuid.uuid4())
+                _login_sessions[session_id] = {
+                    "browser": browser,
+                    "account": acct,
+                    "username": username,
+                    "created_at": _time.time(),
+                }
+                return {
+                    "status": "challenge",
+                    "message": "Instagram detected suspicious login. Check the screenshot and verify your identity.",
+                    "session_id": session_id,
+                    "screenshot": screenshot_b64,
+                    "details": details,
+                }
 
             # --- CHALLENGE / VERIFICATION ---
             if "/challenge/" in url or "/accounts/suspended" in url or "/accounts/consent" in url:
