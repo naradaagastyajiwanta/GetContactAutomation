@@ -1306,7 +1306,17 @@ def _headless_login_impl(username: str, password: str) -> dict:
                 }
 
             # --- STILL LOGIN PAGE (wrong password?) ---
-            if "/accounts/login" in url:
+            # IG may show login form at homepage URL (not just /accounts/login)
+            login_error_texts = ["informasi login", "incorrect", "wrong password",
+                                 "doesn't match", "salah", "find your account"]
+            has_login_error = any(kw in page_text_lower for kw in login_error_texts)
+            has_login_form = False
+            try:
+                has_login_form = browser.page.locator('input[name="username"], input[name="email"]').first.is_visible(timeout=1000)
+            except Exception:
+                pass
+
+            if "/accounts/login" in url or (has_login_error and has_login_form):
                 error_msg = ""
                 try:
                     err_el = browser.page.locator('[role="alert"], .eiCW-, #slfErrorAlert, p[data-testid="login-error-message"]')
