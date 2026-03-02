@@ -2,6 +2,7 @@ import { ControlPanel } from '../components/settings/ControlPanel'
 import { HealthStatus } from '../components/settings/HealthStatus'
 import { ConfigDisplay } from '../components/settings/ConfigDisplay'
 import { ExportSection } from '../components/settings/ExportSection'
+import { IGAccountsManager } from '../components/settings/IGAccountsManager'
 
 export default function SettingsPage() {
   return (
@@ -12,6 +13,8 @@ export default function SettingsPage() {
         <ControlPanel />
         <HealthStatus />
       </div>
+
+      <IGAccountsManager />
 
       <ConfigDisplay />
 

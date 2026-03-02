@@ -5,10 +5,17 @@ Run: uvicorn orchestrator.main:app --port 8000 --reload
 import asyncio
 import csv
 import io
+import json as _json
+import functools
 from collections import OrderedDict
+from concurrent.futures import ThreadPoolExecutor
 from contextlib import asynccontextmanager
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any, Optional
+
+# Dedicated thread-pool for long-running Playwright operations so they
+# don't starve the default executor used by normal request handlers.
+_pw_executor = ThreadPoolExecutor(max_workers=2, thread_name_prefix="pw-login")
 
 import httpx
 from fastapi import FastAPI, BackgroundTasks, UploadFile, File as FastAPIFile, Form, Query, WebSocket, WebSocketDisconnect
@@ -120,6 +127,43 @@ async def _get_phone_lock(phone: str) -> asyncio.Lock:
 
 
 # ---------------------------------------------------------------------------
+# Periodic IG session health check (lightweight — no browser launch)
+# ---------------------------------------------------------------------------
+
+_IG_HEALTH_INTERVAL = 300  # 5 minutes
+
+async def _periodic_ig_health_check():
+    """
+    Background task: log IG account pool status every 5 minutes.
+    Uses existing in-memory pool state (login_ok, healthy, last_error)
+    that is updated by actual scraping operations & login flows —
+    does NOT launch browsers.
+    """
+    await asyncio.sleep(60)  # initial delay — let everything boot
+    while True:
+        try:
+            from orchestrator.playwright_ig import _account_pool
+            pool = _account_pool.status()
+            total = len(pool)
+            healthy = sum(1 for a in pool if a["healthy"])
+            if total > 0 and healthy < total:
+                log.warning(
+                    "[IGHealthCheck] %d/%d accounts healthy — %s",
+                    healthy, total,
+                    ", ".join(
+                        f"@{a['username']}={a.get('last_error', 'unhealthy')}"
+                        for a in pool if not a["healthy"]
+                    ),
+                )
+        except asyncio.CancelledError:
+            break
+        except Exception as exc:
+            log.error("[IGHealthCheck] Error: %s", exc, exc_info=True)
+
+        await asyncio.sleep(_IG_HEALTH_INTERVAL)
+
+
+# ---------------------------------------------------------------------------
 # Lifespan
 # ---------------------------------------------------------------------------
 
@@ -152,13 +196,17 @@ async def lifespan(app: FastAPI):
     # Start message queue send worker
     worker_task = asyncio.create_task(message_queue.send_worker())
 
+    # Start periodic IG session health checker (every 5 min)
+    ig_health_task = asyncio.create_task(_periodic_ig_health_check())
+
     # Start scheduler
     setup_scheduler()
     log.info("Orchestrator started on port 8000")
 
     yield
 
-    # Cancel send worker
+    # Cancel background tasks
+    ig_health_task.cancel()
     worker_task.cancel()
 
     # Shutdown
@@ -1555,6 +1603,425 @@ async def reset_config(key: str):
 
 
 # ---------------------------------------------------------------------------
+# IG Accounts CRUD  (for Playwright multi-account rotation)
+# ---------------------------------------------------------------------------
+
+
+class IGAccountPayload(BaseModel):
+    username: str
+    password: str
+    notes: str = ""
+
+
+class IGAccountUpdatePayload(BaseModel):
+    username: str | None = None
+    password: str | None = None
+    enabled: bool | None = None
+    notes: str | None = None
+
+
+def _mask_password(pw: str) -> str:
+    if not pw:
+        return ""
+    if len(pw) <= 4:
+        return "\u2022" * len(pw)
+    return "\u2022" * (len(pw) - 2) + pw[-2:]
+
+
+@app.get("/ig-accounts")
+async def list_ig_accounts():
+    """Return all IG accounts (passwords masked)."""
+    from orchestrator.db import get_ig_accounts
+    rows = await get_ig_accounts()
+    for r in rows:
+        r["password"] = _mask_password(r.get("password", ""))
+    # Also include live pool status
+    from orchestrator.playwright_ig import _account_pool
+    pool_status = _account_pool.status()
+    return {"accounts": rows, "pool_status": pool_status}
+
+
+@app.get("/ig-accounts/health")
+async def ig_accounts_health(force: bool = False):
+    """
+    Return IG accounts' session health.
+
+    By default this is **lightweight**: reads from the in-memory account
+    pool (login_ok, healthy, last_error) and the DB (login_status).
+    No browser is launched.
+
+    With ``?force=true`` a real browser-based verification is performed
+    for each account (slow, ~15-45 s per account). Use sparingly.
+    """
+    from orchestrator.playwright_ig import _account_pool
+    from orchestrator.db import get_ig_accounts, update_ig_account
+
+    # --- force mode: expensive browser-based verification ---
+    if force:
+        from orchestrator.playwright_ig import (
+            pw_verify_all_sessions, pw_invalidate_health_cache,
+        )
+        pw_invalidate_health_cache()
+        loop = asyncio.get_running_loop()
+        results = await loop.run_in_executor(_pw_executor, pw_verify_all_sessions)
+
+        rows = await get_ig_accounts(enabled_only=True)
+        uid_map = {r["username"]: r["id"] for r in rows}
+        for r in results:
+            acct_id = uid_map.get(r.get("username"))
+            if not acct_id:
+                continue
+            st = r.get("status", "error")
+            db_st = "success" if st == "connected" else ("banned" if st == "banned" else "failed")
+            await update_ig_account(acct_id, login_status=db_st,
+                                    last_login_test=datetime.now(timezone.utc).isoformat())
+
+        total = len(results)
+        connected = sum(1 for r in results if r.get("status") == "connected")
+        return {
+            "total": total, "connected": connected,
+            "all_ok": connected == total and total > 0,
+            "accounts": [
+                {"username": r.get("username"), "status": r.get("status"),
+                 "reason": r.get("reason"), "username_verified": r.get("username_verified")}
+                for r in results
+            ],
+            "checked_at": datetime.now(timezone.utc).isoformat(),
+        }
+
+    # --- default: lightweight pool + DB status ---
+    pool = _account_pool.status()  # [{username, healthy, login_ok, last_error, ...}]
+    rows = await get_ig_accounts(enabled_only=True)
+    db_map = {r["username"]: r for r in rows}
+
+    accounts_out = []
+    for p in pool:
+        uname = p["username"]
+        db_row = db_map.get(uname, {})
+        db_login = db_row.get("login_status", "untested")
+
+        # Derive status from pool state + DB
+        if db_login == "banned":
+            status = "banned"
+            reason = "account_banned"
+        elif not p["login_ok"]:
+            status = "disconnected"
+            reason = p.get("last_error") or "login_failed"
+        elif p.get("cooldown_remaining_s", 0) > 0:
+            status = "rate_limited"
+            reason = "cooldown_active"
+        elif db_login == "success" and p["healthy"]:
+            status = "connected"
+            reason = None
+        elif db_login in ("untested", "challenge"):
+            status = "connected" if p["healthy"] else "disconnected"
+            reason = None if p["healthy"] else (p.get("last_error") or db_login)
+        else:
+            # db_login == 'failed' but pool says healthy → trust pool
+            status = "connected" if p["healthy"] else "disconnected"
+            reason = None if p["healthy"] else (p.get("last_error") or "failed")
+
+        accounts_out.append({
+            "username": uname,
+            "status": status,
+            "reason": reason,
+            "username_verified": uname if status == "connected" else None,
+        })
+
+    total = len(accounts_out)
+    connected = sum(1 for a in accounts_out if a["status"] == "connected")
+    return {
+        "total": total,
+        "connected": connected,
+        "all_ok": connected == total and total > 0,
+        "accounts": accounts_out,
+        "checked_at": datetime.now(timezone.utc).isoformat(),
+    }
+
+
+@app.post("/ig-accounts")
+async def add_ig_account(payload: IGAccountPayload):
+    """Add a new IG account for Playwright rotation."""
+    from orchestrator.db import create_ig_account
+    if not payload.username.strip() or not payload.password.strip():
+        return JSONResponse(status_code=422, content={"detail": "Username and password required"})
+    try:
+        acct = await create_ig_account(payload.username, payload.password, payload.notes)
+    except Exception as e:
+        if "UNIQUE constraint" in str(e):
+            return JSONResponse(status_code=409, content={"detail": f"Account @{payload.username} already exists"})
+        raise
+    acct["password"] = _mask_password(acct.get("password", ""))
+    # Reload pool
+    from orchestrator.playwright_ig import _account_pool
+    await _reload_ig_account_pool()
+    return {"status": "ok", "account": acct}
+
+
+@app.put("/ig-accounts/{account_id}")
+async def edit_ig_account(account_id: int, payload: IGAccountUpdatePayload):
+    """Update an IG account."""
+    from orchestrator.db import update_ig_account
+    updated = await update_ig_account(
+        account_id,
+        username=payload.username,
+        password=payload.password,
+        enabled=payload.enabled,
+        notes=payload.notes,
+    )
+    if not updated:
+        return JSONResponse(status_code=404, content={"detail": "Account not found"})
+    updated["password"] = _mask_password(updated.get("password", ""))
+    await _reload_ig_account_pool()
+    return {"status": "ok", "account": updated}
+
+
+@app.delete("/ig-accounts/{account_id}")
+async def remove_ig_account(account_id: int):
+    """Delete an IG account."""
+    from orchestrator.db import delete_ig_account
+    ok = await delete_ig_account(account_id)
+    if not ok:
+        return JSONResponse(status_code=404, content={"detail": "Account not found"})
+    await _reload_ig_account_pool()
+    return {"status": "ok"}
+
+
+# ---- New headless login endpoints (simple REST, no SSE) ----
+
+@app.post("/ig-accounts/{account_id}/login")
+async def ig_account_login(account_id: int):
+    """
+    Start a headless login for an IG account.
+    Returns immediately with status: success | challenge | failed.
+    If challenge, includes session_id + screenshot for the FE to show.
+    """
+    from orchestrator.db import get_ig_accounts, update_ig_account
+    rows = await get_ig_accounts()
+    acct_row = next((r for r in rows if r["id"] == account_id), None)
+    if not acct_row:
+        return JSONResponse(status_code=404, content={"detail": "Account not found"})
+
+    username = acct_row["username"]
+    password = acct_row["password"]
+
+    from orchestrator.playwright_ig import pw_headless_login, _account_pool, pw_invalidate_health_cache
+
+    loop = asyncio.get_running_loop()
+    result = await loop.run_in_executor(_pw_executor, pw_headless_login, username, password)
+
+    # Persist to DB
+    login_status = result["status"]  # "success", "challenge", or "failed"
+    now_ts = datetime.now(timezone.utc).isoformat()
+    db_status = "success" if login_status == "success" else ("challenge" if login_status == "challenge" else "failed")
+    await update_ig_account(account_id, login_status=db_status, last_login_test=now_ts)
+
+    # Update pool
+    if login_status == "success":
+        with _account_pool._lock:
+            _account_pool._ensure_loaded()
+            for a in _account_pool._accounts:
+                if a.username == username:
+                    a.login_ok = True
+                    a.last_error = None
+                    break
+        pw_invalidate_health_cache()  # refresh health status
+    elif login_status == "failed":
+        _account_pool.mark_login_failed(username, result.get("message", ""))
+
+    await _reload_ig_account_pool()
+    return result
+
+
+@app.post("/ig-accounts/{account_id}/login/challenge")
+async def ig_account_login_challenge(account_id: int, body: dict):
+    """
+    Submit a verification code for an active challenge session.
+    Body: { "session_id": "...", "code": "123456" }
+    """
+    session_id = body.get("session_id")
+    code = body.get("code")
+    if not session_id or not code:
+        return JSONResponse(status_code=400, content={"detail": "session_id and code are required"})
+
+    from orchestrator.db import get_ig_accounts, update_ig_account
+    rows = await get_ig_accounts()
+    acct_row = next((r for r in rows if r["id"] == account_id), None)
+    if not acct_row:
+        return JSONResponse(status_code=404, content={"detail": "Account not found"})
+
+    username = acct_row["username"]
+
+    from orchestrator.playwright_ig import pw_submit_challenge, _account_pool
+
+    loop = asyncio.get_running_loop()
+    result = await loop.run_in_executor(_pw_executor, pw_submit_challenge, session_id, code)
+
+    # Persist
+    login_status = result["status"]
+    now_ts = datetime.now(timezone.utc).isoformat()
+    await update_ig_account(account_id, login_status=login_status, last_login_test=now_ts)
+
+    if login_status == "success":
+        with _account_pool._lock:
+            _account_pool._ensure_loaded()
+            for a in _account_pool._accounts:
+                if a.username == username:
+                    a.login_ok = True
+                    a.last_error = None
+                    break
+    elif login_status == "failed":
+        _account_pool.mark_login_failed(username, result.get("message", ""))
+
+    await _reload_ig_account_pool()
+    return result
+
+
+# ---- Legacy test-login endpoints (kept for backward compatibility) ----
+
+@app.post("/ig-accounts/{account_id}/test-login")
+async def test_ig_account_login(account_id: int):
+    """
+    Test whether the IG credentials for this account can successfully log in.
+    Runs Playwright in a thread-pool executor (blocking, ~10-30s).
+    """
+    from orchestrator.db import get_ig_accounts, update_ig_account
+    rows = await get_ig_accounts()
+    acct_row = next((r for r in rows if r["id"] == account_id), None)
+    if not acct_row:
+        return JSONResponse(status_code=404, content={"detail": "Account not found"})
+
+    username = acct_row["username"]
+    password = acct_row["password"]
+
+    # Run blocking Playwright test in executor
+    from orchestrator.playwright_ig import pw_test_login
+    loop = asyncio.get_running_loop()
+    result = await loop.run_in_executor(None, pw_test_login, username, password)
+
+    # Persist result to DB
+    login_status = "success" if result["success"] else "failed"
+    now_ts = datetime.now(timezone.utc).isoformat()
+    await update_ig_account(
+        account_id,
+        login_status=login_status,
+        last_login_test=now_ts,
+    )
+
+    # Update pool runtime state if applicable
+    from orchestrator.playwright_ig import _account_pool
+    if not result["success"]:
+        _account_pool.mark_login_failed(username, result.get("message", ""))
+    else:
+        # Restore login_ok if it was previously marked failed
+        with _account_pool._lock:
+            _account_pool._ensure_loaded()
+            for a in _account_pool._accounts:
+                if a.username == username:
+                    a.login_ok = True
+                    a.last_error = None
+                    break
+
+    await _reload_ig_account_pool()
+    return {"status": "ok", "result": result, "login_status": login_status}
+
+
+@app.get("/ig-accounts/{account_id}/test-login-live")
+async def test_ig_account_login_live(account_id: int):
+    """
+    SSE endpoint: runs the login test with a *visible* browser and streams
+    live screenshot events to the frontend.
+
+    Event types pushed over SSE:
+      - ``status``      — progress text (no screenshot)
+      - ``screenshot``  — base64 JPEG screenshot + step name + message
+      - ``done``        — final result dict (test complete)
+      - ``result``      — DB-persisted result summary (very last event)
+
+    The frontend should connect via ``EventSource`` or ``fetch`` in
+    streaming mode and react to each event type.
+    """
+    from orchestrator.db import get_ig_accounts, update_ig_account
+
+    rows = await get_ig_accounts()
+    acct_row = next((r for r in rows if r["id"] == account_id), None)
+    if not acct_row:
+        return JSONResponse(status_code=404, content={"detail": "Account not found"})
+
+    username = acct_row["username"]
+    password = acct_row["password"]
+
+    from orchestrator.playwright_ig import pw_test_login, _test_login_events, _account_pool
+
+    # Kick off the blocking pw_test_login in a *dedicated* thread-pool
+    # so it doesn't starve the default executor used by other requests.
+    loop = asyncio.get_running_loop()
+    task = loop.run_in_executor(
+        _pw_executor,
+        functools.partial(pw_test_login, username, password, live=True),
+    )
+
+    async def _event_stream():
+        seen = 0
+        done_result = None  # will hold the result dict from the "done" event
+        while done_result is None:
+            q = _test_login_events.get(username)
+            if q:
+                while seen < len(q):
+                    evt = q[seen]
+                    seen += 1
+                    yield f"data: {_json.dumps(evt, default=str)}\n\n"
+                    if evt.get("type") == "done":
+                        done_result = evt.get("result", {})
+            if done_result is None:
+                await asyncio.sleep(0.4)
+
+        # --- persist result to DB immediately (don't wait for browser cleanup) ---
+        login_status = "success" if done_result.get("success") else "failed"
+        now_ts = datetime.now(timezone.utc).isoformat()
+        await update_ig_account(
+            account_id,
+            login_status=login_status,
+            last_login_test=now_ts,
+        )
+        if not done_result.get("success"):
+            _account_pool.mark_login_failed(username, done_result.get("message", ""))
+        else:
+            with _account_pool._lock:
+                _account_pool._ensure_loaded()
+                for a in _account_pool._accounts:
+                    if a.username == username:
+                        a.login_ok = True
+                        a.last_error = None
+                        break
+        await _reload_ig_account_pool()
+
+        # Send final summary so FE can update its cache
+        yield f"data: {_json.dumps({'type': 'result', 'login_status': login_status, 'result': done_result}, default=str)}\n\n"
+
+        # Clean up event queue
+        _test_login_events.pop(username, None)
+
+    return StreamingResponse(
+        _event_stream(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",
+        },
+    )
+
+
+async def _reload_ig_account_pool():
+    """Reload Playwright account pool from DB."""
+    from orchestrator.db import get_ig_accounts
+    from orchestrator.playwright_ig import _account_pool
+    rows = await get_ig_accounts(enabled_only=True)
+    _account_pool.load_from_db(rows)
+
+
+# ---------------------------------------------------------------------------
 # Knowledge Items CRUD
 # ---------------------------------------------------------------------------
 
@@ -1984,7 +2451,7 @@ async def audiensi_template_placeholders():
 async def health():
     """Health check endpoint."""
     from orchestrator.instagram import get_ig_session_status, get_serper_status
-    from orchestrator import apify_client, scrapingbot_client
+    from orchestrator import apify_client, scrapingbot_client, duckduckgo_client, playwright_ig
 
     # Check WA service connectivity
     wa_status = {"connected": False}
@@ -1999,6 +2466,10 @@ async def health():
         "status": "ok",
         "whatsapp": wa_status,
         "instagram": get_ig_session_status(),
+        "scraping": {
+            "playwright": playwright_ig.get_status(),
+            "duckduckgo": duckduckgo_client.get_status(),
+        },
         "api_keys": {
             "serper": get_serper_status(),
             "apify": apify_client.get_status(),

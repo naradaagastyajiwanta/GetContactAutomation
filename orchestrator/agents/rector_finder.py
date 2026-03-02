@@ -2,7 +2,7 @@
 Agent 5: Rector Name Finder
 
 Finds the rector's name for a university using a cascade of strategies:
-1. Google Search (Serper) — most reliable
+1. DuckDuckGo Search (free) / Serper (legacy fallback) — most reliable
 2. University website scraping — look for "Rektor", "Pimpinan"
 3. GPT extraction — pass scraped text to GPT-4o-mini
 
@@ -15,6 +15,7 @@ import httpx
 from openai import AsyncOpenAI
 
 from orchestrator.config import log, cfg
+from orchestrator import duckduckgo_client
 from orchestrator.db import get_university_by_id, update_university_rector_name
 
 
@@ -49,10 +50,10 @@ async def find_rector_name(university_id: int) -> str | None:
     website = uni.get("website") or ""
     log.info("rector_finder: searching rector for %s (id=%d)", uni_name, university_id)
 
-    # Strategy 1: Google Search via Serper
-    name = await _search_serper(uni_name)
+    # Strategy 1: Web Search (DuckDuckGo primary, Serper fallback)
+    name = await _search_web(uni_name)
     if name:
-        log.info("rector_finder: found via Serper: %s", name)
+        log.info("rector_finder: found via web search: %s", name)
         await update_university_rector_name(university_id, name)
         return name
 
@@ -74,6 +75,50 @@ async def find_rector_name(university_id: int) -> str | None:
     log.info("rector_finder: could not find rector name for %s", uni_name)
     return None
 
+
+
+async def _search_web(uni_name: str) -> str | None:
+    """Search for rector name using DuckDuckGo (free, primary) and Serper (fallback)."""
+    # Primary: DuckDuckGo
+    name = await _search_duckduckgo(uni_name)
+    if name:
+        return name
+
+    # Fallback: Serper (if configured)
+    return await _search_serper(uni_name)
+
+
+async def _search_duckduckgo(uni_name: str) -> str | None:
+    """Search for rector name using DuckDuckGo (free, no API key)."""
+    query = f"nama rektor {uni_name} 2024 2025"
+    try:
+        results = await duckduckgo_client.async_search_text(query, max_results=5, region="id-id")
+
+        if not results:
+            return None
+
+        # Collect text snippets
+        snippets = []
+        for item in results[:5]:
+            title = item.get("title", "")
+            snippet = item.get("snippet", "")
+            snippets.append(f"{title} - {snippet}")
+
+        if not snippets:
+            return None
+
+        # Extract name from snippets using patterns
+        combined = "\n".join(snippets)
+        name = _extract_name_from_text(combined, uni_name)
+        if name:
+            return name
+
+        # Fallback: use GPT to extract from snippets
+        return await _gpt_extract_from_text(combined, uni_name)
+
+    except Exception as e:
+        log.warning("rector_finder: DuckDuckGo search failed: %s", e)
+        return None
 
 async def _search_serper(uni_name: str) -> str | None:
     """Search for rector name using Serper Google Search API."""

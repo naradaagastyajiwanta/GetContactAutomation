@@ -49,4 +49,6 @@ export const queryKeys = {
   },
   config: ['config'] as const,
   models: ['config', 'models'] as const,
+  igAccounts: ['ig-accounts'] as const,
+  igAccountsHealth: ['ig-accounts', 'health'] as const,
 }

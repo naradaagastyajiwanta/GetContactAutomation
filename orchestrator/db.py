@@ -273,6 +273,20 @@ CREATE INDEX IF NOT EXISTS idx_related_igs_scraped ON university_related_igs(pos
 CREATE INDEX IF NOT EXISTS idx_related_igs_type ON university_related_igs(relation_type);
 """
 
+_DDL_IG_ACCOUNTS = """
+CREATE TABLE IF NOT EXISTS ig_accounts (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    username TEXT NOT NULL UNIQUE,
+    password TEXT NOT NULL,
+    enabled BOOLEAN DEFAULT 1,
+    notes TEXT DEFAULT '',
+    login_status TEXT DEFAULT 'untested',
+    last_login_test TIMESTAMP,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+"""
+
 # ---------------------------------------------------------------------------
 # Initialization & connection helper
 # ---------------------------------------------------------------------------
@@ -298,6 +312,7 @@ async def init_db() -> None:
         await db.executescript(_INDEXES_PIPELINE_LOGS)
         await db.executescript(_DDL_RELATED_IGS)
         await db.executescript(_INDEXES_RELATED_IGS)
+        await db.executescript(_DDL_IG_ACCOUNTS)
         # Migration: add agent_reasoning column to conversations (idempotent)
         try:
             await db.execute(
@@ -467,6 +482,23 @@ async def init_db() -> None:
             pass  # Column already exists
         try:
             await db.execute("ALTER TABLE ig_posts ADD COLUMN source_ig_type TEXT")
+            await db.commit()
+        except Exception:
+            pass  # Column already exists
+
+        # Migration: add login_status column to ig_accounts
+        try:
+            await db.execute(
+                "ALTER TABLE ig_accounts ADD COLUMN login_status TEXT DEFAULT 'untested'"
+            )
+            await db.commit()
+        except Exception:
+            pass  # Column already exists
+        # Migration: add last_login_test column to ig_accounts
+        try:
+            await db.execute(
+                "ALTER TABLE ig_accounts ADD COLUMN last_login_test TIMESTAMP"
+            )
             await db.commit()
         except Exception:
             pass  # Column already exists
@@ -2654,3 +2686,84 @@ async def cleanup_old_pipeline_logs(days: int = 30) -> int:
         )
         await db.commit()
         return cursor.rowcount
+
+
+# ---------------------------------------------------------------------------
+# IG Accounts CRUD
+# ---------------------------------------------------------------------------
+
+
+async def get_ig_accounts(enabled_only: bool = False) -> list[dict]:
+    """Return all IG accounts. If *enabled_only*, filter by enabled=1."""
+    async with get_db() as db:
+        if enabled_only:
+            cursor = await db.execute(
+                "SELECT * FROM ig_accounts WHERE enabled = 1 ORDER BY id"
+            )
+        else:
+            cursor = await db.execute("SELECT * FROM ig_accounts ORDER BY id")
+        rows = await cursor.fetchall()
+        return [_row_to_dict(r) for r in rows]
+
+
+async def create_ig_account(username: str, password: str, notes: str = "") -> dict:
+    """Insert a new IG account. Returns the created row."""
+    async with get_db() as db:
+        cursor = await db.execute(
+            """INSERT INTO ig_accounts (username, password, notes)
+               VALUES (?, ?, ?)""",
+            (username.strip().lower(), password, notes),
+        )
+        await db.commit()
+        row_id = cursor.lastrowid
+        cursor = await db.execute("SELECT * FROM ig_accounts WHERE id = ?", (row_id,))
+        row = await cursor.fetchone()
+        return _row_to_dict(row)
+
+
+async def update_ig_account(
+    account_id: int, *, username: str | None = None,
+    password: str | None = None, enabled: bool | None = None,
+    notes: str | None = None, **kwargs,
+) -> dict | None:
+    """Update fields of an IG account. Returns updated row or None."""
+    sets: list[str] = []
+    vals: list = []
+    if username is not None:
+        sets.append("username = ?")
+        vals.append(username.strip().lower())
+    if password is not None:
+        sets.append("password = ?")
+        vals.append(password)
+    if enabled is not None:
+        sets.append("enabled = ?")
+        vals.append(1 if enabled else 0)
+    if notes is not None:
+        sets.append("notes = ?")
+        vals.append(notes)
+    if kwargs.get("login_status") is not None:
+        sets.append("login_status = ?")
+        vals.append(kwargs["login_status"])
+    if kwargs.get("last_login_test") is not None:
+        sets.append("last_login_test = ?")
+        vals.append(kwargs["last_login_test"])
+    if not sets:
+        return None
+    sets.append("updated_at = datetime('now')")
+    vals.append(account_id)
+    async with get_db() as db:
+        await db.execute(
+            f"UPDATE ig_accounts SET {', '.join(sets)} WHERE id = ?", vals
+        )
+        await db.commit()
+        cursor = await db.execute("SELECT * FROM ig_accounts WHERE id = ?", (account_id,))
+        row = await cursor.fetchone()
+        return _row_to_dict(row) if row else None
+
+
+async def delete_ig_account(account_id: int) -> bool:
+    """Delete an IG account. Returns True if deleted."""
+    async with get_db() as db:
+        cursor = await db.execute("DELETE FROM ig_accounts WHERE id = ?", (account_id,))
+        await db.commit()
+        return cursor.rowcount > 0

@@ -15,3 +15,8 @@ python-docx==1.1.2
 PyPDF2==3.0.1
 openpyxl==3.1.5
 python-multipart==0.0.20
+
+# Free scraping replacements (no API key needed)
+ddgs>=7.0.0
+playwright>=1.49.0
+playwright-stealth>=1.0.6

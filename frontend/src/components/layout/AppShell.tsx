@@ -4,6 +4,7 @@ import { Sidebar } from './Sidebar'
 import { TopBar } from './TopBar'
 import { MobileNav } from './MobileNav'
 import { IgSessionBanner } from './IgSessionBanner'
+import { IgPlaywrightBanner } from './IgPlaywrightBanner'
 import { NotificationCenter } from '../notifications/NotificationCenter'
 
 export function AppShell() {
@@ -21,6 +22,7 @@ export function AppShell() {
         <TopBar onMenuClick={() => setMobileNavOpen(true)} />
         <main className="flex-1 overflow-y-auto p-4 lg:p-6">
           <IgSessionBanner />
+          <IgPlaywrightBanner />
           <Outlet />
         </main>
       </div>

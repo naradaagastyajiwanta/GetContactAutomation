@@ -15,7 +15,7 @@ Sistem ini terdiri dari 3 service yang harus dijalankan bersamaan:
 - **Python 3.11+**
 - **Node.js 18+** dan npm
 - **OpenAI API Key** (wajib)
-- **Serper API Key** (wajib untuk pencarian IG)
+- **Serper API Key** (opsional — DuckDuckGo dipakai sebagai pencarian utama, gratis tanpa API key)
 
 ---
 
@@ -31,12 +31,12 @@ Isi minimal yang wajib:
 
 ```env
 OPENAI_API_KEY=sk-...
-SERPER_API_KEY=...
 ```
 
 Opsional:
 
 ```env
+SERPER_API_KEY=...          # Legacy fallback, DuckDuckGo dipakai utama
 IG_USERNAME=...
 IG_PASSWORD=...
 APIFY_API_KEY=...

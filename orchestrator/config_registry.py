@@ -27,6 +27,7 @@ class ConfigGroup(str, Enum):
     CREDENTIALS = "Credentials"
     AUDIENSI = "Audiensi"
     KNOWLEDGE_BASE = "Knowledge Base"
+    PLAYWRIGHT = "Playwright Browser"
 
 
 @dataclass(frozen=True)
@@ -54,8 +55,12 @@ CONFIG_DEFINITIONS: list[ConfigDef] = [
     ConfigDef(
         key="SERPER_API_KEY",
         type=ConfigType.STRING, default="", group=ConfigGroup.CREDENTIALS,
-        label="Serper API Key",
-        description="API key for Serper.dev Google Search.",
+        label="Serper API Key (Legacy)",
+        description=(
+            "Legacy: API key for Serper.dev Google Search. "
+            "DuckDuckGo is now used as the primary search engine (free, no key needed). "
+            "Leave empty unless you want to use Serper as an additional fallback."
+        ),
         sensitive=True,
     ),
     ConfigDef(
@@ -102,10 +107,52 @@ CONFIG_DEFINITIONS: list[ConfigDef] = [
     ),
     ConfigDef(
         key="IG_REQUEST_DELAY_SECONDS",
-        type=ConfigType.INT, default=7, group=ConfigGroup.INSTAGRAM,
-        label="IG Request Delay (s)",
-        description="Seconds between Instagram API requests.",
-        min_value=1, max_value=60,
+        type=ConfigType.INT, default=30, group=ConfigGroup.INSTAGRAM,
+        label="IG API Request Delay (s)",
+        description="Seconds between direct IG API requests (Tier 1). Increased to reduce ban risk.",
+        min_value=10, max_value=120,
+    ),
+    # --- Playwright Browser (Tier 0 — primary IG scraper) ---
+    ConfigDef(
+        key="PW_HEADLESS",
+        type=ConfigType.BOOL, default=True, group=ConfigGroup.PLAYWRIGHT,
+        label="Headless Mode",
+        description="Run Playwright browser without visible window (recommended for production).",
+    ),
+    ConfigDef(
+        key="PW_MIN_DELAY_SECONDS",
+        type=ConfigType.INT, default=8, group=ConfigGroup.PLAYWRIGHT,
+        label="Min Delay (s)",
+        description="Minimum delay between Playwright actions (human-like behavior).",
+        min_value=3, max_value=60,
+    ),
+    ConfigDef(
+        key="PW_MAX_DELAY_SECONDS",
+        type=ConfigType.INT, default=20, group=ConfigGroup.PLAYWRIGHT,
+        label="Max Delay (s)",
+        description="Maximum delay between Playwright actions.",
+        min_value=5, max_value=120,
+    ),
+    ConfigDef(
+        key="PW_PROFILES_PER_SESSION",
+        type=ConfigType.INT, default=15, group=ConfigGroup.PLAYWRIGHT,
+        label="Profiles per Session",
+        description="Max profiles to scrape before restarting browser (prevents detection).",
+        min_value=3, max_value=50,
+    ),
+    ConfigDef(
+        key="PW_DAILY_LIMIT",
+        type=ConfigType.INT, default=100, group=ConfigGroup.PLAYWRIGHT,
+        label="Daily Limit",
+        description="Max profiles scraped per day via Playwright.",
+        min_value=10, max_value=500,
+    ),
+    ConfigDef(
+        key="PW_ACCOUNT_COOLDOWN_MINUTES",
+        type=ConfigType.INT, default=30, group=ConfigGroup.PLAYWRIGHT,
+        label="Account Cooldown (min)",
+        description="Minutes to cool down a rate-limited account before retrying.",
+        min_value=5, max_value=240,
     ),
     # --- Outreach ---
     ConfigDef(
