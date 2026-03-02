@@ -9,8 +9,15 @@ import {
   Eye,
   EyeOff,
   RefreshCw,
+  CloudOff,
+  Download,
+  Upload,
+  ArrowRight,
+  Monitor,
+  Server,
 } from 'lucide-react'
-import { loginIGAccount, submitLoginChallenge, type LoginResult, type ChallengeResult } from '../../api/igAccounts'
+import { loginIGAccount, type LoginResult, type ChallengeResult } from '../../api/igAccounts'
+import { submitLoginChallenge } from '../../api/igAccounts'
 import { useQueryClient } from '@tanstack/react-query'
 
 interface Props {
@@ -20,7 +27,7 @@ interface Props {
   onDone?: (status: 'success' | 'failed', message: string) => void
 }
 
-type FlowState = 'idle' | 'logging_in' | 'challenge' | 'submitting' | 'success' | 'failed'
+type FlowState = 'idle' | 'logging_in' | 'challenge' | 'submitting' | 'success' | 'failed' | 'ip_blocked'
 
 export function IGLoginFlow({ accountId, username, onClose, onDone }: Props) {
   const [state, setState] = useState<FlowState>('idle')
@@ -53,9 +60,16 @@ export function IGLoginFlow({ accountId, username, onClose, onDone }: Props) {
           setScreenshot(result.screenshot)
           break
 
+        case 'ip_blocked':
+          setState('ip_blocked')
+          setMessage(result.message)
+          setScreenshot(result.screenshot)
+          break
+
         case 'failed':
           setState('failed')
           setMessage(result.message)
+          setScreenshot(result.screenshot)
           onDone?.('failed', result.message)
           break
 
@@ -142,6 +156,7 @@ export function IGLoginFlow({ accountId, username, onClose, onDone }: Props) {
                 {state === 'submitting' && 'Verifying code...'}
                 {state === 'success' && 'Connected'}
                 {state === 'failed' && 'Login failed'}
+                {state === 'ip_blocked' && 'Server IP blocked'}
               </p>
             </div>
           </div>
@@ -261,6 +276,113 @@ export function IGLoginFlow({ accountId, username, onClose, onDone }: Props) {
             </div>
           )}
 
+          {/* ---- IP BLOCKED STATE (datacenter/VPS) ---- */}
+          {state === 'ip_blocked' && (
+            <div className="space-y-4">
+              <div className="flex items-start gap-3 p-4 bg-amber-50 border border-amber-300 rounded-xl">
+                <CloudOff className="w-6 h-6 text-amber-600 mt-0.5 flex-shrink-0" />
+                <div>
+                  <p className="font-semibold text-amber-800">Server IP Blocked by Instagram</p>
+                  <p className="text-sm text-amber-700 mt-1">
+                    Instagram blocks logins from cloud/VPS servers.
+                    This is not a password issue — use <strong>Session Sync</strong> instead.
+                  </p>
+                </div>
+              </div>
+
+              {/* Step-by-step guide */}
+              <div className="bg-blue-50 border border-blue-200 rounded-xl p-4 space-y-3">
+                <p className="font-semibold text-blue-800 text-sm">How to fix with Session Sync:</p>
+                <div className="space-y-2.5">
+                  <div className="flex items-start gap-3">
+                    <span className="flex-shrink-0 w-6 h-6 rounded-full bg-blue-500 text-white text-xs font-bold flex items-center justify-center">1</span>
+                    <div className="text-sm text-blue-800">
+                      <div className="flex items-center gap-1.5">
+                        <Monitor className="w-4 h-4" />
+                        <span className="font-medium">Login on your local PC</span>
+                      </div>
+                      <p className="text-blue-600 mt-0.5">
+                        Open this dashboard on <code className="bg-blue-100 px-1 rounded">localhost</code> and login to @{username} there.
+                      </p>
+                    </div>
+                  </div>
+
+                  <div className="flex items-start gap-3">
+                    <span className="flex-shrink-0 w-6 h-6 rounded-full bg-blue-500 text-white text-xs font-bold flex items-center justify-center">2</span>
+                    <div className="text-sm text-blue-800">
+                      <div className="flex items-center gap-1.5">
+                        <Download className="w-4 h-4" />
+                        <span className="font-medium">Export session from local</span>
+                      </div>
+                      <p className="text-blue-600 mt-0.5">
+                        Click the <Download className="w-3.5 h-3.5 inline" /> download button in the Actions column.
+                      </p>
+                    </div>
+                  </div>
+
+                  <div className="flex items-center justify-center text-blue-400">
+                    <ArrowRight className="w-4 h-4" />
+                  </div>
+
+                  <div className="flex items-start gap-3">
+                    <span className="flex-shrink-0 w-6 h-6 rounded-full bg-blue-500 text-white text-xs font-bold flex items-center justify-center">3</span>
+                    <div className="text-sm text-blue-800">
+                      <div className="flex items-center gap-1.5">
+                        <Upload className="w-4 h-4" />
+                        <span className="font-medium">Import session on this server</span>
+                      </div>
+                      <p className="text-blue-600 mt-0.5">
+                        Click the <Upload className="w-3.5 h-3.5 inline" /> upload button in the Actions column to upload the exported file.
+                      </p>
+                    </div>
+                  </div>
+
+                  <div className="flex items-start gap-3">
+                    <span className="flex-shrink-0 w-6 h-6 rounded-full bg-green-500 text-white text-xs font-bold flex items-center justify-center">✓</span>
+                    <div className="text-sm text-blue-800">
+                      <div className="flex items-center gap-1.5">
+                        <Server className="w-4 h-4" />
+                        <span className="font-medium">Session auto-verified</span>
+                      </div>
+                      <p className="text-blue-600 mt-0.5">
+                        The server will verify the imported session works without re-logging in.
+                      </p>
+                    </div>
+                  </div>
+                </div>
+              </div>
+
+              {/* Diagnostic screenshot */}
+              {screenshot && (
+                <div>
+                  <button
+                    onClick={() => setShowScreenshot(!showScreenshot)}
+                    className="text-sm text-gray-500 hover:text-gray-700 flex items-center gap-1"
+                  >
+                    {showScreenshot ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+                    {showScreenshot ? 'Hide' : 'Show'} what Instagram showed
+                  </button>
+                  {showScreenshot && (
+                    <div className="mt-2 rounded-lg overflow-hidden border border-gray-200">
+                      <img
+                        src={`data:image/jpeg;base64,${screenshot}`}
+                        alt="Instagram page screenshot"
+                        className="w-full"
+                      />
+                    </div>
+                  )}
+                </div>
+              )}
+
+              <button
+                onClick={onClose}
+                className="w-full py-3 px-4 bg-blue-500 text-white font-semibold rounded-xl hover:bg-blue-600 transition-colors"
+              >
+                Got it — I'll use Session Sync
+              </button>
+            </div>
+          )}
+
           {/* ---- FAILED ---- */}
           {state === 'failed' && (
             <div className="space-y-4 py-4">
@@ -268,6 +390,15 @@ export function IGLoginFlow({ accountId, username, onClose, onDone }: Props) {
                 <AlertCircle className="w-14 h-14 text-red-400 mx-auto" />
                 <p className="font-semibold text-red-700 mt-2">Login Failed</p>
                 <p className="text-sm text-gray-500 mt-1">{message}</p>
+              </div>
+
+              {/* Hint about session sync */}
+              <div className="flex items-start gap-2 p-3 bg-gray-50 border border-gray-200 rounded-lg">
+                <CloudOff className="w-4 h-4 text-gray-400 mt-0.5 flex-shrink-0" />
+                <p className="text-xs text-gray-500">
+                  If the password is correct but login still fails, your server IP may be blocked.
+                  Try using <strong>Session Sync</strong> (export from local, import here) via the table actions.
+                </p>
               </div>
 
               {/* Diagnostic screenshot if available */}

@@ -128,7 +128,7 @@ export function connectTestLoginLive(
 // ---------------------------------------------------------------------------
 
 export interface LoginResult {
-  status: 'success' | 'challenge' | 'failed'
+  status: 'success' | 'challenge' | 'failed' | 'ip_blocked'
   message: string
   session_id: string | null
   screenshot: string | null // base64 JPEG (challenge page)
@@ -136,6 +136,8 @@ export interface LoginResult {
     cookies: Record<string, string>
     final_url: string
     profile_nuked?: boolean
+    reason?: string       // e.g. "datacenter_ip_block"
+    in_docker?: boolean
   }
 }
 

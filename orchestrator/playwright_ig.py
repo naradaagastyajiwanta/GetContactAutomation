@@ -1354,6 +1354,38 @@ def _headless_login_impl(username: str, password: str) -> dict:
                 except Exception:
                     pass
                 browser.__exit__(None, None, None)
+
+                # --- Detect datacenter / VPS IP blocking ---
+                # Instagram returns "wrong password" or similar error even when
+                # credentials are correct if the login comes from a datacenter IP. 
+                # Detect this pattern so the frontend can guide the user to use
+                # Session Sync instead.
+                _ip_block_keywords = ["informasi login", "incorrect", "wrong password",
+                                      "doesn't match", "salah"]
+                _is_likely_ip_block = (
+                    has_login_error
+                    and any(kw in (error_msg or "").lower() for kw in _ip_block_keywords)
+                    # URL stayed at homepage (not /accounts/login redirect) — hallmark of soft block
+                    and "/accounts/login" not in url
+                )
+                # Also check if we're running inside Docker (strong signal for datacenter)
+                _in_docker = _Path("/.dockerenv").exists()
+                if _is_likely_ip_block or (_in_docker and has_login_error):
+                    log.warning("[HeadlessLogin] Likely datacenter IP block for @%s (docker=%s, url=%s)",
+                                username, _in_docker, url)
+                    return {
+                        "status": "ip_blocked",
+                        "message": (
+                            f"Instagram blocked login for @{username} from this server's IP address. "
+                            "This is normal for cloud/VPS servers. "
+                            "Use Session Sync: login on your local PC, export the session, "
+                            "then import it here."
+                        ),
+                        "session_id": None,
+                        "screenshot": login_fail_screenshot,
+                        "details": {**details, "reason": "datacenter_ip_block", "in_docker": _in_docker},
+                    }
+
                 return {"status": "failed",
                         "message": error_msg or f"Login failed for @{username}. Check username/password.",
                         "session_id": None, "screenshot": login_fail_screenshot, "details": details}

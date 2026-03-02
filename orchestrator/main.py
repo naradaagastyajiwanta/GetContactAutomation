@@ -1811,9 +1811,11 @@ async def ig_account_login(account_id: int):
     result = await loop.run_in_executor(_pw_executor, pw_headless_login, username, password)
 
     # Persist to DB
-    login_status = result["status"]  # "success", "challenge", or "failed"
+    login_status = result["status"]  # "success", "challenge", "failed", or "ip_blocked"
     now_ts = datetime.now(timezone.utc).isoformat()
-    db_status = "success" if login_status == "success" else ("challenge" if login_status == "challenge" else "failed")
+    db_status = ("success" if login_status == "success"
+                 else "challenge" if login_status == "challenge"
+                 else "failed")  # ip_blocked → stored as "failed" in DB
     await update_ig_account(account_id, login_status=db_status, last_login_test=now_ts)
 
     # Update pool
@@ -1826,7 +1828,7 @@ async def ig_account_login(account_id: int):
                     a.last_error = None
                     break
         pw_invalidate_health_cache()  # refresh health status
-    elif login_status == "failed":
+    elif login_status in ("failed", "ip_blocked"):
         _account_pool.mark_login_failed(username, result.get("message", ""))
 
     await _reload_ig_account_pool()
