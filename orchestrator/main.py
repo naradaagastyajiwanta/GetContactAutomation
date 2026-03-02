@@ -2124,10 +2124,80 @@ async def import_ig_session(account_id: int, file: UploadFile = FastAPIFile(...)
     }
 
 
+@app.post("/ig-accounts/{account_id}/session/import-cookies")
+async def import_ig_cookies(account_id: int, body: dict):
+    """
+    Import raw browser cookies into the Playwright profile.
+    Body: { "cookies": [ {name, value, domain, path, ...}, ... ] }
+
+    Typical workflow:
+        1. User logs into IG in their normal browser
+        2. Uses a cookie extension (Cookie-Editor, EditThisCookie) or DevTools
+           to export cookies for instagram.com as JSON
+        3. Pastes the JSON here
+        4. Server injects cookies + verifies session
+
+    This avoids the need to login from the server's IP (which IG may block).
+    """
+    from orchestrator.db import get_ig_accounts, update_ig_account
+    rows = await get_ig_accounts()
+    acct_row = next((r for r in rows if r["id"] == account_id), None)
+    if not acct_row:
+        return JSONResponse(status_code=404, content={"detail": "Account not found"})
+
+    username = acct_row["username"]
+    cookies = body.get("cookies")
+    if not cookies or not isinstance(cookies, list):
+        return JSONResponse(status_code=400, content={
+            "detail": "Body must contain 'cookies' array. "
+                      "Example: {\"cookies\": [{\"name\":\"sessionid\",\"value\":\"...\",\"domain\":\".instagram.com\",\"path\":\"/\"}]}"
+        })
+
+    from orchestrator.playwright_ig import pw_import_cookies, pw_verify_session, _account_pool, pw_invalidate_health_cache
+
+    loop = asyncio.get_running_loop()
+    result = await loop.run_in_executor(_pw_executor, pw_import_cookies, username, cookies)
+
+    if not result.get("success"):
+        return JSONResponse(status_code=400, content={"detail": result.get("error", "Cookie import failed")})
+
+    # Verify the imported session
+    verify = await loop.run_in_executor(_pw_executor, pw_verify_session, username, acct_row["password"])
+
+    v_status = verify.get("status", "error")
+    db_status = "success" if v_status == "connected" else "failed"
+    now_ts = datetime.now(timezone.utc).isoformat()
+    await update_ig_account(account_id, login_status=db_status, last_login_test=now_ts)
+
+    # Update pool
+    if v_status == "connected":
+        with _account_pool._lock:
+            _account_pool._ensure_loaded()
+            for a in _account_pool._accounts:
+                if a.username == username:
+                    a.login_ok = True
+                    a.last_error = None
+                    break
+        pw_invalidate_health_cache()
+    else:
+        _account_pool.mark_login_failed(username, verify.get("reason", ""))
+
+    await _reload_ig_account_pool()
+
+    return {
+        "status": "ok",
+        "import": result,
+        "verify": {
+            "status": v_status,
+            "reason": verify.get("reason"),
+            "username_verified": verify.get("username_verified"),
+        },
+    }
+
+
 # ---------------------------------------------------------------------------
 # Knowledge Items CRUD
 # ---------------------------------------------------------------------------
-
 
 class KnowledgeItemPayload(BaseModel):
     chatbot_type: str  # 'agent' | 'audiensi'

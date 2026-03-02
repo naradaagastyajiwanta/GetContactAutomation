@@ -20,6 +20,7 @@ import {
   CheckCircle2,
   Download,
   Upload,
+  Cookie,
 } from 'lucide-react'
 import { Card, CardHeader, CardTitle } from '../ui/Card'
 import { Button } from '../ui/Button'
@@ -35,6 +36,7 @@ import {
 import type { IGAccount, IGAccountPoolStatus } from '../../api/igAccounts'
 import { exportIGSession, importIGSession } from '../../api/igAccounts'
 import { IGLoginFlow } from './IGLoginFlow'
+import { IGCookieImportModal } from './IGCookieImportModal'
 
 // ---------------------------------------------------------------------------
 // Add / Edit form modal
@@ -284,6 +286,7 @@ export function IGAccountsManager() {
   const [syncingAccountId, setSyncingAccountId] = useState<number | null>(null)
   const importFileRef = useRef<HTMLInputElement>(null)
   const [importTargetAccount, setImportTargetAccount] = useState<{ id: number; username: string } | null>(null)
+  const [cookieImportAccount, setCookieImportAccount] = useState<{ id: number; username: string } | null>(null)
 
   const accounts = data?.accounts ?? []
   const poolStatus = data?.pool_status ?? []
@@ -546,6 +549,13 @@ export function IGAccountsManager() {
                             <Upload className="h-4 w-4" />
                           </button>
                           <button
+                            onClick={() => setCookieImportAccount({ id: acct.id, username: acct.username })}
+                            className="rounded p-1 text-gray-400 hover:bg-amber-50 hover:text-amber-600 dark:hover:bg-amber-900/30 dark:hover:text-amber-400"
+                            title="Import Cookies (from browser extension)"
+                          >
+                            <Cookie className="h-4 w-4" />
+                          </button>
+                          <button
                             onClick={() => handleToggleEnabled(acct)}
                             className="rounded p-1 text-gray-400 hover:bg-gray-100 hover:text-gray-600 dark:hover:bg-gray-700 dark:hover:text-gray-300"
                             title={acct.enabled ? 'Disable' : 'Enable'}
@@ -591,6 +601,12 @@ export function IGAccountsManager() {
             setTestingAccountId(null)
           }}
           onDone={handleLoginDone}
+          onOpenCookieImport={() => {
+            const acct = loginFlowAccount
+            setLoginFlowAccount(null)
+            setTestingAccountId(null)
+            setCookieImportAccount({ id: acct.id, username: acct.username })
+          }}
         />
       )}
 
@@ -637,6 +653,19 @@ export function IGAccountsManager() {
             </Button>
           </div>
         </Modal>
+      )}
+
+      {/* Cookie Import modal */}
+      {cookieImportAccount && (
+        <IGCookieImportModal
+          accountId={cookieImportAccount.id}
+          username={cookieImportAccount.username}
+          isOpen={true}
+          onClose={() => {
+            setCookieImportAccount(null)
+            refetch()
+          }}
+        />
       )}
     </>
   )

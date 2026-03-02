@@ -2788,3 +2788,114 @@ def pw_import_session(username: str, data: bytes) -> dict:
     except Exception as e:
         log.error("[SessionImport] Import failed for @%s: %s", username, e)
         return {"success": False, "error": str(e)}
+
+
+def pw_import_cookies(username: str, cookies: list[dict]) -> dict:
+    """
+    Import browser cookies into a Playwright persistent profile.
+    This creates/updates the Chromium profile so that subsequent launches
+    will have a valid IG session — without ever needing to login from
+    this machine.
+
+    *cookies* should be a list of dicts, each with at least:
+        {name, value, domain, path}
+    Typically exported from a browser extension like "Cookie-Editor" or
+    Chrome DevTools.
+
+    Returns dict with status info.
+    """
+    _SESSION_DIR.mkdir(parents=True, exist_ok=True)
+    profile_dir = _SESSION_DIR / f"chromium_{username}"
+
+    # Normalise cookies into Playwright format
+    pw_cookies: list[dict] = []
+    required_found = set()
+    IMPORTANT_NAMES = {"sessionid", "ds_user_id", "csrftoken"}
+
+    for c in cookies:
+        name = c.get("name", "")
+        value = c.get("value", "")
+        if not name or not value:
+            continue
+
+        domain = c.get("domain", ".instagram.com")
+        # strip leading dot for Playwright if needed — PW accepts both forms
+        pw_cookie: dict = {
+            "name": name,
+            "value": value,
+            "domain": domain if domain else ".instagram.com",
+            "path": c.get("path", "/"),
+        }
+        # Optional fields
+        if c.get("httpOnly") is not None:
+            pw_cookie["httpOnly"] = bool(c["httpOnly"])
+        if c.get("secure") is not None:
+            pw_cookie["secure"] = bool(c["secure"])
+        if c.get("sameSite"):
+            ss = str(c["sameSite"]).capitalize()
+            if ss in ("Strict", "Lax", "None"):
+                pw_cookie["sameSite"] = ss
+
+        pw_cookies.append(pw_cookie)
+        if name in IMPORTANT_NAMES:
+            required_found.add(name)
+
+    # Validate: must have sessionid + ds_user_id at minimum
+    missing = {"sessionid", "ds_user_id"} - required_found
+    if missing:
+        return {"success": False, "error": f"Missing required cookies: {', '.join(sorted(missing))}. "
+                "Make sure you export ALL cookies from instagram.com."}
+
+    log.info("[CookieImport] Importing %d cookies for @%s (has: %s)",
+             len(pw_cookies), username, ", ".join(sorted(required_found)))
+
+    # Launch a temporary persistent context, inject cookies, then close.
+    # This writes the cookies into the Chromium profile on disk.
+    try:
+        from playwright.sync_api import sync_playwright
+
+        original_policy = None
+        if sys.platform == "win32":
+            original_policy = asyncio.get_event_loop_policy()
+            asyncio.set_event_loop_policy(asyncio.WindowsProactorEventLoopPolicy())
+
+        try:
+            pw = sync_playwright().start()
+            ctx = pw.chromium.launch_persistent_context(
+                user_data_dir=str(profile_dir),
+                headless=True,
+                args=["--disable-blink-features=AutomationControlled",
+                      "--disable-dev-shm-usage", "--no-sandbox"],
+            )
+
+            # Inject cookies
+            ctx.add_cookies(pw_cookies)
+
+            # Quick verification: check cookies were stored
+            stored = ctx.cookies("https://www.instagram.com")
+            stored_names = {c["name"] for c in stored}
+            has_session = "sessionid" in stored_names and "ds_user_id" in stored_names
+
+            ctx.close()
+            pw.stop()
+        finally:
+            if original_policy is not None:
+                asyncio.set_event_loop_policy(original_policy)
+
+        if not has_session:
+            return {"success": False, "error": "Cookies were injected but sessionid/ds_user_id not detected in profile."}
+
+        log.info("[CookieImport] Successfully imported %d cookies for @%s into %s",
+                 len(pw_cookies), username, profile_dir)
+        return {
+            "success": True,
+            "message": f"Imported {len(pw_cookies)} cookies for @{username}",
+            "cookies_count": len(pw_cookies),
+            "has_sessionid": "sessionid" in required_found,
+            "has_ds_user_id": "ds_user_id" in required_found,
+            "has_csrftoken": "csrftoken" in required_found,
+        }
+
+    except Exception as e:
+        log.error("[CookieImport] Failed for @%s: %s", username, e)
+        return {"success": False, "error": str(e)}

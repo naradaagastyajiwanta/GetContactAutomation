@@ -246,3 +246,40 @@ export async function importIGSession(
   )
   return data
 }
+
+// ---------------------------------------------------------------------------
+// Cookie Import (browser extension → server session)
+// ---------------------------------------------------------------------------
+
+export interface CookieImportResult {
+  status: string
+  import: {
+    success: boolean
+    message: string
+    cookies_count: number
+    has_sessionid: boolean
+    has_ds_user_id: boolean
+    has_csrftoken: boolean
+  }
+  verify: {
+    status: string
+    reason: string | null
+    username_verified: string | null
+  }
+}
+
+/**
+ * Import raw browser cookies (JSON array) into the server's Playwright profile.
+ * The cookies are typically exported from a browser extension like Cookie-Editor.
+ */
+export async function importIGCookies(
+  id: number,
+  cookies: Array<Record<string, unknown>>,
+): Promise<CookieImportResult> {
+  const { data } = await apiClient.post<CookieImportResult>(
+    `/ig-accounts/${id}/session/import-cookies`,
+    { cookies },
+    { timeout: 120_000 },
+  )
+  return data
+}

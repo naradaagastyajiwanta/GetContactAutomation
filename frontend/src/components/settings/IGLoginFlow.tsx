@@ -10,11 +10,7 @@ import {
   EyeOff,
   RefreshCw,
   CloudOff,
-  Download,
-  Upload,
-  ArrowRight,
-  Monitor,
-  Server,
+  Cookie,
 } from 'lucide-react'
 import { loginIGAccount, type LoginResult, type ChallengeResult } from '../../api/igAccounts'
 import { submitLoginChallenge } from '../../api/igAccounts'
@@ -25,11 +21,12 @@ interface Props {
   username: string
   onClose: () => void
   onDone?: (status: 'success' | 'failed', message: string) => void
+  onOpenCookieImport?: () => void
 }
 
 type FlowState = 'idle' | 'logging_in' | 'challenge' | 'submitting' | 'success' | 'failed' | 'ip_blocked'
 
-export function IGLoginFlow({ accountId, username, onClose, onDone }: Props) {
+export function IGLoginFlow({ accountId, username, onClose, onDone, onOpenCookieImport }: Props) {
   const [state, setState] = useState<FlowState>('idle')
   const [message, setMessage] = useState('')
   const [sessionId, setSessionId] = useState<string | null>(null)
@@ -285,71 +282,19 @@ export function IGLoginFlow({ accountId, username, onClose, onDone }: Props) {
                   <p className="font-semibold text-amber-800">Server IP Blocked by Instagram</p>
                   <p className="text-sm text-amber-700 mt-1">
                     Instagram blocks logins from cloud/VPS servers.
-                    This is not a password issue — use <strong>Session Sync</strong> instead.
+                    This is not a password issue — use <strong>Cookie Import</strong> instead.
                   </p>
                 </div>
               </div>
 
-              {/* Step-by-step guide */}
+              {/* Solution: Cookie Import */}
               <div className="bg-blue-50 border border-blue-200 rounded-xl p-4 space-y-3">
-                <p className="font-semibold text-blue-800 text-sm">How to fix with Session Sync:</p>
-                <div className="space-y-2.5">
-                  <div className="flex items-start gap-3">
-                    <span className="flex-shrink-0 w-6 h-6 rounded-full bg-blue-500 text-white text-xs font-bold flex items-center justify-center">1</span>
-                    <div className="text-sm text-blue-800">
-                      <div className="flex items-center gap-1.5">
-                        <Monitor className="w-4 h-4" />
-                        <span className="font-medium">Login on your local PC</span>
-                      </div>
-                      <p className="text-blue-600 mt-0.5">
-                        Open this dashboard on <code className="bg-blue-100 px-1 rounded">localhost</code> and login to @{username} there.
-                      </p>
-                    </div>
-                  </div>
-
-                  <div className="flex items-start gap-3">
-                    <span className="flex-shrink-0 w-6 h-6 rounded-full bg-blue-500 text-white text-xs font-bold flex items-center justify-center">2</span>
-                    <div className="text-sm text-blue-800">
-                      <div className="flex items-center gap-1.5">
-                        <Download className="w-4 h-4" />
-                        <span className="font-medium">Export session from local</span>
-                      </div>
-                      <p className="text-blue-600 mt-0.5">
-                        Click the <Download className="w-3.5 h-3.5 inline" /> download button in the Actions column.
-                      </p>
-                    </div>
-                  </div>
-
-                  <div className="flex items-center justify-center text-blue-400">
-                    <ArrowRight className="w-4 h-4" />
-                  </div>
-
-                  <div className="flex items-start gap-3">
-                    <span className="flex-shrink-0 w-6 h-6 rounded-full bg-blue-500 text-white text-xs font-bold flex items-center justify-center">3</span>
-                    <div className="text-sm text-blue-800">
-                      <div className="flex items-center gap-1.5">
-                        <Upload className="w-4 h-4" />
-                        <span className="font-medium">Import session on this server</span>
-                      </div>
-                      <p className="text-blue-600 mt-0.5">
-                        Click the <Upload className="w-3.5 h-3.5 inline" /> upload button in the Actions column to upload the exported file.
-                      </p>
-                    </div>
-                  </div>
-
-                  <div className="flex items-start gap-3">
-                    <span className="flex-shrink-0 w-6 h-6 rounded-full bg-green-500 text-white text-xs font-bold flex items-center justify-center">✓</span>
-                    <div className="text-sm text-blue-800">
-                      <div className="flex items-center gap-1.5">
-                        <Server className="w-4 h-4" />
-                        <span className="font-medium">Session auto-verified</span>
-                      </div>
-                      <p className="text-blue-600 mt-0.5">
-                        The server will verify the imported session works without re-logging in.
-                      </p>
-                    </div>
-                  </div>
-                </div>
+                <p className="font-semibold text-blue-800 text-sm">Solusi: Import Cookies dari Browser</p>
+                <p className="text-sm text-blue-700">
+                  Login ke Instagram di browser biasa (Chrome/Firefox), export cookies
+                  pakai extension <strong>Cookie-Editor</strong>, lalu paste di sini.
+                  Tutorialnya ada di halaman berikut.
+                </p>
               </div>
 
               {/* Diagnostic screenshot */}
@@ -374,12 +319,24 @@ export function IGLoginFlow({ accountId, username, onClose, onDone }: Props) {
                 </div>
               )}
 
-              <button
-                onClick={onClose}
-                className="w-full py-3 px-4 bg-blue-500 text-white font-semibold rounded-xl hover:bg-blue-600 transition-colors"
-              >
-                Got it — I'll use Session Sync
-              </button>
+              <div className="flex gap-2">
+                <button
+                  onClick={onClose}
+                  className="flex-1 py-3 px-4 bg-gray-100 text-gray-700 font-semibold rounded-xl hover:bg-gray-200 transition-colors"
+                >
+                  Close
+                </button>
+                <button
+                  onClick={() => {
+                    onClose()
+                    onOpenCookieImport?.()
+                  }}
+                  className="flex-1 py-3 px-4 bg-gradient-to-r from-amber-500 to-orange-500 text-white font-semibold rounded-xl hover:opacity-90 transition-opacity flex items-center justify-center gap-2"
+                >
+                  <Cookie className="w-5 h-5" />
+                  Import Cookies
+                </button>
+              </div>
             </div>
           )}
 
@@ -392,12 +349,12 @@ export function IGLoginFlow({ accountId, username, onClose, onDone }: Props) {
                 <p className="text-sm text-gray-500 mt-1">{message}</p>
               </div>
 
-              {/* Hint about session sync */}
+              {/* Hint about cookie import */}
               <div className="flex items-start gap-2 p-3 bg-gray-50 border border-gray-200 rounded-lg">
                 <CloudOff className="w-4 h-4 text-gray-400 mt-0.5 flex-shrink-0" />
                 <p className="text-xs text-gray-500">
                   If the password is correct but login still fails, your server IP may be blocked.
-                  Try using <strong>Session Sync</strong> (export from local, import here) via the table actions.
+                  Try <strong>Import Cookies</strong> — login via your normal browser, export cookies with Cookie-Editor extension, then paste here.
                 </p>
               </div>
 
