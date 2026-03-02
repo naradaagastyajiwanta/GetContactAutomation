@@ -1433,15 +1433,14 @@ def _verify_session_impl(username: str, password: str) -> dict:
                         "username_verified": None, "cookies": cookies}
 
             # Make lightweight API call to verify session is still valid
+            # Try current_user first; if it fails (e.g. 400 on datacenter IPs),
+            # fallback to web_profile_info which is more reliable.
             api_url = "https://www.instagram.com/api/v1/accounts/current_user/?edit=true"
             resp = browser.ig_api_fetch(api_url)
 
-            if resp is None:
-                return {"status": "disconnected", "reason": "api_call_failed",
-                        "username_verified": None, "cookies": cookies}
-
-            if resp.get("__error"):
-                status_code = resp.get("status", 0)
+            if resp is None or resp.get("__error"):
+                status_code = resp.get("status", 0) if resp else 0
+                # Hard failures — session is definitely bad
                 if status_code == 401:
                     return {"status": "disconnected", "reason": "session_expired",
                             "username_verified": None, "cookies": cookies}
@@ -1451,9 +1450,36 @@ def _verify_session_impl(username: str, password: str) -> dict:
                 elif status_code == 429:
                     return {"status": "rate_limited", "reason": "too_many_requests",
                             "username_verified": None, "cookies": cookies}
-                else:
-                    return {"status": "error", "reason": f"http_{status_code}",
+
+                # Soft failure (400 etc) — try fallback endpoint
+                log.info("[VerifySession] current_user returned %s, trying fallback...", status_code)
+                fallback_url = f"https://www.instagram.com/api/v1/users/web_profile_info/?username={username}"
+                fb_resp = browser.ig_api_fetch(fallback_url)
+                if fb_resp and not fb_resp.get("__error"):
+                    fb_user = fb_resp.get("data", {}).get("user", {})
+                    verified_username = fb_user.get("username", username)
+                    return {"status": "connected", "reason": None,
+                            "username_verified": verified_username, "cookies": cookies}
+
+                # Also check page content — if we see feed content, session is valid
+                try:
+                    has_login_form = browser.page.locator(
+                        'input[name="username"], input[name="email"]'
+                    ).first.is_visible(timeout=2000)
+                except Exception:
+                    has_login_form = False
+
+                if not has_login_form and cookies.get("ds_user_id"):
+                    # No login form + has cookies = session likely valid
+                    return {"status": "connected", "reason": "cookies_valid_api_limited",
+                            "username_verified": username, "cookies": cookies}
+
+                # Truly failed
+                if resp is None:
+                    return {"status": "disconnected", "reason": "api_call_failed",
                             "username_verified": None, "cookies": cookies}
+                return {"status": "error", "reason": f"http_{status_code}",
+                        "username_verified": None, "cookies": cookies}
 
             # Session is valid
             user_data = resp.get("user", {})
@@ -2655,3 +2681,78 @@ def _extract_post_from_html(html: str, post_url: str) -> dict | None:
         "caption": caption,
         "timestamp": timestamp,
     }
+
+
+# ---------------------------------------------------------------------------
+# Session Export / Import (for syncing sessions between local ↔ server)
+# ---------------------------------------------------------------------------
+
+import tarfile as _tarfile
+import io as _io
+import shutil as _shutil
+
+
+def pw_export_session(username: str) -> bytes | None:
+    """
+    Export a Playwright session profile as a tar.gz blob.
+    Returns bytes of the archive, or None if no profile exists.
+    """
+    profile_dir = _SESSION_DIR / f"chromium_{username}"
+    if not profile_dir.exists():
+        log.warning("[SessionExport] No profile found for @%s at %s", username, profile_dir)
+        return None
+
+    buf = _io.BytesIO()
+    with _tarfile.open(fileobj=buf, mode="w:gz") as tar:
+        tar.add(str(profile_dir), arcname=f"chromium_{username}")
+    buf.seek(0)
+    log.info("[SessionExport] Exported profile for @%s (%d bytes)", username, buf.getbuffer().nbytes)
+    return buf.getvalue()
+
+
+def pw_import_session(username: str, data: bytes) -> dict:
+    """
+    Import a Playwright session profile from a tar.gz blob.
+    Replaces any existing profile for the given username.
+    Returns dict with status info.
+    """
+    profile_dir = _SESSION_DIR / f"chromium_{username}"
+    expected_arcname = f"chromium_{username}"
+
+    try:
+        buf = _io.BytesIO(data)
+        with _tarfile.open(fileobj=buf, mode="r:gz") as tar:
+            # Security: check all members are under the expected directory
+            members = tar.getmembers()
+            if not members:
+                return {"success": False, "error": "Empty archive"}
+
+            for m in members:
+                if not m.name.startswith(expected_arcname):
+                    return {"success": False, "error": f"Unexpected path in archive: {m.name}"}
+                # Prevent path traversal
+                if ".." in m.name:
+                    return {"success": False, "error": f"Path traversal detected: {m.name}"}
+
+            # Kill any orphan chrome processes using this profile
+            _kill_orphan_chromes(profile_dir)
+
+            # Remove old profile
+            if profile_dir.exists():
+                _shutil.rmtree(profile_dir, ignore_errors=True)
+                log.info("[SessionImport] Removed old profile for @%s", username)
+
+            # Extract
+            tar.extractall(path=str(_SESSION_DIR))
+            log.info("[SessionImport] Imported profile for @%s (%d members, %d bytes)",
+                     username, len(members), len(data))
+
+        return {"success": True, "message": f"Session imported for @{username}",
+                "profile_dir": str(profile_dir), "members": len(members)}
+
+    except _tarfile.TarError as e:
+        log.error("[SessionImport] Invalid tar.gz for @%s: %s", username, e)
+        return {"success": False, "error": f"Invalid archive: {e}"}
+    except Exception as e:
+        log.error("[SessionImport] Import failed for @%s: %s", username, e)
+        return {"success": False, "error": str(e)}

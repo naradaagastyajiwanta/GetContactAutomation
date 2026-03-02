@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useState, useRef } from 'react'
 import {
   Plus,
   Trash2,
@@ -18,6 +18,8 @@ import {
   AlertCircle,
   X,
   CheckCircle2,
+  Download,
+  Upload,
 } from 'lucide-react'
 import { Card, CardHeader, CardTitle } from '../ui/Card'
 import { Button } from '../ui/Button'
@@ -31,6 +33,7 @@ import {
   useDeleteIGAccount,
 } from '../../hooks/useIGAccounts'
 import type { IGAccount, IGAccountPoolStatus } from '../../api/igAccounts'
+import { exportIGSession, importIGSession } from '../../api/igAccounts'
 import { IGLoginFlow } from './IGLoginFlow'
 
 // ---------------------------------------------------------------------------
@@ -278,6 +281,9 @@ export function IGAccountsManager() {
     message: string
   } | null>(null)
   const [loginFlowAccount, setLoginFlowAccount] = useState<{ id: number; username: string } | null>(null)
+  const [syncingAccountId, setSyncingAccountId] = useState<number | null>(null)
+  const importFileRef = useRef<HTMLInputElement>(null)
+  const [importTargetAccount, setImportTargetAccount] = useState<{ id: number; username: string } | null>(null)
 
   const accounts = data?.accounts ?? []
   const poolStatus = data?.pool_status ?? []
@@ -324,11 +330,62 @@ export function IGAccountsManager() {
     deleteMut.mutate(id, { onSuccess: () => setConfirmDeleteId(null) })
   }
 
+  const handleExportSession = async (acct: IGAccount) => {
+    setSyncingAccountId(acct.id)
+    try {
+      await exportIGSession(acct.id, acct.username)
+      setLastTestResult({ accountId: acct.id, success: true, message: `Session exported for @${acct.username}` })
+    } catch (e: any) {
+      const msg = e?.response?.data?.detail || e?.message || 'Export failed'
+      setLastTestResult({ accountId: acct.id, success: false, message: msg })
+    } finally {
+      setSyncingAccountId(null)
+    }
+  }
+
+  const handleImportSession = (acct: IGAccount) => {
+    setImportTargetAccount({ id: acct.id, username: acct.username })
+    importFileRef.current?.click()
+  }
+
+  const handleImportFileSelected = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0]
+    if (!file || !importTargetAccount) return
+    e.target.value = '' // reset so same file can be re-selected
+
+    setSyncingAccountId(importTargetAccount.id)
+    try {
+      const result = await importIGSession(importTargetAccount.id, file)
+      const verified = result.verify?.status === 'connected'
+      setLastTestResult({
+        accountId: importTargetAccount.id,
+        success: verified,
+        message: verified
+          ? `Session imported & verified for @${importTargetAccount.username}!`
+          : `Session imported but verification ${result.verify?.status}: ${result.verify?.reason || 'unknown'}`,
+      })
+      refetch()
+    } catch (e: any) {
+      const msg = e?.response?.data?.detail || e?.message || 'Import failed'
+      setLastTestResult({ accountId: importTargetAccount.id, success: false, message: msg })
+    } finally {
+      setSyncingAccountId(null)
+      setImportTargetAccount(null)
+    }
+  }
+
   const healthyCount = poolStatus.filter((p) => p.healthy).length
 
   return (
     <>
-      <Card>
+      {/* Hidden file input for session import */}
+      <input
+        ref={importFileRef}
+        type="file"
+        accept=".tar.gz,.tgz"
+        className="hidden"
+        onChange={handleImportFileSelected}
+      />      <Card>
         <CardHeader className="flex flex-row items-center justify-between">
           <div className="flex items-center gap-2">
             <Instagram className="h-5 w-5 text-pink-500" />
@@ -468,6 +525,26 @@ export function IGAccountsManager() {
                       </td>
                       <td className="whitespace-nowrap px-3 py-2 text-right">
                         <div className="flex items-center justify-end gap-1">
+                          <button
+                            onClick={() => handleExportSession(acct)}
+                            disabled={syncingAccountId !== null}
+                            className="rounded p-1 text-gray-400 hover:bg-blue-50 hover:text-blue-600 dark:hover:bg-blue-900/30 dark:hover:text-blue-400 disabled:opacity-40 disabled:cursor-not-allowed"
+                            title="Export Session (download)"
+                          >
+                            {syncingAccountId === acct.id ? (
+                              <Loader2 className="h-4 w-4 animate-spin" />
+                            ) : (
+                              <Download className="h-4 w-4" />
+                            )}
+                          </button>
+                          <button
+                            onClick={() => handleImportSession(acct)}
+                            disabled={syncingAccountId !== null}
+                            className="rounded p-1 text-gray-400 hover:bg-emerald-50 hover:text-emerald-600 dark:hover:bg-emerald-900/30 dark:hover:text-emerald-400 disabled:opacity-40 disabled:cursor-not-allowed"
+                            title="Import Session (upload .tar.gz)"
+                          >
+                            <Upload className="h-4 w-4" />
+                          </button>
                           <button
                             onClick={() => handleToggleEnabled(acct)}
                             className="rounded p-1 text-gray-400 hover:bg-gray-100 hover:text-gray-600 dark:hover:bg-gray-700 dark:hover:text-gray-300"

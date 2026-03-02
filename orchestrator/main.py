@@ -2022,6 +2022,107 @@ async def _reload_ig_account_pool():
 
 
 # ---------------------------------------------------------------------------
+# Session Sync (export from local → import on server)
+# ---------------------------------------------------------------------------
+
+
+@app.get("/ig-accounts/{account_id}/session/export")
+async def export_ig_session(account_id: int):
+    """
+    Export Playwright session profile as a tar.gz download.
+    Use this to download a working session from local machine,
+    then import it on the server where direct IG login may be blocked.
+    """
+    from orchestrator.db import get_ig_accounts
+    rows = await get_ig_accounts()
+    acct_row = next((r for r in rows if r["id"] == account_id), None)
+    if not acct_row:
+        return JSONResponse(status_code=404, content={"detail": "Account not found"})
+
+    username = acct_row["username"]
+
+    from orchestrator.playwright_ig import pw_export_session
+    loop = asyncio.get_running_loop()
+    data = await loop.run_in_executor(None, pw_export_session, username)
+
+    if data is None:
+        return JSONResponse(status_code=404, content={
+            "detail": f"No session profile found for @{username}. Login first."
+        })
+
+    filename = f"ig_session_{username}.tar.gz"
+    return StreamingResponse(
+        iter([data]),
+        media_type="application/gzip",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
+
+
+@app.post("/ig-accounts/{account_id}/session/import")
+async def import_ig_session(account_id: int, file: UploadFile = FastAPIFile(...)):
+    """
+    Import a Playwright session profile from a tar.gz upload.
+    Replaces any existing profile for this account's username.
+    After import, the session is verified with a lightweight check.
+    """
+    from orchestrator.db import get_ig_accounts, update_ig_account
+    rows = await get_ig_accounts()
+    acct_row = next((r for r in rows if r["id"] == account_id), None)
+    if not acct_row:
+        return JSONResponse(status_code=404, content={"detail": "Account not found"})
+
+    username = acct_row["username"]
+
+    # Read uploaded file
+    data = await file.read()
+    if len(data) < 100:
+        return JSONResponse(status_code=400, content={"detail": "File too small — not a valid session archive"})
+
+    from orchestrator.playwright_ig import pw_import_session, pw_verify_session, _account_pool, pw_invalidate_health_cache
+
+    # Import (blocking I/O)
+    loop = asyncio.get_running_loop()
+    result = await loop.run_in_executor(None, pw_import_session, username, data)
+
+    if not result.get("success"):
+        return JSONResponse(status_code=400, content={"detail": result.get("error", "Import failed")})
+
+    # Verify the imported session
+    verify = await loop.run_in_executor(_pw_executor, pw_verify_session, username, acct_row["password"])
+
+    # Update DB status based on verification
+    v_status = verify.get("status", "error")
+    db_status = "success" if v_status == "connected" else "failed"
+    now_ts = datetime.now(timezone.utc).isoformat()
+    await update_ig_account(account_id, login_status=db_status, last_login_test=now_ts)
+
+    # Update pool
+    if v_status == "connected":
+        with _account_pool._lock:
+            _account_pool._ensure_loaded()
+            for a in _account_pool._accounts:
+                if a.username == username:
+                    a.login_ok = True
+                    a.last_error = None
+                    break
+        pw_invalidate_health_cache()
+    else:
+        _account_pool.mark_login_failed(username, verify.get("reason", ""))
+
+    await _reload_ig_account_pool()
+
+    return {
+        "status": "ok",
+        "import": result,
+        "verify": {
+            "status": v_status,
+            "reason": verify.get("reason"),
+            "username_verified": verify.get("username_verified"),
+        },
+    }
+
+
+# ---------------------------------------------------------------------------
 # Knowledge Items CRUD
 # ---------------------------------------------------------------------------
 

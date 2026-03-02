@@ -194,3 +194,53 @@ export async function getIGAccountsHealth(
   )
   return data
 }
+
+// ---------------------------------------------------------------------------
+// Session Export / Import (for syncing sessions between local ↔ server)
+// ---------------------------------------------------------------------------
+
+/**
+ * Download the Playwright session profile for an account as a tar.gz blob.
+ * Returns the Blob directly for the caller to trigger a download.
+ */
+export async function exportIGSession(id: number, username: string): Promise<void> {
+  const resp = await apiClient.get(`/ig-accounts/${id}/session/export`, {
+    responseType: 'blob',
+  })
+  const blob = new Blob([resp.data], { type: 'application/gzip' })
+  const url = URL.createObjectURL(blob)
+  const a = document.createElement('a')
+  a.href = url
+  a.download = `ig_session_${username}.tar.gz`
+  document.body.appendChild(a)
+  a.click()
+  document.body.removeChild(a)
+  URL.revokeObjectURL(url)
+}
+
+export interface SessionImportResult {
+  status: string
+  import: { success: boolean; message: string; members: number }
+  verify: {
+    status: string
+    reason: string | null
+    username_verified: string | null
+  }
+}
+
+/**
+ * Upload a tar.gz session profile archive for an account.
+ */
+export async function importIGSession(
+  id: number,
+  file: File,
+): Promise<SessionImportResult> {
+  const form = new FormData()
+  form.append('file', file)
+  const { data } = await apiClient.post<SessionImportResult>(
+    `/ig-accounts/${id}/session/import`,
+    form,
+    { headers: { 'Content-Type': 'multipart/form-data' }, timeout: 120_000 },
+  )
+  return data
+}
