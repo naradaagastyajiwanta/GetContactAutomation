@@ -6,6 +6,7 @@ from typing import Any, Coroutine, Optional
 import httpx
 
 from orchestrator.config import WA_SERVICE_URL, log, cfg
+from orchestrator.websocket import manager as ws_manager
 
 MAX_SEND_RETRIES = 3
 RETRY_DELAYS = [2, 5, 10]  # seconds – exponential backoff
@@ -100,6 +101,13 @@ class MessageQueue:
                 data = resp.json()
                 if data.get("success"):
                     log.info("Sent WA %s to %s", msg_type, payload["to"])
+                    # Broadcast message sent event
+                    from datetime import datetime, timezone
+                    await ws_manager.broadcast_type(
+                        "message_sent",
+                        phone=payload["to"],
+                        timestamp=datetime.now(timezone.utc).isoformat(),
+                    )
                     return True
                 else:
                     error = data.get("error", "unknown")

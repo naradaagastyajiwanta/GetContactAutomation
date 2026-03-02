@@ -230,3 +230,6 @@ export function createRateLimitMiddleware(
     }
   };
 }
+
+// Singleton instance used by healthAndMetrics.ts and other modules
+export const rateLimiter = new RateLimiterManager();
