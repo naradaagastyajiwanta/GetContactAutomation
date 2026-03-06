@@ -105,9 +105,18 @@ export function UniversityTable({ universities, selected, onSelectedChange }: Un
   const igSessionOk = health?.instagram?.ok ?? true
   const [bulkAgentOpen, setBulkAgentOpen] = useState(false)
   const bulkAgentRef = useRef<HTMLDivElement>(null)
+  const selectAllRef = useRef<HTMLInputElement>(null)
 
   const allIds = universities.map((u) => u.id)
-  const allSelected = universities.length > 0 && selected.size === universities.length
+  const allSelected = universities.length > 0 && allIds.every((id) => selected.has(id))
+  const someSelected = universities.length > 0 && !allSelected && allIds.some((id) => selected.has(id))
+
+  // Set indeterminate state on "select all" checkbox
+  useEffect(() => {
+    if (selectAllRef.current) {
+      selectAllRef.current.indeterminate = someSelected
+    }
+  }, [someSelected])
 
   const toggleSelect = (id: number) => {
     const next = new Set(selected)
@@ -117,11 +126,15 @@ export function UniversityTable({ universities, selected, onSelectedChange }: Un
   }
 
   const toggleAll = () => {
+    const next = new Set(selected)
     if (allSelected) {
-      onSelectedChange(new Set())
+      // Remove only current page items
+      allIds.forEach((id) => next.delete(id))
     } else {
-      onSelectedChange(new Set(allIds))
+      // Add current page items (preserving other pages)
+      allIds.forEach((id) => next.add(id))
     }
+    onSelectedChange(next)
   }
 
   const handleBulk = (enabled: boolean) => {
@@ -231,6 +244,7 @@ export function UniversityTable({ universities, selected, onSelectedChange }: Un
           <TableRow>
             <TableHead className="w-10">
               <input
+                ref={selectAllRef}
                 type="checkbox"
                 checked={allSelected}
                 onChange={toggleAll}

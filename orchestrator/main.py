@@ -3039,6 +3039,64 @@ async def blast_get_contacts(
     return result
 
 
+@app.post("/blast/check-previously-blasted")
+async def blast_check_previously_blasted(payload: dict):
+    """Check which contacts have already been blasted (sent) in any campaign.
+
+    Body: { contact_ids: [1, 2, 3] }           — check specific contacts
+    OR:   { university_ids: [10, 20] }          — check all contacts from universities
+    Returns: { previously_blasted: [{contact_id, phone_number, contact_name, university_name, campaign_name, sent_at}], total_contacts: N }
+    """
+    contact_ids = payload.get("contact_ids", [])
+    university_ids = payload.get("university_ids", [])
+
+    from orchestrator.db import get_db
+
+    async with get_db() as db:
+        # Resolve university_ids to contact_ids if needed
+        if university_ids and not contact_ids:
+            placeholders = ",".join("?" for _ in university_ids)
+            cursor = await db.execute(
+                f"SELECT id FROM ig_contacts WHERE university_id IN ({placeholders})",
+                university_ids,
+            )
+            contact_ids = [r["id"] for r in await cursor.fetchall()]
+
+        total_contacts = len(contact_ids)
+        if not contact_ids:
+            return {"previously_blasted": [], "total_contacts": 0}
+
+        placeholders = ",".join("?" for _ in contact_ids)
+        cursor = await db.execute(
+            f"""SELECT DISTINCT
+                    br.contact_id,
+                    br.phone_number,
+                    br.contact_name,
+                    br.university_name,
+                    bc.name as campaign_name,
+                    br.sent_at
+                FROM blast_recipients br
+                JOIN blast_campaigns bc ON bc.id = br.campaign_id
+                WHERE br.contact_id IN ({placeholders})
+                  AND br.status = 'sent'
+                ORDER BY br.sent_at DESC""",
+            contact_ids,
+        )
+        rows = await cursor.fetchall()
+
+    # Deduplicate by contact_id (keep the most recent blast)
+    seen = {}
+    for r in rows:
+        cid = r["contact_id"]
+        if cid not in seen:
+            seen[cid] = dict(r)
+    return {
+        "previously_blasted": list(seen.values()),
+        "total_contacts": total_contacts,
+        "all_contact_ids": contact_ids,
+    }
+
+
 @app.post("/blast/campaigns")
 async def blast_create_campaign(payload: dict):
     """Create a new blast campaign.

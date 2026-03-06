@@ -21,6 +21,9 @@ import {
   X,
   CheckCircle2,
   ChevronRight,
+  AlertCircle,
+  Phone,
+  GraduationCap,
 } from 'lucide-react'
 import { cn } from '../../lib/utils'
 import {
@@ -28,7 +31,8 @@ import {
   useCreateCampaign,
   useAddRecipients,
 } from '../../hooks/useBlast'
-import type { BlastCampaign } from '../../api/blast'
+import type { BlastCampaign, PreviouslyBlastedContact } from '../../api/blast'
+import { checkPreviouslyBlasted } from '../../api/blast'
 
 interface AddToBlastModalProps {
   isOpen: boolean
@@ -51,6 +55,13 @@ export function AddToBlastModal({
   const [showCreate, setShowCreate] = useState(false)
   const [addedResult, setAddedResult] = useState<{ added: number; skipped: number } | null>(null)
 
+  // Previously-blasted confirmation state
+  const [checking, setChecking] = useState(false)
+  const [duplicates, setDuplicates] = useState<PreviouslyBlastedContact[] | null>(null)
+  const [excludedIds, setExcludedIds] = useState<Set<number>>(new Set())
+  const [pendingCampaignId, setPendingCampaignId] = useState<number | null>(null)
+  const [allResolvedContactIds, setAllResolvedContactIds] = useState<number[]>([])
+
   const { data: campaignsData, isLoading: loadingCampaigns } = useBlastCampaigns(
     { status: 'draft', limit: 50 },
   )
@@ -61,19 +72,78 @@ export function AddToBlastModal({
 
   if (!isOpen) return null
 
-  const handleAddToCampaign = (campaignId: number) => {
-    setSelectedCampaignId(campaignId)
-
+  const doAdd = (campaignId: number) => {
+    // Determine payload: if we have exclusions from university_ids, use resolved contact_ids instead
+    const hasExclusions = excludedIds.size > 0
     const payload: { campaignId: number; contact_ids?: number[]; university_ids?: number[] } = {
       campaignId,
     }
-    if (contactIds?.length) payload.contact_ids = contactIds
-    if (universityIds?.length) payload.university_ids = universityIds
+
+    if (hasExclusions && universityIds?.length) {
+      // Switch from university_ids to explicit resolved contact_ids minus excluded
+      payload.contact_ids = allResolvedContactIds.filter((id) => !excludedIds.has(id))
+    } else if (contactIds?.length) {
+      payload.contact_ids = contactIds.filter((id) => !excludedIds.has(id))
+    } else if (universityIds?.length) {
+      payload.university_ids = universityIds
+    }
 
     addMutation.mutate(payload, {
       onSuccess: (result) => {
         setAddedResult({ added: result.added, skipped: result.skipped })
+        setDuplicates(null)
+        setExcludedIds(new Set())
+        setPendingCampaignId(null)
       },
+    })
+  }
+
+  const handleAddToCampaign = async (campaignId: number) => {
+    setSelectedCampaignId(campaignId)
+    setChecking(true)
+
+    try {
+      const params: { contact_ids?: number[]; university_ids?: number[] } = {}
+      if (contactIds?.length) params.contact_ids = contactIds
+      if (universityIds?.length) params.university_ids = universityIds
+
+      const result = await checkPreviouslyBlasted(params)
+      setAllResolvedContactIds(result.all_contact_ids)
+
+      if (result.previously_blasted.length > 0) {
+        setDuplicates(result.previously_blasted)
+        setExcludedIds(new Set())
+        setPendingCampaignId(campaignId)
+        setChecking(false)
+        return
+      }
+    } catch {
+      // If check fails, proceed anyway
+    }
+
+    setChecking(false)
+    doAdd(campaignId)
+  }
+
+  const handleConfirmAdd = () => {
+    if (!pendingCampaignId) return
+    doAdd(pendingCampaignId)
+  }
+
+  const handleCancelDuplicates = () => {
+    setDuplicates(null)
+    setExcludedIds(new Set())
+    setPendingCampaignId(null)
+    setSelectedCampaignId(null)
+    setChecking(false)
+  }
+
+  const toggleExcluded = (id: number) => {
+    setExcludedIds((prev) => {
+      const next = new Set(prev)
+      if (next.has(id)) next.delete(id)
+      else next.add(id)
+      return next
     })
   }
 
@@ -103,6 +173,11 @@ export function AddToBlastModal({
     setNewCampaignName('')
     setShowCreate(false)
     setAddedResult(null)
+    setDuplicates(null)
+    setExcludedIds(new Set())
+    setPendingCampaignId(null)
+    setChecking(false)
+    setAllResolvedContactIds([])
     onClose()
   }
 
@@ -142,7 +217,7 @@ export function AddToBlastModal({
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 backdrop-blur-sm p-4">
-      <div className="bg-white dark:bg-gray-800 rounded-2xl shadow-2xl w-full max-w-md max-h-[80vh] flex flex-col">
+      <div className="relative bg-white dark:bg-gray-800 rounded-2xl shadow-2xl w-full max-w-md max-h-[80vh] flex flex-col">
         {/* Header */}
         <div className="flex items-center justify-between p-4 border-b border-gray-200 dark:border-gray-700">
           <div className="flex items-center gap-2">
@@ -189,10 +264,10 @@ export function AddToBlastModal({
                 <button
                   key={c.id}
                   onClick={() => handleAddToCampaign(c.id)}
-                  disabled={addMutation.isPending}
+                  disabled={addMutation.isPending || checking}
                   className={cn(
                     'w-full flex items-center justify-between p-3 rounded-lg border text-left transition-all',
-                    selectedCampaignId === c.id && addMutation.isPending
+                    selectedCampaignId === c.id && (addMutation.isPending || checking)
                       ? 'border-indigo-300 dark:border-indigo-700 bg-indigo-50 dark:bg-indigo-900/20'
                       : 'border-gray-200 dark:border-gray-700 hover:border-indigo-300 dark:hover:border-indigo-600 hover:bg-gray-50 dark:hover:bg-gray-800',
                     'disabled:opacity-50'
@@ -206,7 +281,7 @@ export function AddToBlastModal({
                       {c.total_recipients} recipients · {c.device_id}
                     </p>
                   </div>
-                  {selectedCampaignId === c.id && addMutation.isPending ? (
+                  {selectedCampaignId === c.id && (addMutation.isPending || checking) ? (
                     <Loader2 className="w-4 h-4 animate-spin text-indigo-500 shrink-0" />
                   ) : (
                     <Plus className="w-4 h-4 text-gray-400 shrink-0" />
@@ -255,6 +330,91 @@ export function AddToBlastModal({
             </>
           )}
         </div>
+
+        {/* Previously-blasted confirmation overlay */}
+        {duplicates && duplicates.length > 0 && (
+          <div className="absolute inset-0 z-10 bg-white dark:bg-gray-800 rounded-2xl flex flex-col">
+            {/* Overlay header */}
+            <div className="p-4 border-b border-amber-200 dark:border-amber-800 bg-amber-50 dark:bg-amber-900/20 rounded-t-2xl">
+              <div className="flex items-center gap-2 mb-1">
+                <AlertCircle className="w-5 h-5 text-amber-500" />
+                <h3 className="text-sm font-semibold text-amber-800 dark:text-amber-300">
+                  Previously Contacted
+                </h3>
+              </div>
+              <p className="text-xs text-amber-600 dark:text-amber-400">
+                {duplicates.length} of {allResolvedContactIds.length} contacts were already blasted.
+                Uncheck to exclude them.
+              </p>
+            </div>
+
+            {/* Duplicates list */}
+            <div className="flex-1 overflow-y-auto p-3 space-y-1.5">
+              {duplicates.map((d) => {
+                const excluded = excludedIds.has(d.contact_id)
+                return (
+                  <label
+                    key={d.contact_id}
+                    className={cn(
+                      'flex items-start gap-2.5 p-2.5 rounded-lg border cursor-pointer transition-all',
+                      excluded
+                        ? 'border-red-200 dark:border-red-800 bg-red-50/50 dark:bg-red-900/10 opacity-60'
+                        : 'border-amber-200 dark:border-amber-800 bg-amber-50/30 dark:bg-amber-900/10'
+                    )}
+                  >
+                    <input
+                      type="checkbox"
+                      checked={!excluded}
+                      onChange={() => toggleExcluded(d.contact_id)}
+                      className="mt-0.5 rounded border-gray-300 text-amber-600 focus:ring-amber-500"
+                    />
+                    <div className="min-w-0 flex-1">
+                      <div className="flex items-center gap-1.5">
+                        <Phone className="w-3 h-3 text-gray-400 shrink-0" />
+                        <span className="text-xs font-medium text-gray-700 dark:text-gray-300 truncate">
+                          {d.contact_name || d.phone_number}
+                        </span>
+                      </div>
+                      <div className="flex items-center gap-1.5 mt-0.5">
+                        <GraduationCap className="w-3 h-3 text-gray-400 shrink-0" />
+                        <span className="text-[11px] text-gray-500 dark:text-gray-400 truncate">
+                          {d.university_name || '—'}
+                        </span>
+                      </div>
+                      <p className="text-[11px] text-amber-600 dark:text-amber-400 mt-0.5">
+                        Blasted in "{d.campaign_name}"
+                        {d.sent_at && ` · ${new Date(d.sent_at).toLocaleDateString()}`}
+                      </p>
+                    </div>
+                  </label>
+                )
+              })}
+            </div>
+
+            {/* Overlay footer */}
+            <div className="p-3 border-t border-gray-200 dark:border-gray-700 flex items-center justify-between gap-2">
+              <button
+                onClick={handleCancelDuplicates}
+                className="px-3 py-1.5 text-sm text-gray-600 dark:text-gray-400 hover:text-gray-900 dark:hover:text-gray-100 transition-colors"
+              >
+                Cancel
+              </button>
+              <button
+                onClick={handleConfirmAdd}
+                disabled={addMutation.isPending}
+                className="flex items-center gap-1.5 px-4 py-1.5 bg-amber-600 hover:bg-amber-700 text-white text-sm font-medium rounded-lg disabled:opacity-50 transition-colors"
+              >
+                {addMutation.isPending ? (
+                  <Loader2 className="w-4 h-4 animate-spin" />
+                ) : (
+                  <>
+                    Add {allResolvedContactIds.length - excludedIds.size} contacts
+                  </>
+                )}
+              </button>
+            </div>
+          </div>
+        )}
       </div>
     </div>
   )

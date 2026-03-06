@@ -82,6 +82,22 @@ export async function getBlastContacts(
 // Campaigns CRUD
 // ---------------------------------------------------------------------------
 
+export interface PreviouslyBlastedContact {
+  contact_id: number
+  phone_number: string
+  contact_name: string | null
+  university_name: string | null
+  campaign_name: string
+  sent_at: string | null
+}
+
+export async function checkPreviouslyBlasted(
+  params: { contact_ids?: number[]; university_ids?: number[] }
+): Promise<{ previously_blasted: PreviouslyBlastedContact[]; total_contacts: number; all_contact_ids: number[] }> {
+  const { data } = await apiClient.post('/blast/check-previously-blasted', params)
+  return data
+}
+
 export interface CreateCampaignPayload {
   name: string
   template_message?: string

@@ -38,6 +38,7 @@ export function useBlastContacts(params: BlastContactsParams, enabled = true) {
     queryKey: blastKeys.contacts(params),
     queryFn: () => getBlastContacts(params),
     enabled,
+    placeholderData: (prev) => prev,  // keep previous page visible during loading
   })
 }
 

@@ -50,7 +50,8 @@ import {
   useDeleteCampaign,
 } from '../hooks/useBlast'
 import { useWhatsAppDevices } from '../hooks/useWhatsApp'
-import type { BlastContact, BlastContactsParams } from '../api/blast'
+import type { BlastContact, BlastContactsParams, PreviouslyBlastedContact } from '../api/blast'
+import { checkPreviouslyBlasted } from '../api/blast'
 
 // ---------------------------------------------------------------------------
 // Sub-components
@@ -78,6 +79,8 @@ function RecipientStatusBadge({ status }: { status: string }) {
 // Contact Selector Modal
 // ---------------------------------------------------------------------------
 
+const PAGE_SIZE = 100
+
 function ContactSelectorModal({
   campaignId,
   onClose,
@@ -86,21 +89,27 @@ function ContactSelectorModal({
   onClose: () => void
 }) {
   const [searchQuery, setSearchQuery] = useState('')
-  const [filters, setFilters] = useState<BlastContactsParams>({ limit: 100 })
+  const [filters, setFilters] = useState<BlastContactsParams>({ limit: PAGE_SIZE })
   const [selectedIds, setSelectedIds] = useState<Set<number>>(new Set())
+  const [page, setPage] = useState(0)
+  const [checking, setChecking] = useState(false)
+  const [duplicates, setDuplicates] = useState<PreviouslyBlastedContact[] | null>(null)
+  const [excludedIds, setExcludedIds] = useState<Set<number>>(new Set())
 
   const debouncedSearch = useMemo(() => {
     return searchQuery.trim() || undefined
   }, [searchQuery])
 
   const queryParams = useMemo<BlastContactsParams>(
-    () => ({ ...filters, search: debouncedSearch }),
-    [filters, debouncedSearch]
+    () => ({ ...filters, search: debouncedSearch, limit: PAGE_SIZE, offset: page * PAGE_SIZE }),
+    [filters, debouncedSearch, page]
   )
 
   const { data, isLoading } = useBlastContacts(queryParams, true)
   const addMutation = useAddRecipients()
   const contacts = data?.data || []
+  const totalContacts = data?.total ?? 0
+  const totalPages = Math.max(1, Math.ceil(totalContacts / PAGE_SIZE))
 
   const toggleContact = (id: number) => {
     setSelectedIds((prev) => {
@@ -112,24 +121,69 @@ function ContactSelectorModal({
   }
 
   const toggleAll = () => {
-    if (selectedIds.size === contacts.length) {
-      setSelectedIds(new Set())
-    } else {
-      setSelectedIds(new Set(contacts.map((c) => c.contact_id)))
+    const pageIds = contacts.map((c) => c.contact_id)
+    const allPageSelected = pageIds.length > 0 && pageIds.every((id) => selectedIds.has(id))
+    setSelectedIds((prev) => {
+      const next = new Set(prev)
+      if (allPageSelected) {
+        pageIds.forEach((id) => next.delete(id))
+      } else {
+        pageIds.forEach((id) => next.add(id))
+      }
+      return next
+    })
+  }
+
+  const handleAdd = async () => {
+    if (selectedIds.size === 0) return
+    setChecking(true)
+    try {
+      const result = await checkPreviouslyBlasted({ contact_ids: Array.from(selectedIds) })
+      if (result.previously_blasted.length > 0) {
+        setDuplicates(result.previously_blasted)
+        setExcludedIds(new Set())  // default: include all, user can exclude
+      } else {
+        // No duplicates — add directly
+        addMutation.mutate(
+          { campaignId, contact_ids: Array.from(selectedIds) },
+          { onSuccess: () => onClose() }
+        )
+      }
+    } catch {
+      // If check fails, proceed anyway
+      addMutation.mutate(
+        { campaignId, contact_ids: Array.from(selectedIds) },
+        { onSuccess: () => onClose() }
+      )
+    } finally {
+      setChecking(false)
     }
   }
 
-  const handleAdd = () => {
-    if (selectedIds.size === 0) return
+  const handleConfirmAdd = () => {
+    const finalIds = Array.from(selectedIds).filter((id) => !excludedIds.has(id))
+    if (finalIds.length === 0) {
+      setDuplicates(null)
+      return
+    }
     addMutation.mutate(
-      { campaignId, contact_ids: Array.from(selectedIds) },
-      { onSuccess: () => onClose() }
+      { campaignId, contact_ids: finalIds },
+      { onSuccess: () => { setDuplicates(null); onClose() } }
     )
+  }
+
+  const toggleExclude = (id: number) => {
+    setExcludedIds((prev) => {
+      const next = new Set(prev)
+      if (next.has(id)) next.delete(id)
+      else next.add(id)
+      return next
+    })
   }
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 backdrop-blur-sm p-4">
-      <div className="bg-white dark:bg-gray-800 rounded-2xl shadow-2xl w-full max-w-2xl max-h-[85vh] flex flex-col">
+      <div className="relative bg-white dark:bg-gray-800 rounded-2xl shadow-2xl w-full max-w-2xl max-h-[85vh] flex flex-col">
         {/* Header */}
         <div className="flex items-center justify-between p-4 border-b border-gray-200 dark:border-gray-700">
           <div className="flex items-center gap-2">
@@ -148,7 +202,7 @@ function ContactSelectorModal({
             <input
               type="text"
               value={searchQuery}
-              onChange={(e) => setSearchQuery(e.target.value)}
+              onChange={(e) => { setSearchQuery(e.target.value); setPage(0) }}
               placeholder="Search university or contact name..."
               className="w-full pl-9 pr-3 py-2 border border-gray-300 dark:border-gray-600 rounded-lg text-sm dark:bg-gray-900 dark:text-gray-100 focus:ring-1 focus:ring-indigo-500 focus:border-indigo-500"
             />
@@ -157,27 +211,28 @@ function ContactSelectorModal({
             <FilterChip
               label="Has Name"
               active={filters.has_name === true}
-              onClick={() => setFilters((f) => ({ ...f, has_name: f.has_name ? undefined : true }))}
+              onClick={() => { setFilters((f) => ({ ...f, has_name: f.has_name ? undefined : true })); setPage(0) }}
             />
             <FilterChip
               label="Not Contacted"
               active={filters.contacted === false}
-              onClick={() => setFilters((f) => ({ ...f, contacted: f.contacted === false ? undefined : false }))}
+              onClick={() => { setFilters((f) => ({ ...f, contacted: f.contacted === false ? undefined : false })); setPage(0) }}
             />
             <FilterChip
               label="Contacted"
               active={filters.contacted === true}
-              onClick={() => setFilters((f) => ({ ...f, contacted: f.contacted ? undefined : true }))}
+              onClick={() => { setFilters((f) => ({ ...f, contacted: f.contacted ? undefined : true })); setPage(0) }}
             />
             <FilterChip
               label="Has Conversation"
               active={filters.has_conversation === true}
-              onClick={() =>
+              onClick={() => {
                 setFilters((f) => ({
                   ...f,
                   has_conversation: f.has_conversation ? undefined : true,
                 }))
-              }
+                setPage(0)
+              }}
             />
           </div>
         </div>
@@ -199,14 +254,15 @@ function ContactSelectorModal({
               >
                 <input
                   type="checkbox"
-                  checked={selectedIds.size === contacts.length && contacts.length > 0}
+                  checked={contacts.length > 0 && contacts.every(c => selectedIds.has(c.contact_id))}
                   readOnly
                   className="h-3.5 w-3.5 rounded border-gray-300 text-indigo-600 focus:ring-indigo-500"
                 />
                 <span>
-                  {selectedIds.size === contacts.length && contacts.length > 0
-                    ? 'Deselect all'
-                    : `Select all (${contacts.length})`}
+                  {contacts.length > 0 && contacts.every(c => selectedIds.has(c.contact_id))
+                    ? `Deselect page (${contacts.length})`
+                    : `Select page (${contacts.length})`}
+                  {selectedIds.size > 0 && ` · ${selectedIds.size} total selected`}
                 </span>
               </div>
               {contacts.map((c) => (
@@ -255,6 +311,54 @@ function ContactSelectorModal({
           )}
         </div>
 
+        {/* Pagination */}
+        {totalContacts > PAGE_SIZE && (
+          <div className="flex items-center justify-between px-4 py-2.5 border-t border-gray-100 dark:border-gray-700 bg-white dark:bg-gray-800 text-xs">
+            <span className="text-gray-500 dark:text-gray-400">
+              Showing {page * PAGE_SIZE + 1}–{Math.min((page + 1) * PAGE_SIZE, totalContacts)} of {totalContacts}
+            </span>
+            <div className="flex items-center gap-1">
+              <button
+                onClick={() => setPage((p) => Math.max(0, p - 1))}
+                disabled={page === 0}
+                className="px-2.5 py-1 rounded-md text-xs font-medium border border-gray-300 dark:border-gray-600 text-gray-700 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-700 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
+              >
+                Prev
+              </button>
+              {/* Page number buttons */}
+              {(() => {
+                const pages: number[] = []
+                const maxVisible = 5
+                let start = Math.max(0, page - Math.floor(maxVisible / 2))
+                const end = Math.min(totalPages, start + maxVisible)
+                if (end - start < maxVisible) start = Math.max(0, end - maxVisible)
+                for (let i = start; i < end; i++) pages.push(i)
+                return pages.map((p) => (
+                  <button
+                    key={p}
+                    onClick={() => setPage(p)}
+                    className={cn(
+                      'w-7 h-7 rounded-md text-xs font-medium transition-colors',
+                      p === page
+                        ? 'bg-indigo-600 text-white'
+                        : 'text-gray-600 dark:text-gray-400 hover:bg-gray-100 dark:hover:bg-gray-700'
+                    )}
+                  >
+                    {p + 1}
+                  </button>
+                ))
+              })()}
+              <button
+                onClick={() => setPage((p) => Math.min(totalPages - 1, p + 1))}
+                disabled={page >= totalPages - 1}
+                className="px-2.5 py-1 rounded-md text-xs font-medium border border-gray-300 dark:border-gray-600 text-gray-700 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-700 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
+              >
+                Next
+              </button>
+            </div>
+          </div>
+        )}
+
         {/* Footer */}
         <div className="flex items-center justify-between p-4 border-t border-gray-200 dark:border-gray-700 bg-gray-50 dark:bg-gray-800/50">
           <span className="text-sm text-gray-500 dark:text-gray-400">
@@ -269,18 +373,112 @@ function ContactSelectorModal({
             </button>
             <button
               onClick={handleAdd}
-              disabled={selectedIds.size === 0 || addMutation.isPending}
+              disabled={selectedIds.size === 0 || addMutation.isPending || checking}
               className="flex items-center gap-1.5 px-4 py-2 bg-indigo-600 hover:bg-indigo-700 text-white text-sm font-semibold rounded-lg disabled:opacity-50 transition-colors"
             >
-              {addMutation.isPending ? (
+              {(addMutation.isPending || checking) ? (
                 <Loader2 className="w-4 h-4 animate-spin" />
               ) : (
                 <Plus className="w-4 h-4" />
               )}
-              Add {selectedIds.size} Contacts
+              {checking ? 'Checking...' : `Add ${selectedIds.size} Contacts`}
             </button>
           </div>
         </div>
+
+        {/* Duplicate Confirmation Overlay */}
+        {duplicates && duplicates.length > 0 && (
+          <div className="absolute inset-0 z-10 flex items-center justify-center bg-black/30 backdrop-blur-[2px] rounded-2xl">
+            <div className="bg-white dark:bg-gray-800 rounded-xl shadow-2xl w-full max-w-lg mx-4 max-h-[70vh] flex flex-col border border-amber-200 dark:border-amber-700">
+              {/* Confirmation Header */}
+              <div className="flex items-center gap-3 p-4 border-b border-amber-100 dark:border-amber-800 bg-amber-50 dark:bg-amber-900/20 rounded-t-xl">
+                <div className="p-2 rounded-full bg-amber-100 dark:bg-amber-900/40">
+                  <AlertCircle className="w-5 h-5 text-amber-600 dark:text-amber-400" />
+                </div>
+                <div>
+                  <h3 className="text-sm font-semibold text-gray-900 dark:text-gray-100">
+                    {duplicates.length} contact{duplicates.length > 1 ? 's' : ''} previously blasted
+                  </h3>
+                  <p className="text-xs text-gray-500 dark:text-gray-400 mt-0.5">
+                    These contacts have been sent messages in previous campaigns. Uncheck to exclude them.
+                  </p>
+                </div>
+              </div>
+
+              {/* Duplicate List */}
+              <div className="flex-1 overflow-y-auto divide-y divide-gray-100 dark:divide-gray-700">
+                {duplicates.map((d) => (
+                  <label
+                    key={d.contact_id}
+                    className={cn(
+                      'flex items-start gap-3 px-4 py-3 cursor-pointer transition-colors',
+                      excludedIds.has(d.contact_id)
+                        ? 'bg-gray-50 dark:bg-gray-800/50 opacity-60'
+                        : 'hover:bg-amber-50/50 dark:hover:bg-amber-900/10'
+                    )}
+                  >
+                    <input
+                      type="checkbox"
+                      checked={!excludedIds.has(d.contact_id)}
+                      onChange={() => toggleExclude(d.contact_id)}
+                      className="mt-0.5 h-4 w-4 rounded border-gray-300 text-indigo-600 focus:ring-indigo-500"
+                    />
+                    <div className="flex-1 min-w-0">
+                      <div className="text-sm font-medium text-gray-900 dark:text-gray-100 truncate">
+                        {d.contact_name || d.phone_number}
+                      </div>
+                      <div className="flex flex-wrap items-center gap-x-3 gap-y-0.5 mt-0.5 text-[11px] text-gray-500 dark:text-gray-400">
+                        <span className="flex items-center gap-1">
+                          <Phone className="w-3 h-3" /> {d.phone_number}
+                        </span>
+                        {d.university_name && (
+                          <span className="flex items-center gap-1">
+                            <GraduationCap className="w-3 h-3" /> {d.university_name}
+                          </span>
+                        )}
+                      </div>
+                      <div className="mt-1 text-[10px] text-amber-600 dark:text-amber-400">
+                        Blasted in "{d.campaign_name}"{d.sent_at ? ` on ${new Date(d.sent_at).toLocaleDateString()}` : ''}
+                      </div>
+                    </div>
+                  </label>
+                ))}
+              </div>
+
+              {/* Confirmation Footer */}
+              <div className="flex items-center justify-between p-4 border-t border-gray-200 dark:border-gray-700 bg-gray-50 dark:bg-gray-800/50 rounded-b-xl">
+                <span className="text-xs text-gray-500 dark:text-gray-400">
+                  {excludedIds.size > 0 && (
+                    <span className="text-amber-600 dark:text-amber-400 font-medium">
+                      {excludedIds.size} excluded ·{' '}
+                    </span>
+                  )}
+                  {selectedIds.size - excludedIds.size} will be added
+                </span>
+                <div className="flex gap-2">
+                  <button
+                    onClick={() => setDuplicates(null)}
+                    className="px-3 py-1.5 text-xs text-gray-600 dark:text-gray-400 hover:text-gray-900 dark:hover:text-gray-100 transition-colors"
+                  >
+                    Back
+                  </button>
+                  <button
+                    onClick={handleConfirmAdd}
+                    disabled={selectedIds.size - excludedIds.size === 0 || addMutation.isPending}
+                    className="flex items-center gap-1.5 px-3 py-1.5 bg-indigo-600 hover:bg-indigo-700 text-white text-xs font-semibold rounded-lg disabled:opacity-50 transition-colors"
+                  >
+                    {addMutation.isPending ? (
+                      <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                    ) : (
+                      <CheckCircle2 className="w-3.5 h-3.5" />
+                    )}
+                    Confirm Add {selectedIds.size - excludedIds.size} Contacts
+                  </button>
+                </div>
+              </div>
+            </div>
+          </div>
+        )}
       </div>
     </div>
   )
