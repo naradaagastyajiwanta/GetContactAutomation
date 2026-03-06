@@ -1,0 +1,4 @@
+id,username,password,enabled,notes,login_status,last_login_test,created_at,updated_at
+1,sekretariataaii_1,SalamKompeten1,1,"",success,2026-03-06T04:10:22.359547+00:00,"2026-03-02 17:18:37","2026-03-06 04:10:22"
+2,sekretariataaii_3,SalamKompeten3,1,"",success,2026-03-06T04:10:22.368053+00:00,"2026-03-02 18:15:01","2026-03-06 04:10:22"
+3,sekretariataaii_2,SalamKompeten2,1,"",success,2026-03-06T04:10:22.376990+00:00,"2026-03-04 07:30:24","2026-03-06 04:10:22"
