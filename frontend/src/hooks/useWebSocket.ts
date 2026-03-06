@@ -10,8 +10,11 @@ type WSEvent =
   | { type: 'university_updated'; uni_id: number; status: string }
   | { type: 'got_number'; uni_id: number; phone: string }
   | { type: 'quota_reached'; remaining: number }
+<<<<<<< HEAD
   | { type: 'blast_progress'; campaign_id: number; recipient_id: number; phone: string; status: string }
   | { type: 'blast_completed'; campaign_id: number; failed: Array<{ phone: string; name: string; university: string; error: string }> }
+=======
+>>>>>>> 831d0ac59127446266432db213cea3cddcb64b25
 
 const WS_URL = `${import.meta.env.VITE_API_URL || 'http://localhost:8000'}/ws`
 
@@ -112,6 +115,7 @@ export function useWebSocket() {
         toast.error('Daily quota reached!', { duration: 5000, icon: '⚠️' })
         break
 
+<<<<<<< HEAD
       case 'blast_progress':
         // Silently refresh blast campaign data
         queryClient.invalidateQueries({ queryKey: queryKeys.blast })
@@ -141,6 +145,8 @@ export function useWebSocket() {
         break
       }
 
+=======
+>>>>>>> 831d0ac59127446266432db213cea3cddcb64b25
       default:
         console.log('[WS] Unknown event type:', event)
     }

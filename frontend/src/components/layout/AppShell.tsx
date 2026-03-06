@@ -4,7 +4,10 @@ import { Sidebar } from './Sidebar'
 import { TopBar } from './TopBar'
 import { MobileNav } from './MobileNav'
 import { IgSessionBanner } from './IgSessionBanner'
+<<<<<<< HEAD
 import { IgPlaywrightBanner } from './IgPlaywrightBanner'
+=======
+>>>>>>> 831d0ac59127446266432db213cea3cddcb64b25
 import { NotificationCenter } from '../notifications/NotificationCenter'
 
 export function AppShell() {
