@@ -44,4 +44,10 @@ whatsapp-service/auth_store_backup
 *.log
 .claude
 .superdesign
-=2.1.2
+briefs/
+docs/
+
+# Docker files (not needed inside build context copies)
+docker-compose*.yml
+Dockerfile.*
+.dockerignore

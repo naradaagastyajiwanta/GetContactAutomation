@@ -1,14 +1,11 @@
 # docker-compose.prod.yml
 # ----------------------------------------------------------
-# Production-only compose file for VPS.
+# Production compose file for VPS.
 # Uses pre-built images from Docker Hub — NO local build.
-# 
+#
 # Usage on VPS:
 #   docker compose -f docker-compose.prod.yml pull
 #   docker compose -f docker-compose.prod.yml up -d
-#
-# Or if you prefer the main file (which also works):
-#   docker compose pull && docker compose up -d --no-build
 # ----------------------------------------------------------
 
 services:
@@ -40,7 +37,6 @@ services:
       - "8000:8000"
     volumes:
       - ./data:/app/data
-      - ./orchestrator:/app/orchestrator
     env_file:
       - .env.production
     environment:

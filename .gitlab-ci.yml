@@ -178,10 +178,10 @@ deploy_production:
         cd "$DEPLOY_DIR"
 
         echo "  → Pulling images from Docker Hub..."
-        docker compose pull
+        docker compose -f docker-compose.prod.yml pull
 
         echo "  → Starting containers (pre-built, no local build)..."
-        docker compose up -d --no-build --remove-orphans
+        docker compose -f docker-compose.prod.yml up -d --remove-orphans
 
         echo "  → Cleaning old images..."
         docker image prune -f --filter "until=72h" 2>/dev/null || true
@@ -223,15 +223,15 @@ verify_deployment:
     # Container status
     - |
       echo "[verify] Container status:"
-      ssh "$VPS_USER@$VPS_HOST" "cd $DEPLOY_DIR && docker compose ps --format 'table {{.Name}}\t{{.Status}}\t{{.Image}}'"
+      ssh "$VPS_USER@$VPS_HOST" "cd $DEPLOY_DIR && docker compose -f docker-compose.prod.yml ps --format 'table {{.Name}}\t{{.Status}}\t{{.Image}}'"
 
     # Crashed containers
     - |
       echo ""
-      UNHEALTHY=$(ssh "$VPS_USER@$VPS_HOST" "cd $DEPLOY_DIR && docker compose ps --status exited --format '{{.Name}}' 2>/dev/null" || echo "")
+      UNHEALTHY=$(ssh "$VPS_USER@$VPS_HOST" "cd $DEPLOY_DIR && docker compose -f docker-compose.prod.yml ps --status exited --format '{{.Name}}' 2>/dev/null" || echo "")
       if [ -n "$UNHEALTHY" ]; then
         echo "  ✗ Stopped: $UNHEALTHY"
-        ssh "$VPS_USER@$VPS_HOST" "cd $DEPLOY_DIR && docker compose logs --tail=30 $UNHEALTHY"
+        ssh "$VPS_USER@$VPS_HOST" "cd $DEPLOY_DIR && docker compose -f docker-compose.prod.yml logs --tail=30 $UNHEALTHY"
         exit 1
       else
         echo "  ✓ All containers running"
@@ -251,7 +251,7 @@ verify_deployment:
           echo "  ✓ API healthy (retry): $HEALTH"
         else
           echo "  ✗ API FAILED"
-          ssh "$VPS_USER@$VPS_HOST" "cd $DEPLOY_DIR && docker compose logs --tail=20 orchestrator"
+          ssh "$VPS_USER@$VPS_HOST" "cd $DEPLOY_DIR && docker compose -f docker-compose.prod.yml logs --tail=20 orchestrator"
           exit 1
         fi
       fi

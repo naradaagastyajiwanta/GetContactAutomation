@@ -1,23 +1,34 @@
-FROM node:20-slim
+# syntax=docker/dockerfile:1
 
+# ── Stage 1: Install dependencies ─────────────────────────────
+FROM node:20-alpine AS deps
 WORKDIR /app
-
-# Install git (required by @whiskeysockets/baileys git deps)
-RUN apt-get update && apt-get install -y --no-install-recommends git \
-    && rm -rf /var/lib/apt/lists/*
-
-# Install deps
+RUN apk add --no-cache git python3 make g++
 COPY whatsapp-service/package*.json ./
-RUN npm install --legacy-peer-deps
+RUN npm ci --no-audit --progress=false --legacy-peer-deps
 
-# Build TypeScript
+# ── Stage 2: Build TypeScript ─────────────────────────────────
+FROM deps AS build
+WORKDIR /app
 COPY whatsapp-service/tsconfig.json ./
 COPY whatsapp-service/src/ src/
 RUN npm run build
 
-# Auth store dir (will be mounted as volume)
+# ── Stage 3: Production runtime (small) ──────────────────────
+FROM node:20-alpine AS runtime
+WORKDIR /app
+
+# Only production deps (no devDependencies)
+COPY whatsapp-service/package*.json ./
+RUN apk add --no-cache git python3 make g++ \
+    && npm ci --no-audit --progress=false --legacy-peer-deps --omit=dev \
+    && apk del python3 make g++
+
+# Copy compiled JS from build stage
+COPY --from=build /app/dist ./dist
+
+# Dirs for volume mounts
 RUN mkdir -p auth_store auth_store_backup
 
 EXPOSE 3100
-
 CMD ["node", "dist/index.js"]

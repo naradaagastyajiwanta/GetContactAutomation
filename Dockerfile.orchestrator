@@ -1,27 +1,30 @@
-FROM python:3.11-slim
+# syntax=docker/dockerfile:1
 
+# ── Stage 1: Install Python dependencies ─────────────────────
+FROM python:3.11-slim AS deps
 WORKDIR /app
-
-# System deps for building Python packages
-RUN apt-get update && apt-get install -y --no-install-recommends \
-    gcc \
+RUN apt-get update && apt-get install -y --no-install-recommends gcc \
     && rm -rf /var/lib/apt/lists/*
-
-# Python deps
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
+# ── Stage 2: Runtime ─────────────────────────────────────────
+FROM python:3.11-slim AS runtime
+WORKDIR /app
+
+# Copy installed packages from deps stage
+COPY --from=deps /usr/local/lib/python3.11/site-packages /usr/local/lib/python3.11/site-packages
+COPY --from=deps /usr/local/bin /usr/local/bin
+
 # Install Playwright Chromium + headless shell + all system deps
-# --with-deps auto-installs libnss3, libatk, fonts, etc.
 RUN playwright install --with-deps chromium chromium-headless-shell
 
 # App code
 COPY orchestrator/ orchestrator/
 COPY scripts/ scripts/
 
-# Data & template dirs (will be mounted as volumes)
+# Dirs for volume mounts
 RUN mkdir -p data data/audiensi_docs data/templates data/ig_sessions data/pw_sessions
 
 EXPOSE 8000
-
 CMD ["uvicorn", "orchestrator.main:app", "--host", "0.0.0.0", "--port", "8000"]

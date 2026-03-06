@@ -3,10 +3,10 @@ services:
   # WhatsApp Service (must start first — orchestrator registers webhook)
   # ---------------------------------------------------------------
   whatsapp:
-    image: naradaagastya/gc-whatsapp:latest
     build:
       context: .
       dockerfile: Dockerfile.whatsapp
+    image: naradaagastya/gc-whatsapp:latest
     container_name: gc-whatsapp
     restart: unless-stopped
     ports:
@@ -29,10 +29,10 @@ services:
   # Orchestrator (Python FastAPI)
   # ---------------------------------------------------------------
   orchestrator:
-    image: naradaagastya/gc-orchestrator:latest
     build:
       context: .
       dockerfile: Dockerfile.orchestrator
+    image: naradaagastya/gc-orchestrator:latest
     container_name: gc-orchestrator
     restart: unless-stopped
     ports:
@@ -55,10 +55,10 @@ services:
   # Frontend (React built → served by internal Nginx)
   # ---------------------------------------------------------------
   frontend:
-    image: naradaagastya/gc-frontend:latest
     build:
       context: .
       dockerfile: Dockerfile.frontend
+    image: naradaagastya/gc-frontend:latest
     container_name: gc-frontend
     restart: unless-stopped
     ports:
