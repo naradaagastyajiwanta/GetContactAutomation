@@ -1,0 +1,286 @@
+# =============================================================
+# GetContact AI Agent — GitLab CI/CD Pipeline
+# =============================================================
+# Push to `main` → Build images → Push to Docker Hub → Deploy to VPS
+#
+# Required GitLab CI/CD Variables (Settings → CI/CD → Variables):
+#   SSH_PRIVATE_KEY   - Private SSH key for VPS (type: File)
+#   VPS_HOST          - VPS IP (e.g. 103.253.145.84)
+#   VPS_USER          - SSH user (e.g. root)
+#   DOCKERHUB_USER    - Docker Hub username (naradaagastya)
+#   DOCKERHUB_TOKEN   - Docker Hub access token (dckr_pat_...)
+#
+# Optional:
+#   DEPLOY_DIR        - Remote path (default: /opt/getcontact-ai-agent)
+#   DEPLOY_TOKEN_USER - GitLab deploy token user (for git pull on VPS)
+#   DEPLOY_TOKEN_PASS - GitLab deploy token password
+# =============================================================
+
+stages:
+  - build
+  - deploy
+  - verify
+
+variables:
+  DEPLOY_DIR: "/opt/getcontact-ai-agent"
+  IMAGE_ORCHESTRATOR: naradaagastya/gc-orchestrator
+  IMAGE_FRONTEND: naradaagastya/gc-frontend
+  IMAGE_WHATSAPP: naradaagastya/gc-whatsapp
+
+workflow:
+  rules:
+    - if: $CI_COMMIT_BRANCH == "main"
+
+# ---------------------------------------------------------------
+# Stage 1: Build Docker images & push to Docker Hub
+# ---------------------------------------------------------------
+build_and_push:
+  stage: build
+  image: docker:27
+  services:
+    - docker:27-dind
+  variables:
+    DOCKER_TLS_CERTDIR: "/certs"
+    DOCKER_BUILDKIT: "1"
+  before_script:
+    - echo "$DOCKERHUB_TOKEN" | docker login -u "$DOCKERHUB_USER" --password-stdin
+  script:
+    - echo "============================================="
+    - echo "  Building Docker images"
+    - echo "  Commit → $CI_COMMIT_SHORT_SHA"
+    - echo "============================================="
+
+    # Pull previous images for layer caching
+    - docker pull $IMAGE_ORCHESTRATOR:latest || true
+    - docker pull $IMAGE_FRONTEND:latest || true
+    - docker pull $IMAGE_WHATSAPP:latest || true
+
+    # --- Build Orchestrator ---
+    - echo ""
+    - echo "[build] Orchestrator..."
+    - |
+      docker build \
+        --cache-from $IMAGE_ORCHESTRATOR:latest \
+        --build-arg BUILDKIT_INLINE_CACHE=1 \
+        -t $IMAGE_ORCHESTRATOR:latest \
+        -t $IMAGE_ORCHESTRATOR:$CI_COMMIT_SHORT_SHA \
+        -f Dockerfile.orchestrator .
+
+    # --- Build Frontend ---
+    - echo ""
+    - echo "[build] Frontend..."
+    - |
+      docker build \
+        --cache-from $IMAGE_FRONTEND:latest \
+        --build-arg BUILDKIT_INLINE_CACHE=1 \
+        -t $IMAGE_FRONTEND:latest \
+        -t $IMAGE_FRONTEND:$CI_COMMIT_SHORT_SHA \
+        -f Dockerfile.frontend .
+
+    # --- Build WhatsApp ---
+    - echo ""
+    - echo "[build] WhatsApp..."
+    - |
+      docker build \
+        --cache-from $IMAGE_WHATSAPP:latest \
+        --build-arg BUILDKIT_INLINE_CACHE=1 \
+        -t $IMAGE_WHATSAPP:latest \
+        -t $IMAGE_WHATSAPP:$CI_COMMIT_SHORT_SHA \
+        -f Dockerfile.whatsapp .
+
+    # --- Push all images ---
+    - echo ""
+    - echo "[push] Pushing to Docker Hub..."
+    - docker push $IMAGE_ORCHESTRATOR:latest
+    - docker push $IMAGE_ORCHESTRATOR:$CI_COMMIT_SHORT_SHA
+    - docker push $IMAGE_FRONTEND:latest
+    - docker push $IMAGE_FRONTEND:$CI_COMMIT_SHORT_SHA
+    - docker push $IMAGE_WHATSAPP:latest
+    - docker push $IMAGE_WHATSAPP:$CI_COMMIT_SHORT_SHA
+    - echo "✓ All images pushed"
+
+# ---------------------------------------------------------------
+# Stage 2: Deploy to VPS (pull pre-built images & restart)
+# ---------------------------------------------------------------
+deploy_production:
+  stage: deploy
+  image: alpine:3.19
+  needs:
+    - build_and_push
+  before_script:
+    - apk add --no-cache openssh-client git bash
+    - eval $(ssh-agent -s)
+    - chmod 600 "$SSH_PRIVATE_KEY"
+    - ssh-add "$SSH_PRIVATE_KEY"
+    - mkdir -p ~/.ssh && chmod 700 ~/.ssh
+    - |
+      if [ -n "$SSH_KNOWN_HOSTS" ]; then
+        echo "$SSH_KNOWN_HOSTS" >> ~/.ssh/known_hosts
+      else
+        ssh-keyscan -H "$VPS_HOST" >> ~/.ssh/known_hosts 2>/dev/null
+      fi
+    - chmod 644 ~/.ssh/known_hosts
+
+  script:
+    - echo "============================================="
+    - echo "  Deploying to $VPS_USER@$VPS_HOST"
+    - echo "  Images  → $CI_COMMIT_SHORT_SHA"
+    - echo "============================================="
+
+    # ---------------------------------------------------------
+    # Step 1: Sync repo to VPS (for compose files + override volumes)
+    # ---------------------------------------------------------
+    - |
+      echo "[deploy] Step 1: Syncing code..."
+
+      if [ -n "$DEPLOY_TOKEN_USER" ] && [ -n "$DEPLOY_TOKEN_PASS" ]; then
+        REPO_URL="https://${DEPLOY_TOKEN_USER}:${DEPLOY_TOKEN_PASS}@${CI_SERVER_HOST}/${CI_PROJECT_PATH}.git"
+      else
+        REPO_URL="${CI_REPOSITORY_URL}"
+      fi
+
+      ssh "$VPS_USER@$VPS_HOST" bash -s -- "$DEPLOY_DIR" "$REPO_URL" "$CI_COMMIT_SHA" << 'REMOTE_SYNC'
+        DEPLOY_DIR="$1"
+        REPO_URL="$2"
+        COMMIT_SHA="$3"
+        mkdir -p "$DEPLOY_DIR"
+
+        if [ -d "$DEPLOY_DIR/.git" ]; then
+          cd "$DEPLOY_DIR"
+          git fetch origin main --depth=5
+          git reset --hard "$COMMIT_SHA"
+          echo "  ✓ Code updated to $COMMIT_SHA"
+        else
+          git clone --depth=5 --branch main "$REPO_URL" "$DEPLOY_DIR"
+          echo "  ✓ Repository cloned"
+        fi
+
+        # Ensure data directories
+        mkdir -p data data/audiensi_docs data/templates data/ig_sessions data/pw_sessions
+        mkdir -p whatsapp-service/auth_store whatsapp-service/auth_store_backup
+
+        if [ ! -f ".env.production" ]; then
+          echo "  ⚠ WARNING: .env.production not found!"
+        else
+          echo "  ✓ .env.production present"
+        fi
+      REMOTE_SYNC
+
+    # ---------------------------------------------------------
+    # Step 2: Pull images from Docker Hub & restart
+    # ---------------------------------------------------------
+    - |
+      echo ""
+      echo "[deploy] Step 2: Pulling images & restarting..."
+
+      ssh "$VPS_USER@$VPS_HOST" bash -s -- "$DEPLOY_DIR" << 'REMOTE_DEPLOY'
+        DEPLOY_DIR="$1"
+        cd "$DEPLOY_DIR"
+
+        echo "  → Pulling images from Docker Hub..."
+        docker compose pull
+
+        echo "  → Starting containers (pre-built, no local build)..."
+        docker compose up -d --no-build --remove-orphans
+
+        echo "  → Cleaning old images..."
+        docker image prune -f --filter "until=72h" 2>/dev/null || true
+
+        echo "  ✓ Done"
+      REMOTE_DEPLOY
+
+  environment:
+    name: production
+    url: https://getcontact.najworks.me
+
+# ---------------------------------------------------------------
+# Stage 3: Health check
+# ---------------------------------------------------------------
+verify_deployment:
+  stage: verify
+  image: alpine:3.19
+  needs:
+    - deploy_production
+  before_script:
+    - apk add --no-cache openssh-client
+    - eval $(ssh-agent -s)
+    - chmod 600 "$SSH_PRIVATE_KEY"
+    - ssh-add "$SSH_PRIVATE_KEY"
+    - mkdir -p ~/.ssh
+    - |
+      if [ -n "$SSH_KNOWN_HOSTS" ]; then
+        echo "$SSH_KNOWN_HOSTS" >> ~/.ssh/known_hosts
+      else
+        ssh-keyscan -H "$VPS_HOST" >> ~/.ssh/known_hosts 2>/dev/null
+      fi
+
+  script:
+    - echo "============================================="
+    - echo "  Post-deploy verification"
+    - echo "============================================="
+    - sleep 15
+
+    # Container status
+    - |
+      echo "[verify] Container status:"
+      ssh "$VPS_USER@$VPS_HOST" "cd $DEPLOY_DIR && docker compose ps --format 'table {{.Name}}\t{{.Status}}\t{{.Image}}'"
+
+    # Crashed containers
+    - |
+      echo ""
+      UNHEALTHY=$(ssh "$VPS_USER@$VPS_HOST" "cd $DEPLOY_DIR && docker compose ps --status exited --format '{{.Name}}' 2>/dev/null" || echo "")
+      if [ -n "$UNHEALTHY" ]; then
+        echo "  ✗ Stopped: $UNHEALTHY"
+        ssh "$VPS_USER@$VPS_HOST" "cd $DEPLOY_DIR && docker compose logs --tail=30 $UNHEALTHY"
+        exit 1
+      else
+        echo "  ✓ All containers running"
+      fi
+
+    # API health
+    - |
+      echo ""
+      echo "[verify] API health..."
+      HEALTH=$(ssh "$VPS_USER@$VPS_HOST" "curl -sf http://localhost:8000/health 2>/dev/null" || echo "FAIL")
+      if echo "$HEALTH" | grep -q "status"; then
+        echo "  ✓ API healthy: $HEALTH"
+      else
+        sleep 10
+        HEALTH=$(ssh "$VPS_USER@$VPS_HOST" "curl -sf http://localhost:8000/health 2>/dev/null" || echo "FAIL")
+        if echo "$HEALTH" | grep -q "status"; then
+          echo "  ✓ API healthy (retry): $HEALTH"
+        else
+          echo "  ✗ API FAILED"
+          ssh "$VPS_USER@$VPS_HOST" "cd $DEPLOY_DIR && docker compose logs --tail=20 orchestrator"
+          exit 1
+        fi
+      fi
+
+    # Frontend
+    - |
+      echo ""
+      HTTP_CODE=$(ssh "$VPS_USER@$VPS_HOST" "curl -so /dev/null -w '%{http_code}' http://localhost:3200/ 2>/dev/null" || echo "000")
+      if [ "$HTTP_CODE" = "200" ]; then
+        echo "  ✓ Frontend OK (HTTP $HTTP_CODE)"
+      else
+        echo "  ⚠ Frontend HTTP $HTTP_CODE"
+      fi
+
+    # WhatsApp
+    - |
+      echo ""
+      WA=$(ssh "$VPS_USER@$VPS_HOST" "curl -sf http://localhost:3100/status 2>/dev/null" || echo "")
+      if echo "$WA" | grep -qE "status|connected"; then
+        echo "  ✓ WhatsApp OK"
+      else
+        echo "  ⚠ WhatsApp may need QR scan"
+      fi
+
+    - echo ""
+    - echo "============================================="
+    - echo "  ✅ Deploy complete → https://getcontact.najworks.me"
+    - echo "============================================="
+
+  environment:
+    name: production
+    url: https://getcontact.najworks.me
