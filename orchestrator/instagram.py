@@ -477,9 +477,24 @@ async def search_ig_from_website(university_name: str, website_url: str | None =
         # Website found but no IG handle on it
         return {"handle": None, "website_url": website_url}
 
-    # The first IG handle on a university website is almost always the official one
+    # When multiple IG handles found on the website, filter out sub-entity handles
+    # (clinics, hospitals, student orgs, etc.) to pick the main institutional account.
+    if len(unique) > 1:
+        main_handles = [
+            h for h in unique
+            if not any(kw in h.lower() for kw in _DEPT_HANDLE_KEYWORDS)
+        ]
+        if main_handles:
+            log.info(
+                "Website %s has %d IG links, filtered %d sub-entity handles: kept %s, removed %s",
+                website_url, len(unique), len(unique) - len(main_handles),
+                [f"@{h}" for h in main_handles],
+                [f"@{h}" for h in unique if h not in main_handles],
+            )
+            unique = main_handles
+
     handle = unique[0]
-    log.info("Website %s has IG link: @%s", website_url, handle)
+    log.info("Website %s -> selected IG: @%s (out of %d found)", website_url, handle, len(unique))
     return {
         "handle": handle,
         "url": f"https://www.instagram.com/{handle}/",
@@ -698,9 +713,19 @@ def _calculate_confidence(
         score += 0.15
 
     # Handle doesn't look like a personal/org account
-    _NON_INSTITUTION = ["personal", "fan", "meme", "info_", "pers", "himpunan", "bem_", "himapsi"]
+    _NON_INSTITUTION = [
+        "personal", "fan", "meme", "info_", "pers", "himpunan", "bem_", "himapsi",
+        # University sub-unit facilities
+        "klinik", "rumahsakit", "apotek", "rsgm",
+        # Student organisations
+        "hima_", "dema_", "senat_", "ukm_", "ormawa",
+    ]
     if any(x in handle_lower for x in _NON_INSTITUTION):
         score -= 0.15
+
+    # Penalty: title/snippet indicates a subsidiary entity (clinic, hospital, etc.)
+    if any(kw in title_lower or kw in snippet_lower for kw in _SUBSIDIARY_ENTITY_KEYWORDS):
+        score -= 0.25
 
     # Not a personal account (basic check)
     if not any(x in handle_lower for x in ["personal", "fan", "meme"]):
@@ -771,9 +796,23 @@ _ENOUGH_PHONE_RESULTS = 10
 
 # Sub-department handle prefixes â€” these are NOT the main university account
 _DEPT_HANDLE_KEYWORDS = [
+    # Administrative / departmental sub-units
     "kemahasiswaan", "humas", "pmb", "biro", "upt", "lppm",
-    "perpustakaan", "lpm", "bak", "baak", "alumni", "bem",
-    "hmj", "ormawa", "ukm",
+    "perpustakaan", "lpm", "bak", "baak", "alumni",
+    # Student organisations
+    "bem", "hmj", "ormawa", "ukm", "hima", "dema", "senat",
+    # University-affiliated facilities (NOT the main institution)
+    "klinik", "rumahsakit", "apotek", "laboratorium",
+    "asrama", "kantin", "kopma", "koperasi", "masjid",
+    "rsgm",  # Rumah Sakit Gigi & Mulut
+]
+
+# Words in an IG full_name / bio that indicate a sub-entity (not the main university)
+_SUBSIDIARY_ENTITY_KEYWORDS = [
+    "klinik", "rumah sakit", "rs ", "rsgm", "apotek", "farmasi",
+    "laboratorium", "lab ", "perpustakaan", "asrama", "kantin",
+    "koperasi", "kopma", "masjid", "mushola", "poliklinik",
+    "rawat inap", "rawat jalan", "24 jam",
 ]
 
 
@@ -1238,6 +1277,15 @@ def _score_ig_user(user_data: dict, university_name: str) -> float:
     if any(d in handle_lower for d in _DEPT_HANDLE_KEYWORDS):
         score -= 0.2
 
+    # Heavy penalty: full_name indicates a subsidiary entity (clinic, hospital, etc.)
+    # e.g. "Klinik Pratama UNIMUS" is NOT the university's main account
+    if any(kw in full_name for kw in _SUBSIDIARY_ENTITY_KEYWORDS):
+        score -= 0.35
+        log.debug(
+            "Subsidiary penalty for @%s: full_name='%s' matched subsidiary keywords",
+            username, full_name[:60],
+        )
+
     return max(min(score, 1.0), 0.0)
 
 
@@ -1406,6 +1454,12 @@ def verify_ig_handle(handle: str, university_name: str) -> dict:
         if any(nk in bio for nk in negative_keywords):
             boost = -0.3
             reasons = ["bio indicates non-university account"]
+
+        # Negative: bio indicates a subsidiary entity (clinic, hospital, etc.)
+        subsidiary_matches = [kw for kw in _SUBSIDIARY_ENTITY_KEYWORDS if kw in bio]
+        if subsidiary_matches:
+            boost -= 0.35
+            reasons.append(f"bio indicates subsidiary entity ({', '.join(subsidiary_matches[:3])})")
 
     verified = boost > 0
     reason_str = "; ".join(reasons) if reasons else "no university signals in bio"
@@ -1756,6 +1810,12 @@ def _verify_from_profile_data(handle: str, university_name: str, profile: dict) 
         if any(nk in bio for nk in negative_keywords):
             boost = -0.3
             reasons = ["bio indicates non-university account"]
+
+        # Negative: bio indicates a subsidiary entity (clinic, hospital, etc.)
+        subsidiary_matches = [kw for kw in _SUBSIDIARY_ENTITY_KEYWORDS if kw in bio]
+        if subsidiary_matches:
+            boost -= 0.35
+            reasons.append(f"bio indicates subsidiary entity ({', '.join(subsidiary_matches[:3])})")
 
     verified = boost > 0
     reason_str = "; ".join(reasons) if reasons else "no university signals in bio"

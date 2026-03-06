@@ -1,6 +1,6 @@
 import { useState, useEffect, useMemo } from 'react'
 import { useSearchParams } from 'react-router-dom'
-import { Upload, Building2, Plus, Download, ClipboardList, RefreshCw, X } from 'lucide-react'
+import { Upload, Building2, Megaphone, Plus, Download, ClipboardList, ListChecks, RefreshCw, X } from 'lucide-react'
 import { formatDistanceToNow } from 'date-fns'
 import { useUniversities } from '../hooks/useUniversities'
 import { exportUniversitiesExcel } from '../api/universities'
@@ -15,6 +15,8 @@ import { RunningAgentsBanner } from '../components/universities/RunningAgentsBan
 import { ImportModal } from '../components/universities/ImportModal'
 import { AddUniversityModal } from '../components/universities/AddUniversityModal'
 import { BulkSelectModal } from '../components/universities/BulkSelectModal'
+import { BulkUpdateContactsModal } from '../components/universities/BulkUpdateContactsModal'
+import { AddToBlastModal } from '../components/blast/AddToBlastModal'
 import { ITEMS_PER_PAGE } from '../lib/constants'
 
 export default function UniversitiesPage() {
@@ -37,6 +39,8 @@ export default function UniversitiesPage() {
   const [importOpen, setImportOpen] = useState(false)
   const [addOpen, setAddOpen] = useState(false)
   const [bulkSelectOpen, setBulkSelectOpen] = useState(false)
+  const [bulkContactsOpen, setBulkContactsOpen] = useState(false)
+  const [blastOpen, setBlastOpen] = useState(false)
   const [selected, setSelected] = useState<Set<number>>(new Set())
   const [lastUpdated, setLastUpdated] = useState<Date>(new Date())
   const [isAutoRefreshing, setIsAutoRefreshing] = useState(true)
@@ -167,6 +171,16 @@ export default function UniversitiesPage() {
             <ClipboardList className="h-4 w-4" />
             Bulk Select
           </Button>
+          <Button variant="secondary" onClick={() => setBulkContactsOpen(true)}>
+            <ListChecks className="h-4 w-4" />
+            Bulk Update Status
+          </Button>
+          {selected.size > 0 && (
+            <Button variant="secondary" onClick={() => setBlastOpen(true)}>
+              <Megaphone className="h-4 w-4" />
+              Add to Blast ({selected.size})
+            </Button>
+          )}
           <Button variant="secondary" onClick={handleExport}>
             <Download className="h-4 w-4" />
             {selected.size > 0 ? `Export Contacts (${selected.size})` : 'Export All Contacts'}
@@ -352,6 +366,17 @@ export default function UniversitiesPage() {
         onClose={() => setBulkSelectOpen(false)}
         currentSelected={selected}
         onSelect={setSelected}
+      />
+      <BulkUpdateContactsModal
+        isOpen={bulkContactsOpen}
+        onClose={() => setBulkContactsOpen(false)}
+        onUpdated={() => {}}
+      />
+      <AddToBlastModal
+        isOpen={blastOpen}
+        onClose={() => setBlastOpen(false)}
+        universityIds={Array.from(selected)}
+        label={`Contacts from ${selected.size} selected universities`}
       />
     </div>
   )

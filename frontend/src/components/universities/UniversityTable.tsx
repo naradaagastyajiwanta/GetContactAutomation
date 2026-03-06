@@ -241,6 +241,7 @@ export function UniversityTable({ universities, selected, onSelectedChange }: Un
             <TableHead>Province</TableHead>
             <TableHead>IG Handle</TableHead>
             <TableHead>Status</TableHead>
+            <TableHead className="w-28 text-center">Contacts</TableHead>
             <TableHead className="w-24 text-center">Enabled</TableHead>
             <TableHead>Updated</TableHead>
             <TableHead className="w-20 text-center">Actions</TableHead>
@@ -283,6 +284,22 @@ export function UniversityTable({ universities, selected, onSelectedChange }: Un
                   <Badge className={`${colors.bg} ${colors.text}`}>
                     {uni.status}
                   </Badge>
+                </TableCell>
+                <TableCell className="text-center">
+                  {(uni.total_contacts ?? 0) === 0 ? (
+                    <span className="text-xs text-gray-400">—</span>
+                  ) : (
+                    <span className="inline-flex items-center gap-1">
+                      <span className={`text-sm font-semibold ${
+                        (uni.contacted_contacts ?? 0) > 0
+                          ? 'text-emerald-600 dark:text-emerald-400'
+                          : 'text-gray-400'
+                      }`}>
+                        {uni.contacted_contacts ?? 0}
+                      </span>
+                      <span className="text-xs text-gray-400">/ {uni.total_contacts}</span>
+                    </span>
+                  )}
                 </TableCell>
                 <TableCell className="text-center" onClick={(e) => e.stopPropagation()}>
                   <button

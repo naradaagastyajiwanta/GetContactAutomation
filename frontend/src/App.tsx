@@ -20,6 +20,8 @@ const AudiensiDetailPage = lazy(() => import('./pages/AudiensiDetailPage'))
 const KnowledgeBasePage = lazy(() => import('./pages/KnowledgeBasePage'))
 const ApiLogsPage = lazy(() => import('./pages/ApiLogsPage'))
 const SettingsPage = lazy(() => import('./pages/SettingsPage'))
+const BlastCampaignsPage = lazy(() => import('./pages/BlastCampaignsPage'))
+const BlastCampaignDetailPage = lazy(() => import('./pages/BlastCampaignDetailPage'))
 
 const queryClient = new QueryClient({
   defaultOptions: { queries: { retry: 1, refetchOnWindowFocus: false } },
@@ -53,6 +55,8 @@ export default function App() {
                   <Route path="audiensi/:id" element={<AudiensiDetailPage />} />
                   <Route path="knowledge" element={<KnowledgeBasePage />} />
                   <Route path="api-logs" element={<ApiLogsPage />} />
+                  <Route path="blast" element={<BlastCampaignsPage />} />
+                  <Route path="blast/:id" element={<BlastCampaignDetailPage />} />
                   <Route path="settings" element={<SettingsPage />} />
                 </Route>
               </Routes>

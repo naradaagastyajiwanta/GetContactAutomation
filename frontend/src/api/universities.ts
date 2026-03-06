@@ -69,6 +69,58 @@ export async function getUniversityRelatedIgs(id: number): Promise<RelatedIg[]> 
   return data
 }
 
+export async function toggleContactContacted(
+  contactId: number,
+  contacted: boolean
+): Promise<{ success: boolean; id: number; manual_contacted: boolean }> {
+  const { data } = await apiClient.patch<{ success: boolean; id: number; manual_contacted: boolean }>(
+    `/contacts/${contactId}/toggle-contacted`,
+    null,
+    { params: { contacted } }
+  )
+  return data
+}
+
+export interface BulkMatchedContact {
+  id: number
+  university_id: number
+  phone_number: string
+  contact_name: string | null
+  has_person_name: boolean
+  manual_contacted: boolean
+  conversation_state: string | null
+  conversation_id: number | null
+  university_name: string | null
+  created_at: string
+}
+
+export async function bulkMatchContacts(
+  phoneNumbers: string[]
+): Promise<{ matched: BulkMatchedContact[]; not_matched: string[] }> {
+  const { data } = await apiClient.post('/contacts/bulk-match', { phone_numbers: phoneNumbers })
+  return data
+}
+
+export async function bulkUpdateContactStatus(
+  contactIds: number[],
+  contacted: boolean
+): Promise<{ success: boolean; updated: number }> {
+  const { data } = await apiClient.post('/contacts/bulk-update-status', {
+    contact_ids: contactIds,
+    contacted,
+  })
+  return data
+}
+
+export async function resetUniversityIgHandle(
+  id: number
+): Promise<{ success: boolean; id: number; status: string }> {
+  const { data } = await apiClient.delete<{ success: boolean; id: number; status: string }>(
+    `/universities/${id}/ig-handle`
+  )
+  return data
+}
+
 export async function importUniversities(file: File): Promise<{ imported: number; skipped: number }> {
   const formData = new FormData()
   formData.append('file', file)

@@ -10,6 +10,8 @@ type WSEvent =
   | { type: 'university_updated'; uni_id: number; status: string }
   | { type: 'got_number'; uni_id: number; phone: string }
   | { type: 'quota_reached'; remaining: number }
+  | { type: 'blast_progress'; campaign_id: number; recipient_id: number; phone: string; status: string }
+  | { type: 'blast_completed'; campaign_id: number; failed: Array<{ phone: string; name: string; university: string; error: string }> }
 
 const WS_URL = `${import.meta.env.VITE_API_URL || 'http://localhost:8000'}/ws`
 
@@ -109,6 +111,35 @@ export function useWebSocket() {
       case 'quota_reached':
         toast.error('Daily quota reached!', { duration: 5000, icon: '⚠️' })
         break
+
+      case 'blast_progress':
+        // Silently refresh blast campaign data
+        queryClient.invalidateQueries({ queryKey: queryKeys.blast })
+        break
+
+      case 'blast_completed': {
+        const failedCount = event.failed?.length || 0
+        if (failedCount === 0) {
+          toast.success('Blast campaign completed! All messages sent.', {
+            duration: 5000,
+            icon: '🎉',
+          })
+        } else {
+          const failedNames = event.failed
+            .slice(0, 5)
+            .map((f) => f.name || f.phone)
+            .join(', ')
+          const extra = failedCount > 5 ? ` +${failedCount - 5} more` : ''
+          toast.error(
+            `Blast completed with ${failedCount} failures: ${failedNames}${extra}`,
+            { duration: 8000 },
+          )
+        }
+        queryClient.invalidateQueries({ queryKey: queryKeys.blast })
+        // Also refresh university contacts (manual_contacted may have changed)
+        queryClient.invalidateQueries({ queryKey: queryKeys.universities.all })
+        break
+      }
 
       default:
         console.log('[WS] Unknown event type:', event)

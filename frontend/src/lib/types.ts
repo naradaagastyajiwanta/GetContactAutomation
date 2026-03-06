@@ -11,6 +11,8 @@ export interface University {
   enabled: boolean | number
   created_at: string
   updated_at?: string | null
+  total_contacts?: number
+  contacted_contacts?: number
 }
 
 export type UniversityStatus =
@@ -43,6 +45,9 @@ export interface IgContact {
   has_person_name: boolean
   source_post_url: string | null
   source_image_url: string | null
+  manual_contacted: boolean
+  conversation_state: string | null
+  conversation_id: number | null
   created_at: string
 }
 

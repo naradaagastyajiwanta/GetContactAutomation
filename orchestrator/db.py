@@ -287,6 +287,48 @@ CREATE TABLE IF NOT EXISTS ig_accounts (
 );
 """
 
+_DDL_BLAST = """
+CREATE TABLE IF NOT EXISTS blast_campaigns (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    name TEXT NOT NULL,
+    template_message TEXT NOT NULL DEFAULT '',
+    device_id TEXT DEFAULT 'device_1',
+    delay_between_ms INTEGER DEFAULT 5000,
+    human_delay_min_ms INTEGER DEFAULT 2000,
+    human_delay_max_ms INTEGER DEFAULT 8000,
+    status TEXT NOT NULL DEFAULT 'draft',
+    total_recipients INTEGER DEFAULT 0,
+    sent_count INTEGER DEFAULT 0,
+    failed_count INTEGER DEFAULT 0,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    started_at TIMESTAMP,
+    completed_at TIMESTAMP,
+    paused_at TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS blast_recipients (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    campaign_id INTEGER NOT NULL REFERENCES blast_campaigns(id) ON DELETE CASCADE,
+    contact_id INTEGER REFERENCES ig_contacts(id),
+    university_id INTEGER REFERENCES universities(id),
+    phone_number TEXT NOT NULL,
+    contact_name TEXT,
+    university_name TEXT,
+    rendered_message TEXT,
+    status TEXT NOT NULL DEFAULT 'pending',
+    error_message TEXT,
+    sent_at TIMESTAMP,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE(campaign_id, phone_number)
+);
+"""
+
+_INDEXES_BLAST = """
+CREATE INDEX IF NOT EXISTS idx_blast_campaigns_status ON blast_campaigns(status);
+CREATE INDEX IF NOT EXISTS idx_blast_recipients_campaign ON blast_recipients(campaign_id);
+CREATE INDEX IF NOT EXISTS idx_blast_recipients_status ON blast_recipients(status);
+"""
+
 # ---------------------------------------------------------------------------
 # Initialization & connection helper
 # ---------------------------------------------------------------------------
@@ -313,6 +355,8 @@ async def init_db() -> None:
         await db.executescript(_DDL_RELATED_IGS)
         await db.executescript(_INDEXES_RELATED_IGS)
         await db.executescript(_DDL_IG_ACCOUNTS)
+        await db.executescript(_DDL_BLAST)
+        await db.executescript(_INDEXES_BLAST)
         # Migration: add agent_reasoning column to conversations (idempotent)
         try:
             await db.execute(
@@ -349,6 +393,14 @@ async def init_db() -> None:
         try:
             await db.execute(
                 "ALTER TABLE ig_contacts ADD COLUMN has_person_name BOOLEAN DEFAULT 1"
+            )
+            await db.commit()
+        except Exception:
+            pass  # Column already exists
+        # Migration: add manual_contacted flag to ig_contacts
+        try:
+            await db.execute(
+                "ALTER TABLE ig_contacts ADD COLUMN manual_contacted BOOLEAN DEFAULT 0"
             )
             await db.commit()
         except Exception:
@@ -706,6 +758,22 @@ async def update_ig_handle(uni_id: int, handle: str, verified: bool = False) -> 
         await db.commit()
 
 
+async def reset_ig_handle(uni_id: int) -> bool:
+    """Clear IG handle and reset status to 'pending' so the agent re-searches."""
+    async with get_db() as db:
+        cur = await db.execute("SELECT id FROM universities WHERE id = ?", (uni_id,))
+        if not await cur.fetchone():
+            return False
+        await db.execute(
+            "UPDATE universities SET ig_handle = NULL, ig_verified = 0, status = 'pending', "
+            "updated_at = datetime('now') WHERE id = ?",
+            (uni_id,),
+        )
+        await db.commit()
+    await ws_manager.broadcast_type("university_updated", uni_id=uni_id, status="pending")
+    return True
+
+
 async def update_secretariat_phone(uni_id: int, phone: str) -> None:
     async with get_db() as db:
         await db.execute(
@@ -800,8 +868,20 @@ async def list_universities_paginated(
         total = row[0] if row else 0
 
         # Data page - order by updated_at DESC (most recently updated first), fallback to id
+        # Include contact counts as derived columns via correlated subqueries
         cursor = await db.execute(
-            f"SELECT * FROM universities {where} ORDER BY COALESCE(updated_at, created_at) DESC LIMIT ? OFFSET ?",
+            f"""SELECT u.*,
+                (SELECT COUNT(*) FROM ig_contacts c WHERE c.university_id = u.id) AS total_contacts,
+                (SELECT COUNT(*) FROM ig_contacts c WHERE c.university_id = u.id
+                    AND (c.manual_contacted = 1
+                         OR EXISTS (
+                             SELECT 1 FROM conversations cv
+                             WHERE cv.contact_phone = c.phone_number
+                               AND cv.university_id = c.university_id
+                         ))
+                ) AS contacted_contacts
+            FROM universities u {where}
+            ORDER BY COALESCE(u.updated_at, u.created_at) DESC LIMIT ? OFFSET ?""",
             params + [limit, offset],
         )
         rows = await cursor.fetchall()
@@ -1062,11 +1142,106 @@ async def add_ig_contact(
 async def get_contacts_for_university(university_id: int) -> list[dict]:
     async with get_db() as db:
         cursor = await db.execute(
-            "SELECT * FROM ig_contacts WHERE university_id = ?",
+            """
+            SELECT ic.*,
+                   CASE
+                       WHEN c.id IS NOT NULL THEN c.state
+                       ELSE NULL
+                   END AS conversation_state,
+                   c.id AS conversation_id
+            FROM ig_contacts ic
+            LEFT JOIN conversations c
+                   ON c.contact_phone = ic.phone_number
+                  AND c.university_id = ic.university_id
+            WHERE ic.university_id = ?
+            ORDER BY ic.created_at
+            """,
             (university_id,),
         )
         rows = await cursor.fetchall()
         return _rows_to_dicts(rows)
+
+
+async def toggle_contact_manual_status(contact_id: int, contacted: bool) -> dict | None:
+    """Toggle the manual_contacted flag on an ig_contact."""
+    async with get_db() as db:
+        await db.execute(
+            "UPDATE ig_contacts SET manual_contacted = ? WHERE id = ?",
+            (1 if contacted else 0, contact_id),
+        )
+        await db.commit()
+        cursor = await db.execute(
+            "SELECT * FROM ig_contacts WHERE id = ?", (contact_id,)
+        )
+        row = await cursor.fetchone()
+        return _row_to_dict(row) if row else None
+
+
+async def bulk_match_contacts_by_phone(phone_numbers: list[str]) -> dict:
+    """
+    Given a list of raw phone numbers (any format), normalise them and look up
+    matching ig_contacts.  Returns {matched: [...], not_matched: [...]}.
+    """
+    # Normalise all inputs
+    normalised_map: dict[str, str] = {}      # e164 -> original
+    invalid_numbers: list[str] = []
+
+    for raw in phone_numbers:
+        raw = raw.strip()
+        if not raw:
+            continue
+        e164 = validate_phone(raw)
+        if e164:
+            normalised_map[e164] = raw
+        else:
+            invalid_numbers.append(raw)
+
+    if not normalised_map:
+        return {"matched": [], "not_matched": invalid_numbers}
+
+    async with get_db() as db:
+        placeholders = ",".join("?" for _ in normalised_map)
+        cursor = await db.execute(
+            f"""
+            SELECT ic.*, u.name AS university_name,
+                   c.state AS conversation_state,
+                   c.id    AS conversation_id
+            FROM ig_contacts ic
+            LEFT JOIN universities u ON u.id = ic.university_id
+            LEFT JOIN conversations c
+                   ON c.contact_phone = ic.phone_number
+                  AND c.university_id = ic.university_id
+            WHERE ic.phone_number IN ({placeholders})
+            ORDER BY u.name, ic.phone_number
+            """,
+            list(normalised_map.keys()),
+        )
+        rows = await cursor.fetchall()
+        matched = _rows_to_dicts(rows)
+
+    # Find which normalised numbers actually matched
+    matched_phones = {r["phone_number"] for r in matched}
+    not_matched: list[str] = []
+    for e164, original in normalised_map.items():
+        if e164 not in matched_phones:
+            not_matched.append(original)
+    not_matched.extend(invalid_numbers)
+
+    return {"matched": matched, "not_matched": not_matched}
+
+
+async def bulk_update_contact_status(contact_ids: list[int], contacted: bool) -> int:
+    """Bulk set manual_contacted flag for a list of contact IDs. Returns count updated."""
+    if not contact_ids:
+        return 0
+    async with get_db() as db:
+        placeholders = ",".join("?" for _ in contact_ids)
+        cursor = await db.execute(
+            f"UPDATE ig_contacts SET manual_contacted = ? WHERE id IN ({placeholders})",
+            [1 if contacted else 0] + contact_ids,
+        )
+        await db.commit()
+        return cursor.rowcount
 
 
 async def get_unused_contacts() -> list[dict]:

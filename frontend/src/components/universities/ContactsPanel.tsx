@@ -1,35 +1,156 @@
 import { useState } from 'react'
-import { ExternalLink, Image, Phone, User, X } from 'lucide-react'
+import { CheckCircle, Clock, ExternalLink, Image, ListChecks, Megaphone, MessageCircle, Phone, User, X, XCircle } from 'lucide-react'
+import { useQueryClient } from '@tanstack/react-query'
 import { Table, TableHeader, TableBody, TableRow, TableHead, TableCell } from '../ui/Table'
 import { EmptyState } from '../ui/EmptyState'
+import { Button } from '../ui/Button'
 import { formatDate } from '../../lib/utils'
+import { useToggleContactContacted } from '../../hooks/useUniversities'
+import { queryKeys } from '../../lib/queryKeys'
+import { BulkUpdateContactsModal } from './BulkUpdateContactsModal'
+import { AddToBlastModal } from '../blast/AddToBlastModal'
 import type { IgContact } from '../../lib/types'
+
+function ContactStatusBadge({
+  contact,
+  onToggle,
+  isToggling,
+}: {
+  contact: IgContact
+  onToggle: (contacted: boolean) => void
+  isToggling: boolean
+}) {
+  const state = contact.conversation_state
+  const manualContacted = contact.manual_contacted
+
+  // Has a real conversation → show conversation state (not toggleable)
+  if (state) {
+    const upper = state.toUpperCase()
+
+    if (['GOT_NUMBER', 'COMPLETED'].includes(upper)) {
+      return (
+        <span className="inline-flex items-center gap-1 rounded-full bg-green-100 px-2.5 py-0.5 text-xs font-medium text-green-700 dark:bg-green-900/30 dark:text-green-400">
+          <CheckCircle className="h-3 w-3" />
+          Berhasil
+        </span>
+      )
+    }
+
+    if (['REFUSED', 'ABANDONED'].includes(upper)) {
+      return (
+        <span className="inline-flex items-center gap-1 rounded-full bg-red-100 px-2.5 py-0.5 text-xs font-medium text-red-700 dark:bg-red-900/30 dark:text-red-400">
+          <XCircle className="h-3 w-3" />
+          {upper === 'REFUSED' ? 'Ditolak' : 'Abandoned'}
+        </span>
+      )
+    }
+
+    return (
+      <span className="inline-flex items-center gap-1 rounded-full bg-blue-100 px-2.5 py-0.5 text-xs font-medium text-blue-700 dark:bg-blue-900/30 dark:text-blue-400">
+        <MessageCircle className="h-3 w-3" />
+        {upper === 'PENDING' ? 'Pending' : 'Sedang dihubungi'}
+      </span>
+    )
+  }
+
+  // No conversation → toggleable manual status
+  if (manualContacted) {
+    return (
+      <button
+        onClick={() => onToggle(false)}
+        disabled={isToggling}
+        className="inline-flex items-center gap-1 rounded-full bg-green-100 px-2.5 py-0.5 text-xs font-medium text-green-700 dark:bg-green-900/30 dark:text-green-400 hover:bg-green-200 dark:hover:bg-green-900/50 transition-colors cursor-pointer disabled:opacity-50"
+        title="Klik untuk tandai belum dihubungi"
+      >
+        <CheckCircle className="h-3 w-3" />
+        Sudah dihubungi
+      </button>
+    )
+  }
+
+  return (
+    <button
+      onClick={() => onToggle(true)}
+      disabled={isToggling}
+      className="inline-flex items-center gap-1 rounded-full bg-gray-100 px-2.5 py-0.5 text-xs font-medium text-gray-600 dark:bg-gray-700 dark:text-gray-300 hover:bg-gray-200 dark:hover:bg-gray-600 transition-colors cursor-pointer disabled:opacity-50"
+      title="Klik untuk tandai sudah dihubungi"
+    >
+      <Clock className="h-3 w-3" />
+      Belum dihubungi
+    </button>
+  )
+}
 
 interface ContactsPanelProps {
   contacts: IgContact[]
+  universityId: number
 }
 
-export function ContactsPanel({ contacts }: ContactsPanelProps) {
+export function ContactsPanel({ contacts, universityId }: ContactsPanelProps) {
   const [previewUrl, setPreviewUrl] = useState<string | null>(null)
+  const [bulkOpen, setBulkOpen] = useState(false)
+  const [blastOpen, setBlastOpen] = useState(false)
+  const queryClient = useQueryClient()
+  const toggleMutation = useToggleContactContacted(universityId)
+
+  const contactIds = contacts.map((c) => c.id)
+
+  const handleBulkUpdated = () => {
+    queryClient.invalidateQueries({ queryKey: queryKeys.universities.contacts(universityId) })
+  }
 
   if (contacts.length === 0) {
     return (
-      <EmptyState
-        icon={Phone}
-        title="No contacts found"
-        description="No phone contacts have been extracted for this university yet."
-      />
+      <>
+        <div className="mb-3 flex justify-end gap-2">
+          <Button variant="secondary" size="sm" onClick={() => setBlastOpen(true)}>
+            <Megaphone className="h-4 w-4" />
+            Add to Blast
+          </Button>
+          <Button variant="secondary" size="sm" onClick={() => setBulkOpen(true)}>
+            <ListChecks className="h-4 w-4" />
+            Bulk Update Status
+          </Button>
+        </div>
+        <EmptyState
+          icon={Phone}
+          title="No contacts found"
+          description="No phone contacts have been extracted for this university yet."
+        />
+        <BulkUpdateContactsModal
+          isOpen={bulkOpen}
+          onClose={() => setBulkOpen(false)}
+          onUpdated={handleBulkUpdated}
+        />
+        <AddToBlastModal
+          isOpen={blastOpen}
+          onClose={() => setBlastOpen(false)}
+          universityIds={[universityId]}
+          label={`All contacts from this university`}
+        />
+      </>
     )
   }
 
   return (
     <>
+      <div className="mb-3 flex justify-end gap-2">
+        <Button variant="secondary" size="sm" onClick={() => setBlastOpen(true)} disabled={contacts.length === 0}>
+          <Megaphone className="h-4 w-4" />
+          Add to Blast
+        </Button>
+        <Button variant="secondary" size="sm" onClick={() => setBulkOpen(true)}>
+          <ListChecks className="h-4 w-4" />
+          Bulk Update Status
+        </Button>
+      </div>
       <Table>
         <TableHeader>
           <TableRow>
             <TableHead>Source</TableHead>
             <TableHead>Name</TableHead>
             <TableHead>Phone Number</TableHead>
+            <TableHead>Status</TableHead>
             <TableHead>Post</TableHead>
             <TableHead>Found At</TableHead>
           </TableRow>
@@ -65,6 +186,15 @@ export function ContactsPanel({ contacts }: ContactsPanelProps) {
                 </div>
               </TableCell>
               <TableCell className="font-mono">{contact.phone_number}</TableCell>
+              <TableCell>
+                <ContactStatusBadge
+                  contact={contact}
+                  onToggle={(contacted) =>
+                    toggleMutation.mutate({ contactId: contact.id, contacted })
+                  }
+                  isToggling={toggleMutation.isPending}
+                />
+              </TableCell>
               <TableCell>
                 {contact.source_post_url ? (
                   <a
@@ -107,6 +237,20 @@ export function ContactsPanel({ contacts }: ContactsPanelProps) {
           </div>
         </div>
       )}
+
+      {/* Bulk update modal */}
+      <BulkUpdateContactsModal
+        isOpen={bulkOpen}
+        onClose={() => setBulkOpen(false)}
+        onUpdated={handleBulkUpdated}
+      />
+
+      <AddToBlastModal
+        isOpen={blastOpen}
+        onClose={() => setBlastOpen(false)}
+        contactIds={contactIds}
+        label={`${contacts.length} contacts from this university`}
+      />
     </>
   )
 }

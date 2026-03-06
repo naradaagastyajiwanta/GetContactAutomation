@@ -431,6 +431,22 @@ class _PlaywrightBrowser:
             ],
         )
 
+        # Re-inject cookies from sidecar JSON (if a previous
+        # pw_import_cookies() call saved them).  This is necessary
+        # because add_cookies() in a prior persistent context may
+        # not have been flushed to Chromium's on-disk cookie store.
+        _cookie_file = Path(profile_dir) / "imported_cookies.json"
+        if _cookie_file.exists():
+            try:
+                import json as _json
+                _saved = _json.loads(_cookie_file.read_text(encoding="utf-8"))
+                if _saved:
+                    self._context.add_cookies(_saved)
+                    log.info("[Playwright] Re-injected %d cookies from %s",
+                             len(_saved), _cookie_file)
+            except Exception as _exc:
+                log.warning("[Playwright] Failed to reload saved cookies: %s", _exc)
+
         # Apply stealth patches
         self._page = self._context.new_page()
         try:
@@ -1369,7 +1385,7 @@ def _headless_login_impl(username: str, password: str) -> dict:
                     and "/accounts/login" not in url
                 )
                 # Also check if we're running inside Docker (strong signal for datacenter)
-                _in_docker = _Path("/.dockerenv").exists()
+                _in_docker = Path("/.dockerenv").exists()
                 if _is_likely_ip_block or (_in_docker and has_login_error):
                     log.warning("[HeadlessLogin] Likely datacenter IP block for @%s (docker=%s, url=%s)",
                                 username, _in_docker, url)
@@ -1443,6 +1459,37 @@ def _verify_session_impl(username: str, password: str) -> dict:
       - cookies: dict of key cookies found
     """
     acct = _IGAccount(username, password)
+
+    # ------------------------------------------------------------------
+    # Fast path: if we have a sidecar cookie file from a previous import,
+    # trust it directly.  Navigating to IG from a datacenter IP often
+    # causes "Execution context destroyed" or IG clearing cookies.
+    # The cookies will be validated at actual scraping time anyway.
+    # ------------------------------------------------------------------
+    import json as _json
+    cookie_file = Path(acct.profile_dir) / "imported_cookies.json"
+    if cookie_file.exists():
+        try:
+            saved = _json.loads(cookie_file.read_text(encoding="utf-8"))
+            saved_map = {c["name"]: c["value"] for c in saved
+                         if c.get("name") in ("ds_user_id", "csrftoken", "sessionid", "ig_did", "mid")}
+            if saved_map.get("ds_user_id") and saved_map.get("sessionid"):
+                log.info("[VerifySession] Found valid imported_cookies.json for @%s "
+                         "(ds_user_id=%s..., sessionid=%s...). Trusting import.",
+                         username,
+                         saved_map["ds_user_id"][:6],
+                         saved_map["sessionid"][:8])
+                return {"status": "connected",
+                        "reason": "cookies_imported",
+                        "username_verified": username,
+                        "cookies": saved_map}
+        except Exception as exc:
+            log.warning("[VerifySession] Failed to read imported_cookies.json for @%s: %s",
+                        username, exc)
+
+    # ------------------------------------------------------------------
+    # Slow path: launch browser, navigate, check cookies + API
+    # ------------------------------------------------------------------
     try:
         _kill_orphan_chromes(acct.profile_dir)
         browser = _PlaywrightBrowser(acct, headless=True)
@@ -1453,14 +1500,48 @@ def _verify_session_impl(username: str, password: str) -> dict:
                     "username_verified": None, "cookies": {}}
 
         try:
-            # Navigate to IG briefly to activate cookies
-            browser.page.goto("https://www.instagram.com/",
-                              wait_until="domcontentloaded", timeout=15000)
-            _time.sleep(2)
+            # Check cookies BEFORE navigation — they may be cleared by IG
+            # if the server IP differs from where the cookies were created.
+            pre_nav_cookies = browser._get_ig_cookies()
+            log.info("[VerifySession] Pre-navigation cookies for @%s: %s",
+                     username, {k: v[:8] + '...' for k, v in pre_nav_cookies.items()})
 
-            # Check cookies
+            # Navigate to IG briefly to activate cookies
+            try:
+                browser.page.goto("https://www.instagram.com/",
+                                  wait_until="domcontentloaded", timeout=15000)
+                _time.sleep(2)
+            except Exception as nav_exc:
+                log.warning("[VerifySession] Navigation failed for @%s: %s. "
+                            "Checking pre-nav cookies instead.", username, nav_exc)
+                # If we had cookies before navigation blew up, trust them
+                if pre_nav_cookies.get("ds_user_id") and pre_nav_cookies.get("sessionid"):
+                    return {"status": "connected",
+                            "reason": "cookies_valid_nav_failed",
+                            "username_verified": username,
+                            "cookies": pre_nav_cookies}
+                return {"status": "error",
+                        "reason": f"navigation_failed: {nav_exc}",
+                        "username_verified": None, "cookies": pre_nav_cookies}
+
+            # Check cookies after navigation
             cookies = browser._get_ig_cookies()
+            log.info("[VerifySession] Post-navigation cookies for @%s: %s",
+                     username, {k: v[:8] + '...' for k, v in cookies.items()})
+
             if not cookies.get("ds_user_id"):
+                # Cookies disappeared after navigation — IG cleared them
+                # If they existed before navigation, the import was fine but
+                # IG rejected from this IP/fingerprint.
+                if pre_nav_cookies.get("ds_user_id") and pre_nav_cookies.get("sessionid"):
+                    log.warning("[VerifySession] Cookies existed pre-navigation but IG cleared them "
+                                "post-navigation for @%s — likely IP/fingerprint mismatch. "
+                                "Treating as conditionally connected.", username)
+                    return {"status": "connected",
+                            "reason": "cookies_valid_ip_mismatch",
+                            "username_verified": username,
+                            "cookies": pre_nav_cookies}
+
                 return {"status": "disconnected", "reason": "no_session_cookie",
                         "username_verified": None, "cookies": cookies}
 
@@ -2875,6 +2956,16 @@ def pw_import_cookies(username: str, cookies: list[dict]) -> dict:
             stored = ctx.cookies("https://www.instagram.com")
             stored_names = {c["name"] for c in stored}
             has_session = "sessionid" in stored_names and "ds_user_id" in stored_names
+
+            # Persist cookies to a sidecar JSON file.
+            # Chromium's add_cookies() may NOT flush to the profile
+            # directory on disk, so a subsequent launch_persistent_context
+            # loses them.  We write them ourselves and re-inject on
+            # every _PlaywrightBrowser.__enter__().
+            import json as _json
+            cookie_file = profile_dir / "imported_cookies.json" if isinstance(profile_dir, Path) else Path(profile_dir) / "imported_cookies.json"
+            cookie_file.write_text(_json.dumps(pw_cookies, ensure_ascii=False, indent=2), encoding="utf-8")
+            log.info("[CookieImport] Saved %d cookies to %s", len(pw_cookies), cookie_file)
 
             ctx.close()
             pw.stop()

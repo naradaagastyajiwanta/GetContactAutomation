@@ -78,6 +78,7 @@ from orchestrator.config_registry import (
     ConfigType,
 )
 from orchestrator.agent.learning import LearningSystem
+from orchestrator import blast_service
 from orchestrator.conversation import conversation_manager, ConvState
 from orchestrator.message_queue import message_queue
 from orchestrator.scheduler import (
@@ -834,10 +835,54 @@ async def get_university(university_id: int):
     return uni
 
 
+@app.delete("/universities/{university_id}/ig-handle")
+async def reset_university_ig_handle(university_id: int):
+    """Clear IG handle and reset status to pending so Agent 1 re-searches."""
+    from orchestrator.db import reset_ig_handle
+    ok = await reset_ig_handle(university_id)
+    if not ok:
+        return JSONResponse(status_code=404, content={"detail": "University not found"})
+    log.info("[API] IG handle reset for university %d", university_id)
+    return {"success": True, "id": university_id, "status": "pending"}
+
+
 @app.get("/universities/{university_id}/contacts")
 async def get_university_contacts(university_id: int):
     """Get IG contacts for a university."""
     return await get_contacts_for_university(university_id)
+
+
+@app.patch("/contacts/{contact_id}/toggle-contacted")
+async def toggle_contact_contacted(contact_id: int, contacted: bool = True):
+    """Manually mark a contact as contacted or not."""
+    from orchestrator.db import toggle_contact_manual_status
+    result = await toggle_contact_manual_status(contact_id, contacted)
+    if not result:
+        return JSONResponse(status_code=404, content={"detail": "Contact not found"})
+    return {"success": True, "id": contact_id, "manual_contacted": contacted}
+
+
+@app.post("/contacts/bulk-match")
+async def bulk_match_contacts(payload: dict):
+    """Match a list of phone numbers against existing contacts."""
+    phone_numbers = payload.get("phone_numbers", [])
+    if not phone_numbers or not isinstance(phone_numbers, list):
+        return JSONResponse(status_code=400, content={"detail": "Provide 'phone_numbers' array"})
+    from orchestrator.db import bulk_match_contacts_by_phone
+    result = await bulk_match_contacts_by_phone(phone_numbers)
+    return result
+
+
+@app.post("/contacts/bulk-update-status")
+async def bulk_update_contacts_status(payload: dict):
+    """Bulk update manual_contacted status for a list of contact IDs."""
+    contact_ids = payload.get("contact_ids", [])
+    contacted = payload.get("contacted", True)
+    if not contact_ids or not isinstance(contact_ids, list):
+        return JSONResponse(status_code=400, content={"detail": "Provide 'contact_ids' array"})
+    from orchestrator.db import bulk_update_contact_status
+    updated = await bulk_update_contact_status(contact_ids, contacted)
+    return {"success": True, "updated": updated}
 
 
 @app.get("/universities/{university_id}/posts")
@@ -1433,6 +1478,145 @@ async def wa_restart():
         return JSONResponse(
             status_code=502,
             content={"success": False, "error": f"WA service unavailable: {e}"},
+        )
+
+
+# ---------------------------------------------------------------------------
+# Bulk Send Endpoints (Multi-Device Support)
+# ---------------------------------------------------------------------------
+
+
+@app.get("/wa/devices")
+async def wa_get_devices():
+    """Proxy to WhatsApp service to get all devices with status."""
+    from orchestrator.config import WA_SERVICE_URL
+    async with httpx.AsyncClient() as client:
+        response = await client.get(f"{WA_SERVICE_URL}/devices")
+        return response.json()
+
+
+@app.get("/wa/devices/{device_id}/qr")
+async def wa_get_device_qr(device_id: str):
+    """Proxy to WhatsApp service to get QR code for a device."""
+    from orchestrator.config import WA_SERVICE_URL
+    async with httpx.AsyncClient() as client:
+        response = await client.get(f"{WA_SERVICE_URL}/devices/{device_id}/qr")
+        return response.json()
+
+
+@app.post("/wa/devices/{device_id}/connect")
+async def wa_connect_device(device_id: str):
+    """Proxy to WhatsApp service to connect a device (triggers QR generation)."""
+    from orchestrator.config import WA_SERVICE_URL
+    async with httpx.AsyncClient() as client:
+        response = await client.post(f"{WA_SERVICE_URL}/devices/{device_id}/connect")
+        return response.json()
+
+
+@app.post("/wa/devices/{device_id}/disconnect")
+async def wa_disconnect_device(device_id: str):
+    """Proxy to WhatsApp service to disconnect a device."""
+    from orchestrator.config import WA_SERVICE_URL
+    async with httpx.AsyncClient() as client:
+        response = await client.post(f"{WA_SERVICE_URL}/devices/{device_id}/disconnect")
+        return response.json()
+
+
+@app.post("/wa/bulk-send")
+async def wa_bulk_send(payload: dict):
+    """
+    Bulk send WhatsApp text messages to multiple phone numbers.
+
+    Body: {
+      phone_numbers: ["628xxx", ...],
+      message: "Hello!",
+      device_id: "device_1"  # Optional, defaults to "device_1"
+    }
+    """
+    try:
+        phone_numbers = payload.get("phone_numbers", [])
+        message = payload.get("message", "")
+        device_id = payload.get("device_id", "device_1")
+
+        if not phone_numbers:
+            return {"success": False, "error": "No phone numbers provided"}
+        if not message:
+            return {"success": False, "error": "No message provided"}
+
+        for phone in phone_numbers:
+            await message_queue.enqueue_send(phone, message, device_id=device_id)
+
+        return {
+            "success": True,
+            "queued": len(phone_numbers),
+            "device_id": device_id,
+        }
+    except Exception as e:
+        log.error("Bulk send failed: %s", e)
+        return JSONResponse(
+            status_code=500,
+            content={"success": False, "error": f"Bulk send failed: {e}"},
+        )
+
+
+@app.post("/wa/bulk-send-document")
+async def wa_bulk_send_document(payload: dict):
+    """
+    Bulk send WhatsApp document messages to multiple phone numbers.
+
+    Body: {
+      phone_numbers: ["628xxx", ...],
+      file_path: "/path/to/file.pdf",
+      file_name: "document.pdf",
+      caption: "Optional caption",
+      device_id: "device_1"  # Optional, defaults to "device_1"
+    }
+    """
+    try:
+        phone_numbers = payload.get("phone_numbers", [])
+        file_path = payload.get("file_path", "")
+        file_name = payload.get("file_name", "")
+        caption = payload.get("caption")
+        device_id = payload.get("device_id", "device_1")
+
+        if not phone_numbers:
+            return {"success": False, "error": "No phone numbers provided"}
+        if not file_path:
+            return {"success": False, "error": "No file_path provided"}
+        if not file_name:
+            return {"success": False, "error": "No file_name provided"}
+
+        for phone in phone_numbers:
+            await message_queue.enqueue_send_document(
+                phone, file_path, file_name, caption, device_id=device_id
+            )
+
+        return {
+            "success": True,
+            "queued": len(phone_numbers),
+            "device_id": device_id,
+            "file_name": file_name,
+        }
+    except Exception as e:
+        log.error("Bulk send document failed: %s", e)
+        return JSONResponse(
+            status_code=500,
+            content={"success": False, "error": f"Bulk send document failed: {e}"},
+        )
+
+
+@app.get("/wa/devices")
+async def wa_get_devices():
+    """Get all WhatsApp devices and their status."""
+    try:
+        async with httpx.AsyncClient(timeout=15) as client:
+            resp = await client.get(f"{WA_SERVICE_URL}/devices")
+            return resp.json()
+    except Exception as e:
+        log.error("Failed to get devices: %s", e)
+        return JSONResponse(
+            status_code=502,
+            content={"success": False, "error": f"Failed to get devices: {e}"},
         )
 
 
@@ -2819,3 +3003,190 @@ async def get_instagram_image_url(post_url: str = Query(..., description="Instag
             {"detail": "Failed to fetch image URL"},
             status_code=500
         )
+
+
+# ============================================================================
+# Blast Campaign Endpoints
+# ============================================================================
+
+
+@app.get("/blast/contacts")
+async def blast_get_contacts(
+    university_ids: Optional[str] = Query(None, description="Comma-separated university IDs"),
+    search: Optional[str] = Query(None),
+    province: Optional[str] = Query(None),
+    has_name: Optional[bool] = Query(None),
+    contacted: Optional[bool] = Query(None),
+    has_conversation: Optional[bool] = Query(None),
+    limit: int = Query(200, le=1000),
+    offset: int = Query(0),
+):
+    """Get contacts available for blast selection with filters."""
+    uid_list = None
+    if university_ids:
+        uid_list = [int(x.strip()) for x in university_ids.split(",") if x.strip().isdigit()]
+
+    result = await blast_service.get_contacts_for_blast(
+        university_ids=uid_list,
+        search=search,
+        province=province,
+        has_name=has_name,
+        contacted=contacted,
+        has_conversation=has_conversation,
+        limit=limit,
+        offset=offset,
+    )
+    return result
+
+
+@app.post("/blast/campaigns")
+async def blast_create_campaign(payload: dict):
+    """Create a new blast campaign.
+
+    Body: { name, template_message?, device_id?, delay_between_ms?, human_delay_min_ms?, human_delay_max_ms? }
+    """
+    name = payload.get("name", "").strip()
+    if not name:
+        return JSONResponse({"success": False, "error": "Campaign name is required"}, status_code=400)
+
+    campaign = await blast_service.create_campaign(
+        name=name,
+        template_message=payload.get("template_message", ""),
+        device_id=payload.get("device_id", "device_1"),
+        delay_between_ms=payload.get("delay_between_ms", 5000),
+        human_delay_min_ms=payload.get("human_delay_min_ms", 2000),
+        human_delay_max_ms=payload.get("human_delay_max_ms", 8000),
+    )
+    return {"success": True, "campaign": campaign}
+
+
+@app.get("/blast/campaigns")
+async def blast_list_campaigns(
+    status: Optional[str] = Query(None),
+    limit: int = Query(50),
+    offset: int = Query(0),
+):
+    """List all blast campaigns."""
+    return await blast_service.list_campaigns(status=status, limit=limit, offset=offset)
+
+
+@app.get("/blast/campaigns/{campaign_id}")
+async def blast_get_campaign(campaign_id: int):
+    """Get campaign detail."""
+    campaign = await blast_service.get_campaign(campaign_id)
+    if not campaign:
+        return JSONResponse({"detail": "Campaign not found"}, status_code=404)
+    return campaign
+
+
+@app.put("/blast/campaigns/{campaign_id}")
+async def blast_update_campaign(campaign_id: int, payload: dict):
+    """Update campaign settings.
+
+    Body: { name?, template_message?, device_id?, delay_between_ms?, human_delay_min_ms?, human_delay_max_ms? }
+    """
+    campaign = await blast_service.update_campaign(campaign_id, **payload)
+    if not campaign:
+        return JSONResponse({"detail": "Campaign not found"}, status_code=404)
+    return {"success": True, "campaign": campaign}
+
+
+@app.delete("/blast/campaigns/{campaign_id}")
+async def blast_delete_campaign(campaign_id: int):
+    """Delete a draft/completed/cancelled campaign."""
+    deleted = await blast_service.delete_campaign(campaign_id)
+    if not deleted:
+        return JSONResponse(
+            {"detail": "Campaign not found or cannot be deleted (must be draft/completed/cancelled)"},
+            status_code=400,
+        )
+    return {"success": True}
+
+
+@app.post("/blast/campaigns/{campaign_id}/recipients")
+async def blast_add_recipients(campaign_id: int, payload: dict):
+    """Add recipients to a campaign.
+
+    Body: { contact_ids: [1,2,3] }  — from ig_contacts
+    OR:   { university_ids: [10,20] } — all contacts from these universities
+    OR:   { recipients: [{phone_number, contact_name?, university_name?, university_id?, contact_id?}] }
+    """
+    campaign = await blast_service.get_campaign(campaign_id)
+    if not campaign:
+        return JSONResponse({"detail": "Campaign not found"}, status_code=404)
+
+    contact_ids = payload.get("contact_ids", [])
+    university_ids = payload.get("university_ids", [])
+    recipients = payload.get("recipients", [])
+
+    if contact_ids:
+        result = await blast_service.add_recipients_from_contacts(campaign_id, contact_ids)
+    elif university_ids:
+        result = await blast_service.add_recipients_from_universities(campaign_id, university_ids)
+    elif recipients:
+        result = await blast_service.add_recipients_bulk(campaign_id, recipients)
+    else:
+        return JSONResponse({"success": False, "error": "Provide contact_ids, university_ids, or recipients"}, status_code=400)
+
+    return {"success": True, **result}
+
+
+@app.get("/blast/campaigns/{campaign_id}/recipients")
+async def blast_get_recipients(
+    campaign_id: int,
+    status: Optional[str] = Query(None),
+    limit: int = Query(100, le=1000),
+    offset: int = Query(0),
+):
+    """Get recipients of a campaign."""
+    return await blast_service.get_recipients(campaign_id, status=status, limit=limit, offset=offset)
+
+
+@app.delete("/blast/campaigns/{campaign_id}/recipients/{recipient_id}")
+async def blast_remove_recipient(campaign_id: int, recipient_id: int):
+    """Remove a pending recipient."""
+    removed = await blast_service.remove_recipient(campaign_id, recipient_id)
+    if not removed:
+        return JSONResponse({"detail": "Recipient not found or already sent"}, status_code=400)
+    return {"success": True}
+
+
+@app.delete("/blast/campaigns/{campaign_id}/recipients")
+async def blast_clear_recipients(campaign_id: int):
+    """Remove all pending recipients from a campaign."""
+    removed = await blast_service.clear_recipients(campaign_id)
+    return {"success": True, "removed": removed}
+
+
+@app.get("/blast/campaigns/{campaign_id}/preview")
+async def blast_preview_messages(campaign_id: int, limit: int = Query(3)):
+    """Preview rendered messages for a few recipients."""
+    previews = await blast_service.preview_messages(campaign_id, limit=limit)
+    return {"previews": previews}
+
+
+@app.post("/blast/campaigns/{campaign_id}/start")
+async def blast_start_campaign(campaign_id: int):
+    """Start or resume sending a blast campaign."""
+    result = await blast_service.start_campaign(campaign_id)
+    if not result.get("success"):
+        return JSONResponse(result, status_code=400)
+    return result
+
+
+@app.post("/blast/campaigns/{campaign_id}/pause")
+async def blast_pause_campaign(campaign_id: int):
+    """Pause a running campaign."""
+    result = await blast_service.pause_campaign(campaign_id)
+    if not result.get("success"):
+        return JSONResponse(result, status_code=400)
+    return result
+
+
+@app.post("/blast/campaigns/{campaign_id}/cancel")
+async def blast_cancel_campaign(campaign_id: int):
+    """Cancel a campaign."""
+    result = await blast_service.cancel_campaign(campaign_id)
+    if not result.get("success"):
+        return JSONResponse(result, status_code=400)
+    return result

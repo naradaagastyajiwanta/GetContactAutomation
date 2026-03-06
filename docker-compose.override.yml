@@ -1,0 +1,18 @@
+# docker-compose.override.yml
+# ----------------------------------------------------------
+# Hot-reload override for FAST deployment.
+# Mounts orchestrator/ source code as a volume so that
+# code changes only need: SCP file + docker compose restart
+# (no image rebuild needed).
+#
+# This file is auto-loaded by docker compose alongside
+# docker-compose.yml. To DISABLE it (use baked-in image),
+# rename it or pass --file explicitly:
+#   docker compose -f docker-compose.yml up -d --build
+# ----------------------------------------------------------
+
+services:
+  orchestrator:
+    volumes:
+      - ./data:/app/data
+      - ./orchestrator:/app/orchestrator

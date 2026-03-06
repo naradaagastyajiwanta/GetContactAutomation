@@ -11,6 +11,7 @@ import {
   Video,
   BookOpen,
   ScrollText,
+  Megaphone,
 } from 'lucide-react'
 import { cn } from '../../lib/utils'
 
@@ -24,6 +25,7 @@ const navItems = [
   { to: '/knowledge', label: 'Knowledge Base', icon: BookOpen },
   { to: '/api-logs', label: 'API Logs', icon: ScrollText },
   { to: '/whatsapp', label: 'WhatsApp', icon: Smartphone },
+  { to: '/blast', label: 'WA Blast', icon: Megaphone },
   { to: '/settings', label: 'Settings', icon: Settings },
 ]
 
