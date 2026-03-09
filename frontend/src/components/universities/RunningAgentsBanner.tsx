@@ -1,4 +1,4 @@
-import { Loader2, Search, Download, Phone, Clock, Users } from 'lucide-react'
+import { Loader2, Search, Download, Phone, Clock, Users, GraduationCap } from 'lucide-react'
 import { usePipelineStatus } from '../../hooks/usePipeline'
 import { formatRelative } from '../../lib/utils'
 import type { RunningAgent, PipelineAgentType } from '../../lib/types'
@@ -33,6 +33,12 @@ const AGENT_CONFIG: Record<PipelineAgentType, { label: string; icon: typeof Sear
     icon: Users,
     color: 'text-teal-700 dark:text-teal-300',
     bgColor: 'bg-teal-50 border-teal-200 dark:bg-teal-950/40 dark:border-teal-800',
+  },
+  dms_research: {
+    label: 'Research Rektor',
+    icon: GraduationCap,
+    color: 'text-violet-700 dark:text-violet-300',
+    bgColor: 'bg-violet-50 border-violet-200 dark:bg-violet-950/40 dark:border-violet-800',
   },
 }
 

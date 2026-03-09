@@ -22,6 +22,8 @@ const ApiLogsPage = lazy(() => import('./pages/ApiLogsPage'))
 const SettingsPage = lazy(() => import('./pages/SettingsPage'))
 const BlastCampaignsPage = lazy(() => import('./pages/BlastCampaignsPage'))
 const BlastCampaignDetailPage = lazy(() => import('./pages/BlastCampaignDetailPage'))
+const DmsSchedulesPage = lazy(() => import('./pages/DmsSchedulesPage'))
+const DmsScheduleDetailPage = lazy(() => import('./pages/DmsScheduleDetailPage'))
 
 const queryClient = new QueryClient({
   defaultOptions: { queries: { retry: 1, refetchOnWindowFocus: false } },
@@ -57,6 +59,8 @@ export default function App() {
                   <Route path="api-logs" element={<ApiLogsPage />} />
                   <Route path="blast" element={<BlastCampaignsPage />} />
                   <Route path="blast/:id" element={<BlastCampaignDetailPage />} />
+                  <Route path="dms-schedules" element={<DmsSchedulesPage />} />
+                  <Route path="dms-schedules/:id" element={<DmsScheduleDetailPage />} />
                   <Route path="settings" element={<SettingsPage />} />
                 </Route>
               </Routes>

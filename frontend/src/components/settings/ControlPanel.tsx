@@ -1,4 +1,4 @@
-import { Pause, Play, MessageSquare, Video } from 'lucide-react'
+import { Pause, Play, MessageSquare, Video, Brain } from 'lucide-react'
 import { useControlStatus, usePause, useResume, useToggleChatbot } from '../../hooks/useControl'
 import { Card, CardHeader, CardTitle, CardContent } from '../ui/Card'
 import { Button } from '../ui/Button'
@@ -42,6 +42,7 @@ export function ControlPanel() {
   const isPaused = status?.paused ?? false
   const chatbotEnabled = status?.chatbot_enabled ?? true
   const audiensiEnabled = status?.audiensi_enabled ?? false
+  const researchMultiAgent = status?.research_multi_agent ?? false
   const isToggling = pause.isPending || resume.isPending
 
   return (
@@ -126,6 +127,27 @@ export function ControlPanel() {
                     loading={toggleChatbot.isPending}
                     onToggle={() =>
                       toggleChatbot.mutate({ type: 'audiensi', enabled: !audiensiEnabled })
+                    }
+                  />
+                </div>
+
+                <div className="flex items-center justify-between">
+                  <div className="flex items-center gap-2">
+                    <Brain className="h-4 w-4 text-gray-500 dark:text-gray-400" />
+                    <div>
+                      <span className="text-sm font-medium text-gray-700 dark:text-gray-300">
+                        Multi-Agent Research
+                      </span>
+                      <p className="text-xs text-gray-400 dark:text-gray-500">
+                        1 pertanyaan = 1 agent + reviewer
+                      </p>
+                    </div>
+                  </div>
+                  <Toggle
+                    enabled={researchMultiAgent}
+                    loading={toggleChatbot.isPending}
+                    onToggle={() =>
+                      toggleChatbot.mutate({ type: 'research_multi_agent', enabled: !researchMultiAgent })
                     }
                   />
                 </div>

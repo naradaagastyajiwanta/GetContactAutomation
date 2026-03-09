@@ -12,6 +12,7 @@ import {
   BookOpen,
   ScrollText,
   Megaphone,
+  CalendarClock,
 } from 'lucide-react'
 import { cn } from '../../lib/utils'
 
@@ -26,6 +27,7 @@ const navItems = [
   { to: '/api-logs', label: 'API Logs', icon: ScrollText },
   { to: '/whatsapp', label: 'WhatsApp', icon: Smartphone },
   { to: '/blast', label: 'WA Blast', icon: Megaphone },
+  { to: '/dms-schedules', label: 'DMS Schedules', icon: CalendarClock },
   { to: '/settings', label: 'Settings', icon: Settings },
 ]
 

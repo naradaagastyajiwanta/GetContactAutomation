@@ -1,5 +1,5 @@
-import { Search, Download, Phone, Users } from 'lucide-react'
-import { usePipelineStatus, useTriggerFindHandles, useTriggerDiscoverBem, useTriggerScrapePosts, useTriggerExtractPhones } from '../hooks/usePipeline'
+import { Search, Download, Phone, Users, User } from 'lucide-react'
+import { usePipelineStatus, useTriggerFindHandles, useTriggerDiscoverBem, useTriggerScrapePosts, useTriggerExtractPhones, useTriggerFindRectors } from '../hooks/usePipeline'
 import { Spinner } from '../components/ui/Spinner'
 import { PipelineOverview } from '../components/pipeline/PipelineOverview'
 import { FunnelChart } from '../components/pipeline/FunnelChart'
@@ -13,6 +13,7 @@ export default function PipelinePage() {
   const discoverBem = useTriggerDiscoverBem()
   const scrapePosts = useTriggerScrapePosts()
   const extractPhones = useTriggerExtractPhones()
+  const findRectors = useTriggerFindRectors()
 
   if (isLoading) {
     return (
@@ -38,7 +39,7 @@ export default function PipelinePage() {
         <h2 className="mb-4 text-lg font-semibold text-gray-900 dark:text-gray-100">
           Trigger Agents
         </h2>
-        <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-5">
+        <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-6">
           <PddiktiTriggerCard />
           <AgentTriggerCard
             title="Find IG Handles"
@@ -67,6 +68,13 @@ export default function PipelinePage() {
             defaultLimit={50}
             mutation={extractPhones}
             icon={Phone}
+          />
+          <AgentTriggerCard
+            title="Find Rectors"
+            description="Find rector names using web search and AI."
+            defaultLimit={20}
+            mutation={findRectors}
+            icon={User}
           />
         </div>
       </div>

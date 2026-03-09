@@ -42,11 +42,16 @@ export function useResume() {
 export function useToggleChatbot() {
   const queryClient = useQueryClient()
   return useMutation({
-    mutationFn: ({ type, enabled }: { type: 'agent' | 'audiensi'; enabled: boolean }) =>
+    mutationFn: ({ type, enabled }: { type: 'agent' | 'audiensi' | 'research_multi_agent'; enabled: boolean }) =>
       toggleChatbot(type, enabled),
     onSuccess: (_, variables) => {
-      const label = variables.type === 'agent' ? 'Contact Finder' : 'Audiensi'
-      toast.success(`${label} chatbot ${variables.enabled ? 'enabled' : 'disabled'}`)
+      const label =
+        variables.type === 'agent'
+          ? 'Contact Finder'
+          : variables.type === 'audiensi'
+            ? 'Audiensi'
+            : 'Multi-Agent Research'
+      toast.success(`${label} ${variables.enabled ? 'enabled' : 'disabled'}`)
       queryClient.invalidateQueries({ queryKey: queryKeys.control })
       queryClient.invalidateQueries({ queryKey: queryKeys.config })
     },

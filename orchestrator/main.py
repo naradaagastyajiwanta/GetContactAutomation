@@ -92,6 +92,7 @@ from orchestrator.agents.ig_handle_finder import run_handle_search_batch, run_ha
 from orchestrator.agents.ig_post_scraper import run_post_scrape_batch, run_post_scrape_for_universities
 from orchestrator.agents.ig_phone_extractor import run_phone_extraction_batch, run_phone_extraction_for_universities
 from orchestrator.agents.bem_finder import run_bem_discovery_batch, run_bem_discovery_for_universities
+from orchestrator.agents.rector_finder import run_rector_finder_batch
 from orchestrator.config import PROVINCES
 
 learning_system = LearningSystem()
@@ -194,6 +195,22 @@ async def lifespan(app: FastAPI):
     # Register webhook with WA service
     await register_webhook()
 
+    # Initialize DMS MySQL connection pool
+    try:
+        from orchestrator.dms_mysql import init_dms_pool, close_dms_pool
+        dms_pool = await init_dms_pool()
+        if dms_pool:
+            log.info("DMS MySQL pool initialized")
+    except Exception as e:
+        log.warning("DMS MySQL init failed (non-critical): %s", e)
+
+    # Ensure audiensi research table
+    try:
+        from orchestrator.audiensi_research import ensure_research_table
+        await ensure_research_table()
+    except Exception as e:
+        log.warning("Failed to ensure research table: %s", e)
+
     # Start message queue send worker
     worker_task = asyncio.create_task(message_queue.send_worker())
 
@@ -212,6 +229,14 @@ async def lifespan(app: FastAPI):
 
     # Shutdown
     scheduler.shutdown(wait=False)
+
+    # Close DMS MySQL pool
+    try:
+        from orchestrator.dms_mysql import close_dms_pool
+        await close_dms_pool()
+    except Exception:
+        pass
+
     log.info("Scheduler stopped, shutting down")
 
 
@@ -1144,6 +1169,16 @@ async def trigger_discover_bem(background_tasks: BackgroundTasks, limit: int = 3
     return {"status": "started", "message": f"Agent 4: discovering BEM for up to {limit} universities"}
 
 
+@app.post("/pipeline/find-rectors")
+async def trigger_find_rectors(background_tasks: BackgroundTasks, limit: int = 20):
+    """Agent 5: Find rector names for universities using web search and GPT."""
+    background_tasks.add_task(
+        run_agent_in_thread, _run_agent_with_log,
+        run_rector_finder_batch, "find_rectors", "manual", limit,
+    )
+    return {"status": "started", "message": f"Agent 5: finding rector names for up to {limit} universities"}
+
+
 # ---------------------------------------------------------------------------
 # Targeted agent triggers (per-university / bulk)
 # ---------------------------------------------------------------------------
@@ -1326,6 +1361,7 @@ async def control_status():
         "paused": is_paused(),
         "chatbot_enabled": cfg.CHATBOT_ENABLED,
         "audiensi_enabled": cfg.AUDIENSI_ENABLED,
+        "research_multi_agent": cfg.get("RESEARCH_USE_MULTI_AGENT", False),
     }
 
 
@@ -1348,6 +1384,12 @@ async def toggle_chatbot(chatbot_type: str, payload: ChatbotTogglePayload):
         await upsert_config("AUDIENSI_ENABLED", db_val)
         log.info("Audiensi chatbot %s", "ENABLED" if payload.enabled else "DISABLED")
         return {"audiensi_enabled": payload.enabled}
+    elif chatbot_type == "research_multi_agent":
+        cfg.set("RESEARCH_USE_MULTI_AGENT", payload.enabled)
+        db_val = "true" if payload.enabled else "false"
+        await upsert_config("RESEARCH_USE_MULTI_AGENT", db_val)
+        log.info("Research multi-agent pipeline %s", "ENABLED" if payload.enabled else "DISABLED")
+        return {"research_multi_agent": payload.enabled}
     else:
         return JSONResponse(
             status_code=422,
@@ -2801,6 +2843,263 @@ async def audiensi_template_placeholders():
 
 
 # ---------------------------------------------------------------------------
+# DMS MySQL Integration Endpoints
+# ---------------------------------------------------------------------------
+
+
+@app.get("/dms/health")
+async def dms_health():
+    """Check DMS MySQL connection health."""
+    try:
+        from orchestrator.dms_mysql import check_dms_connection
+        return await check_dms_connection()
+    except Exception as e:
+        return {"status": "error", "error": str(e)}
+
+
+@app.get("/dms/stats")
+async def dms_stats():
+    """Get aggregate stats from DMS database."""
+    try:
+        from orchestrator.dms_mysql import get_dms_audiensi_stats
+        return await get_dms_audiensi_stats()
+    except Exception as e:
+        return JSONResponse(status_code=500, content={"detail": str(e)})
+
+
+@app.get("/dms/schedules")
+async def dms_schedules(
+    days_ahead: int = 30,
+    include_past_days: int = 7,
+):
+    """Get upcoming audiensi schedules from DMS."""
+    try:
+        from orchestrator.dms_mysql import get_upcoming_audiensi_schedules
+        schedules = await get_upcoming_audiensi_schedules(days_ahead, include_past_days)
+        return {"total": len(schedules), "schedules": schedules}
+    except Exception as e:
+        return JSONResponse(status_code=500, content={"detail": str(e)})
+
+
+@app.get("/dms/schedules/today")
+async def dms_schedules_today():
+    """Get today's audiensi schedules from DMS."""
+    try:
+        from orchestrator.dms_mysql import get_today_audiensi_schedules
+        schedules = await get_today_audiensi_schedules()
+        return {"total": len(schedules), "schedules": schedules}
+    except Exception as e:
+        return JSONResponse(status_code=500, content={"detail": str(e)})
+
+
+@app.get("/dms/schedules/{schedule_id}")
+async def dms_schedule_detail(schedule_id: int, source: str = "schedule_follow_up"):
+    """Get detailed info for a specific audiensi schedule.
+
+    ``source`` can be ``schedule_follow_up`` (default) or ``surat_audiensi``.
+    """
+    try:
+        from orchestrator.dms_mysql import get_audiensi_schedule_by_id, get_meeting_by_schedule
+        schedule = await get_audiensi_schedule_by_id(schedule_id, source=source)
+        if not schedule:
+            return JSONResponse(status_code=404, content={"detail": "Schedule not found"})
+        if source == "schedule_follow_up":
+            meetings = await get_meeting_by_schedule(schedule_id)
+            schedule["meetings"] = meetings or []
+        else:
+            schedule["meetings"] = []
+        return schedule
+    except Exception as e:
+        return JSONResponse(status_code=500, content={"detail": str(e)})
+
+
+@app.get("/dms/followups")
+async def dms_followups(limit: int = 50):
+    """Get recent follow-up activities from DMS."""
+    try:
+        from orchestrator.dms_mysql import get_recent_follow_ups
+        followups = await get_recent_follow_ups(limit)
+        return {"total": len(followups), "followups": followups}
+    except Exception as e:
+        return JSONResponse(status_code=500, content={"detail": str(e)})
+
+
+@app.get("/dms/followups/{id_univ}")
+async def dms_followups_by_university(id_univ: int, limit: int = 20):
+    """Get follow-up history for a specific university from DMS."""
+    try:
+        from orchestrator.dms_mysql import get_follow_up_history
+        followups = await get_follow_up_history(id_univ, limit)
+        return {"total": len(followups), "followups": followups}
+    except Exception as e:
+        return JSONResponse(status_code=500, content={"detail": str(e)})
+
+
+@app.get("/dms/meetings")
+async def dms_meetings(days_ahead: int = 14):
+    """Get upcoming Zoom meetings from DMS."""
+    try:
+        from orchestrator.dms_mysql import get_upcoming_meetings
+        meetings = await get_upcoming_meetings(days_ahead)
+        return {"total": len(meetings), "meetings": meetings}
+    except Exception as e:
+        return JSONResponse(status_code=500, content={"detail": str(e)})
+
+
+@app.get("/dms/universities/search")
+async def dms_search_universities(q: str = "", limit: int = 20):
+    """Search universities in DMS by keyword."""
+    if not q or len(q) < 2:
+        return JSONResponse(status_code=400, content={"detail": "Query must be at least 2 characters"})
+    try:
+        from orchestrator.dms_mysql import search_dms_universities
+        results = await search_dms_universities(q, limit)
+        return {"total": len(results), "universities": results}
+    except Exception as e:
+        return JSONResponse(status_code=500, content={"detail": str(e)})
+
+
+@app.get("/dms/universities/{id_univ}")
+async def dms_university_detail(id_univ: int):
+    """Get university details from DMS."""
+    try:
+        from orchestrator.dms_mysql import get_dms_university, get_dms_university_contacts
+        uni = await get_dms_university(id_univ)
+        if not uni:
+            return JSONResponse(status_code=404, content={"detail": "University not found"})
+        uni["contacts"] = await get_dms_university_contacts(id_univ)
+        return uni
+    except Exception as e:
+        return JSONResponse(status_code=500, content={"detail": str(e)})
+
+
+@app.get("/dms/approvals")
+async def dms_approvals(status: str = None, limit: int = 50):
+    """Get schedule audiensi approval entries."""
+    try:
+        from orchestrator.dms_mysql import get_schedule_audiensi_approvals
+        approvals = await get_schedule_audiensi_approvals(status, limit)
+        return {"total": len(approvals), "approvals": approvals}
+    except Exception as e:
+        return JSONResponse(status_code=500, content={"detail": str(e)})
+
+
+@app.post("/dms/sync/contacts")
+async def dms_trigger_contact_sync(background_tasks: BackgroundTasks):
+    """Manually trigger contact sync from GetContact to DMS."""
+    from orchestrator.scheduler import dms_sync_contacts
+    background_tasks.add_task(dms_sync_contacts)
+    return {"status": "ok", "message": "Contact sync started in background"}
+
+
+@app.post("/dms/sync/schedules")
+async def dms_trigger_schedule_sync(background_tasks: BackgroundTasks):
+    """Manually trigger DMS schedule sync and reminder check."""
+    from orchestrator.scheduler import dms_sync_audiensi_schedules
+    background_tasks.add_task(dms_sync_audiensi_schedules)
+    return {"status": "ok", "message": "Schedule sync started in background"}
+
+
+# ---------------------------------------------------------------------------
+# DMS Audiensi Research (Gemini AI)
+# ---------------------------------------------------------------------------
+
+@app.post("/dms/research/run-tomorrow")
+async def dms_research_run_tomorrow(background_tasks: BackgroundTasks):
+    """Trigger H-1 audiensi research for tomorrow's schedules."""
+    from orchestrator.audiensi_research import research_tomorrow_schedules
+    background_tasks.add_task(research_tomorrow_schedules)
+    return {"status": "ok", "message": "H-1 audiensi research started in background"}
+
+
+@app.post("/dms/research/schedule/{schedule_id}")
+async def dms_research_single(
+    schedule_id: int,
+    background_tasks: BackgroundTasks,
+    source: str = "schedule_follow_up",
+):
+    """Trigger research for a specific schedule."""
+    try:
+        from orchestrator.dms_mysql import get_audiensi_schedule_by_id
+        from orchestrator.audiensi_research import research_and_notify_schedule
+        schedule = await get_audiensi_schedule_by_id(schedule_id, source=source)
+        if not schedule:
+            return {"status": "error", "message": "Schedule not found"}
+        background_tasks.add_task(research_and_notify_schedule, schedule)
+        return {"status": "ok", "message": f"Research started for schedule #{schedule_id} ({source})"}
+    except Exception as e:
+        return {"status": "error", "message": str(e)}
+
+
+@app.post("/dms/research/test")
+async def dms_research_test(body: dict):
+    """
+    Test research with a dummy/custom university — no MySQL schedule needed.
+    Body: { "university_name": "...", "university_city": "...", "schedule_date": "2026-03-08" }
+    Calls Gemini AI, stores result in local SQLite (GetContactAIAgent DB), and returns it.
+    Pass "notify": true to also send WA notification to configured phones.
+    """
+    from orchestrator.audiensi_research import research_and_notify_schedule
+
+    university_name = body.get("university_name", "").strip()
+    if not university_name:
+        return JSONResponse(status_code=400, content={"detail": "university_name is required"})
+
+    university_city = body.get("university_city", "").strip() or None
+    schedule_date = body.get("schedule_date", "").strip() or None
+    send_notify = body.get("notify", False)
+
+    # Build a dummy schedule dict — use id=0 so it's clearly a test entry
+    dummy_schedule = {
+        "id": 0,
+        "source": "test",
+        "nama_universitas": university_name,
+        "alamat": university_city,
+        "jadwal_audiensi": schedule_date or "",
+        "jam_audensi": "",
+    }
+
+    # notify_phones=[] suppresses WA notification unless "notify": true
+    notify_phones = None if send_notify else []
+
+    try:
+        log.info("TEST research for: %s (%s) on %s (notify=%s)",
+                 university_name, university_city, schedule_date, send_notify)
+        result = await research_and_notify_schedule(dummy_schedule, notify_phones=notify_phones)
+        return {"status": "ok", "university": university_name, "stored": True, "result": result}
+    except Exception as e:
+        log.error("TEST research failed: %s", e, exc_info=True)
+        return JSONResponse(status_code=500, content={"detail": str(e)})
+
+
+@app.get("/dms/research/results")
+async def dms_research_results(date: str = None, limit: int = 50):
+    """Get research results, optionally filtered by date."""
+    from orchestrator.audiensi_research import get_all_research, get_research_by_date
+    try:
+        if date:
+            results = await get_research_by_date(date)
+        else:
+            results = await get_all_research(limit)
+        return {"results": results, "count": len(results)}
+    except Exception as e:
+        return JSONResponse(status_code=500, content={"detail": str(e)})
+
+
+@app.get("/dms/research/results/{schedule_id}")
+async def dms_research_result_by_schedule(schedule_id: int):
+    """Get research result for a specific schedule."""
+    from orchestrator.audiensi_research import get_research_by_schedule_id
+    try:
+        result = await get_research_by_schedule_id(schedule_id)
+        if not result:
+            return {"status": "not_found", "message": "No research found for this schedule"}
+        return {"status": "ok", "data": result}
+    except Exception as e:
+        return {"status": "error", "message": str(e)}
+
+
+# ---------------------------------------------------------------------------
 # Health check
 # ---------------------------------------------------------------------------
 
@@ -2819,10 +3118,20 @@ async def health():
     except Exception:
         pass
 
+    # Check DMS MySQL connectivity
+    dms_status = {"status": "disabled"}
+    if cfg.get("DMS_MYSQL_HOST"):
+        try:
+            from orchestrator.dms_mysql import check_dms_connection
+            dms_status = await check_dms_connection()
+        except Exception as e:
+            dms_status = {"status": "error", "error": str(e)}
+
     return {
         "status": "ok",
         "whatsapp": wa_status,
         "instagram": get_ig_session_status(),
+        "dms_mysql": dms_status,
         "scraping": {
             "playwright": playwright_ig.get_status(),
             "duckduckgo": duckduckgo_client.get_status(),

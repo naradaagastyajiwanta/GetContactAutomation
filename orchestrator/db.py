@@ -23,9 +23,10 @@ CREATE TABLE IF NOT EXISTS universities (
     ig_handle TEXT,
     ig_verified BOOLEAN DEFAULT 0,
     secretariat_phone TEXT,
+    rector_name TEXT,
+    student_count INTEGER DEFAULT NULL,
     status TEXT DEFAULT 'pending',
     enabled BOOLEAN DEFAULT 1,
-    rector_name TEXT,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
@@ -633,19 +634,21 @@ async def add_university(
     pddikti_id: str | None = None,
     province: str | None = None,
     website: str | None = None,
+    student_count: int | None = None,
 ) -> int:
     """Insert a university row and return the new id."""
     async with get_db() as db:
         cursor = await db.execute(
             """
-            INSERT INTO universities (name, pddikti_id, province, website)
-            VALUES (?, ?, ?, ?)
+            INSERT INTO universities (name, pddikti_id, province, website, student_count)
+            VALUES (?, ?, ?, ?, ?)
             ON CONFLICT(pddikti_id) DO UPDATE SET
                 name = excluded.name,
                 province = excluded.province,
-                website = excluded.website
+                website = excluded.website,
+                student_count = excluded.student_count
             """,
-            (name, pddikti_id, province, website),
+            (name, pddikti_id, province, website, student_count),
         )
         await db.commit()
         return cursor.lastrowid  # type: ignore[return-value]
@@ -783,6 +786,26 @@ async def update_secretariat_phone(uni_id: int, phone: str) -> None:
         await db.commit()
     # Broadcast got_number event
     await ws_manager.broadcast_type("got_number", uni_id=uni_id, phone=phone)
+
+
+async def update_university_rector_name(uni_id: int, rector_name: str) -> None:
+    """Set the rector name on the university record."""
+    async with get_db() as db:
+        await db.execute(
+            "UPDATE universities SET rector_name = ?, updated_at = datetime('now') WHERE id = ?",
+            (rector_name, uni_id),
+        )
+        await db.commit()
+
+
+async def update_student_count(uni_id: int, student_count: int | None) -> None:
+    """Set the student count on the university record."""
+    async with get_db() as db:
+        await db.execute(
+            "UPDATE universities SET student_count = ?, updated_at = datetime('now') WHERE id = ?",
+            (student_count, uni_id),
+        )
+        await db.commit()
 
 
 async def update_bem_handle(uni_id: int, handle: str) -> None:

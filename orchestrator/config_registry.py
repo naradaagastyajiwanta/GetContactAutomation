@@ -28,6 +28,7 @@ class ConfigGroup(str, Enum):
     AUDIENSI = "Audiensi"
     KNOWLEDGE_BASE = "Knowledge Base"
     PLAYWRIGHT = "Playwright Browser"
+    DMS_INTEGRATION = "DMS Integration"
 
 
 @dataclass(frozen=True)
@@ -340,6 +341,109 @@ CONFIG_DEFINITIONS: list[ConfigDef] = [
         label="Target Posts per University",
         description="Target jumlah posts per universitas (dari gabungan IG utama + related IGs).",
         min_value=10, max_value=500,
+    ),
+    # --- DMS Integration (MySQL) ---
+    ConfigDef(
+        key="DMS_MYSQL_HOST",
+        type=ConfigType.STRING, default="", group=ConfigGroup.DMS_INTEGRATION,
+        label="DMS MySQL Host",
+        description="Hostname/IP database DMS (dev staging atau production). Kosong = disabled.",
+    ),
+    ConfigDef(
+        key="DMS_MYSQL_PORT",
+        type=ConfigType.INT, default=3306, group=ConfigGroup.DMS_INTEGRATION,
+        label="DMS MySQL Port",
+        description="Port database DMS MySQL.",
+        min_value=1, max_value=65535,
+    ),
+    ConfigDef(
+        key="DMS_MYSQL_USER",
+        type=ConfigType.STRING, default="", group=ConfigGroup.DMS_INTEGRATION,
+        label="DMS MySQL User",
+        description="Username untuk koneksi database DMS.",
+    ),
+    ConfigDef(
+        key="DMS_MYSQL_PASSWORD",
+        type=ConfigType.STRING, default="", group=ConfigGroup.DMS_INTEGRATION,
+        label="DMS MySQL Password",
+        description="Password untuk koneksi database DMS.",
+        sensitive=True,
+    ),
+    ConfigDef(
+        key="DMS_MYSQL_DATABASE",
+        type=ConfigType.STRING, default="", group=ConfigGroup.DMS_INTEGRATION,
+        label="DMS MySQL Database",
+        description="Nama database DMS (e.g. dev_staging_dmsedu).",
+    ),
+    ConfigDef(
+        key="DMS_SYNC_ENABLED",
+        type=ConfigType.BOOL, default=False, group=ConfigGroup.DMS_INTEGRATION,
+        label="Aktifkan DMS Sync",
+        description="Aktifkan sinkronisasi otomatis dengan database DMS (read jadwal audiensi, sync kontak).",
+    ),
+    ConfigDef(
+        key="DMS_SYNC_INTERVAL_MINUTES",
+        type=ConfigType.INT, default=30, group=ConfigGroup.DMS_INTEGRATION,
+        label="DMS Sync Interval (menit)",
+        description="Interval sinkronisasi data dari DMS MySQL ke sistem GetContact.",
+        min_value=5, max_value=1440,
+    ),
+    ConfigDef(
+        key="DMS_CONTACT_SYNC_ENABLED",
+        type=ConfigType.BOOL, default=False, group=ConfigGroup.DMS_INTEGRATION,
+        label="Sync Kontak ke DMS",
+        description="Otomatis sinkronkan kontak yang ditemukan oleh GetContact ke tabel kontak_auto di DMS.",
+    ),
+    ConfigDef(
+        key="DMS_REMINDER_ENABLED",
+        type=ConfigType.BOOL, default=False, group=ConfigGroup.DMS_INTEGRATION,
+        label="WhatsApp Reminder Audiensi",
+        description="Kirim reminder WhatsApp otomatis untuk jadwal audiensi dari DMS.",
+    ),
+    ConfigDef(
+        key="DMS_REMINDER_HOURS_BEFORE",
+        type=ConfigType.INT, default=24, group=ConfigGroup.DMS_INTEGRATION,
+        label="Reminder Hours Before",
+        description="Kirim reminder H-berapa jam sebelum jadwal audiensi.",
+        min_value=1, max_value=72,
+    ),
+
+    # --- Audiensi Research (Gemini AI) ---
+    ConfigDef(
+        key="GEMINI_API_KEY",
+        type=ConfigType.STRING, default="", group=ConfigGroup.DMS_INTEGRATION,
+        label="Gemini API Key",
+        description="API key untuk Google Gemini AI (digunakan untuk riset latar belakang audiensi).",
+        sensitive=True,
+    ),
+    ConfigDef(
+        key="DMS_RESEARCH_ENABLED",
+        type=ConfigType.BOOL, default=False, group=ConfigGroup.DMS_INTEGRATION,
+        label="Riset Audiensi Otomatis",
+        description="Aktifkan riset otomatis H-1 audiensi menggunakan Gemini AI dengan Google Search.",
+    ),
+    ConfigDef(
+        key="DMS_RESEARCH_NOTIFY_PHONES",
+        type=ConfigType.STRING, default="", group=ConfigGroup.DMS_INTEGRATION,
+        label="Nomor WA Notifikasi Riset",
+        description="Nomor WhatsApp tujuan notifikasi hasil riset (pisahkan dengan koma). Contoh: 6281234567890,6289876543210",
+    ),
+    ConfigDef(
+        key="DMS_RESEARCH_HOUR",
+        type=ConfigType.INT, default=18, group=ConfigGroup.DMS_INTEGRATION,
+        label="Jam Riset Audiensi (WIB)",
+        description="Jam berapa (WIB) riset H-1 audiensi dijalankan setiap hari.",
+        min_value=0, max_value=23,
+    ),
+    ConfigDef(
+        key="RESEARCH_USE_MULTI_AGENT",
+        type=ConfigType.BOOL, default=False, group=ConfigGroup.DMS_INTEGRATION,
+        label="Multi-Agent Research",
+        description=(
+            "Gunakan pipeline multi-agent (LangGraph) untuk riset audiensi. "
+            "Setiap pertanyaan didedikasikan ke 1 agent + reviewer. "
+            "Jika false, gunakan single-prompt legacy."
+        ),
     ),
 ]
 

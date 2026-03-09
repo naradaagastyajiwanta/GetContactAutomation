@@ -239,6 +239,7 @@ async def search_pddikti(
                         "pddikti_id": pddikti_code,
                         "province": prov,
                         "website": website,
+                        "student_count": None,  # TODO: Extract from PDDIKTI detail API when available
                     })
 
             except Exception as e:

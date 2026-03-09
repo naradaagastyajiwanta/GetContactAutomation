@@ -10,6 +10,7 @@ const AGENT_LABELS: Record<PipelineAgentType, string> = {
   extract_phones: 'Extract Phones',
   collect_universities: 'Collect Universities',
   discover_bem: 'Discover BEM',
+  dms_research: 'Research Rektor',
 }
 
 const AGENT_COLORS: Record<PipelineAgentType, string> = {
@@ -18,6 +19,7 @@ const AGENT_COLORS: Record<PipelineAgentType, string> = {
   extract_phones: 'bg-green-100 text-green-700 dark:bg-green-900/50 dark:text-green-300',
   collect_universities: 'bg-orange-100 text-orange-700 dark:bg-orange-900/50 dark:text-orange-300',
   discover_bem: 'bg-teal-100 text-teal-700 dark:bg-teal-900/50 dark:text-teal-300',
+  dms_research: 'bg-violet-100 text-violet-700 dark:bg-violet-900/50 dark:text-violet-300',
 }
 
 const STATUS_CONFIG: Record<PipelineLogStatus, { icon: typeof CheckCircle; color: string; label: string }> = {
@@ -244,6 +246,7 @@ export function PipelineActivityLog() {
             <option value="extract_phones">Extract Phones</option>
             <option value="collect_universities">Collect Universities</option>
             <option value="discover_bem">Discover BEM</option>
+            <option value="dms_research">Research Rektor</option>
           </select>
         </div>
       </CardHeader>

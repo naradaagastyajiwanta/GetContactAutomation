@@ -111,6 +111,14 @@ export function UniversityDetail({ university }: UniversityDetailProps) {
           <InfoRow label="Created">
             {formatDate(university.created_at)}
           </InfoRow>
+
+          <InfoRow label="Rector">
+            {university.rector_name || '-'}
+          </InfoRow>
+
+          <InfoRow label="Student Count">
+            {university.student_count ? university.student_count.toLocaleString('id-ID') : '-'}
+          </InfoRow>
         </div>
       </CardContent>
     </Card>
