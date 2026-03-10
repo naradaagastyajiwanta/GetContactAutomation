@@ -331,6 +331,214 @@ CREATE INDEX IF NOT EXISTS idx_blast_recipients_status ON blast_recipients(statu
 """
 
 # ---------------------------------------------------------------------------
+# OSINT Tables
+# ---------------------------------------------------------------------------
+
+_DDL_OSINT = """
+CREATE TABLE IF NOT EXISTS osint_profiles (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    university_id INTEGER NOT NULL REFERENCES universities(id),
+    address TEXT,
+    city TEXT,
+    province TEXT,
+    postal_code TEXT,
+    phone_official TEXT,
+    fax TEXT,
+    email_official TEXT,
+    website_verified TEXT,
+    vision_mission TEXT,
+    faculty_count INTEGER,
+    faculty_list TEXT,
+    org_structure TEXT,
+    confidence REAL DEFAULT 0.0,
+    last_run_id INTEGER,
+    created_at TEXT DEFAULT (datetime('now')),
+    updated_at TEXT DEFAULT (datetime('now')),
+    UNIQUE(university_id)
+);
+
+CREATE TABLE IF NOT EXISTS osint_contacts (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    university_id INTEGER NOT NULL REFERENCES universities(id),
+    name TEXT,
+    title TEXT,
+    department TEXT,
+    phone TEXT,
+    email TEXT,
+    source TEXT,
+    source_url TEXT,
+    confidence REAL DEFAULT 0.0,
+    priority INTEGER DEFAULT 0,
+    verified INTEGER DEFAULT 0,
+    created_at TEXT DEFAULT (datetime('now')),
+    UNIQUE(university_id, phone, name)
+);
+
+CREATE TABLE IF NOT EXISTS osint_social_media (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    university_id INTEGER NOT NULL REFERENCES universities(id),
+    platform TEXT NOT NULL,
+    handle TEXT,
+    url TEXT,
+    followers INTEGER,
+    verified INTEGER DEFAULT 0,
+    confidence REAL DEFAULT 0.0,
+    source TEXT,
+    created_at TEXT DEFAULT (datetime('now')),
+    UNIQUE(university_id, platform, handle)
+);
+
+CREATE TABLE IF NOT EXISTS osint_news (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    university_id INTEGER NOT NULL REFERENCES universities(id),
+    title TEXT NOT NULL,
+    summary TEXT,
+    url TEXT,
+    source TEXT,
+    published_date TEXT,
+    category TEXT,
+    relevance_score REAL DEFAULT 0.0,
+    created_at TEXT DEFAULT (datetime('now'))
+);
+
+CREATE TABLE IF NOT EXISTS osint_runs (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    university_id INTEGER NOT NULL REFERENCES universities(id),
+    status TEXT DEFAULT 'running',
+    trigger_type TEXT DEFAULT 'manual',
+    agents_completed TEXT,
+    agents_failed TEXT,
+    contacts_found INTEGER DEFAULT 0,
+    social_media_found INTEGER DEFAULT 0,
+    news_found INTEGER DEFAULT 0,
+    duration_seconds REAL,
+    error TEXT,
+    started_at TEXT DEFAULT (datetime('now')),
+    completed_at TEXT
+);
+"""
+
+_INDEXES_OSINT = """
+CREATE INDEX IF NOT EXISTS idx_osint_profiles_university ON osint_profiles(university_id);
+CREATE INDEX IF NOT EXISTS idx_osint_contacts_university ON osint_contacts(university_id);
+CREATE INDEX IF NOT EXISTS idx_osint_social_university ON osint_social_media(university_id);
+CREATE INDEX IF NOT EXISTS idx_osint_news_university ON osint_news(university_id);
+CREATE INDEX IF NOT EXISTS idx_osint_runs_university ON osint_runs(university_id);
+CREATE INDEX IF NOT EXISTS idx_osint_runs_status ON osint_runs(status);
+"""
+
+# ---------------------------------------------------------------------------
+# CRM / PIC Profiling Tables
+# ---------------------------------------------------------------------------
+
+_DDL_CRM = """
+CREATE TABLE IF NOT EXISTS crm_requests (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    university_id INTEGER REFERENCES universities(id),
+    university_name TEXT,
+    requested_by TEXT,
+    status TEXT DEFAULT 'pending',
+    pic_name TEXT NOT NULL,
+    pic_title TEXT,
+    priority TEXT DEFAULT 'normal',
+    notes TEXT,
+    run_id INTEGER,
+    created_at TEXT DEFAULT (datetime('now')),
+    updated_at TEXT DEFAULT (datetime('now'))
+);
+
+CREATE TABLE IF NOT EXISTS crm_pic_profiles (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    request_id INTEGER NOT NULL REFERENCES crm_requests(id),
+    university_id INTEGER REFERENCES universities(id),
+    full_name TEXT,
+    full_name_source TEXT,
+    title TEXT,
+    title_source TEXT,
+    teaching_subjects TEXT,
+    teaching_subjects_source TEXT,
+    tenure_years INTEGER,
+    tenure_years_source TEXT,
+    birth_date TEXT,
+    birth_date_source TEXT,
+    age INTEGER,
+    origin_region TEXT,
+    origin_region_source TEXT,
+    education_history TEXT,
+    education_history_source TEXT,
+    photo_url TEXT,
+    marital_status TEXT,
+    marital_status_source TEXT,
+    spouse_name TEXT,
+    spouse_name_source TEXT,
+    children_count INTEGER,
+    children_count_source TEXT,
+    family_residence TEXT,
+    family_residence_source TEXT,
+    campus_problems TEXT,
+    campus_problems_source TEXT,
+    campus_concerns TEXT,
+    campus_concerns_source TEXT,
+    campus_hopes TEXT,
+    campus_hopes_source TEXT,
+    hobbies TEXT,
+    hobbies_source TEXT,
+    favorite_food TEXT,
+    favorite_food_source TEXT,
+    outside_activities TEXT,
+    outside_activities_source TEXT,
+    linkedin_url TEXT,
+    instagram_handle TEXT,
+    facebook_url TEXT,
+    twitter_handle TEXT,
+    other_social TEXT,
+    home_address TEXT,
+    home_address_source TEXT,
+    phone TEXT,
+    email TEXT,
+    overall_confidence REAL DEFAULT 0.0,
+    fields_found INTEGER DEFAULT 0,
+    fields_total INTEGER DEFAULT 0,
+    fields_manual INTEGER DEFAULT 0,
+    last_updated TEXT DEFAULT (datetime('now')),
+    created_at TEXT DEFAULT (datetime('now'))
+);
+
+CREATE TABLE IF NOT EXISTS crm_profile_runs (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    request_id INTEGER NOT NULL REFERENCES crm_requests(id),
+    status TEXT DEFAULT 'running',
+    agents_completed TEXT,
+    agents_failed TEXT,
+    duration_seconds REAL,
+    error TEXT,
+    started_at TEXT DEFAULT (datetime('now')),
+    completed_at TEXT
+);
+
+CREATE TABLE IF NOT EXISTS crm_profile_sources (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    profile_id INTEGER NOT NULL REFERENCES crm_pic_profiles(id),
+    field_name TEXT NOT NULL,
+    value TEXT,
+    source_type TEXT,
+    source_url TEXT,
+    confidence REAL DEFAULT 0.0,
+    notes TEXT,
+    created_at TEXT DEFAULT (datetime('now'))
+);
+"""
+
+_INDEXES_CRM = """
+CREATE INDEX IF NOT EXISTS idx_crm_requests_status ON crm_requests(status);
+CREATE INDEX IF NOT EXISTS idx_crm_requests_university ON crm_requests(university_id);
+CREATE INDEX IF NOT EXISTS idx_crm_pic_profiles_request ON crm_pic_profiles(request_id);
+CREATE INDEX IF NOT EXISTS idx_crm_pic_profiles_university ON crm_pic_profiles(university_id);
+CREATE INDEX IF NOT EXISTS idx_crm_profile_runs_request ON crm_profile_runs(request_id);
+CREATE INDEX IF NOT EXISTS idx_crm_profile_sources_profile ON crm_profile_sources(profile_id);
+"""
+
+# ---------------------------------------------------------------------------
 # Initialization & connection helper
 # ---------------------------------------------------------------------------
 
@@ -358,6 +566,10 @@ async def init_db() -> None:
         await db.executescript(_DDL_IG_ACCOUNTS)
         await db.executescript(_DDL_BLAST)
         await db.executescript(_INDEXES_BLAST)
+        await db.executescript(_DDL_OSINT)
+        await db.executescript(_INDEXES_OSINT)
+        await db.executescript(_DDL_CRM)
+        await db.executescript(_INDEXES_CRM)
         # Migration: add agent_reasoning column to conversations (idempotent)
         try:
             await db.execute(
@@ -2965,3 +3177,437 @@ async def delete_ig_account(account_id: int) -> bool:
         cursor = await db.execute("DELETE FROM ig_accounts WHERE id = ?", (account_id,))
         await db.commit()
         return cursor.rowcount > 0
+
+
+# ---------------------------------------------------------------------------
+# OSINT CRUD
+# ---------------------------------------------------------------------------
+
+
+async def upsert_osint_profile(university_id: int, **kwargs) -> int:
+    """Insert or update an OSINT profile for a university. Returns the profile id."""
+    allowed = {
+        "address", "city", "province", "postal_code", "phone_official", "fax",
+        "email_official", "website_verified", "vision_mission", "faculty_count",
+        "faculty_list", "org_structure", "confidence", "last_run_id",
+    }
+    data = {k: v for k, v in kwargs.items() if k in allowed and v is not None}
+    async with get_db() as db:
+        cursor = await db.execute(
+            "SELECT id FROM osint_profiles WHERE university_id = ?", (university_id,)
+        )
+        existing = await cursor.fetchone()
+        if existing:
+            if data:
+                sets = ", ".join(f"{k} = ?" for k in data)
+                vals = list(data.values()) + [university_id]
+                await db.execute(
+                    f"UPDATE osint_profiles SET {sets}, updated_at = datetime('now') WHERE university_id = ?",
+                    vals,
+                )
+                await db.commit()
+            return existing["id"]
+        else:
+            cols = ["university_id"] + list(data.keys())
+            placeholders = ", ".join("?" for _ in cols)
+            vals = [university_id] + list(data.values())
+            cursor = await db.execute(
+                f"INSERT INTO osint_profiles ({', '.join(cols)}) VALUES ({placeholders})",
+                vals,
+            )
+            await db.commit()
+            return cursor.lastrowid
+
+
+async def get_osint_profile(university_id: int) -> dict | None:
+    """Get the OSINT profile for a university."""
+    async with get_db() as db:
+        cursor = await db.execute(
+            "SELECT * FROM osint_profiles WHERE university_id = ?", (university_id,)
+        )
+        row = await cursor.fetchone()
+        return _row_to_dict(row) if row else None
+
+
+async def upsert_osint_contact(university_id: int, name: str | None, phone: str | None, **kwargs) -> int:
+    """Insert or update an OSINT contact. Returns the contact id."""
+    async with get_db() as db:
+        cursor = await db.execute(
+            "SELECT id FROM osint_contacts WHERE university_id = ? AND phone = ? AND name = ?",
+            (university_id, phone, name),
+        )
+        existing = await cursor.fetchone()
+        if existing:
+            return existing["id"]
+        allowed = {"title", "department", "email", "source", "source_url", "confidence", "priority", "verified"}
+        data = {k: v for k, v in kwargs.items() if k in allowed and v is not None}
+        cols = ["university_id", "name", "phone"] + list(data.keys())
+        placeholders = ", ".join("?" for _ in cols)
+        vals = [university_id, name, phone] + list(data.values())
+        cursor = await db.execute(
+            f"INSERT OR IGNORE INTO osint_contacts ({', '.join(cols)}) VALUES ({placeholders})",
+            vals,
+        )
+        await db.commit()
+        return cursor.lastrowid
+
+
+async def get_osint_contacts(university_id: int) -> list[dict]:
+    """List all OSINT contacts for a university, ordered by priority."""
+    async with get_db() as db:
+        cursor = await db.execute(
+            "SELECT * FROM osint_contacts WHERE university_id = ? ORDER BY priority DESC, confidence DESC",
+            (university_id,),
+        )
+        return _rows_to_dicts(await cursor.fetchall())
+
+
+async def upsert_osint_social(university_id: int, platform: str, handle: str, **kwargs) -> int:
+    """Insert or update an OSINT social media entry."""
+    async with get_db() as db:
+        cursor = await db.execute(
+            "SELECT id FROM osint_social_media WHERE university_id = ? AND platform = ? AND handle = ?",
+            (university_id, platform, handle),
+        )
+        existing = await cursor.fetchone()
+        if existing:
+            return existing["id"]
+        allowed = {"url", "followers", "verified", "confidence", "source"}
+        data = {k: v for k, v in kwargs.items() if k in allowed and v is not None}
+        cols = ["university_id", "platform", "handle"] + list(data.keys())
+        placeholders = ", ".join("?" for _ in cols)
+        vals = [university_id, platform, handle] + list(data.values())
+        cursor = await db.execute(
+            f"INSERT OR IGNORE INTO osint_social_media ({', '.join(cols)}) VALUES ({placeholders})",
+            vals,
+        )
+        await db.commit()
+        return cursor.lastrowid
+
+
+async def get_osint_social(university_id: int) -> list[dict]:
+    """List all OSINT social media entries for a university."""
+    async with get_db() as db:
+        cursor = await db.execute(
+            "SELECT * FROM osint_social_media WHERE university_id = ? ORDER BY platform",
+            (university_id,),
+        )
+        return _rows_to_dicts(await cursor.fetchall())
+
+
+async def add_osint_news(university_id: int, title: str, **kwargs) -> int:
+    """Insert a news item for a university."""
+    allowed = {"summary", "url", "source", "published_date", "category", "relevance_score"}
+    data = {k: v for k, v in kwargs.items() if k in allowed and v is not None}
+    cols = ["university_id", "title"] + list(data.keys())
+    placeholders = ", ".join("?" for _ in cols)
+    vals = [university_id, title] + list(data.values())
+    async with get_db() as db:
+        cursor = await db.execute(
+            f"INSERT INTO osint_news ({', '.join(cols)}) VALUES ({placeholders})",
+            vals,
+        )
+        await db.commit()
+        return cursor.lastrowid
+
+
+async def get_osint_news(university_id: int, limit: int = 20) -> list[dict]:
+    """List recent news for a university."""
+    async with get_db() as db:
+        cursor = await db.execute(
+            "SELECT * FROM osint_news WHERE university_id = ? ORDER BY created_at DESC LIMIT ?",
+            (university_id, limit),
+        )
+        return _rows_to_dicts(await cursor.fetchall())
+
+
+async def create_osint_run(university_id: int, trigger_type: str = "manual") -> int:
+    """Create an OSINT run log entry. Returns the run id."""
+    async with get_db() as db:
+        cursor = await db.execute(
+            "INSERT INTO osint_runs (university_id, trigger_type) VALUES (?, ?)",
+            (university_id, trigger_type),
+        )
+        await db.commit()
+        return cursor.lastrowid
+
+
+async def update_osint_run(run_id: int, **kwargs) -> None:
+    """Update an OSINT run log entry."""
+    allowed = {
+        "status", "agents_completed", "agents_failed", "contacts_found",
+        "social_media_found", "news_found", "duration_seconds", "error", "completed_at",
+    }
+    data = {k: v for k, v in kwargs.items() if k in allowed and v is not None}
+    if not data:
+        return
+    sets = ", ".join(f"{k} = ?" for k in data)
+    vals = list(data.values()) + [run_id]
+    async with get_db() as db:
+        await db.execute(f"UPDATE osint_runs SET {sets} WHERE id = ?", vals)
+        await db.commit()
+
+
+async def get_osint_runs(university_id: int | None = None, limit: int = 20) -> list[dict]:
+    """List OSINT run logs, optionally filtered by university."""
+    async with get_db() as db:
+        if university_id:
+            cursor = await db.execute(
+                "SELECT * FROM osint_runs WHERE university_id = ? ORDER BY started_at DESC LIMIT ?",
+                (university_id, limit),
+            )
+        else:
+            cursor = await db.execute(
+                "SELECT * FROM osint_runs ORDER BY started_at DESC LIMIT ?", (limit,)
+            )
+        return _rows_to_dicts(await cursor.fetchall())
+
+
+async def get_osint_run(run_id: int) -> dict | None:
+    """Get a single OSINT run by id."""
+    async with get_db() as db:
+        cursor = await db.execute("SELECT * FROM osint_runs WHERE id = ?", (run_id,))
+        row = await cursor.fetchone()
+        return _row_to_dict(row) if row else None
+
+
+# ---------------------------------------------------------------------------
+# CRM / PIC Profiling CRUD
+# ---------------------------------------------------------------------------
+
+
+async def create_crm_request(
+    pic_name: str,
+    university_id: int | None = None,
+    university_name: str | None = None,
+    pic_title: str | None = None,
+    requested_by: str | None = None,
+    priority: str = "normal",
+    notes: str | None = None,
+) -> int:
+    """Create a new CRM profiling request. Returns the request id."""
+    async with get_db() as db:
+        cursor = await db.execute(
+            """INSERT INTO crm_requests
+               (university_id, university_name, pic_name, pic_title, requested_by, priority, notes)
+               VALUES (?, ?, ?, ?, ?, ?, ?)""",
+            (university_id, university_name, pic_name, pic_title, requested_by, priority, notes),
+        )
+        await db.commit()
+        return cursor.lastrowid
+
+
+async def get_crm_requests(
+    status: str | None = None,
+    limit: int = 25,
+    offset: int = 0,
+) -> dict:
+    """List CRM requests with optional status filter. Returns {requests, total}."""
+    async with get_db() as db:
+        where = "WHERE status = ?" if status else ""
+        params_count: tuple = (status,) if status else ()
+        cursor = await db.execute(
+            f"SELECT COUNT(*) as cnt FROM crm_requests {where}", params_count
+        )
+        total = (await cursor.fetchone())["cnt"]
+
+        params: tuple = (*params_count, limit, offset)
+        cursor = await db.execute(
+            f"SELECT * FROM crm_requests {where} ORDER BY created_at DESC LIMIT ? OFFSET ?",
+            params,
+        )
+        rows = _rows_to_dicts(await cursor.fetchall())
+        return {"requests": rows, "total": total}
+
+
+async def get_crm_request(request_id: int) -> dict | None:
+    """Get a single CRM request by id."""
+    async with get_db() as db:
+        cursor = await db.execute("SELECT * FROM crm_requests WHERE id = ?", (request_id,))
+        row = await cursor.fetchone()
+        return _row_to_dict(row) if row else None
+
+
+async def update_crm_request_status(request_id: int, status: str, run_id: int | None = None) -> None:
+    """Update CRM request status."""
+    async with get_db() as db:
+        if run_id is not None:
+            await db.execute(
+                "UPDATE crm_requests SET status = ?, run_id = ?, updated_at = datetime('now') WHERE id = ?",
+                (status, run_id, request_id),
+            )
+        else:
+            await db.execute(
+                "UPDATE crm_requests SET status = ?, updated_at = datetime('now') WHERE id = ?",
+                (status, request_id),
+            )
+        await db.commit()
+
+
+async def create_crm_profile(request_id: int, university_id: int | None = None, **kwargs) -> int:
+    """Create a PIC profile. Returns the profile id."""
+    allowed = {
+        "full_name", "full_name_source", "title", "title_source",
+        "teaching_subjects", "teaching_subjects_source", "tenure_years", "tenure_years_source",
+        "birth_date", "birth_date_source", "age", "origin_region", "origin_region_source",
+        "education_history", "education_history_source", "photo_url",
+        "marital_status", "marital_status_source", "spouse_name", "spouse_name_source",
+        "children_count", "children_count_source", "family_residence", "family_residence_source",
+        "campus_problems", "campus_problems_source", "campus_concerns", "campus_concerns_source",
+        "campus_hopes", "campus_hopes_source",
+        "hobbies", "hobbies_source", "favorite_food", "favorite_food_source",
+        "outside_activities", "outside_activities_source",
+        "linkedin_url", "instagram_handle", "facebook_url", "twitter_handle", "other_social",
+        "home_address", "home_address_source", "phone", "email",
+        "overall_confidence", "fields_found", "fields_total", "fields_manual",
+    }
+    data = {k: v for k, v in kwargs.items() if k in allowed and v is not None}
+    cols = ["request_id", "university_id"] + list(data.keys())
+    placeholders = ", ".join("?" for _ in cols)
+    vals = [request_id, university_id] + list(data.values())
+    async with get_db() as db:
+        cursor = await db.execute(
+            f"INSERT INTO crm_pic_profiles ({', '.join(cols)}) VALUES ({placeholders})",
+            vals,
+        )
+        await db.commit()
+        return cursor.lastrowid
+
+
+async def get_crm_profile_by_request(request_id: int) -> dict | None:
+    """Get the PIC profile associated with a CRM request."""
+    async with get_db() as db:
+        cursor = await db.execute(
+            "SELECT * FROM crm_pic_profiles WHERE request_id = ?", (request_id,)
+        )
+        row = await cursor.fetchone()
+        return _row_to_dict(row) if row else None
+
+
+async def get_crm_profile(profile_id: int) -> dict | None:
+    """Get a PIC profile by id."""
+    async with get_db() as db:
+        cursor = await db.execute(
+            "SELECT * FROM crm_pic_profiles WHERE id = ?", (profile_id,)
+        )
+        row = await cursor.fetchone()
+        return _row_to_dict(row) if row else None
+
+
+async def update_crm_profile(profile_id: int, source_type: str = "manual", **kwargs) -> dict | None:
+    """Update fields on a PIC profile. Automatically records sources for each updated field."""
+    allowed = {
+        "full_name", "title", "teaching_subjects", "tenure_years",
+        "birth_date", "age", "origin_region", "education_history", "photo_url",
+        "marital_status", "spouse_name", "children_count", "family_residence",
+        "campus_problems", "campus_concerns", "campus_hopes",
+        "hobbies", "favorite_food", "outside_activities",
+        "linkedin_url", "instagram_handle", "facebook_url", "twitter_handle", "other_social",
+        "home_address", "phone", "email",
+        "overall_confidence", "fields_found", "fields_total", "fields_manual",
+    }
+    data = {k: v for k, v in kwargs.items() if k in allowed and v is not None}
+    if not data:
+        return None
+    # Also set source columns for fields that have them
+    source_fields = {}
+    for k in list(data.keys()):
+        src_col = f"{k}_source"
+        if src_col in {
+            "full_name_source", "title_source", "teaching_subjects_source",
+            "tenure_years_source", "birth_date_source", "origin_region_source",
+            "education_history_source", "marital_status_source", "spouse_name_source",
+            "children_count_source", "family_residence_source",
+            "campus_problems_source", "campus_concerns_source", "campus_hopes_source",
+            "hobbies_source", "favorite_food_source", "outside_activities_source",
+            "home_address_source",
+        }:
+            source_fields[src_col] = source_type
+    data.update(source_fields)
+    sets = ", ".join(f"{k} = ?" for k in data)
+    vals = list(data.values()) + [profile_id]
+    async with get_db() as db:
+        await db.execute(
+            f"UPDATE crm_pic_profiles SET {sets}, last_updated = datetime('now') WHERE id = ?",
+            vals,
+        )
+        await db.commit()
+        cursor = await db.execute(
+            "SELECT * FROM crm_pic_profiles WHERE id = ?", (profile_id,)
+        )
+        row = await cursor.fetchone()
+        return _row_to_dict(row) if row else None
+
+
+async def add_crm_profile_source(profile_id: int, field_name: str, value: str, source_type: str, **kwargs) -> int:
+    """Add an audit trail entry for a profile field."""
+    allowed = {"source_url", "confidence", "notes"}
+    data = {k: v for k, v in kwargs.items() if k in allowed and v is not None}
+    cols = ["profile_id", "field_name", "value", "source_type"] + list(data.keys())
+    placeholders = ", ".join("?" for _ in cols)
+    vals = [profile_id, field_name, value, source_type] + list(data.values())
+    async with get_db() as db:
+        cursor = await db.execute(
+            f"INSERT INTO crm_profile_sources ({', '.join(cols)}) VALUES ({placeholders})",
+            vals,
+        )
+        await db.commit()
+        return cursor.lastrowid
+
+
+async def get_crm_profile_sources(profile_id: int) -> list[dict]:
+    """Get all source audit trail entries for a profile."""
+    async with get_db() as db:
+        cursor = await db.execute(
+            "SELECT * FROM crm_profile_sources WHERE profile_id = ? ORDER BY created_at DESC",
+            (profile_id,),
+        )
+        return _rows_to_dicts(await cursor.fetchall())
+
+
+async def create_crm_profile_run(request_id: int) -> int:
+    """Create a CRM profiling run log. Returns the run id."""
+    async with get_db() as db:
+        cursor = await db.execute(
+            "INSERT INTO crm_profile_runs (request_id) VALUES (?)", (request_id,)
+        )
+        await db.commit()
+        return cursor.lastrowid
+
+
+async def update_crm_profile_run(run_id: int, **kwargs) -> None:
+    """Update a CRM profiling run log entry."""
+    allowed = {"status", "agents_completed", "agents_failed", "duration_seconds", "error", "completed_at"}
+    data = {k: v for k, v in kwargs.items() if k in allowed and v is not None}
+    if not data:
+        return
+    sets = ", ".join(f"{k} = ?" for k in data)
+    vals = list(data.values()) + [run_id]
+    async with get_db() as db:
+        await db.execute(f"UPDATE crm_profile_runs SET {sets} WHERE id = ?", vals)
+        await db.commit()
+
+
+async def get_crm_stats() -> dict:
+    """Get CRM dashboard statistics."""
+    async with get_db() as db:
+        cursor = await db.execute("SELECT COUNT(*) as cnt FROM crm_requests")
+        total = (await cursor.fetchone())["cnt"]
+        cursor = await db.execute("SELECT COUNT(*) as cnt FROM crm_requests WHERE status = 'completed'")
+        completed = (await cursor.fetchone())["cnt"]
+        cursor = await db.execute("SELECT COUNT(*) as cnt FROM crm_requests WHERE status = 'processing'")
+        processing = (await cursor.fetchone())["cnt"]
+        cursor = await db.execute("SELECT COUNT(*) as cnt FROM crm_requests WHERE status = 'pending'")
+        pending = (await cursor.fetchone())["cnt"]
+        cursor = await db.execute(
+            "SELECT AVG(overall_confidence) as avg_conf FROM crm_pic_profiles WHERE overall_confidence > 0"
+        )
+        avg_row = await cursor.fetchone()
+        avg_confidence = avg_row["avg_conf"] if avg_row["avg_conf"] else 0.0
+        return {
+            "total_requests": total,
+            "completed": completed,
+            "processing": processing,
+            "pending": pending,
+            "avg_completion_confidence": round(avg_confidence, 2),
+        }

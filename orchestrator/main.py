@@ -2946,6 +2946,186 @@ async def dms_meetings(days_ahead: int = 14):
         return JSONResponse(status_code=500, content={"detail": str(e)})
 
 
+# ═══════════════════════════════════════════════════════════════════════════
+# OSINT Endpoints
+# ═══════════════════════════════════════════════════════════════════════════
+
+
+@app.post("/osint/run/{university_id}")
+async def osint_run(university_id: int, background_tasks: BackgroundTasks):
+    """Start OSINT pipeline for a single university (background)."""
+    from orchestrator.osint.graph import run_osint_pipeline
+
+    background_tasks.add_task(run_osint_pipeline, university_id)
+    return {"status": "started", "university_id": university_id}
+
+
+class OsintBatchRequest(BaseModel):
+    university_ids: list[int]
+
+
+@app.post("/osint/run-batch")
+async def osint_run_batch(req: OsintBatchRequest, background_tasks: BackgroundTasks):
+    """Start OSINT pipeline for multiple universities (background)."""
+    from orchestrator.osint.graph import run_osint_pipeline
+
+    for uid in req.university_ids:
+        background_tasks.add_task(run_osint_pipeline, uid)
+    return {"status": "started", "count": len(req.university_ids)}
+
+
+@app.get("/osint/profile/{university_id}")
+async def osint_profile(university_id: int):
+    """Get OSINT profile + contacts + social + news for a university."""
+    from orchestrator.db import (
+        get_osint_profile,
+        get_osint_contacts,
+        get_osint_social,
+        get_osint_news,
+    )
+
+    profile = await get_osint_profile(university_id)
+    contacts = await get_osint_contacts(university_id)
+    social = await get_osint_social(university_id)
+    news = await get_osint_news(university_id)
+    return {
+        "profile": profile,
+        "contacts": contacts,
+        "social_media": social,
+        "news": news,
+    }
+
+
+@app.get("/osint/runs")
+async def osint_runs(limit: int = 25, offset: int = 0):
+    """List OSINT pipeline runs."""
+    from orchestrator.db import get_osint_runs
+
+    return await get_osint_runs(limit=limit, offset=offset)
+
+
+@app.get("/osint/runs/{run_id}")
+async def osint_run_detail(run_id: int):
+    """Get details of a specific OSINT run."""
+    from orchestrator.db import get_osint_run
+
+    run = await get_osint_run(run_id)
+    if not run:
+        return JSONResponse(status_code=404, content={"detail": "Run not found"})
+    return run
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# CRM / PIC Profiling Endpoints
+# ═══════════════════════════════════════════════════════════════════════════
+
+
+class CrmRequestCreate(BaseModel):
+    pic_name: str
+    university_id: int | None = None
+    university_name: str | None = None
+    pic_title: str | None = None
+    requested_by: str | None = None
+    priority: str = "normal"
+    notes: str | None = None
+
+
+@app.post("/crm/requests")
+async def crm_create_request(req: CrmRequestCreate):
+    """Create a new PIC profiling request."""
+    from orchestrator.db import create_crm_request
+
+    request_id = await create_crm_request(
+        pic_name=req.pic_name,
+        university_id=req.university_id,
+        university_name=req.university_name,
+        pic_title=req.pic_title,
+        requested_by=req.requested_by,
+        priority=req.priority,
+        notes=req.notes,
+    )
+    return {"id": request_id, "status": "pending"}
+
+
+@app.get("/crm/requests")
+async def crm_list_requests(
+    status: str | None = None,
+    limit: int = 25,
+    offset: int = 0,
+):
+    """List CRM profiling requests with optional status filter."""
+    from orchestrator.db import get_crm_requests
+
+    return await get_crm_requests(status=status, limit=limit, offset=offset)
+
+
+@app.get("/crm/requests/{request_id}")
+async def crm_get_request(request_id: int):
+    """Get a single CRM request with its profile if available."""
+    from orchestrator.db import get_crm_request, get_crm_profile_by_request
+
+    request = await get_crm_request(request_id)
+    if not request:
+        return JSONResponse(status_code=404, content={"detail": "Request not found"})
+
+    profile = await get_crm_profile_by_request(request_id)
+    return {"request": request, "profile": profile}
+
+
+@app.post("/crm/requests/{request_id}/run")
+async def crm_run_profiling(request_id: int, background_tasks: BackgroundTasks):
+    """Start PIC profiling pipeline for a request (background)."""
+    from orchestrator.db import get_crm_request
+    from orchestrator.crm.graph import run_pic_profiling
+
+    request = await get_crm_request(request_id)
+    if not request:
+        return JSONResponse(status_code=404, content={"detail": "Request not found"})
+
+    if request.get("status") == "processing":
+        return JSONResponse(status_code=409, content={"detail": "Already processing"})
+
+    background_tasks.add_task(run_pic_profiling, request_id)
+    return {"status": "started", "request_id": request_id}
+
+
+@app.get("/crm/profiles/{profile_id}")
+async def crm_get_profile(profile_id: int):
+    """Get a PIC profile with its source audit trail."""
+    from orchestrator.db import get_crm_profile, get_crm_profile_sources
+
+    profile = await get_crm_profile(profile_id)
+    if not profile:
+        return JSONResponse(status_code=404, content={"detail": "Profile not found"})
+
+    sources = await get_crm_profile_sources(profile_id)
+    return {"profile": profile, "sources": sources}
+
+
+class CrmProfileUpdate(BaseModel):
+    """Manual profile field updates."""
+    fields: dict[str, Any]
+
+
+@app.patch("/crm/profiles/{profile_id}")
+async def crm_update_profile(profile_id: int, req: CrmProfileUpdate):
+    """Manually update fields on a PIC profile."""
+    from orchestrator.db import update_crm_profile
+
+    updated = await update_crm_profile(profile_id, source_type="manual", **req.fields)
+    if not updated:
+        return JSONResponse(status_code=404, content={"detail": "Profile not found or no valid fields"})
+    return {"profile": updated}
+
+
+@app.get("/crm/stats")
+async def crm_stats():
+    """Get CRM dashboard statistics."""
+    from orchestrator.db import get_crm_stats
+
+    return await get_crm_stats()
+
+
 @app.get("/dms/universities/search")
 async def dms_search_universities(q: str = "", limit: int = 20):
     """Search universities in DMS by keyword."""

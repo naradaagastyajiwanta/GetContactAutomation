@@ -1,19 +1,19 @@
 <div align="center">
 
-  # 🎓 GetContactAI Agent
+# 🎓 GetContactAI Agent
 
-  ### AI-Powered WhatsApp Outreach System for Indonesian Universities
+### AI-Powered Outreach & Intelligence Platform for Indonesian Universities
 
-  ![Python](https://img.shields.io/badge/Python-3.11+-blue.svg)
-  ![Node.js](https://img.shields.io/badge/Node.js-20+-green.svg)
-  ![React](https://img.shields.io/badge/React-18-cyan.svg)
-  ![License](https://img.shields.io/badge/License-MIT-yellow.svg)
+![Python](https://img.shields.io/badge/Python-3.11+-3776AB?style=flat&logo=python&logoColor=white)
+![Node.js](https://img.shields.io/badge/Node.js-20+-339933?style=flat&logo=node.js&logoColor=white)
+![React](https://img.shields.io/badge/React-18-61DAFB?style=flat&logo=react&logoColor=white)
+![FastAPI](https://img.shields.io/badge/FastAPI-009688?style=flat&logo=fastapi&logoColor=white)
+![TypeScript](https://img.shields.io/badge/TypeScript-3178C6?style=flat&logo=typescript&logoColor=white)
+![License](https://img.shields.io/badge/License-MIT-yellow.svg)
 
-  [Features](#-features) • [Architecture](#-architecture) • [Quick Start](#-quick-start) • [Documentation](#-documentation)
+**Automated WhatsApp outreach with AI-driven conversations to collect university contact information, enriched with OSINT intelligence and CRM profiles.**
 
-  ![GetContactAI Banner](https://img.shields.io/badge/GetContactAI-Automation%20Platform-orange)
-
-  **Automated WhatsApp outreach with AI-driven conversations to collect university contact information ethically and efficiently.**
+[Features](#-features) • [Architecture](#-architecture) • [Quick Start](#-quick-start) • [API Reference](#-api-reference) • [Deployment](#-deployment)
 
 </div>
 
@@ -21,110 +21,151 @@
 
 ## 📖 Overview
 
-**GetContactAI Agent** is an intelligent automation system designed to contact Indonesian universities via WhatsApp to collect secretariat contact information. The system combines web scraping, computer vision, conversational AI, and state management to conduct respectful, personalized outreach campaigns.
+**GetContactAI Agent** is an intelligent automation platform designed to streamline outreach to Indonesian universities through multiple channels:
 
-### 🎯 What It Does
+1. **WhatsApp Outreach** - AI-powered conversational outreach to collect contact information
+2. **OSINT Pipeline** - Automated intelligence gathering about universities and key personnel
+3. **CRM System** - Detailed profiling of Point of Contact (PIC) individuals
+4. **Audiensi Scheduling** - Zoom meeting scheduling with university leadership
+5. **DMS Integration** - Daily Management System for research and scheduling workflows
 
-1. **Discovers Universities** - Scrapes university data from [PDDIKTI](https://pddikti.kemdikbud.go.id/) (Indonesian higher education database)
-2. **Finds Instagram Handles** - Searches for official university Instagram accounts
-3. **Extracts Phone Numbers** - Uses GPT-4o Vision OCR to find contacts from Instagram posts
-4. **Initiates Conversations** - Sends personalized WhatsApp messages using AI-generated content
-5. **Manages Follow-ups** - Automated follow-up sequences based on conversation state
-6. **Learns & Improves** - Captures insights to enhance future interactions
+### What It Does
+
+| Pipeline | Description |
+|----------|-------------|
+| **Contact Collection** | Discovers universities → Finds IG → Extracts phones → WhatsApp outreach |
+| **OSINT Enrichment** | Web profiling → Social intelligence → Key people → News scanning |
+| **CRM Profiling** | Identity resolution → Academic background → Social profiles → Personal interests |
+| **Audiensi** | Meeting scheduling → PDF invitations → Zoom link generation |
+| **Blast Campaigns** | Bulk messaging with templates and recipient management |
 
 ---
 
 ## ✨ Features
 
 ### 🤖 AI-Powered Pipeline
-- **GPT-4o Vision** for phone number extraction from images
-- **GPT-4o-mini** for intelligent conversation management
-- **Dynamic message generation** based on university context
-- **Smart reply analysis** to determine next actions
+
+- **GPT-4o Vision** - Phone number extraction from Instagram post images
+- **GPT-4o-mini** - Intelligent conversation management and reply analysis
+- **LangGraph Orchestration** - Multi-agent workflows for OSINT and CRM pipelines
+- **Dynamic Message Generation** - Context-aware personalized messages
 
 ### 💬 Human-Like WhatsApp Behavior
-- **Typing indicators** for natural conversation feel
+
+- **Typing indicators** and **read receipts** for natural conversation feel
 - **Configurable delays** between messages
-- **Read receipts** for message confirmation
-- **Multi-message handling** with proper threading
+- **Multi-device support** via DeviceManager
+- **Message queuing** with rate limiting
+
+### 🔍 OSINT Intelligence Pipeline
+
+- **Web Profiler** - Extracts address, contact info, org structure
+- **Social Intel** - Discovers official social media accounts
+- **Key People Finder** - Identifies rectors, secretaries, BEM contacts
+- **News Scanner** - Monitors recent news and events
+- **Contact Enricher** - Aggregates contacts from multiple sources
+
+### 👤 CRM Profiling System
+
+- **Identity Resolver** - PDDIKTI-based identity verification
+- **Academic Profiler** - Education history, publications, research topics
+- **Social Profiler** - LinkedIn, Instagram, Facebook presence
+- **Personal Interest Agent** - Hobbies, personality traits (best-effort)
+- **Family Info Agent** - Marital status, family details (best-effort)
+- **Profile Compiler** - Aggregates all data into unified profile
+
+### 📅 Audiensi (Meeting) System
+
+- **Automated Zoom scheduling** with university rectors
+- **PDF invitation generation** with university branding
+- **Template management** for personalized outreach
+- **State tracking** through the scheduling funnel
 
 ### 📊 Real-Time Dashboard
-- **Live monitoring** of all active conversations
-- **Pipeline status** tracking with visual indicators
-- **WebSocket updates** for instant data refresh
-- **Export capabilities** (CSV/Excel) for collected data
+
+- **Live conversation monitoring** with WebSocket updates
+- **Pipeline funnel visualization**
+- **Stats cards** - universities contacted, success rates, etc.
+- **Export capabilities** - CSV/Excel download
 
 ### ⚙️ Advanced Configuration
-- **Respectful outreach hours** (configurable WIB timezone)
+
+- **Dynamic config** via database (no restart needed)
+- **Respectful outreach hours** (WIB timezone)
 - **Daily quota limits** to prevent spam
 - **Per-university enable/disable** controls
-- **Test mode** for development without real outreach
-
-### 🎓 Audiensi Feature (Zoom Scheduling)
-- **Automated Zoom meeting** scheduling with university rectors
-- **PDF invitation** generation
-- **Template management** for personalized invitations
-- **Conversation tracking** through scheduling funnel
-
-### 📚 Learning System
-- **Conversation analysis** for continuous improvement
-- **Lesson capture** from successful interactions
-- **Pattern recognition** for better responses
 
 ---
 
 ## 🏗️ Architecture
 
 ```
-┌─────────────────────────────────────────────────────────────────┐
-│                         Frontend (React)                         │
-│                    localhost:5173                                │
-│  ┌──────────────┐  ┌──────────────┐  ┌──────────────┐         │
-│  │  Dashboard   │  │  Pipeline    │  │ Conversations │         │
-│  └──────────────┘  └──────────────┘  └──────────────┘         │
-└──────────────────────────────┬──────────────────────────────────┘
-                               │ WebSocket + HTTP
-┌──────────────────────────────┴──────────────────────────────────┐
-│                      Orchestrator (FastAPI)                      │
-│                       localhost:8000                             │
-│  ┌─────────────┐  ┌─────────────┐  ┌─────────────┐            │
-│  │   Agents    │  │ Scheduler   │  │  State      │            │
-│  │             │  │             │  │  Machine    │            │
-│  │ • IG Handle │  │ • APScheduler│  │ • WhatsApp  │            │
-│  │ • Post      │  │ • Cron Jobs │  │ • Audiensi  │            │
-│  │   Scraper   │  │ • Quota Mgmt│  │             │            │
-│  │ • Phone     │  │             │  │             │            │
-│  │   Extractor │  │             │  │             │            │
-│  └─────────────┘  └─────────────┘  └─────────────┘            │
-└──────────────────────────────┬──────────────────────────────────┘
-                               │ HTTP/Webhook
-┌──────────────────────────────┴──────────────────────────────────┐
-│                   WhatsApp Service (Node.js)                     │
-│                       localhost:3100                             │
-│  ┌─────────────────────────────────────────────────────────┐   │
-│  │           Baileys WhatsApp Library                        │   │
-│  │  • QR Code Authentication • Message Queue                │   │
-│  │  • Typing Indicators • Read Receipts                     │   │
-│  └─────────────────────────────────────────────────────────┘   │
-└──────────────────────────────┬──────────────────────────────────┘
-                               │
-                               ▼
-                        📱 WhatsApp Servers
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                              Frontend (React + Vite)                         │
+│                             localhost:5173                                   │
+│  ┌─────────────┐  ┌─────────────┐  ┌─────────────┐  ┌─────────────┐      │
+│  │  Dashboard  │  │ Universities │  │ Conversations│  │ Audiensi   │      │
+│  └─────────────┘  └─────────────┘  └─────────────┘  └─────────────┘      │
+│  ┌─────────────┐  ┌─────────────┐  ┌─────────────┐  ┌─────────────┐      │
+│  │  OSINT      │  │    CRM      │  │    DMS      │  │   Blast    │      │
+│  └─────────────┘  └─────────────┘  └─────────────┘  └─────────────┘      │
+└────────────────────────────────┬────────────────────────────────────────────┘
+                                 │ HTTP + WebSocket
+                                 ▼
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                         Orchestrator (FastAPI)                              │
+│                           localhost:8000                                    │
+│  ┌─────────────────────────────────────────────────────────────────────┐   │
+│  │                         API Endpoints                                │   │
+│  │  /universities  /pipeline  /conversations  /audiensi  /osint       │   │
+│  │  /crm  /dms  /blast  /config  /learning  /wa  /ig-accounts       │   │
+│  └─────────────────────────────────────────────────────────────────────┘   │
+│  ┌──────────────────┐  ┌──────────────────┐  ┌──────────────────────┐   │
+│  │   Agent Layer    │  │   Scheduler      │  │   State Machines     │   │
+│  │  • IG Finders    │  │  • APScheduler   │  │  • Conversations    │   │
+│  │  • Post Scraper  │  │  • Daily loops   │  │  • Audiensi States   │   │
+│  │  • Phone Extract │  │  • Follow-ups     │  │                      │   │
+│  └──────────────────┘  └──────────────────┘  └──────────────────────┘   │
+│  ┌──────────────────┐  ┌──────────────────┐  ┌──────────────────────┐       │
+│  │  OSINT Pipeline  │  │  CRM Pipeline   │  │   Message Queue     │       │
+│  │  (LangGraph)     │  │  (LangGraph)    │  │   + Semaphore       │       │
+│  └──────────────────┘  └──────────────────┘  └──────────────────────┘       │
+└────────────────────────────────┬────────────────────────────────────────────┘
+                                 │ HTTP / Webhook
+                                 ▼
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                     WhatsApp Service (Node.js)                             │
+│                           localhost:3100                                    │
+│  ┌─────────────────────────────────────────────────────────────────────┐   │
+│  │              @whiskeysockets/baileys                                 │   │
+│  │  • QR Code Auth  • Multi-device  • Message Queue  • Rate Limiter   │   │
+│  │  • Typing Indicators  • Read Receipts  • Media Handling           │   │
+│  └─────────────────────────────────────────────────────────────────────┘   │
+└─────────────────────────────────────────────────────────────────────────────┘
+                                 │
+                                 ▼
+                              📱 WhatsApp
 ```
 
 ### Data Flow
 
-```mermaid
-graph LR
-    A[PDDIKTI] --> B[Universities DB]
-    B --> C[Agent 1: Find IG]
-    C --> D[Agent 2: Scrape Posts]
-    D --> E[Agent 3: Extract Phones]
-    E --> F[Conversation Manager]
-    F --> G[WhatsApp Service]
-    G --> H[WhatsApp Users]
-    H --> F
-    F --> I[Learning System]
+```
+┌─────────────┐     ┌─────────────┐     ┌─────────────┐     ┌─────────────┐
+│   PDDIKTI   │────▶│  Universities │────▶│   Agents    │────▶│ WhatsApp   │
+│   (Source)  │     │     DB       │     │  (Pipeline) │     │  Outreach  │
+└─────────────┘     └─────────────┘     └─────────────┘     └─────────────┘
+                                            │                    │
+                                            ▼                    ▼
+                                     ┌─────────────┐     ┌─────────────┐
+                                     │    OSINT    │     │   Audiensi  │
+                                     │  Enrichment │     │  Scheduling │
+                                     └─────────────┘     └─────────────┘
+                                            │
+                                            ▼
+                                     ┌─────────────┐
+                                     │     CRM     │
+                                     │  Profiling  │
+                                     └─────────────┘
 ```
 
 ---
@@ -132,38 +173,43 @@ graph LR
 ## 🛠️ Tech Stack
 
 ### Backend (Orchestrator)
-| Component | Technology |
-|-----------|------------|
-| **Framework** | FastAPI |
-| **Database** | SQLite (aiosqlite) |
-| **Scheduler** | APScheduler |
-| **AI/ML** | OpenAI GPT-4o, GPT-4o-mini |
-| **HTTP Client** | httpx |
-| **Web Scraping** | Serper.dev, Apify |
+
+| Component | Technology | Purpose |
+|-----------|------------|---------|
+| **Framework** | FastAPI | High-performance async API |
+| **Database** | SQLite (aiosqlite) | Persistent storage |
+| **AI/ML** | OpenAI GPT-4o, GPT-4o-mini | Vision OCR & Chat |
+| **Orchestration** | LangGraph | OSINT & CRM pipelines |
+| **Scheduler** | APScheduler | Daily jobs & follow-ups |
+| **HTTP Client** | httpx | Async HTTP requests |
+| **Web Scraping** | Serper.dev, Playwright | Search & IG scraping |
 
 ### WhatsApp Service
-| Component | Technology |
-|-----------|------------|
-| **Runtime** | Node.js 20+ |
-| **Framework** | Express.js |
-| **WhatsApp** | @whiskeysockets/baileys |
-| **Database** | SQLite (better-sqlite3) |
+
+| Component | Technology | Purpose |
+|-----------|------------|---------|
+| **Runtime** | Node.js 20+ | JavaScript runtime |
+| **Framework** | Express.js | HTTP server |
+| **WhatsApp** | @whiskeysockets/baileys | WA protocol implementation |
+| **Logging** | pino | Structured logging |
+| **Metrics** | prom-client | Observability |
 
 ### Frontend
-| Component | Technology |
-|-----------|------------|
-| **Framework** | React 18 + Vite |
-| **Routing** | React Router 6 |
-| **State** | TanStack React Query 5 |
-| **Styling** | Tailwind CSS 3 |
-| **Icons** | Lucide React |
-| **Real-time** | WebSocket |
+
+| Component | Technology | Purpose |
+|-----------|------------|---------|
+| **Framework** | React 18 + Vite | UI framework |
+| **Routing** | React Router 6 | SPA navigation |
+| **State** | TanStack React Query 5 | Server state management |
+| **Styling** | Tailwind CSS 3 | Utility-first CSS |
+| **Icons** | Lucide React | Icon library |
+| **Real-time** | WebSocket | Live updates |
 
 ---
 
 ## 📋 Prerequisites
 
-Before installing, ensure you have:
+### Required Software
 
 - **Python 3.11+** - [Download](https://www.python.org/downloads/)
 - **Node.js 20+** - [Download](https://nodejs.org/)
@@ -173,41 +219,37 @@ Before installing, ensure you have:
 
 | Service | Purpose | Get It |
 |---------|---------|--------|
-| **OpenAI API** | GPT-4o Vision & Chat | [openai.com](https://openai.com/) |
-| **Serper.dev** | Google Search results | [serper.dev](https://serper.dev/) |
+| **OpenAI API Key** | GPT-4o Vision & Chat | [openai.com](https://openai.com/) |
+| **Serper API Key** | Google Search results | [serper.dev](https://serper.dev/) |
 
 ### Optional API Keys
 
 | Service | Purpose |
 |---------|---------|
-| **Instagram Credentials** | Direct IG scraping |
-| **Apify API Key** | Instagram data extraction |
+| **Instagram Credentials** | Direct IG scraping via Playwright |
+| **Apify API Key** | Alternative IG data extraction |
+| **Google Sheets API** | Data export to Sheets |
 
 ---
 
 ## 🚀 Quick Start
 
-### 1. Clone the Repository
+### 1. Clone & Install
 
 ```bash
-git clone https://github.com/your-username/GetContactAI.git
+# Clone repository
+git clone https://github.com/your-org/GetContactAI.git
 cd GetContactAI
-```
 
-### 2. Install Dependencies
+# Install Python dependencies
+pip install -r requirements.txt
 
-```bash
-# Orchestrator (Python)
-pip install -r orchestrator/requirements.txt
-
-# WhatsApp Service (Node.js)
+# Install Node.js dependencies
 cd whatsapp-service && npm install && cd ..
-
-# Frontend (Node.js)
 cd frontend && npm install && cd ..
 ```
 
-### 3. Configure Environment
+### 2. Configure Environment
 
 ```bash
 # Copy environment template
@@ -217,32 +259,33 @@ cp .env.example .env
 # Required: OPENAI_API_KEY, SERPER_API_KEY
 ```
 
-### 4. Initialize Database
+### 3. Initialize Database
 
 ```bash
 python scripts/setup_db.py
 ```
 
-### 5. Start Services
-
-**Important: Start services in this order:**
+### 4. Start Services
 
 ```bash
-# Terminal 1: WhatsApp Service (must start first)
+# Terminal 1: WhatsApp Service
 cd whatsapp-service && npm run dev
 
 # Terminal 2: Orchestrator
-python -m uvicorn orchestrator.main:app --port 8000 --reload
+uvicorn orchestrator.main:app --port 8000 --reload
 
 # Terminal 3: Frontend
 cd frontend && npm run dev
 ```
 
-### 6. Access the Application
+### 5. Access Application
 
-- **Frontend Dashboard**: http://localhost:5173
-- **API Documentation**: http://localhost:8000/docs
-- **Health Check**: http://localhost:8000/health
+| Service | URL |
+|---------|-----|
+| **Frontend** | http://localhost:5173 |
+| **API Docs (Swagger)** | http://localhost:8000/docs |
+| **API Docs (ReDoc)** | http://localhost:8000/redoc |
+| **Health Check** | http://localhost:8000/health |
 
 ---
 
@@ -251,40 +294,60 @@ cd frontend && npm run dev
 ### Environment Variables
 
 ```bash
-# Core Configuration
-OPENAI_API_KEY=sk-...                    # Required
-SERPER_API_KEY=...                       # Required
+# ═══════════════════════════════════════════════════════
+# REQUIRED
+# ═══════════════════════════════════════════════════════
+OPENAI_API_KEY=sk-...              # OpenAI API key
+SERPER_API_KEY=...                 # Serper.dev API key
 
-# Database
-DATABASE_PATH=data/getcontact.db         # SQLite database path
+# ═══════════════════════════════════════════════════════
+# DATABASE
+# ═══════════════════════════════════════════════════════
+DATABASE_PATH=data/getcontact.db    # SQLite path
 
-# WhatsApp Service
-WA_SERVICE_URL=http://localhost:3100     # WhatsApp service URL
+# ═══════════════════════════════════════════════════════
+# WHATSAPP SERVICE
+# ═══════════════════════════════════════════════════════
+WA_SERVICE_URL=http://localhost:3100
 WEBHOOK_URL=http://localhost:8000/webhook/incoming
 
-# Outreach Settings
-OUTREACH_START_HOUR=7                    # WIB timezone
+# ═══════════════════════════════════════════════════════
+# OUTREACH SETTINGS (WIB = UTC+7)
+# ═══════════════════════════════════════════════════════
+OUTREACH_START_HOUR=7
 OUTREACH_END_HOUR=22
 MAX_DAILY_CONVERSATIONS=50
 MIN_MESSAGE_GAP_SECONDS=30
 
-# AI Settings
-AGENT_MODEL=gpt-4o-mini                  # Chat model
-VISION_MODEL=gpt-4o                      # Vision OCR model
+# ═══════════════════════════════════════════════════════
+# AI SETTINGS
+# ═══════════════════════════════════════════════════════
+AGENT_MODEL=gpt-4o-mini
+VISION_MODEL=gpt-4o-mini
 
-# Optional Services
-IG_USERNAME=...                          # Instagram credentials
+# ═══════════════════════════════════════════════════════
+# OPTIONAL
+# ═══════════════════════════════════════════════════════
+IG_USERNAME=...                    # Instagram credentials
 IG_PASSWORD=...
 APIFY_API_KEY=...
 ```
 
-### Configuration via Dashboard
+### Dynamic Configuration
 
-Many settings can be adjusted dynamically through the **Settings** page:
-- Toggle chatbots on/off
-- Adjust outreach hours
-- Modify daily quotas
-- Enable/disable features
+Many settings can be adjusted via the **Settings** page** or API:
+
+```bash
+# Get all config
+GET /config
+
+# Update config
+PATCH /config
+{
+  "key": "MAX_DAILY_CONVERSATIONS",
+  "value": "100"
+}
+```
 
 ---
 
@@ -294,127 +357,360 @@ Many settings can be adjusted dynamically through the **Settings** page:
 
 Navigate to **Dashboard** → Click **"Collect Universities"**
 
-Select province and limit, then click start. The system will fetch university data from PDDIKTI.
+The system will fetch university data from PDDIKTI based on selected provinces.
 
-### 2. Run Pipeline Agents
+### 2. Run Contact Pipeline
 
 Go to **Pipeline** page and run agents in sequence:
 
-1. **Find IG Handles** - Search Instagram accounts for universities
-2. **Scrape IG Posts** - Download recent posts from found accounts
-3. **Extract Phones** - Use GPT-4o Vision to find phone numbers in posts
+```
+┌─────────────────┐    ┌─────────────────┐    ┌─────────────────┐
+│  Find IG Handles │───▶│  Scrape IG Posts │───▶│  Extract Phones  │
+│  (Serper + IG)  │    │  (Playwright)   │    │  (GPT-4o Vision) │
+└─────────────────┘    └─────────────────┘    └─────────────────┘
+```
 
-### 3. Start Outreach
+### 3. Start WhatsApp Outreach
 
-Navigate to **Control Panel**:
-- Ensure system is not paused
-- Enable contact finder chatbot
-- Click "Start Outreach" or wait for scheduled runs
+1. **Connect WhatsApp** - Scan QR code from WhatsApp page
+2. **Enable Chatbot** - Turn on contact finder chatbot
+3. **Start Outreach** - Click "Start Outreach" or wait for scheduled run
+4. **Monitor** - Watch conversations in real-time
 
-### 4. Monitor Conversations
+### 4. Run OSINT Enrichment
 
-Visit **Conversations** page to:
-- View all active conversations
-- Read message history
-- Track conversation states
-- Manually trigger test conversations
+Go to **University Detail** → Click **"Run OSINT"**
 
-### 5. Export Data
+```
+┌──────────────┐   ┌──────────────┐   ┌──────────────┐   ┌──────────────┐
+│ Web Profiler │──▶│ Social Intel │──▶│  Key People  │──▶│ News Scanner │
+└──────────────┘   └──────────────┘   └──────────────┘   └──────────────┘
+        │                                                    │
+        └─────────────────▶ Contact Enricher ◀──────────────┘
+                                   │
+                                   ▼
+                            Reviewer Agent
+                                   │
+                                   ▼
+                          OSINT Profile Stored
+```
 
-Go to **Universities** page → Click **Export** to download collected data as CSV or Excel.
+### 5. CRM Profiling
+
+Go to **CRM** → Create new profile request
+
+```
+┌──────────────┐   ┌──────────────┐   ┌──────────────┐
+│   Identity   │──▶│   Academic    │──▶│    Social    │
+│   Resolver   │   │   Profiler   │   │   Profiler   │
+└──────────────┘   └──────────────┘   └──────────────┘
+        │                │                   │
+        └────────────────┴───────────────────┘
+                         │
+                         ▼
+                ┌──────────────┐   ┌──────────────┐
+                │   Personal   │   │    Family    │
+                │   Interest   │   │    Info      │
+                └──────────────┘   └──────────────┘
+                         │
+                         ▼
+                Profile Compiler
+                         │
+                         ▼
+                   Unified Profile
+```
+
+### 6. Schedule Audiensi
+
+1. Navigate to **Audiensi** page
+2. Select approved conversation
+3. Generate PDF invitation
+4. Send to rector via WhatsApp
+5. Schedule Zoom meeting
 
 ---
 
-## 🔌 API Documentation
+## 📂 Project Structure
+
+```
+GetContactAI/
+├── orchestrator/                    # Python FastAPI backend
+│   ├── main.py                      # FastAPI app & endpoints
+│   ├── config.py                    # Configuration & logging
+│   ├── db.py                        # Database schema & queries
+│   ├── conversation.py              # WhatsApp state machine
+│   ├── message_queue.py             # AI semaphore + WA queue
+│   ├── scheduler.py                # APScheduler jobs
+│   │
+│   ├── agents/                      # Contact discovery agents
+│   │   ├── ig_handle_finder.py      # Find IG from website
+│   │   ├── ig_post_scraper.py       # Scrape IG posts
+│   │   ├── ig_phone_extractor.py   # Vision OCR extraction
+│   │   ├── bem_finder.py            # Find BEM contacts
+│   │   └── rector_finder.py        # Find rector contacts
+│   │
+│   ├── osint/                       # OSINT pipeline (LangGraph)
+│   │   ├── state.py                 # State definitions
+│   │   ├── graph.py                 # LangGraph workflow
+│   │   ├── web_profiler.py          # University web profiling
+│   │   ├── social_intel.py          # Social media discovery
+│   │   ├── key_people.py           # Key personnel finder
+│   │   ├── news_scanner.py          # News monitoring
+│   │   ├── contact_enricher.py     # Contact aggregation
+│   │   └── reviewer.py             # Quality review agent
+│   │
+│   ├── crm/                         # CRM pipeline (LangGraph)
+│   │   ├── state.py                 # State definitions
+│   │   ├── graph.py                 # LangGraph workflow
+│   │   ├── identity_resolver.py    # PDDIKTI identity lookup
+│   │   ├── academic_profiler.py    # Academic background
+│   │   ├── social_profiler.py      # Social media profiles
+│   │   ├── personal_interest.py    # Personal interests
+│   │   ├── family_info.py          # Family details
+│   │   └── profile_compiler.py     # Profile aggregation
+│   │
+│   ├── audiensi/                    # Audiensi scheduling
+│   │   ├── conversation.py          # Audiensi state machine
+│   │   ├── pdf_generator.py        # PDF invitation generator
+│   │   └── auto_queue.py           # Auto-queue management
+│   │
+│   ├── agent/                       # Core AI agent system
+│   │   ├── react_agent.py          # ReAct agent
+│   │   ├── learning.py             # Learning system
+│   │   ├── situation_detector.py   # Reply classification
+│   │   └── prompts.py              # AI prompts
+│   │
+│   └── research_agents/             # Research & DMS agents
+│       ├── gemini_caller.py        # Gemini API caller
+│       └── graph.py                # Research workflow
+│
+├── whatsapp-service/               # Node.js WhatsApp bridge
+│   ├── src/
+│   │   ├── index.ts               # Express server & handlers
+│   │   ├── deviceManager.ts      # Multi-device management
+│   │   ├── messageQueue.ts       # Message queue & rate limit
+│   │   ├── rateLimiter.ts        # Rate limiting
+│   │   └── metrics.ts            # Prometheus metrics
+│   └── package.json
+│
+├── frontend/                      # React dashboard
+│   ├── src/
+│   │   ├── components/           # Reusable UI components
+│   │   │   ├── ui/              # Base components (Button, Card, etc.)
+│   │   │   ├── layout/          # AppShell, Sidebar, TopBar
+│   │   │   ├── dashboard/       # Dashboard widgets
+│   │   │   ├── universities/    # University management
+│   │   │   ├── conversations/   # Chat components
+│   │   │   ├── audiensi/        # Audiensi components
+│   │   │   ├── dms/             # DMS components
+│   │   │   └── ...
+│   │   ├── pages/               # Page components
+│   │   │   ├── DashboardPage.tsx
+│   │   │   ├── UniversitiesPage.tsx
+│   │   │   ├── PipelinePage.tsx
+│   │   │   ├── ConversationsPage.tsx
+│   │   │   ├── AudiensiQueuePage.tsx
+│   │   │   ├── DmsSchedulesPage.tsx
+│   │   │   └── ...
+│   │   ├── api/                 # API client layer
+│   │   ├── context/             # React contexts
+│   │   └── App.tsx             # Router setup
+│   └── package.json
+│
+├── scripts/                       # Utility scripts
+│   ├── setup_db.py              # Database initialization
+│   ├── collect_universities.py  # PDDIKTI scraper
+│   └── ...
+│
+├── data/                         # Runtime data (gitignored)
+│   ├── getcontact.db           # SQLite database
+│   ├── audiensi_docs/          # Generated PDFs
+│   ├── templates/              # Email templates
+│   └── pw_sessions/           # Playwright sessions
+│
+├── docker-compose.yml           # Docker orchestration
+├── Dockerfile.orchestrator     # Orchestrator image
+├── Dockerfile.whatsapp         # WhatsApp service image
+├── Dockerfile.frontend         # Frontend image
+└── README.md                   # This file
+```
+
+---
+
+## 📚 Database Schema
+
+### Core Tables
+
+| Table | Description |
+|-------|-------------|
+| `universities` | University records from PDDIKTI |
+| `ig_contacts` | Extracted phone numbers from IG |
+| `ig_posts` | Scraped Instagram posts |
+| `conversations` | WhatsApp conversation state |
+| `audiensi_conversations` | Audiensi scheduling state |
+| `daily_quota` | Daily outreach limits |
+
+### OSINT Tables
+
+| Table | Description |
+|-------|-------------|
+| `osint_profiles` | OSINT enrichment results |
+| `osint_contacts` | Aggregated contacts |
+| `osint_social_media` | Social media accounts |
+| `osint_news` | News items |
+| `osint_runs` | Run history |
+
+### CRM Tables
+
+| Table | Description |
+|-------|-------------|
+| `crm_requests` | Profile requests |
+| `crm_pic_profiles` | PIC profiles |
+| `crm_profile_runs` | Run history |
+| `crm_profile_sources` | Data sources |
+
+### Other Tables
+
+| Table | Description |
+|-------|-------------|
+| `blast_campaigns` | Bulk messaging campaigns |
+| `blast_recipients` | Campaign recipients |
+| `knowledge_items` | Chatbot knowledge base |
+| `config` | Dynamic configuration |
+| `api_call_logs` | API usage logs |
+| `pipeline_logs` | Pipeline execution logs |
+
+---
+
+## 🔌 API Reference
 
 ### Core Endpoints
 
-#### Health Check
 ```http
+# Health Check
 GET /health
-```
 
-#### Dashboard Statistics
-```http
+# Dashboard
 GET /dashboard
-```
 
-#### Pipeline Status
-```http
-GET /pipeline/status
-```
+# Universities
+GET    /universities
+POST   /universities
+GET    /universities/{id}
+PATCH  /universities/{id}/toggle-enabled
+GET    /universities/export-excel
 
-#### Trigger Agent
-```http
+# Pipeline
 POST /pipeline/find-ig-handles
 POST /pipeline/scrape-ig-posts
 POST /pipeline/extract-phones
-```
+POST /pipeline/discover-bem
+POST /pipeline/find-rectors
 
-#### Control System
-```http
+# Conversations
+GET  /conversations
+GET  /conversations/{id}
+POST /conversations/test
+
+# Audiensi
+GET  /audiensi
+GET  /audiensi/queue
+POST /audiensi/{id}/approve
+POST /audiensi/{id}/send-zoom
+
+# OSINT
+POST /osint/run/{university_id}
+POST /osint/run-batch
+GET  /osint/profile/{university_id}
+
+# CRM
+POST   /crm/requests
+GET    /crm/requests
+POST   /crm/requests/{id}/run
+GET    /crm/profiles/{id}
+
+# DMS
+GET /dms/schedules
+GET /dms/schedules/today
+POST /dms/sync/contacts
+POST /dms/research/run-tomorrow
+
+# Blast
+POST /blast/campaigns
+GET  /blast/campaigns/{id}
+POST /blast/campaigns/{id}/start
+
+# Control
 POST /control/pause
 POST /control/resume
-GET /control/status
+GET  /control/status
+
+# WhatsApp
+GET /wa/qr
+GET /wa/status
+POST /wa/bulk-send
+
+# Config
+GET /config
+PATCH /config
+
+# Learning
+GET /learning/lessons
+GET /learning/analyses
 ```
 
-### Full API Docs
+### Interactive Documentation
 
-Interactive API documentation available at:
 - **Swagger UI**: http://localhost:8000/docs
 - **ReDoc**: http://localhost:8000/redoc
 
 ---
 
-## 🗂️ Project Structure
+## 🗺️ Conversation States
+
+### Contact Outreach
 
 ```
-GetContactAI/
-├── orchestrator/              # Python FastAPI backend
-│   ├── agents/               # Pipeline agents
-│   ├── audiensi/             # Zoom scheduling feature
-│   ├── agent/                # Agentic AI system
-│   ├── main.py               # FastAPI application
-│   ├── config.py             # Configuration
-│   ├── db.py                 # Database layer
-│   ├── scheduler.py          # Job scheduler
-│   ├── conversation.py       # Conversation state machine
-│   └── message_queue.py      # WhatsApp message queue
-│
-├── whatsapp-service/         # Node.js WhatsApp bridge
-│   ├── src/
-│   │   ├── baileys.ts        # WhatsApp client wrapper
-│   │   ├── queue.ts          # Message queue
-│   │   └── server.ts         # Express server
-│   └── package.json
-│
-├── frontend/                 # React frontend
-│   ├── src/
-│   │   ├── components/       # React components
-│   │   ├── pages/            # Page components
-│   │   ├── hooks/            # Custom hooks
-│   │   ├── lib/              # Utilities
-│   │   └── App.tsx
-│   └── package.json
-│
-├── scripts/                  # Utility scripts
-│   ├── setup_db.py           # Database initialization
-│   └── collect_universities.py
-│
-├── data/                     # SQLite database (created at runtime)
-├── .env.example              # Environment template
-├── docker-compose.yml        # Docker orchestration
-└── README.md                 # This file
+PENDING
+    │
+    ▼
+INITIAL_SENT
+    │
+    ▼
+WAITING_REPLY
+    │
+    ├───────────▶ GOT_NUMBER      ✅ Success
+    ├───────────▶ REFUSED         ❌ Contact refused
+    ├───────────▶ NEED_MORE       🔄 Need follow-up
+    ├───────────▶ NO_REPLY       ⏰ No response
+    ├───────────▶ ABANDONED      ⏹️ Max attempts reached
+    └───────────▶ UNDELIVERED    📵 Message failed
+```
+
+### Audiensi Flow
+
+```
+QUEUED
+    │
+    ▼
+MESSAGE_SENT
+    │
+    ▼
+WAITING_REPLY
+    │
+    ├───────────▶ APPROVED       ✅ Rector agreed
+    ├───────────▶ REFUSED        ❌ Rector declined
+    └───────────▶ ZOOM_SENT      📅 Zoom link sent
 ```
 
 ---
 
-## 🐳 Docker Deployment
+## 🐳 Deployment
 
-### Using Docker Compose
+### Docker Compose (Recommended)
 
 ```bash
-# Build and start all services
+# Start all services
 docker-compose up -d
 
 # View logs
@@ -424,120 +720,121 @@ docker-compose logs -f
 docker-compose down
 ```
 
-### Individual Services
+### Manual Deployment
 
 ```bash
-# Orchestrator
-cd orchestrator && docker build -t getcontact-orchestrator .
+# Build images
+docker build -f Dockerfile.orchestrator -t getcontact-orchestrator .
+docker build -f Dockerfile.whatsapp -t getcontact-whatsapp .
+docker build -f Dockerfile.frontend -t getcontact-frontend .
+
+# Run containers
 docker run -p 8000:8000 --env-file .env getcontact-orchestrator
-
-# WhatsApp Service
-cd whatsapp-service && docker build -t getcontact-whatsapp .
 docker run -p 3100:3100 getcontact-whatsapp
-
-# Frontend
-cd frontend && docker build -t getcontact-frontend .
 docker run -p 5173:5173 getcontact-frontend
 ```
 
+### Production Environment Variables
+
+See `.env.production.example` for production-ready configuration.
+
 ---
 
-## 🧪 Testing
-
-### Test Mode
-
-Enable test conversations without affecting real universities:
-
-```bash
-# Via API
-POST /conversations/test
-{
-  "phone": "6281234567890",
-  "universityName": "Test University"
-}
-```
+## 🔧 Development
 
 ### Running Tests
 
 ```bash
-# Python tests (orchestrator)
+# Python (pytest)
 pytest orchestrator/tests/
 
-# Node.js tests (whatsapp-service)
+# Node.js
 npm test --prefix whatsapp-service
-
-# Frontend tests
-npm test --prefix frontend
 ```
+
+### Code Style
+
+- **Python**: Follow PEP 8, use `black` formatter
+- **TypeScript**: Strict mode enabled
+- **React**: Functional components with hooks
+
+### Adding New Agents
+
+1. Create agent file in `orchestrator/agents/`
+2. Define state in `orchestrator/osint/state.py` or `orchestrator/crm/state.py`
+3. Add to LangGraph workflow
+4. Register endpoint in `orchestrator/main.py`
 
 ---
 
-## 📊 Conversation States
+## 📊 Monitoring
 
+### Health Checks
+
+```bash
+# Orchestrator
+curl http://localhost:8000/health
+
+# WhatsApp Service
+curl http://localhost:3100/health
+
+# Database
+sqlite3 data/getcontact.db "SELECT COUNT(*) FROM universities;"
 ```
-PENDING
-    ↓
-INITIAL_SENT
-    ↓
-WAITING_REPLY
-    ↓
-    ├─→ GOT_NUMBER        ✅ Success
-    ├─→ REFUSED           ❌ Contact refused
-    ├─→ NEED_MORE         🔄 Need follow-up
-    ├─→ ABANDONED         ⏹️ Too many follow-ups
-    └─→ UNDELIVERED       📵 Message not delivered
+
+### Logs
+
+```bash
+# Orchestrator logs
+tail -f logs/orchestrator.log
+
+# WhatsApp service logs
+docker logs getcontact-whatsapp
 ```
 
 ---
 
 ## 🤝 Contributing
 
-Contributions are welcome! Please follow these steps:
+Contributions are welcome! Please:
 
 1. Fork the repository
-2. Create a feature branch (`git checkout -b feature/AmazingFeature`)
-3. Commit your changes (`git commit -m 'Add some AmazingFeature'`)
-4. Push to the branch (`git push origin feature/AmazingFeature`)
-5. Open a Pull Request
-
-### Development Guidelines
-
-- Follow Python PEP 8 style guidelines
-- Use TypeScript strict mode for Node.js
-- Write meaningful commit messages
-- Add tests for new features
-- Update documentation as needed
+2. Create a feature branch
+3. Follow code style guidelines
+4. Add tests for new features
+5. Update documentation
+6. Submit a pull request
 
 ---
 
 ## 📝 License
 
-This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
+MIT License - see [LICENSE](LICENSE) file for details.
 
 ---
 
 ## 🙏 Acknowledgments
 
-- **OpenAI** for GPT-4o and GPT-4o-mini APIs
-- **Baileys** for the excellent WhatsApp library
-- **FastAPI** for the modern Python framework
-- **PDDIKTI** for the Indonesian higher education database
+- **OpenAI** - GPT-4o and GPT-4o-mini APIs
+- **Baileys** - WhatsApp library
+- **FastAPI** - Python web framework
+- **PDDIKTI** - Indonesian higher education database
+- **LangChain** - LangGraph orchestration
 
 ---
 
 ## 📧 Support
 
-For questions, issues, or suggestions:
-
-- Open an issue on GitHub
-- Contact: [your-email@example.com]
+- **Issues**: Open an issue on GitHub
+- **Discussions**: Use GitHub Discussions
+- **Email**: [your-email@example.com]
 
 ---
 
 <div align="center">
 
-  **Built with ❤️ for Indonesian Universities**
+**Built with ❤️ for Indonesian Universities**
 
-  [⬆ Back to Top](#-getcontactai-agent)
+[⬆ Back to Top](#-getcontactai-agent)
 
 </div>
