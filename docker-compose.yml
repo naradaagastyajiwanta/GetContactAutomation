@@ -35,8 +35,8 @@ services:
     image: naradaagastya/gc-orchestrator:latest
     container_name: gc-orchestrator
     restart: unless-stopped
-    ports:
-      - "8000:8000"
+    expose:
+      - "8000"
     volumes:
       - ./data:/app/data
     env_file:

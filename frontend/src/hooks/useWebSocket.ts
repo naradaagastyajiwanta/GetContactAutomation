@@ -13,7 +13,8 @@ type WSEvent =
   | { type: 'blast_progress'; campaign_id: number; recipient_id: number; phone: string; status: string }
   | { type: 'blast_completed'; campaign_id: number; failed: Array<{ phone: string; name: string; university: string; error: string }> }
 
-const WS_URL = `${import.meta.env.VITE_API_URL || 'http://localhost:8000'}/ws`
+const WS_URL = import.meta.env.VITE_WS_URL
+  || `${window.location.protocol === 'https:' ? 'wss:' : 'ws:'}//${window.location.host}/ws`
 
 let wsConnectionCount = 0
 
