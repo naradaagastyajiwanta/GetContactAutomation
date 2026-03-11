@@ -15,18 +15,27 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 import time as _time
 from typing import Any
 
 from orchestrator.config import log
 
-# Suppress noisy HTTP-level logging from primp (DDG's HTTP client)
-for _noisy in ("primp", "httpx", "httpcore"):
+# Suppress noisy HTTP-level logging from primp/ddgs (DDG's HTTP client)
+for _noisy in ("primp", "httpx", "httpcore", "ddgs", "ddgs.ddgs"):
     logging.getLogger(_noisy).setLevel(logging.WARNING)
 
 # ---------------------------------------------------------------------------
 # DuckDuckGo wrapper with retry + rate-limit awareness
 # ---------------------------------------------------------------------------
+
+# SOCKS5 proxy to bypass ISP DPI blocking (e.g. Cloudflare WARP)
+_DDG_PROXY: str | None = os.environ.get("DDG_PROXY")
+
+# Backends for the ddgs metasearch library
+# Include 'duckduckgo' because site: queries work better there,
+# even though the engine fails sometimes through the proxy.
+_DDG_BACKENDS = "auto"
 
 # Minimum seconds between DDG queries to avoid rate-limiting
 _MIN_QUERY_GAP = 2.5
@@ -84,8 +93,10 @@ def search_text(
     _rate_limit_wait()
 
     try:
-        with DDGS() as ddgs:
-            raw = list(ddgs.text(query, region=region, max_results=max_results))
+        with DDGS(proxy=_DDG_PROXY, timeout=10) as ddgs:
+            raw = list(ddgs.text(query, region=region, max_results=max_results, backend=_DDG_BACKENDS))
+        if not raw:
+            raise Exception("No results found.")
 
         _ddg_status["ok"] = True
         _ddg_status["error"] = None
@@ -111,8 +122,8 @@ def search_text(
             _time.sleep(10)
             try:
                 from ddgs import DDGS as _DDGS2
-                with _DDGS2() as ddgs:
-                    raw = list(ddgs.text(query, region=region, max_results=max_results))
+                with _DDGS2(proxy=_DDG_PROXY, timeout=10) as ddgs:
+                    raw = list(ddgs.text(query, region=region, max_results=max_results, backend=_DDG_BACKENDS))
                 _ddg_status["ok"] = True
                 _ddg_status["error"] = None
                 _last_query_time = _time.monotonic()
@@ -122,6 +133,23 @@ def search_text(
                 ]
             except Exception as e2:
                 log.warning("[DDG] Retry also failed: %s", e2)
+                return []
+        elif "timeout" in err_str or "timed out" in err_str:
+            _ddg_status["error"] = "timeout"
+            log.warning("[DDG] Timeout for '%s', retrying after 5s...", query[:60])
+            _time.sleep(5)
+            try:
+                with DDGS(proxy=_DDG_PROXY, timeout=10) as ddgs2:
+                    raw = list(ddgs2.text(query, region=region, max_results=max_results, backend=_DDG_BACKENDS))
+                _ddg_status["ok"] = True
+                _ddg_status["error"] = None
+                _last_query_time = _time.monotonic()
+                return [
+                    {"title": r.get("title", ""), "link": r.get("href", ""), "snippet": r.get("body", "")}
+                    for r in raw
+                ]
+            except Exception as e2:
+                log.warning("[DDG] Timeout retry also failed: %s", e2)
                 return []
         else:
             _ddg_status["ok"] = False

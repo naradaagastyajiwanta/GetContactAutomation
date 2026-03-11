@@ -1,3 +1,8 @@
-2026/03/06-11:11:37.964 3be4 Reusing MANIFEST F:\Programming\GetContactAIAgent\data\pw_sessions\chromium_sekretariataaii_2\Default\Session Storage/MANIFEST-000001
-2026/03/06-11:11:37.986 3be4 Recovering log #3
-2026/03/06-11:11:37.986 3be4 Reusing old log F:\Programming\GetContactAIAgent\data\pw_sessions\chromium_sekretariataaii_2\Default\Session Storage/000003.log 
+2026/03/11-11:21:41.767 111b Reusing MANIFEST /app/data/pw_sessions/chromium_sekretariataaii_2/Default/Session Storage/MANIFEST-000001
+2026/03/11-11:21:41.816 111b Recovering log #3
+2026/03/11-11:21:41.819 111b Level-0 table #3: started
+2026/03/11-11:21:41.838 111b Level-0 table #3: 14672 bytes OK
+2026/03/11-11:21:41.840 111b Recovering log #4
+2026/03/11-11:21:41.843 111b Reusing old log /app/data/pw_sessions/chromium_sekretariataaii_2/Default/Session Storage/000004.log 
+2026/03/11-11:21:41.865 111b Delete type=0 #3
+2026/03/11-11:21:41.865 111b Delete type=2 #5

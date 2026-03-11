@@ -3,7 +3,9 @@ uvicorn==0.34.0
 pddiktipy==2.0.6
 openai>=1.66.0
 phonenumbers==8.13.52
+certifi>=2024.0
 httpx==0.28.1
+beautifulsoup4>=4.12
 python-dotenv==1.0.1
 gspread==6.1.4
 oauth2client==4.1.3

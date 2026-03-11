@@ -50,12 +50,19 @@ async def campus_context_agent(state: CrmState) -> dict:
 
     # ── 2. Gemini grounded research ────────────────────────────────────
     gemini_q = (
-        f"Apa saja masalah, tantangan, kekhawatiran, dan harapan utama "
-        f"di {uni_name}"
+        f"Cari informasi terkini tentang {uni_name}"
     )
     if faculty:
         gemini_q += f" khususnya {faculty}"
-    gemini_q += "? Berikan fakta terkini dari berita."
+    gemini_q += (
+        ". Saya butuh informasi berikut:\n"
+        "1. Masalah dan tantangan kampus saat ini (campus_problems)\n"
+        "2. Kekhawatiran tentang masa depan (campus_concerns)\n"
+        "3. Harapan, target, dan aspirasi (campus_hopes)\n"
+        "4. Berita terbaru dan pencapaian penting di tahun 2025-2026 (recent_news)\n\n"
+        "PENTING: Sertakan berita terbaru (recent_news) minimal 2-3 item.\n"
+        "Gunakan bahasa Indonesia. Hanya fakta yang didukung sumber."
+    )
 
     gemini_resp = await gemini_research(gemini_q)
     if gemini_resp and gemini_resp.get("text"):

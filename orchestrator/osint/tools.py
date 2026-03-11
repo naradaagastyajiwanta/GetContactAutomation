@@ -30,7 +30,7 @@ async def ddg_search(query: str, max_results: int = 5) -> list[dict]:
     try:
         results = await async_search_text(query, max_results=max_results, region="id-id")
         return results
-    except Exception as e:
+    except (Exception, asyncio.CancelledError) as e:
         log.warning("[OSINT Tools] DDG search failed for '%s': %s", query[:60], e)
         return []
 
@@ -48,6 +48,9 @@ def _get_pddikti():
         try:
             from pddiktipy import api
             _pddikti = api()
+            # PDDIKTI API has incomplete cert chain; disable SSL verification
+            if hasattr(_pddikti, 'H') and hasattr(_pddikti.H, 'session'):
+                _pddikti.H.session.verify = False
         except ImportError:
             log.warning("[OSINT Tools] pddiktipy not installed")
             return None
@@ -178,7 +181,7 @@ async def fetch_page(url: str, timeout: float = 15.0) -> str | None:
             resp = await client.get(url)
             resp.raise_for_status()
             return resp.text
-    except Exception as e:
+    except (Exception, asyncio.CancelledError) as e:
         log.debug("[OSINT Tools] fetch_page failed for %s: %s", url, e)
         return None
 
@@ -268,7 +271,7 @@ async def gpt_extract_structured(
         )
         content = response.choices[0].message.content
         return json.loads(content) if content else None
-    except Exception as e:
+    except (Exception, asyncio.CancelledError) as e:
         log.warning("[OSINT Tools] GPT extraction failed: %s", e)
         return None
 

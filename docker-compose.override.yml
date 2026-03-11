@@ -1,9 +1,12 @@
 # docker-compose.override.yml
 # ----------------------------------------------------------
-# Hot-reload override for FAST deployment.
-# Mounts orchestrator/ source code as a volume so that
-# code changes only need: SCP file + docker compose restart
-# (no image rebuild needed).
+# Development override for FAST deployment.
+# Mounts source code as volumes so that code changes are
+# reflected without rebuilding images.
+#
+# - Orchestrator: source mounted + uvicorn --reload (auto-restart on change)
+# - WhatsApp: source mounted + ts-node (TypeScript on-the-fly, no compile)
+# - Frontend: source mounted + vite dev server (HMR, no build needed)
 #
 # This file is auto-loaded by docker compose alongside
 # docker-compose.yml. To DISABLE it (use baked-in image),
@@ -16,3 +19,35 @@ services:
     volumes:
       - ./data:/app/data
       - ./orchestrator:/app/orchestrator
+      - ./scripts:/app/scripts
+    command: ["uvicorn", "orchestrator.main:app", "--host", "0.0.0.0", "--port", "8000", "--reload"]
+
+  whatsapp:
+    build:
+      context: .
+      dockerfile: Dockerfile.whatsapp
+      target: deps
+    volumes:
+      - ./whatsapp-service/src:/app/src
+      - ./whatsapp-service/tsconfig.json:/app/tsconfig.json
+      - ./whatsapp-service/auth_store:/app/auth_store
+      - ./whatsapp-service/auth_store_backup:/app/auth_store_backup
+      - ./whatsapp-service/auth_store_device_1:/app/auth_store_device_1
+      - ./whatsapp-service/auth_store_device_2:/app/auth_store_device_2
+      - ./whatsapp-service/auth_store_device_3:/app/auth_store_device_3
+      - ./whatsapp-service/auth_store_device_4:/app/auth_store_device_4
+      - ./whatsapp-service/auth_store_device_5:/app/auth_store_device_5
+      - ./whatsapp-service/data:/app/data
+    command: ["npx", "ts-node", "src/index.ts"]
+
+  frontend:
+    build:
+      context: .
+      dockerfile: Dockerfile.frontend
+      target: deps
+    volumes:
+      - ./frontend:/app
+      - /app/node_modules
+    environment:
+      - API_TARGET=http://orchestrator:8000
+    command: ["npx", "vite", "--host", "--port", "80"]

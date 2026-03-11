@@ -74,18 +74,66 @@ async def personal_interest_agent(state: CrmState) -> dict:
     # ── 2. Social media content (from social profiler) ─────────────────
     if social:
         if social.instagram_handle:
-            ig_queries = [
-                f'site:instagram.com/{social.instagram_handle}',
-                f'"{social.instagram_handle}" instagram bio OR tentang',
-            ]
-            for q in ig_queries:
-                ig_hits = await ddg_search(q, max_results=2)
-                for h in (ig_hits or []):
-                    snippet = h.get("snippet", "") or h.get("body", "")
-                    if snippet:
-                        snippets.append(f"Instagram: {snippet}")
-            if ig_hits:
-                sources.append("instagram_bio")
+            # Strategy A: Try Playwright for real IG bio + recent posts
+            ig_scraped = False
+            try:
+                import asyncio as _aio
+                from orchestrator.playwright_ig import pw_get_profile, pw_get_posts, is_available
+                if is_available():
+                    loop = _aio.get_event_loop()
+                    profile = await loop.run_in_executor(
+                        None, pw_get_profile, social.instagram_handle,
+                    )
+                    if profile:
+                        bio = profile.get("bio", "")
+                        ig_name = profile.get("full_name", "")
+                        ext_url = profile.get("external_url", "")
+                        followers = profile.get("followers", 0)
+                        if bio:
+                            snippets.append(
+                                f"Instagram bio (@{social.instagram_handle}): "
+                                f"{ig_name}. {bio}. "
+                                f"Followers: {followers}. External: {ext_url}"
+                            )
+                            ig_scraped = True
+                            sources.append("instagram_profile_pw")
+
+                    # Get recent posts for activity/interest insights
+                    posts = await loop.run_in_executor(
+                        None, pw_get_posts, social.instagram_handle, 6,
+                    )
+                    if posts:
+                        captions = []
+                        for p in posts[:6]:
+                            cap = p.get("caption", "") or ""
+                            if cap and len(cap) > 20:
+                                captions.append(cap[:500])
+                        if captions:
+                            snippets.append(
+                                f"Instagram recent posts (@{social.instagram_handle}):\n"
+                                + "\n---\n".join(captions)
+                            )
+                            ig_scraped = True
+                            sources.append("instagram_posts_pw")
+            except ImportError:
+                pass  # Playwright not available
+            except Exception as e:
+                log.warning("[PersonalInterest] IG Playwright failed: %s", e)
+
+            # Strategy B: Fallback to DDG snippets if Playwright unavailable
+            if not ig_scraped:
+                ig_queries = [
+                    f'site:instagram.com/{social.instagram_handle}',
+                    f'"{social.instagram_handle}" instagram bio OR tentang',
+                ]
+                for q in ig_queries:
+                    ig_hits = await ddg_search(q, max_results=2)
+                    for h in (ig_hits or []):
+                        snippet = h.get("snippet", "") or h.get("body", "")
+                        if snippet:
+                            snippets.append(f"Instagram: {snippet}")
+                if ig_hits:
+                    sources.append("instagram_bio")
 
         if social.linkedin_url:
             ln_hits = await ddg_search(
@@ -127,7 +175,27 @@ async def personal_interest_agent(state: CrmState) -> dict:
                 snippets.append(f"Google Scholar:\n{scholar_text}")
                 sources.append("scholar_profile")
 
-    # ── 3. Academic-based personality inference ─────────────────────────
+    # ── 3. Gemini grounded research for personal details ────────────────
+    try:
+        from orchestrator.crm.tools import gemini_research
+        gemini_q = (
+            f"Cari informasi personal tentang {full_name}, "
+            f"dosen di {uni_name}. "
+            f"Saya ingin tahu: hobi, kegiatan di luar kampus, "
+            f"makanan favorit, sifat kepribadian, "
+            f"aktivitas sehari-hari, dan hal menarik tentang beliau."
+        )
+        log.info("[PersonalInterest] Calling Gemini for %s (snippets so far: %d)", full_name, len(snippets))
+        gemini_resp = await gemini_research(gemini_q)
+        if gemini_resp and gemini_resp.get("text"):
+            snippets.append(f"Gemini research:\n{gemini_resp['text']}")
+            sources.append("gemini_personal")
+        else:
+            log.warning("[PersonalInterest] Gemini returned empty for %s", full_name)
+    except Exception as e:
+        log.warning("[PersonalInterest] Gemini failed for %s: %s", full_name, e)
+
+    # ── 4. Academic-based personality inference ─────────────────────────
     if academic:
         # Build context from academic data for GPT inference
         acad_context = []

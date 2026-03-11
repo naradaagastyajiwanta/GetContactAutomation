@@ -14,6 +14,12 @@ services:
     volumes:
       - ./whatsapp-service/auth_store:/app/auth_store
       - ./whatsapp-service/auth_store_backup:/app/auth_store_backup
+      - ./whatsapp-service/auth_store_device_1:/app/auth_store_device_1
+      - ./whatsapp-service/auth_store_device_2:/app/auth_store_device_2
+      - ./whatsapp-service/auth_store_device_3:/app/auth_store_device_3
+      - ./whatsapp-service/auth_store_device_4:/app/auth_store_device_4
+      - ./whatsapp-service/auth_store_device_5:/app/auth_store_device_5
+      - ./whatsapp-service/data:/app/data
     environment:
       - NODE_ENV=production
     networks:
@@ -26,6 +32,32 @@ services:
       start_period: 20s
 
   # ---------------------------------------------------------------
+  # Cloudflare WARP — SOCKS5 proxy to bypass ISP DPI blocking
+  # (Indonesian ISPs block DuckDuckGo via TLS/SNI inspection)
+  # ---------------------------------------------------------------
+  warp:
+    image: caomingjun/warp:latest
+    container_name: gc-warp
+    restart: unless-stopped
+    environment:
+      - WARP_SLEEP=2
+    cap_add:
+      - NET_ADMIN
+    sysctls:
+      - net.ipv6.conf.all.disable_ipv6=0
+      - net.ipv4.conf.all.src_valid_mark=1
+    volumes:
+      - warp-data:/var/lib/cloudflare-warp
+    networks:
+      - gc-network
+    healthcheck:
+      test: ["CMD", "curl", "-f", "--socks5", "127.0.0.1:1080", "https://cloudflare.com/cdn-cgi/trace"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 15s
+
+  # ---------------------------------------------------------------
   # Orchestrator (Python FastAPI)
   # ---------------------------------------------------------------
   orchestrator:
@@ -35,6 +67,9 @@ services:
     image: naradaagastya/gc-orchestrator:latest
     container_name: gc-orchestrator
     restart: unless-stopped
+    dns:
+      - 1.1.1.1
+      - 8.8.8.8
     expose:
       - "8000"
     volumes:
@@ -45,8 +80,12 @@ services:
       - WA_SERVICE_URL=http://whatsapp:3100
       - WEBHOOK_URL=http://orchestrator:8000/webhook/incoming
       - DATABASE_PATH=data/getcontact.db
+      - DDG_PROXY=socks5h://warp:1080
+      - DDGS_PROXY=socks5h://warp:1080
     depends_on:
       whatsapp:
+        condition: service_healthy
+      warp:
         condition: service_healthy
     networks:
       - gc-network
@@ -71,3 +110,6 @@ services:
 networks:
   gc-network:
     driver: bridge
+
+volumes:
+  warp-data:

@@ -18,6 +18,12 @@ services:
     volumes:
       - ./whatsapp-service/auth_store:/app/auth_store
       - ./whatsapp-service/auth_store_backup:/app/auth_store_backup
+      - ./whatsapp-service/auth_store_device_1:/app/auth_store_device_1
+      - ./whatsapp-service/auth_store_device_2:/app/auth_store_device_2
+      - ./whatsapp-service/auth_store_device_3:/app/auth_store_device_3
+      - ./whatsapp-service/auth_store_device_4:/app/auth_store_device_4
+      - ./whatsapp-service/auth_store_device_5:/app/auth_store_device_5
+      - ./whatsapp-service/data:/app/data
     environment:
       - NODE_ENV=production
     networks:

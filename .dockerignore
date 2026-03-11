@@ -1,3 +1,6 @@
+# ── Docker build context exclusions ──
+# Keeps build context small and prevents leaking secrets.
+
 # Git
 .git
 .gitignore
@@ -9,43 +12,53 @@
 *.swo
 
 # Python cache
-__pycache__
-*.pyc
-*.pyo
+**/__pycache__
+**/*.pyc
+**/*.pyo
 *.egg-info
 .eggs
 venv
 .venv
+.pytest_cache
+.mypy_cache
 
 # Node modules (rebuilt in container)
-node_modules
-frontend/node_modules
-whatsapp-service/node_modules
+**/node_modules
+**/npm-debug.log*
 
-# Build outputs
+# Build outputs (rebuilt in container)
 frontend/dist
 whatsapp-service/dist
 
-# Database (will be volume-mounted)
-data/*.db
-data/*.db-journal
+# Runtime data (persisted via volume mounts)
+data/
+whatsapp-service/auth_store/
+whatsapp-service/auth_store_backup/
+whatsapp-service/auth_store_device_*/
+whatsapp-service/data/
 
-# WhatsApp session (will be volume-mounted)
-whatsapp-service/auth_store
-whatsapp-service/auth_store_backup
-
-# Env files
+# Env files — never bake into images
 .env
-.env.production
+.env.*
+!.env.example
+!.env.production.example
 
 # Docs & misc
 *.md
-*.sql
 *.log
 .claude
 .superdesign
 briefs/
 docs/
+
+# Deploy / infra scripts
+deploy*.ps1
+deploy*.sh
+sync-to-vps*
+quick-deploy*
+ecosystem.config.cjs
+start-all.bat
+stop-all.bat
 
 # Docker files (not needed inside build context copies)
 docker-compose*.yml
