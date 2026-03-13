@@ -131,7 +131,16 @@ def parse_json_response(text: str) -> dict[str, Any]:
     """Parse JSON from Gemini response, handling code blocks and partial JSON."""
     text = text.strip()
 
-    # Remove markdown code blocks
+    # 1. Try to extract from markdown code blocks first (most reliable if there is chatter)
+    import re
+    match = re.search(r"```(?:json)?\s*([\s\S]*?)```", text)
+    if match:
+        try:
+            return json.loads(match.group(1).strip())
+        except json.JSONDecodeError:
+            pass
+
+    # 2. Remove markdown code blocks (fallback if started with ``` but not matched above)
     if text.startswith("```"):
         lines = text.split("\n")
         lines = [l for l in lines if not l.strip().startswith("```")]
@@ -142,7 +151,7 @@ def parse_json_response(text: str) -> dict[str, Any]:
     except json.JSONDecodeError:
         pass
 
-    # Find JSON object in text
+    # 3. Find JSON object in text
     start = text.find("{")
     end = text.rfind("}") + 1
     if start >= 0 and end > start:
@@ -151,7 +160,7 @@ def parse_json_response(text: str) -> dict[str, Any]:
         except json.JSONDecodeError:
             pass
 
-    # Find JSON list in text
+    # 4. Find JSON list in text
     start_list = text.find("[")
     end_list = text.rfind("]") + 1
     if start_list >= 0 and end_list > start_list:

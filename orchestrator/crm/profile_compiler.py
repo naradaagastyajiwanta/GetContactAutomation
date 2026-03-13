@@ -55,6 +55,11 @@ _FIELD_MAP: list[tuple[str, str, str, str]] = [
     ("personal_interest", "favorite_food", "Makanan Favorit", "personal"),
     ("personal_interest", "outside_activities", "Aktivitas Luar Kampus", "personal"),
     ("personal_interest", "personality_traits", "Sifat Kepribadian", "personal"),
+    # Social Post Analysis
+    ("social_post_analysis", "personality_summary", "Ringkasan Kepribadian", "personal"),
+    ("social_post_analysis", "recent_topics", "Topik Relevan Sosial Media", "personal"),
+    ("social_post_analysis", "communication_style", "Gaya Komunikasi", "personal"),
+    ("social_post_analysis", "social_behavior_insights", "Perilaku Sosial", "personal"),
     # Family
     ("family_info", "marital_status", "Status Pernikahan", "family"),
     ("family_info", "spouse_name", "Nama Pasangan", "family"),

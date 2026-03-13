@@ -100,6 +100,16 @@ class FamilyInfoResult(BaseModel):
     source_urls: dict[str, list[str]] = Field(default_factory=dict)
 
 
+class SocialPostAnalysisResult(BaseModel):
+    """Output of the Social Post Analyzer Agent (analyzes timeline/posts)."""
+
+    personality_summary: str | None = None
+    recent_topics: list[str] = Field(default_factory=list)
+    communication_style: str | None = None
+    social_behavior_insights: str | None = None
+    analyzed_platforms: list[str] = Field(default_factory=list)
+    confidence: float = 0.0
+
 class ProfileFieldStatus(BaseModel):
     """Status of a single profile field."""
 
@@ -152,6 +162,7 @@ class CrmState(TypedDict, total=False):
     social_profile: SocialProfileResult | None
     campus_context: CampusContextResult | None
     personal_interest: PersonalInterestResult | None
+    social_post_analysis: SocialPostAnalysisResult | None
     family_info: FamilyInfoResult | None
     compiled_profile: CompiledProfile | None
 
@@ -168,6 +179,7 @@ CRM_AGENT_KEYS: list[str] = [
     "social_profiler",
     "campus_context",
     "personal_interest",
+    "social_post_analyzer",
     "family_info",
     "profile_compiler",
 ]

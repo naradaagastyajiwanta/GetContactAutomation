@@ -88,6 +88,7 @@ from orchestrator.crm.academic_profiler import academic_profiler_agent
 from orchestrator.crm.social_profiler import social_profiler_agent
 from orchestrator.crm.campus_context import campus_context_agent
 from orchestrator.crm.personal_interest import personal_interest_agent
+from orchestrator.crm.social_post_analyzer import social_post_analyzer_agent
 from orchestrator.crm.family_info import family_info_agent
 from orchestrator.crm.profile_compiler import profile_compiler_agent
 from orchestrator.db import (
@@ -225,17 +226,18 @@ async def _parallel_phase_1(state: CrmState) -> dict:
 
 
 async def _parallel_phase_2(state: CrmState) -> dict:
-    """Run personal interest and family info agents in parallel."""
-    log.info("[CRM Graph] Starting phase 2 (2 agents in parallel)...")
+    """Run personal interest, family info, and social post analyzer agents in parallel."""
+    log.info("[CRM Graph] Starting phase 2 (3 agents in parallel)...")
 
     results = await asyncio.gather(
         personal_interest_agent(state),
         family_info_agent(state),
+        social_post_analyzer_agent(state),
         return_exceptions=True,
     )
 
     merged: dict[str, Any] = {}
-    agent_names = ["personal_interest", "family_info"]
+    agent_names = ["personal_interest", "family_info", "social_post_analyzer"]
     completed = list(state.get("agents_completed", []))
     failed = list(state.get("agents_failed", []))
 
@@ -356,6 +358,13 @@ async def _persist_results(state: CrmState) -> dict:
         profile_data["family_residence"] = family.family_residence
         profile_data["family_residence_source"] = ", ".join(family.sources) if family.sources else None
 
+    social_post_analysis = state.get("social_post_analysis")
+    if social_post_analysis:
+        profile_data["personality_summary"] = social_post_analysis.personality_summary
+        profile_data["recent_topics"] = json.dumps(social_post_analysis.recent_topics) if social_post_analysis.recent_topics else None
+        profile_data["communication_style"] = social_post_analysis.communication_style
+        profile_data["social_behavior_insights"] = social_post_analysis.social_behavior_insights
+
     if compiled:
         profile_data["overall_confidence"] = compiled.overall_confidence
         profile_data["fields_found"] = compiled.fields_found
@@ -436,25 +445,81 @@ async def _gap_filler(state: CrmState) -> dict:
         full_name, compiled.fields_found, compiled.fields_total,
     )
 
-    # Identify which fields are missing
+    # Identity which fields are missing
     missing_fields = [f.field_name for f in compiled.fields if f.status == "not_found"]
     log.info("[CRM Graph] Missing fields: %s", missing_fields)
 
     updates: dict = {}
 
-    # ── Gap: family_residence — infer from university location ──────
-    if family and not family.family_residence and "Tempat Tinggal Keluarga" in missing_fields:
-        # University city is a strong proxy for residence
-        hits = await ddg_search(f'"{uni_name}" lokasi OR alamat OR kota', max_results=2)
-        if hits:
-            combined = "\n".join(h.get("snippet", "") for h in hits)
+    # ── Gap: Facebook Deep Dive ──────
+    fb_url = social.facebook_url if social else None
+    if fb_url:
+        fb_targets = []
+        if "Status Pernikahan" in missing_fields or "Nama Pasangan" in missing_fields:
+            fb_targets.append("status pernikahan dan nama pasangan")
+        if "Tempat Tinggal Keluarga" in missing_fields or "Alamat Rumah" in missing_fields or "Kota Asal" in missing_fields:
+            fb_targets.append("tempat tinggal, kota asal, dan alamat")
+        if "Riwayat Akademik" in missing_fields or "Riwayat Pendidikan" in missing_fields:
+            fb_targets.append("riwayat pendidikan (sekolah, kampus)")
+        if "Tanggal Lahir" in missing_fields or "Umur" in missing_fields:
+            fb_targets.append("tanggal lahir atau umur")
+        
+        if fb_targets:
+            log.info("[CRM Graph] Gap filler leveraging Facebook deep scrape for: %s", fb_targets)
+            
+            # Step 1: Deep PinchTab Fetch of actual FB page
+            page_text = ""
+            about_url = fb_url.rstrip("/") + "/about"
+            fb_html = await fetch_page(about_url)
+            if fb_html:
+                page_text = extract_text_from_html(fb_html, max_chars=8000)
+            
+            # Step 2: Use intelligent Search fallback as well
+            fb_search = await ddg_search(f'site:facebook.com "{cleaned_name}" ' + " OR ".join(fb_targets), max_results=3)
+            search_text = ""
+            if fb_search:
+                search_text = "\n".join(s.get("snippet", "") for s in fb_search)
+            
+            combined_context = f"FACEBOOK PAGE TEXT:\n{page_text}\n\nSEARCH SNIPPETS:\n{search_text}"
+            
             extracted = await gpt_extract_structured(
-                combined,
-                f"Where is {uni_name} located? Return JSON: {{\"city\": \"...\", \"province\": \"...\"}}",
+                combined_context,
+                f"Kamu adalah AI OSINT. Cari informasi spesifik mengenai sosok {cleaned_name} dosen {uni_name}: {', '.join(fb_targets)}.\nReturn JSON: {{\"marital_status\": \"married/single/unknown\", \"spouse_name\": \"...\", \"residence\": \"...\", \"education_history\": [{{\"jenjang\": \"...\", \"nama_pt\": \"...\"}}], \"birth_date\": \"YYYY-MM-DD\", \"home_address\": \"...\"}}"
             )
-            if extracted and extracted.get("city"):
-                family.family_residence = extracted["city"]
-                family.sources = list(family.sources) + ["gap_filler_inferred"]
+            
+            if extracted:
+                if family:
+                    if extracted.get("marital_status") and extracted["marital_status"] != "unknown" and not family.marital_status:
+                        family.marital_status = extracted["marital_status"]
+                        family.sources.append("facebook_gap_filler")
+                        updates["family_info"] = family
+                    if extracted.get("spouse_name") and not family.spouse_name:
+                        family.spouse_name = extracted["spouse_name"]
+                        family.sources.append("facebook_gap_filler")
+                        updates["family_info"] = family
+                    if extracted.get("residence") and not family.family_residence:
+                        family.family_residence = extracted["residence"]
+                        family.sources.append("facebook_gap_filler")
+                        updates["family_info"] = family
+
+                if identity:
+                    updated_id = False
+                    if extracted.get("birth_date") and not identity.birth_date:
+                        identity.birth_date = extracted["birth_date"]
+                        identity.sources.append("facebook_gap_filler")
+                        updated_id = True
+                    if extracted.get("home_address") and not identity.home_address:
+                        identity.home_address = extracted["home_address"]
+                        identity.sources.append("facebook_gap_filler")
+                        updated_id = True
+                    if updated_id:
+                        updates["identity"] = identity
+
+                academic = state.get("academic")
+                if academic and extracted.get("education_history") and not academic.education_history:
+                    academic.education_history = extracted["education_history"]
+                    academic.sources.append("facebook_gap_filler")
+                    updates["academic"] = academic
                 updates["family_info"] = family
 
     # ── Gap: hobbies / outside_activities — Gemini targeted ──────

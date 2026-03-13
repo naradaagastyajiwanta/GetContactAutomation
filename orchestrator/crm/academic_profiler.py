@@ -208,6 +208,32 @@ async def academic_profiler_agent(state: CrmState) -> dict:
                     result.source_urls["teaching_subjects"] = ddg_links
             sources.append("ddg_academic")
 
+    # ── 8. DDG fallback for education history ─────────
+    if not result.education_history:
+        ddg_results = await ddg_search(
+            f'"{search_name}" "pendidikan" OR "alumni" OR "lulusan" OR "universitas"',
+            max_results=5,
+        )
+        if ddg_results:
+            log.info("[AcademicProfiler] Deep diving for education history with DDG...")
+            combined = "\n".join(r.get("snippet", "") for r in ddg_results)
+            extracted = await gpt_extract_structured(
+                combined,
+                (
+                    f"Extract academic education history (S1, S2, S3, etc) for {full_name}:\n"
+                    "Search comprehensively for any mention of schools or universities attended. Don't be rigid.\n"
+                    "Return JSON with keys:\n"
+                    "- education_history: array of dicts with 'jenjang' (level), 'nama_pt' (institute name), 'gelar' (title).\n"
+                    "Return null/empty list if not found. Ignore other info."
+                ),
+            )
+            if extracted and extracted.get("education_history"):
+                result.education_history = extracted["education_history"]
+                ddg_links = [r.get("link", "") for r in ddg_results if r.get("link")]
+                if ddg_links:
+                    result.source_urls["education_history"] = ddg_links
+                sources.append("ddg_education_dive")
+
     # ── Source URLs per field ──────────────────────────────────────────
     if pddikti_url:
         for field in ("jabatan_akademik", "pendidikan_tertinggi", "education_history",

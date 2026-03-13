@@ -173,10 +173,21 @@ async def pddikti_get_dosen_karya(dosen_id: str) -> list[dict]:
 async def fetch_page(url: str, timeout: float = 15.0) -> str | None:
     """Fetch a web page and return the HTML body text, or None on error."""
     try:
+        # Delegate JS-heavy sites to PinchTab headless browser
+        if any(domain in url.lower() for domain in ["facebook.com", "instagram.com", "linkedin.com", "scholar.google.com"]):
+            try:
+                from orchestrator.osint.pinchtab_client import pt_fetch_html
+                log.info("[fetch_page] Using PinchTab for deep JS scrape of %s", url)
+                res = await pt_fetch_html(url, timeout=int(timeout) + 10)
+                if res:
+                    return res
+            except Exception as e:
+                log.warning("[fetch_page] PinchTab fallback failed for %s: %s", url, e)
+        
         async with httpx.AsyncClient(
             timeout=timeout,
             follow_redirects=True,
-            headers={"User-Agent": "Mozilla/5.0 (compatible; GetContactAI/1.0)"},
+            headers={"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"},
         ) as client:
             resp = await client.get(url)
             resp.raise_for_status()

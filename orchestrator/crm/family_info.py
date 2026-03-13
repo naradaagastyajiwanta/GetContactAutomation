@@ -100,9 +100,10 @@ async def family_info_agent(state: CrmState) -> dict:
             sources.append("facebook")
 
         # Try to fetch FB about page
-        fb_about_html = await fetch_page(fb_url)
+        about_url = fb_url.rstrip("/") + "/about"
+        fb_about_html = await fetch_page(about_url)
         if fb_about_html:
-            fb_text = extract_text_from_html(fb_about_html, max_chars=2000)
+            fb_text = extract_text_from_html(fb_about_html, max_chars=4000)
             if fb_text and len(fb_text) > 50:
                 snippets.append(f"Facebook profile:\n{fb_text}")
                 sources.append("facebook_page")
