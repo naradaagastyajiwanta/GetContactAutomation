@@ -10,7 +10,8 @@ from typing import Any
 
 from orchestrator.config import log
 from orchestrator.crm.state import CrmState, FamilyInfoResult
-from orchestrator.crm.tools import ddg_search, gpt_extract_structured, fetch_page, extract_text_from_html
+from orchestrator.crm.name_utils import strip_academic_titles, ai_strip_titles, build_name_variants
+from orchestrator.crm.tools import ddg_search, ddg_search, gpt_extract_structured, fetch_page, extract_text_from_html
 
 
 async def family_info_agent(state: CrmState) -> dict:
@@ -31,30 +32,43 @@ async def family_info_agent(state: CrmState) -> dict:
 
     full_name = (identity.full_name if identity else None) or pic_name
     nidn = identity.nidn if identity else None
+    # Use cleaned name for DDG queries (strip academic titles)
+    cleaned_name = state.get("cleaned_name") or await ai_strip_titles(pic_name)
+    search_name = cleaned_name if cleaned_name != full_name else full_name
 
-    log.info("[FamilyInfo] Starting for %s", full_name)
+    log.info("[FamilyInfo] Starting for %s (search_name=%s)", full_name, search_name)
 
     snippets: list[str] = []
     sources: list[str] = []
+    collected_urls: list[str] = []
 
-    # ── 1. Google dorking for family mentions ──────────────────────────
+    # ── 1. Google dorking for family mentions (agentic retry) ─────────
+    # Use cleaned name for better DDG results
     dork_queries = [
-        f'"{full_name}" istri OR suami OR keluarga OR anak "{uni_name}"',
-        f'"{full_name}" "menikah" OR "nikah" OR "pernikahan"',
-        f'"{full_name}" profil pribadi OR biografi "{uni_name}"',
-        f'intitle:"{full_name}" profil OR biografi',
+        f'"{search_name}" istri OR suami OR keluarga OR anak "{uni_name}"',
+        f'"{search_name}" "menikah" OR "nikah" OR "pernikahan"',
+        f'"{search_name}" tinggal OR domisili OR alamat OR "berdomisili di"',
+        f'"{search_name}" profil pribadi OR biografi "{uni_name}"',
+        f'intitle:"{search_name}" profil OR biografi',
     ]
     if nidn:
         dork_queries.append(f'"{nidn}" profil OR biografi keluarga')
+    # Add shorter name variant as broadest fallback
+    name_variants = state.get("name_variants") or build_name_variants(pic_name)
+    short_variants = [v for v in name_variants if v.lower() != search_name.lower() and len(v.split()) <= 2]
+    for sv in short_variants[:1]:
+        dork_queries.append(f'"{sv}" dosen "{uni_name}" profil keluarga')
 
     for q in dork_queries:
         hits = await ddg_search(q, max_results=3)
         for h in (hits or []):
             snippet = h.get("snippet", "") or h.get("body", "")
+            link = h.get("link", "")
             if snippet and len(snippet) > 20:
                 snippets.append(snippet)
+            if link:
+                collected_urls.append(link)
             # Fetch relevant pages that might have full bio
-            link = h.get("link", "")
             if link and ("profil" in link.lower() or "biografi" in link.lower()
                         or ".ac.id" in link.lower()):
                 page_html = await fetch_page(link)
@@ -71,9 +85,10 @@ async def family_info_agent(state: CrmState) -> dict:
     # ── 2. Facebook public search ──────────────────────────────────────
     fb_url = social.facebook_url if social else None
     if fb_url:
+        collected_urls.append(fb_url)
         fb_queries = [
-            f'"{full_name}" site:facebook.com keluarga OR family OR tentang',
-            f'site:facebook.com "{full_name}" married OR menikah',
+            f'"{search_name}" site:facebook.com keluarga OR family OR tentang',
+            f'site:facebook.com "{search_name}" married OR menikah',
         ]
         for q in fb_queries:
             fb_hits = await ddg_search(q, max_results=2)
@@ -94,13 +109,14 @@ async def family_info_agent(state: CrmState) -> dict:
 
     # ── 3. University staff page ───────────────────────────────────────
     staff_queries = [
-        f'site:*.ac.id "{full_name}" profil OR staff OR dosen',
+        f'site:*.ac.id "{search_name}" profil OR staff OR dosen',
     ]
     for q in staff_queries:
         hits = await ddg_search(q, max_results=2)
         for h in (hits or []):
             link = h.get("link", "")
             if link and ".ac.id" in link:
+                collected_urls.append(link)
                 page_html = await fetch_page(link)
                 if page_html:
                     page_text = extract_text_from_html(page_html, max_chars=3000)
@@ -113,19 +129,32 @@ async def family_info_agent(state: CrmState) -> dict:
     # ── 4. Gemini grounded research for family info ────────────────────
     try:
         from orchestrator.crm.tools import gemini_research
-        gemini_q = (
-            f"Cari informasi keluarga tentang {full_name}, "
-            f"dosen di {uni_name}. "
-            f"Apakah beliau sudah menikah? Siapa nama istri/suami? "
-            f"Berapa jumlah anak? Tinggal di mana?"
-        )
-        log.info("[FamilyInfo] Calling Gemini for %s", full_name)
-        gemini_resp = await gemini_research(gemini_q)
-        if gemini_resp and gemini_resp.get("text"):
-            snippets.append(f"Gemini research:\n{gemini_resp['text']}")
-            sources.append("gemini_grounded")
-        else:
-            log.warning("[FamilyInfo] Gemini returned empty for %s", full_name)
+        gemini_queries = [
+            (
+                f"Cari informasi keluarga tentang {search_name}, "
+                f"dosen di {uni_name}. "
+                f"Apakah beliau sudah menikah? Siapa nama istri/suami? "
+                f"Berapa jumlah anak? Tinggal di mana? "
+                f"WARNING: JANGAN MENGARANG (HALUSINASI). Jika tidak ada informasi terpublikasi, katakan saja 'tidak diketahui'. Jangan asal tebak atau campur aduk dengan orang lain."
+            ),
+        ]
+        # Add targeted residence query if we're missing that
+        if not any("domisili" in s.lower() or "tinggal" in s.lower() for s in snippets):
+            gemini_queries.append(
+                f"Di mana {search_name} dosen {uni_name} berdomisili? "
+                f"Sebutkan kotanya JIKA ADA BUKTI SAJA. JANGAN MENGARANG."
+            )
+        for gq in gemini_queries:
+            log.info("[FamilyInfo] Calling Gemini for %s", search_name)
+            gemini_resp = await gemini_research(gq)
+            if gemini_resp and gemini_resp.get("text"):
+                snippets.append(f"Gemini research:\n{gemini_resp['text']}")
+                sources.append("gemini_grounded")
+                for u in (gemini_resp.get("urls") or []):
+                    if u:
+                        collected_urls.append(u)
+            else:
+                log.warning("[FamilyInfo] Gemini returned empty for %s", full_name)
     except Exception as e:
         log.warning("[FamilyInfo] Gemini failed for %s: %s", full_name, e)
 
@@ -144,8 +173,11 @@ async def family_info_agent(state: CrmState) -> dict:
                 "- spouse_name: string or null\n"
                 "- children_count: integer or null\n"
                 "- family_residence: city/region or null\n\n"
-                "IMPORTANT: Only include information that is EXPLICITLY stated "
-                "in the text. Do not infer or guess. Use null if not found."
+                "IMPORTANT:\n"
+                "- For marital_status, spouse_name, children_count: only include if EXPLICITLY stated.\n"
+                "- For family_residence: you may infer the city/region from their university location "
+                "or any mention of where they live/work. Example: a professor at 'Universitas Gadjah Mada' "
+                "likely resides in 'Yogyakarta'. Return the city name."
             ),
         )
         if extracted:
@@ -158,6 +190,13 @@ async def family_info_agent(state: CrmState) -> dict:
                 except (ValueError, TypeError):
                     pass
             result.family_residence = extracted.get("family_residence")
+
+    # ── Source URLs per field ──────────────────────────────────────────
+    unique_urls = list(dict.fromkeys(collected_urls))
+    for field in ("marital_status", "spouse_name", "children_count", "family_residence"):
+        val = getattr(result, field, None)
+        if val is not None and val != "unknown":
+            result.source_urls[field] = unique_urls
 
     # ── Confidence ─────────────────────────────────────────────────────
     filled = sum([

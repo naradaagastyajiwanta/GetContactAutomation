@@ -192,6 +192,23 @@ export async function searchDmsUniversities(
   return data
 }
 
+export interface DmsPicResult {
+  id_univ: number | null
+  nama_universitas: string | null
+  nama_pic: string | null
+  jabatan_pic: string | null
+  no_pic: string | null
+  pic_source: string
+}
+
+export async function searchDmsPics(
+  q: string = '',
+  limit: number = 50,
+): Promise<{ total: number; pics: DmsPicResult[] }> {
+  const { data } = await apiClient.get('/dms/pics/search', { params: { q, limit } })
+  return data
+}
+
 export async function getDmsUniversity(idUniv: number): Promise<DmsUniversity> {
   const { data } = await apiClient.get<DmsUniversity>(`/dms/universities/${idUniv}`)
   return data

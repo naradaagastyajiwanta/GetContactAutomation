@@ -298,6 +298,16 @@ CONFIG_DEFINITIONS: list[ConfigDef] = [
     ),
     # --- Scraping Fallback APIs ---
     ConfigDef(
+        key="BRAVE_API_KEY",
+        type=ConfigType.STRING, default="", group=ConfigGroup.CREDENTIALS,
+        label="Brave Search API Key",
+        description=(
+            "API key for Brave Web Search. Better quality than DDG for Indonesian content. "
+            "Get from: https://brave.com/search/api/"
+        ),
+        sensitive=True,
+    ),
+    ConfigDef(
         key="APIFY_API_KEY",
         type=ConfigType.STRING, default="", group=ConfigGroup.CREDENTIALS,
         label="Apify API Key",

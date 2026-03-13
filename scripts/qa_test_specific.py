@@ -20,9 +20,9 @@ async def test_specific_person():
     state: CrmState = {
         "request_id": 0,
         "university_id": None,
-        "university_name": "Universitas Akprind Indonesia",
-        "pic_name": "Samuel Kristiyana",
-        "pic_title": "Wakil Rektor III",
+        "university_name": "Universitas Brawijaya",
+        "pic_name": "Widodo",
+        "pic_title": "Rektor",
         "faculty": None,
         "university_data": None,
         "existing_conversations": [],

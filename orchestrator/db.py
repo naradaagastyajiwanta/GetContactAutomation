@@ -3475,10 +3475,10 @@ async def create_crm_profile(request_id: int, university_id: int | None = None, 
 
 
 async def get_crm_profile_by_request(request_id: int) -> dict | None:
-    """Get the PIC profile associated with a CRM request."""
+    """Get the latest PIC profile associated with a CRM request."""
     async with get_db() as db:
         cursor = await db.execute(
-            "SELECT * FROM crm_pic_profiles WHERE request_id = ?", (request_id,)
+            "SELECT * FROM crm_pic_profiles WHERE request_id = ? ORDER BY id DESC LIMIT 1", (request_id,)
         )
         row = await cursor.fetchone()
         return _row_to_dict(row) if row else None

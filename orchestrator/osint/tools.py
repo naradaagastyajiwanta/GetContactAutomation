@@ -289,8 +289,11 @@ async def gemini_research(query: str) -> dict[str, Any]:
     try:
         from orchestrator.research_agents.gemini_caller import call_gemini
         parsed, urls = await call_gemini(query)
-        # parsed is a dict (possibly with _raw if JSON parse failed)
-        raw_text = parsed.get("_raw", "") if parsed.get("_parse_failed") else json.dumps(parsed, ensure_ascii=False)
+        # parsed can be a dict or a list
+        if isinstance(parsed, list):
+            raw_text = json.dumps(parsed, ensure_ascii=False)
+        else:
+            raw_text = parsed.get("_raw", "") if parsed.get("_parse_failed") else json.dumps(parsed, ensure_ascii=False)
         return {"text": raw_text, "urls": urls}
     except Exception as e:
         log.warning("[OSINT Tools] Gemini research failed: %s", e)

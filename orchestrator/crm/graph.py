@@ -6,13 +6,13 @@ Workflow:
     │  load_existing (CRM request + university data)           │
     │         │                                                │
     │         ▼                                                │
-    │  identity_resolver (PDDIKTI → DDG)                       │
+    │  identity_resolver (PDDIKTI → DDG/Brave)                │
     │         │                                                │
     │         ▼                                                │
     │  ┌──────────────────────────────────────┐               │
     │  │ parallel_phase_1                      │               │
     │  │  ├── academic_profiler                │               │
-    │  │  ├── social_profiler                  │               │
+    │  │  ├── social_profiler (+email/phone)   │               │
     │  │  └── campus_context                   │               │
     │  └──────────┬───────────────────────────┘               │
     │             ▼                                            │
@@ -25,6 +25,9 @@ Workflow:
     │  profile_compiler (merge all → CompiledProfile)          │
     │             │                                            │
     │             ▼                                            │
+    │  gap_filler (re-query missing fields via Gemini)         │
+    │             │                                            │
+    │             ▼                                            │
     │  persist_results (save to DB)                            │
     │             │                                            │
     │            END                                           │
@@ -35,13 +38,51 @@ from __future__ import annotations
 
 import asyncio
 import json
+import re
 import time
 from typing import Any
+from urllib.parse import urlparse
 
 from langgraph.graph import StateGraph, END
 
 from orchestrator.config import log
 from orchestrator.crm.state import CrmState, CRM_AGENT_KEYS
+
+
+# ---------------------------------------------------------------------------
+# Source URL quality filter — drop junk / unreachable / irrelevant links
+# ---------------------------------------------------------------------------
+_JUNK_DOMAINS = {
+    "translate.google.com",
+    "translate.google.co.id",
+    "primevideo.com",
+    "www.primevideo.com",
+    "target.com",
+    "www.target.com",
+    "wa.me",
+}
+
+_JUNK_PATTERNS = re.compile(
+    r"vertexaisearch\.cloud\.google\.com"
+    r"|accounts\.google\.com"
+    r"|play\.google\.com/store",
+    re.IGNORECASE,
+)
+
+
+def _is_useful_url(url: str) -> bool:
+    """Return True if *url* is a real, useful source link."""
+    if not url or not url.startswith("http"):
+        return False
+    try:
+        host = urlparse(url).netloc.lower()
+    except Exception:
+        return False
+    if host in _JUNK_DOMAINS:
+        return False
+    if _JUNK_PATTERNS.search(url):
+        return False
+    return True
 from orchestrator.crm.identity_resolver import identity_resolver_agent
 from orchestrator.crm.academic_profiler import academic_profiler_agent
 from orchestrator.crm.social_profiler import social_profiler_agent
@@ -286,6 +327,8 @@ async def _persist_results(state: CrmState) -> dict:
         profile_data["facebook_url"] = social.facebook_url
         profile_data["twitter_handle"] = social.twitter_handle
         profile_data["other_social"] = json.dumps(social.other_social) if social.other_social else None
+        profile_data["email"] = social.email
+        profile_data["phone"] = social.phone
 
     if campus:
         profile_data["campus_problems"] = json.dumps(campus.campus_problems) if campus.campus_problems else None
@@ -327,12 +370,16 @@ async def _persist_results(state: CrmState) -> dict:
         for field in compiled.fields:
             if field.value is not None and field.status != "not_found":
                 value_str = json.dumps(field.value) if not isinstance(field.value, str) else field.value
+                # Filter out junk URLs, then join for DB
+                clean_urls = [u for u in field.source_urls if _is_useful_url(u)]
+                source_url = ", ".join(clean_urls) if clean_urls else None
                 await add_crm_profile_source(
                     profile_id,
                     field_name=field.field_name,
                     value=value_str[:500],  # Cap length
                     source_type=field.source or "agent",
                     confidence=field.confidence,
+                    source_url=source_url,
                 )
 
     # Update run log
@@ -360,6 +407,131 @@ async def _persist_results(state: CrmState) -> dict:
 
 
 # ---------------------------------------------------------------------------
+# Node: gap filler (cross-reference re-query for missing fields)
+# ---------------------------------------------------------------------------
+
+
+async def _gap_filler(state: CrmState) -> dict:
+    """Re-query specifically for fields that are still empty after compilation."""
+    compiled = state.get("compiled_profile")
+    if not compiled or compiled.overall_confidence >= 0.90:
+        log.info("[CRM Graph] Gap filler skipped (confidence=%.2f)", compiled.overall_confidence if compiled else 0)
+        return {}
+
+    identity = state.get("identity")
+    social = state.get("social_profile")
+    personal = state.get("personal_interest")
+    family = state.get("family_info")
+    pic_name = state.get("pic_name", "")
+    uni_name = state.get("university_name", "")
+
+    full_name = (identity.full_name if identity else None) or pic_name
+    cleaned_name = state.get("cleaned_name") or full_name
+
+    from orchestrator.crm.tools import ddg_search, gpt_extract_structured, gemini_research, fetch_page, extract_text_from_html
+    from orchestrator.crm.name_utils import strip_academic_titles
+
+    log.info(
+        "[CRM Graph] Gap filler starting for %s (%d/%d fields found)",
+        full_name, compiled.fields_found, compiled.fields_total,
+    )
+
+    # Identify which fields are missing
+    missing_fields = [f.field_name for f in compiled.fields if f.status == "not_found"]
+    log.info("[CRM Graph] Missing fields: %s", missing_fields)
+
+    updates: dict = {}
+
+    # ── Gap: family_residence — infer from university location ──────
+    if family and not family.family_residence and "Tempat Tinggal Keluarga" in missing_fields:
+        # University city is a strong proxy for residence
+        hits = await ddg_search(f'"{uni_name}" lokasi OR alamat OR kota', max_results=2)
+        if hits:
+            combined = "\n".join(h.get("snippet", "") for h in hits)
+            extracted = await gpt_extract_structured(
+                combined,
+                f"Where is {uni_name} located? Return JSON: {{\"city\": \"...\", \"province\": \"...\"}}",
+            )
+            if extracted and extracted.get("city"):
+                family.family_residence = extracted["city"]
+                family.sources = list(family.sources) + ["gap_filler_inferred"]
+                updates["family_info"] = family
+
+    # ── Gap: hobbies / outside_activities — Gemini targeted ──────
+    if personal and not personal.hobbies and "Hobi" in missing_fields:
+        gemini_resp = await gemini_research(
+            f"Apa hobi atau kegiatan di luar kampus {cleaned_name} dosen {uni_name}? "
+            f"Cari di berita, sosial media, atau profil akademik."
+        )
+        if gemini_resp and gemini_resp.get("text"):
+            extracted = await gpt_extract_structured(
+                gemini_resp["text"],
+                "Extract hobbies and activities. Return JSON: {\"hobbies\": [...], \"outside_activities\": [...]}",
+            )
+            if extracted:
+                if extracted.get("hobbies") and isinstance(extracted["hobbies"], list):
+                    personal.hobbies = extracted["hobbies"]
+                if extracted.get("outside_activities") and isinstance(extracted["outside_activities"], list):
+                    personal.outside_activities = extracted["outside_activities"]
+                personal.sources = list(personal.sources) + ["gap_filler_gemini"]
+                updates["personal_interest"] = personal
+
+    # ── Gap: marital_status — Gemini targeted ──────
+    if family and (not family.marital_status or family.marital_status == "unknown") and "Status Pernikahan" in missing_fields:
+        gemini_resp = await gemini_research(
+            f"Apakah {cleaned_name} dosen {uni_name} sudah menikah? "
+            f"Siapa nama pasangannya? Berapa anaknya?"
+        )
+        if gemini_resp and gemini_resp.get("text"):
+            extracted = await gpt_extract_structured(
+                gemini_resp["text"],
+                "Extract: {\"marital_status\": \"married\"/\"single\"/\"unknown\", \"spouse_name\": str|null, \"children_count\": int|null}",
+            )
+            if extracted:
+                ms = extracted.get("marital_status")
+                if ms and ms != "unknown":
+                    family.marital_status = ms
+                if extracted.get("spouse_name"):
+                    family.spouse_name = extracted["spouse_name"]
+                if extracted.get("children_count") is not None:
+                    try:
+                        family.children_count = int(extracted["children_count"])
+                    except (ValueError, TypeError):
+                        pass
+                family.sources = list(family.sources) + ["gap_filler_gemini"]
+                updates["family_info"] = family
+
+    # ── Gap: personality_traits — infer from academic data ──────
+    if personal and not personal.personality_traits and "Sifat Kepribadian" in missing_fields:
+        academic = state.get("academic")
+        if academic and (academic.research_topics or academic.teaching_subjects):
+            context = f"Research: {academic.research_topics}, Teaching: {academic.teaching_subjects}"
+            extracted = await gpt_extract_structured(
+                context,
+                (
+                    f"Based on {full_name}'s research and teaching profile, infer 3-5 likely personality traits. "
+                    "Return JSON: {\"personality_traits\": [\"trait1\", \"trait2\", ...]}"
+                ),
+            )
+            if extracted and extracted.get("personality_traits"):
+                personal.personality_traits = extracted["personality_traits"]
+                personal.sources = list(personal.sources) + ["gap_filler_inferred"]
+                updates["personal_interest"] = personal
+
+    if updates:
+        log.info("[CRM Graph] Gap filler filled %d agent outputs", len(updates))
+        # Re-run compiler with updated data
+        merged_state = dict(state)
+        merged_state.update(updates)
+        recompiled = await profile_compiler_agent(merged_state)
+        updates.update(recompiled)
+    else:
+        log.info("[CRM Graph] Gap filler found nothing new")
+
+    return updates
+
+
+# ---------------------------------------------------------------------------
 # Build the LangGraph
 # ---------------------------------------------------------------------------
 
@@ -373,6 +545,7 @@ def _build_graph() -> StateGraph:
     graph.add_node("parallel_phase_1", _parallel_phase_1)
     graph.add_node("parallel_phase_2", _parallel_phase_2)
     graph.add_node("profile_compiler", _compile_profile)
+    graph.add_node("gap_filler", _gap_filler)
     graph.add_node("persist_results", _persist_results)
 
     graph.set_entry_point("load_existing")
@@ -381,7 +554,8 @@ def _build_graph() -> StateGraph:
     graph.add_edge("identity_resolver", "parallel_phase_1")
     graph.add_edge("parallel_phase_1", "parallel_phase_2")
     graph.add_edge("parallel_phase_2", "profile_compiler")
-    graph.add_edge("profile_compiler", "persist_results")
+    graph.add_edge("profile_compiler", "gap_filler")
+    graph.add_edge("gap_filler", "persist_results")
     graph.add_edge("persist_results", END)
 
     return graph

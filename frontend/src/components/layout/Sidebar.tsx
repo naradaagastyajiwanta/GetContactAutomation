@@ -13,6 +13,7 @@ import {
   ScrollText,
   Megaphone,
   CalendarClock,
+  UserSearch,
 } from 'lucide-react'
 import { cn } from '../../lib/utils'
 
@@ -28,6 +29,7 @@ const navItems = [
   { to: '/whatsapp', label: 'WhatsApp', icon: Smartphone },
   { to: '/blast', label: 'WA Blast', icon: Megaphone },
   { to: '/dms-schedules', label: 'DMS Schedules', icon: CalendarClock },
+  { to: '/crm', label: 'PIC Profiling', icon: UserSearch },
   { to: '/settings', label: 'Settings', icon: Settings },
 ]
 

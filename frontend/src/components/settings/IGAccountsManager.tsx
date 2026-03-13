@@ -1,4 +1,4 @@
-import { useState, useRef } from 'react'
+import { useState, useRef, useEffect } from 'react'
 import {
   Plus,
   Trash2,
@@ -21,12 +21,15 @@ import {
   Download,
   Upload,
   Cookie,
+  MoreVertical,
+  Pencil,
 } from 'lucide-react'
 import { Card, CardHeader, CardTitle } from '../ui/Card'
 import { Button } from '../ui/Button'
 import { Badge } from '../ui/Badge'
 import { Modal } from '../ui/Modal'
 import { Spinner } from '../ui/Spinner'
+import { cn } from '../../lib/utils'
 import {
   useIGAccounts,
   useCreateIGAccount,
@@ -65,7 +68,6 @@ function AccountFormModal({
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault()
     if (initial) {
-      // Update — only send fields that changed
       const payload: Record<string, unknown> = { id: initial.id }
       if (username && username !== initial.username) payload.username = username
       if (password) payload.password = password
@@ -77,7 +79,6 @@ function AccountFormModal({
         {
           onSuccess: (data) => {
             onClose()
-            // Auto-trigger login test for newly created account
             if (onCreated && data.account?.id) {
               onCreated(data.account.id)
             }
@@ -159,6 +160,81 @@ function AccountFormModal({
 }
 
 // ---------------------------------------------------------------------------
+// Dropdown menu for secondary actions
+// ---------------------------------------------------------------------------
+
+function ActionDropdown({
+  children,
+  trigger,
+}: {
+  children: React.ReactNode
+  trigger: React.ReactNode
+}) {
+  const [open, setOpen] = useState(false)
+  const ref = useRef<HTMLDivElement>(null)
+
+  useEffect(() => {
+    if (!open) return
+    const handler = (e: MouseEvent) => {
+      if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false)
+    }
+    document.addEventListener('mousedown', handler)
+    return () => document.removeEventListener('mousedown', handler)
+  }, [open])
+
+  return (
+    <div ref={ref} className="relative">
+      <button
+        type="button"
+        onClick={() => setOpen(!open)}
+        className="rounded-lg p-1.5 text-gray-400 hover:bg-gray-100 hover:text-gray-600 dark:hover:bg-gray-700 dark:hover:text-gray-300"
+      >
+        {trigger}
+      </button>
+      {open && (
+        <div
+          className="absolute right-0 top-full z-30 mt-1 w-48 rounded-lg border border-gray-200 bg-white py-1 shadow-lg dark:border-gray-700 dark:bg-gray-800"
+          onClick={() => setOpen(false)}
+        >
+          {children}
+        </div>
+      )}
+    </div>
+  )
+}
+
+function DropdownItem({
+  icon,
+  label,
+  onClick,
+  disabled,
+  danger,
+}: {
+  icon: React.ReactNode
+  label: string
+  onClick: () => void
+  disabled?: boolean
+  danger?: boolean
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      disabled={disabled}
+      className={cn(
+        'flex w-full items-center gap-2.5 px-3 py-2 text-left text-sm transition-colors disabled:opacity-40 disabled:cursor-not-allowed',
+        danger
+          ? 'text-red-600 hover:bg-red-50 dark:text-red-400 dark:hover:bg-red-900/20'
+          : 'text-gray-700 hover:bg-gray-50 dark:text-gray-300 dark:hover:bg-gray-700/50',
+      )}
+    >
+      {icon}
+      {label}
+    </button>
+  )
+}
+
+// ---------------------------------------------------------------------------
 // Status badge for pool runtime state
 // ---------------------------------------------------------------------------
 
@@ -194,16 +270,16 @@ function PoolStatusBadge({ poolInfo }: { poolInfo?: IGAccountPoolStatus }) {
 }
 
 // ---------------------------------------------------------------------------
-// Login verification status badge
+// Login verification status icon + text
 // ---------------------------------------------------------------------------
 
-function LoginStatusBadge({ acct, isTesting }: { acct: IGAccount; isTesting: boolean }) {
+function LoginStatusIndicator({ acct, isTesting }: { acct: IGAccount; isTesting: boolean }) {
   if (isTesting) {
     return (
-      <Badge variant="bg-blue-100 text-blue-700 dark:bg-blue-900/40 dark:text-blue-400">
-        <Loader2 className="mr-1 h-3 w-3 inline animate-spin" />
-        Testing...
-      </Badge>
+      <div className="flex items-center gap-1.5 text-blue-600 dark:text-blue-400">
+        <Loader2 className="h-4 w-4 animate-spin" />
+        <span className="text-xs font-medium">Testing...</span>
+      </div>
     )
   }
 
@@ -212,55 +288,192 @@ function LoginStatusBadge({ acct, isTesting }: { acct: IGAccount; isTesting: boo
     ? new Date(acct.last_login_test).toLocaleString('id-ID', { dateStyle: 'short', timeStyle: 'short' })
     : null
 
-  if (status === 'success') {
-    return (
-      <div className="flex flex-col gap-0.5">
-        <Badge variant="bg-green-100 text-green-700 dark:bg-green-900/40 dark:text-green-400">
-          <ShieldCheck className="mr-1 h-3 w-3 inline" />
-          Verified
-        </Badge>
-        {lastTest && <span className="text-[10px] text-gray-400">{lastTest}</span>}
-      </div>
-    )
+  const configs: Record<string, { icon: React.ReactNode; label: string; color: string }> = {
+    success: {
+      icon: <ShieldCheck className="h-4 w-4" />,
+      label: 'Verified',
+      color: 'text-green-600 dark:text-green-400',
+    },
+    failed: {
+      icon: <ShieldX className="h-4 w-4" />,
+      label: 'Failed',
+      color: 'text-red-600 dark:text-red-400',
+    },
+    challenge: {
+      icon: <ShieldQuestion className="h-4 w-4" />,
+      label: 'Needs Verify',
+      color: 'text-yellow-600 dark:text-yellow-400',
+    },
+    banned: {
+      icon: <ShieldAlert className="h-4 w-4" />,
+      label: 'Banned',
+      color: 'text-red-600 dark:text-red-400',
+    },
+    untested: {
+      icon: <ShieldQuestion className="h-4 w-4" />,
+      label: 'Untested',
+      color: 'text-gray-400 dark:text-gray-500',
+    },
   }
-  if (status === 'failed') {
-    return (
-      <div className="flex flex-col gap-0.5">
-        <Badge variant="bg-red-100 text-red-700 dark:bg-red-900/40 dark:text-red-400">
-          <ShieldX className="mr-1 h-3 w-3 inline" />
-          Failed
-        </Badge>
-        {lastTest && <span className="text-[10px] text-gray-400">{lastTest}</span>}
-      </div>
-    )
-  }
-  if (status === 'challenge') {
-    return (
-      <div className="flex flex-col gap-0.5">
-        <Badge variant="bg-yellow-100 text-yellow-700 dark:bg-yellow-900/40 dark:text-yellow-400">
-          <ShieldQuestion className="mr-1 h-3 w-3 inline" />
-          Needs Verify
-        </Badge>
-        {lastTest && <span className="text-[10px] text-gray-400">{lastTest}</span>}
-      </div>
-    )
-  }
-  if (status === 'banned') {
-    return (
-      <div className="flex flex-col gap-0.5">
-        <Badge variant="bg-red-100 text-red-700 dark:bg-red-900/40 dark:text-red-400">
-          <ShieldAlert className="mr-1 h-3 w-3 inline" />
-          Banned
-        </Badge>
-        {lastTest && <span className="text-[10px] text-gray-400">{lastTest}</span>}
-      </div>
-    )
-  }
+
+  const cfg = configs[status] ?? configs.untested
+
   return (
-    <Badge variant="bg-gray-100 text-gray-500 dark:bg-gray-700 dark:text-gray-400">
-      <ShieldQuestion className="mr-1 h-3 w-3 inline" />
-      Untested
-    </Badge>
+    <div>
+      <div className={cn('flex items-center gap-1.5', cfg.color)}>
+        {cfg.icon}
+        <span className="text-xs font-medium">{cfg.label}</span>
+      </div>
+      {lastTest && <span className="text-[10px] text-gray-400 ml-5.5">{lastTest}</span>}
+    </div>
+  )
+}
+
+// ---------------------------------------------------------------------------
+// Account Card
+// ---------------------------------------------------------------------------
+
+function AccountCard({
+  acct,
+  pool,
+  isTesting,
+  isSyncing,
+  onTestLogin,
+  onToggleEnabled,
+  onEdit,
+  onDelete,
+  onExportSession,
+  onImportSession,
+  onCookieImport,
+  testingDisabled,
+}: {
+  acct: IGAccount
+  pool?: IGAccountPoolStatus
+  isTesting: boolean
+  isSyncing: boolean
+  onTestLogin: () => void
+  onToggleEnabled: () => void
+  onEdit: () => void
+  onDelete: () => void
+  onExportSession: () => void
+  onImportSession: () => void
+  onCookieImport: () => void
+  testingDisabled: boolean
+}) {
+  const borderColor = !acct.enabled
+    ? 'border-gray-200 dark:border-gray-700'
+    : acct.login_status === 'success'
+      ? 'border-green-200 dark:border-green-800'
+      : acct.login_status === 'failed' || acct.login_status === 'banned'
+        ? 'border-red-200 dark:border-red-800'
+        : 'border-gray-200 dark:border-gray-700'
+
+  return (
+    <div
+      className={cn(
+        'relative rounded-xl border bg-white p-4 transition-shadow hover:shadow-md dark:bg-gray-800',
+        borderColor,
+        !acct.enabled && 'opacity-60',
+      )}
+    >
+      {/* Top row: avatar + username + dropdown */}
+      <div className="flex items-start justify-between">
+        <div className="flex items-center gap-3">
+          <div className="flex h-10 w-10 items-center justify-center rounded-full bg-gradient-to-br from-purple-400 via-pink-400 to-orange-400">
+            <span className="text-sm font-bold text-white">
+              {acct.username.charAt(0).toUpperCase()}
+            </span>
+          </div>
+          <div>
+            <p className="text-sm font-semibold text-gray-900 dark:text-gray-100">
+              @{acct.username}
+            </p>
+            {acct.notes && (
+              <p className="text-xs text-gray-400 dark:text-gray-500 max-w-[180px] truncate">
+                {acct.notes}
+              </p>
+            )}
+          </div>
+        </div>
+        <ActionDropdown trigger={<MoreVertical className="h-4 w-4" />}>
+          <DropdownItem
+            icon={<Pencil className="h-4 w-4" />}
+            label="Edit Account"
+            onClick={onEdit}
+          />
+          <DropdownItem
+            icon={acct.enabled ? <ToggleLeft className="h-4 w-4" /> : <ToggleRight className="h-4 w-4" />}
+            label={acct.enabled ? 'Disable' : 'Enable'}
+            onClick={onToggleEnabled}
+          />
+          <div className="my-1 border-t border-gray-100 dark:border-gray-700" />
+          <DropdownItem
+            icon={<Download className="h-4 w-4" />}
+            label="Export Session"
+            onClick={onExportSession}
+            disabled={isSyncing}
+          />
+          <DropdownItem
+            icon={<Upload className="h-4 w-4" />}
+            label="Import Session"
+            onClick={onImportSession}
+            disabled={isSyncing}
+          />
+          <DropdownItem
+            icon={<Cookie className="h-4 w-4" />}
+            label="Import Cookies"
+            onClick={onCookieImport}
+          />
+          <div className="my-1 border-t border-gray-100 dark:border-gray-700" />
+          <DropdownItem
+            icon={<Trash2 className="h-4 w-4" />}
+            label="Delete"
+            onClick={onDelete}
+            danger
+          />
+        </ActionDropdown>
+      </div>
+
+      {/* Status badges row */}
+      <div className="mt-3 flex flex-wrap items-center gap-2">
+        {acct.enabled ? (
+          <Badge variant="bg-green-100 text-green-700 dark:bg-green-900/40 dark:text-green-400">
+            Enabled
+          </Badge>
+        ) : (
+          <Badge variant="bg-gray-100 text-gray-500 dark:bg-gray-700 dark:text-gray-400">
+            Disabled
+          </Badge>
+        )}
+        <PoolStatusBadge poolInfo={pool} />
+        {pool && pool.profiles_today > 0 && (
+          <span className="text-[11px] text-gray-400">
+            {pool.profiles_today} scraped today
+          </span>
+        )}
+      </div>
+
+      {/* Login status + Test button */}
+      <div className="mt-3 flex items-center justify-between rounded-lg bg-gray-50 px-3 py-2 dark:bg-gray-700/30">
+        <LoginStatusIndicator acct={acct} isTesting={isTesting} />
+        <button
+          onClick={onTestLogin}
+          disabled={testingDisabled}
+          className={cn(
+            'inline-flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-xs font-medium transition-colors',
+            'bg-indigo-100 text-indigo-700 hover:bg-indigo-200 dark:bg-indigo-900/40 dark:text-indigo-400 dark:hover:bg-indigo-900/60',
+            'disabled:opacity-40 disabled:cursor-not-allowed',
+          )}
+        >
+          {isTesting ? (
+            <Loader2 className="h-3.5 w-3.5 animate-spin" />
+          ) : (
+            <Play className="h-3.5 w-3.5" />
+          )}
+          {isTesting ? 'Testing...' : 'Login'}
+        </button>
+      </div>
+    </div>
   )
 }
 
@@ -316,12 +529,10 @@ export function IGAccountsManager() {
   }
 
   const handleAccountCreated = (accountId: number) => {
-    // Auto-test login after creating a new account — find the account
     const acct = accounts.find((a) => a.id === accountId)
     if (acct) {
       handleTestLogin(acct)
     } else {
-      // Refetch first, then test
       refetch().then((res) => {
         const freshAcct = res.data?.accounts?.find((a: IGAccount) => a.id === accountId)
         if (freshAcct) handleTestLogin(freshAcct)
@@ -354,7 +565,7 @@ export function IGAccountsManager() {
   const handleImportFileSelected = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0]
     if (!file || !importTargetAccount) return
-    e.target.value = '' // reset so same file can be re-selected
+    e.target.value = ''
 
     setSyncingAccountId(importTargetAccount.id)
     try {
@@ -388,8 +599,10 @@ export function IGAccountsManager() {
         accept=".tar.gz,.tgz"
         className="hidden"
         onChange={handleImportFileSelected}
-      />      <Card>
-        <CardHeader className="flex flex-row items-center justify-between">
+      />
+
+      <Card padding={false}>
+        <CardHeader className="flex flex-row items-center justify-between px-5 pt-5">
           <div className="flex items-center gap-2">
             <Instagram className="h-5 w-5 text-pink-500" />
             <CardTitle>Instagram Accounts</CardTitle>
@@ -415,14 +628,13 @@ export function IGAccountsManager() {
           </div>
         </CardHeader>
 
-
-
         {lastTestResult && (
-          <div className={`mx-4 mb-2 rounded-md border px-3 py-2 text-xs ${
+          <div className={cn(
+            'mx-5 mb-2 rounded-lg border px-3 py-2 text-xs',
             lastTestResult.success
               ? 'border-green-200 bg-green-50 text-green-800 dark:border-green-800 dark:bg-green-900/20 dark:text-green-400'
-              : 'border-red-200 bg-red-50 text-red-800 dark:border-red-800 dark:bg-red-900/20 dark:text-red-400'
-          }`}>
+              : 'border-red-200 bg-red-50 text-red-800 dark:border-red-800 dark:bg-red-900/20 dark:text-red-400',
+          )}>
             <div className="flex items-start justify-between">
               <div className="flex items-start gap-2">
                 {lastTestResult.success ? (
@@ -442,153 +654,48 @@ export function IGAccountsManager() {
           </div>
         )}
 
-        {isLoading ? (
-          <div className="flex justify-center py-8">
-            <Spinner />
-          </div>
-        ) : accounts.length === 0 ? (
-          <div className="rounded-lg border-2 border-dashed border-gray-200 p-8 text-center dark:border-gray-700">
-            <Instagram className="mx-auto h-10 w-10 text-gray-300 dark:text-gray-600" />
-            <p className="mt-2 text-sm font-medium text-gray-600 dark:text-gray-400">
-              No Instagram accounts configured
-            </p>
-            <p className="mt-1 text-xs text-gray-400 dark:text-gray-500">
-              Add accounts to enable multi-account rotation for IG scraping.
-              Multiple accounts help avoid rate limits.
-            </p>
-            <Button size="sm" className="mt-4" onClick={() => setShowAddModal(true)}>
-              <Plus className="h-4 w-4" />
-              Add First Account
-            </Button>
-          </div>
-        ) : (
-          <div className="overflow-x-auto">
-            <table className="min-w-full divide-y divide-gray-200 dark:divide-gray-700">
-              <thead>
-                <tr className="text-left text-xs font-medium uppercase tracking-wider text-gray-500 dark:text-gray-400">
-                  <th className="px-3 py-2">Username</th>
-                  <th className="px-3 py-2">Password</th>
-                  <th className="px-3 py-2">Status</th>
-                  <th className="px-3 py-2">Login</th>
-                  <th className="px-3 py-2">Pool</th>
-                  <th className="px-3 py-2">Notes</th>
-                  <th className="px-3 py-2 text-right">Actions</th>
-                </tr>
-              </thead>
-              <tbody className="divide-y divide-gray-100 dark:divide-gray-700/50">
-                {accounts.map((acct) => {
-                  const pool = poolMap.get(acct.username)
-                  const isTesting = testingAccountId === acct.id
-                  return (
-                    <tr key={acct.id} className="hover:bg-gray-50 dark:hover:bg-gray-700/30">
-                      <td className="whitespace-nowrap px-3 py-2 text-sm font-medium text-gray-900 dark:text-gray-100">
-                        @{acct.username}
-                      </td>
-                      <td className="whitespace-nowrap px-3 py-2 text-sm text-gray-500 dark:text-gray-400 font-mono">
-                        {acct.password}
-                      </td>
-                      <td className="whitespace-nowrap px-3 py-2 text-sm">
-                        {acct.enabled ? (
-                          <Badge variant="bg-green-100 text-green-700 dark:bg-green-900/40 dark:text-green-400">
-                            Enabled
-                          </Badge>
-                        ) : (
-                          <Badge variant="bg-gray-100 text-gray-500 dark:bg-gray-700 dark:text-gray-400">
-                            Disabled
-                          </Badge>
-                        )}
-                      </td>
-                      <td className="whitespace-nowrap px-3 py-2 text-sm">
-                        <div className="flex items-center gap-1.5">
-                          <LoginStatusBadge acct={acct} isTesting={isTesting} />
-                          <button
-                            onClick={() => handleTestLogin(acct)}
-                            disabled={isTesting || testingAccountId !== null}
-                            className="rounded p-1 text-gray-400 hover:bg-indigo-50 hover:text-indigo-600 dark:hover:bg-indigo-900/30 dark:hover:text-indigo-400 disabled:opacity-40 disabled:cursor-not-allowed"
-                            title="Login to Instagram"
-                          >
-                            {isTesting ? (
-                              <Loader2 className="h-3.5 w-3.5 animate-spin" />
-                            ) : (
-                              <Play className="h-3.5 w-3.5" />
-                            )}
-                          </button>
-                        </div>
-                      </td>
-                      <td className="whitespace-nowrap px-3 py-2 text-sm">
-                        <PoolStatusBadge poolInfo={pool} />
-                        {pool && pool.profiles_today > 0 && (
-                          <span className="ml-1 text-xs text-gray-400">
-                            {pool.profiles_today} today
-                          </span>
-                        )}
-                      </td>
-                      <td className="px-3 py-2 text-sm text-gray-500 dark:text-gray-400 max-w-[200px] truncate">
-                        {acct.notes || '—'}
-                      </td>
-                      <td className="whitespace-nowrap px-3 py-2 text-right">
-                        <div className="flex items-center justify-end gap-1">
-                          <button
-                            onClick={() => handleExportSession(acct)}
-                            disabled={syncingAccountId !== null}
-                            className="rounded p-1 text-gray-400 hover:bg-blue-50 hover:text-blue-600 dark:hover:bg-blue-900/30 dark:hover:text-blue-400 disabled:opacity-40 disabled:cursor-not-allowed"
-                            title="Export Session (download)"
-                          >
-                            {syncingAccountId === acct.id ? (
-                              <Loader2 className="h-4 w-4 animate-spin" />
-                            ) : (
-                              <Download className="h-4 w-4" />
-                            )}
-                          </button>
-                          <button
-                            onClick={() => handleImportSession(acct)}
-                            disabled={syncingAccountId !== null}
-                            className="rounded p-1 text-gray-400 hover:bg-emerald-50 hover:text-emerald-600 dark:hover:bg-emerald-900/30 dark:hover:text-emerald-400 disabled:opacity-40 disabled:cursor-not-allowed"
-                            title="Import Session (upload .tar.gz)"
-                          >
-                            <Upload className="h-4 w-4" />
-                          </button>
-                          <button
-                            onClick={() => setCookieImportAccount({ id: acct.id, username: acct.username })}
-                            className="rounded p-1 text-gray-400 hover:bg-amber-50 hover:text-amber-600 dark:hover:bg-amber-900/30 dark:hover:text-amber-400"
-                            title="Import Cookies (from browser extension)"
-                          >
-                            <Cookie className="h-4 w-4" />
-                          </button>
-                          <button
-                            onClick={() => handleToggleEnabled(acct)}
-                            className="rounded p-1 text-gray-400 hover:bg-gray-100 hover:text-gray-600 dark:hover:bg-gray-700 dark:hover:text-gray-300"
-                            title={acct.enabled ? 'Disable' : 'Enable'}
-                          >
-                            {acct.enabled ? (
-                              <ToggleRight className="h-4 w-4 text-green-500" />
-                            ) : (
-                              <ToggleLeft className="h-4 w-4" />
-                            )}
-                          </button>
-                          <button
-                            onClick={() => setEditAccount(acct)}
-                            className="rounded p-1 text-gray-400 hover:bg-gray-100 hover:text-indigo-600 dark:hover:bg-gray-700 dark:hover:text-indigo-400"
-                            title="Edit"
-                          >
-                            <Eye className="h-4 w-4" />
-                          </button>
-                          <button
-                            onClick={() => setConfirmDeleteId(acct.id)}
-                            className="rounded p-1 text-gray-400 hover:bg-red-50 hover:text-red-600 dark:hover:bg-red-900/30 dark:hover:text-red-400"
-                            title="Delete"
-                          >
-                            <Trash2 className="h-4 w-4" />
-                          </button>
-                        </div>
-                      </td>
-                    </tr>
-                  )
-                })}
-              </tbody>
-            </table>
-          </div>
-        )}
+        <div className="p-5 pt-2">
+          {isLoading ? (
+            <div className="flex justify-center py-8">
+              <Spinner />
+            </div>
+          ) : accounts.length === 0 ? (
+            <div className="rounded-xl border-2 border-dashed border-gray-200 p-8 text-center dark:border-gray-700">
+              <Instagram className="mx-auto h-10 w-10 text-gray-300 dark:text-gray-600" />
+              <p className="mt-2 text-sm font-medium text-gray-600 dark:text-gray-400">
+                No Instagram accounts configured
+              </p>
+              <p className="mt-1 text-xs text-gray-400 dark:text-gray-500">
+                Add accounts to enable multi-account rotation for IG scraping.
+                Multiple accounts help avoid rate limits.
+              </p>
+              <Button size="sm" className="mt-4" onClick={() => setShowAddModal(true)}>
+                <Plus className="h-4 w-4" />
+                Add First Account
+              </Button>
+            </div>
+          ) : (
+            <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-3">
+              {accounts.map((acct) => (
+                <AccountCard
+                  key={acct.id}
+                  acct={acct}
+                  pool={poolMap.get(acct.username)}
+                  isTesting={testingAccountId === acct.id}
+                  isSyncing={syncingAccountId === acct.id}
+                  testingDisabled={testingAccountId !== null}
+                  onTestLogin={() => handleTestLogin(acct)}
+                  onToggleEnabled={() => handleToggleEnabled(acct)}
+                  onEdit={() => setEditAccount(acct)}
+                  onDelete={() => setConfirmDeleteId(acct.id)}
+                  onExportSession={() => handleExportSession(acct)}
+                  onImportSession={() => handleImportSession(acct)}
+                  onCookieImport={() => setCookieImportAccount({ id: acct.id, username: acct.username })}
+                />
+              ))}
+            </div>
+          )}
+        </div>
       </Card>
 
       {/* Login flow modal */}

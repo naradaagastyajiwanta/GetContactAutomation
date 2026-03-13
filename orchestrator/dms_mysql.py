@@ -508,6 +508,134 @@ async def get_dms_university_contacts(id_univ: int) -> list[dict]:
         return [_serialize_row(r) for r in rows]
 
 
+async def search_dms_pics(
+    keyword: str = "",
+    limit: int = 50,
+) -> list[dict]:
+    """
+    Search PIC data across all DMS sources:
+    - universitas table (pic, pic2, pic3 fields)
+    - kontak_universitas table
+    - schedule_pic_audiensi (linked via schedule_audiensi → schedule_follow_up)
+
+    Returns deduplicated list of PICs with university info.
+    """
+    async with get_dms_cursor() as cursor:
+        like_param = f"%{keyword}%" if keyword else "%"
+
+        # Source 1: universitas table — pic, pic2, pic3
+        await cursor.execute("""
+            SELECT
+                u.id_univ,
+                u.universitas AS nama_universitas,
+                u.pic AS nama_pic,
+                u.jabatan AS jabatan_pic,
+                u.no_hppickampus AS no_pic,
+                'universitas' AS pic_source
+            FROM universitas u
+            WHERE u.pic IS NOT NULL AND u.pic != ''
+              AND (u.pic LIKE %s OR u.universitas LIKE %s)
+            UNION ALL
+            SELECT
+                u.id_univ,
+                u.universitas AS nama_universitas,
+                u.pic2 AS nama_pic,
+                u.jabatan2 AS jabatan_pic,
+                u.no_hppickampus2 AS no_pic,
+                'universitas' AS pic_source
+            FROM universitas u
+            WHERE u.pic2 IS NOT NULL AND u.pic2 != ''
+              AND (u.pic2 LIKE %s OR u.universitas LIKE %s)
+            UNION ALL
+            SELECT
+                u.id_univ,
+                u.universitas AS nama_universitas,
+                u.pic3 AS nama_pic,
+                u.jabatan3 AS jabatan_pic,
+                u.no_hppickampus3 AS no_pic,
+                'universitas' AS pic_source
+            FROM universitas u
+            WHERE u.pic3 IS NOT NULL AND u.pic3 != ''
+              AND (u.pic3 LIKE %s OR u.universitas LIKE %s)
+            LIMIT %s
+        """, (like_param, like_param, like_param, like_param, like_param, like_param, limit * 3))
+        uni_rows = await cursor.fetchall()
+
+        # Source 2: kontak_universitas
+        await cursor.execute("""
+            SELECT
+                ku.id_univ,
+                u.universitas AS nama_universitas,
+                ku.pic AS nama_pic,
+                ku.jabatan AS jabatan_pic,
+                ku.no_hppickampus AS no_pic,
+                'kontak_universitas' AS pic_source
+            FROM kontak_universitas ku
+            LEFT JOIN universitas u ON ku.id_univ = u.id_univ
+            WHERE ku.pic IS NOT NULL AND ku.pic != ''
+              AND (ku.pic LIKE %s OR u.universitas LIKE %s)
+            LIMIT %s
+        """, (like_param, like_param, limit * 2))
+        kontak_rows = await cursor.fetchall()
+
+        # Source 3: schedule_pic_audiensi
+        await cursor.execute("""
+            SELECT
+                sf.id_univ,
+                u.universitas AS nama_universitas,
+                spa.nama_pic,
+                spa.jabatan_pic,
+                spa.no_pic,
+                'schedule_pic' AS pic_source
+            FROM schedule_pic_audiensi spa
+            INNER JOIN schedule_audiensi sa ON spa.schedule_id = sa.id
+            INNER JOIN schedule_follow_up sf ON sa.id_followup = sf.id
+            LEFT JOIN universitas u ON sf.id_univ = u.id_univ
+            WHERE spa.nama_pic IS NOT NULL AND spa.nama_pic != ''
+              AND (spa.nama_pic LIKE %s OR u.universitas LIKE %s)
+            LIMIT %s
+        """, (like_param, like_param, limit * 2))
+        sched_rows = await cursor.fetchall()
+
+        # Combine and deduplicate
+        all_rows = [_serialize_row(r) for r in list(uni_rows) + list(kontak_rows) + list(sched_rows)]
+
+        # Expand JSON array entries (some DMS fields store ["name1","name2",...])
+        import json
+        expanded = []
+        for row in all_rows:
+            nama = (row.get("nama_pic") or "").strip()
+            if nama.startswith("["):
+                try:
+                    names = json.loads(nama)
+                    jabatans = json.loads(row.get("jabatan_pic") or "[]") if (row.get("jabatan_pic") or "").startswith("[") else []
+                    phones = json.loads(row.get("no_pic") or "[]") if (row.get("no_pic") or "").startswith("[") else []
+                    for idx, n in enumerate(names):
+                        if n and n.strip():
+                            expanded.append({
+                                **row,
+                                "nama_pic": n.strip(),
+                                "jabatan_pic": jabatans[idx].strip() if idx < len(jabatans) and jabatans[idx] else None,
+                                "no_pic": phones[idx].strip() if idx < len(phones) and phones[idx] else None,
+                            })
+                except (json.JSONDecodeError, IndexError):
+                    expanded.append(row)
+            else:
+                expanded.append(row)
+
+        seen = set()
+        deduped = []
+        for row in expanded:
+            name = (row.get("nama_pic") or "").strip().lower()
+            uni = (row.get("nama_universitas") or "").strip().lower()
+            key = f"{name}|{uni}"
+            if key not in seen and name:
+                seen.add(key)
+                deduped.append(row)
+
+        return deduped[:limit]
+
+
 # ---------------------------------------------------------------------------
 # READ: Schedule Audiensi (approval tracking)
 # ---------------------------------------------------------------------------

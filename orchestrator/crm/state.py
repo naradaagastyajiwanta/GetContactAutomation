@@ -29,6 +29,7 @@ class IdentityResult(BaseModel):
     photo_url: str | None = None
     confidence: float = 0.0
     sources: list[str] = Field(default_factory=list)
+    source_urls: dict[str, list[str]] = Field(default_factory=dict)
 
 
 class AcademicResult(BaseModel):
@@ -45,6 +46,7 @@ class AcademicResult(BaseModel):
     scholar_id: str | None = None
     confidence: float = 0.0
     sources: list[str] = Field(default_factory=list)
+    source_urls: dict[str, list[str]] = Field(default_factory=dict)
 
 
 class SocialProfileResult(BaseModel):
@@ -55,8 +57,11 @@ class SocialProfileResult(BaseModel):
     facebook_url: str | None = None
     twitter_handle: str | None = None
     other_social: dict[str, str] = Field(default_factory=dict)
+    email: str | None = None
+    phone: str | None = None
     confidence: float = 0.0
     sources: list[str] = Field(default_factory=list)
+    source_urls: dict[str, list[str]] = Field(default_factory=dict)
 
 
 class CampusContextResult(BaseModel):
@@ -68,6 +73,7 @@ class CampusContextResult(BaseModel):
     recent_news: list[str] = Field(default_factory=list)
     confidence: float = 0.0
     sources: list[str] = Field(default_factory=list)
+    source_urls: dict[str, list[str]] = Field(default_factory=dict)
 
 
 class PersonalInterestResult(BaseModel):
@@ -79,6 +85,7 @@ class PersonalInterestResult(BaseModel):
     personality_traits: list[str] = Field(default_factory=list)
     confidence: float = 0.0
     sources: list[str] = Field(default_factory=list)
+    source_urls: dict[str, list[str]] = Field(default_factory=dict)
 
 
 class FamilyInfoResult(BaseModel):
@@ -90,6 +97,7 @@ class FamilyInfoResult(BaseModel):
     family_residence: str | None = None
     confidence: float = 0.0
     sources: list[str] = Field(default_factory=list)
+    source_urls: dict[str, list[str]] = Field(default_factory=dict)
 
 
 class ProfileFieldStatus(BaseModel):
@@ -98,6 +106,7 @@ class ProfileFieldStatus(BaseModel):
     field_name: str
     value: Any = None
     source: str | None = None
+    source_urls: list[str] = Field(default_factory=list)
     status: str = "not_found"  # 'confirmed', 'found', 'inferred', 'needs_manual', 'not_found'
     confidence: float = 0.0
 
@@ -132,6 +141,10 @@ class CrmState(TypedDict, total=False):
     # ── Existing data ─────────────────────────────────────────────────────
     university_data: dict[str, Any] | None
     existing_conversations: list[dict[str, Any]]
+
+    # ── Name variants (from identity resolver → all downstream agents) ──
+    cleaned_name: str | None   # Academic-title-stripped name
+    name_variants: list[str]   # Progressive search variants
 
     # ── Agent outputs ─────────────────────────────────────────────────────
     identity: IdentityResult | None

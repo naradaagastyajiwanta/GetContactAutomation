@@ -29,6 +29,7 @@ _FIELD_MAP: list[tuple[str, str, str, str]] = [
     ("identity", "age", "Usia", "identity"),
     ("identity", "birth_date", "Tanggal Lahir", "identity"),
     ("identity", "origin_region", "Asal Daerah", "identity"),
+    ("identity", "photo_url", "Foto Profil", "identity"),
     # Academic
     ("academic", "jabatan_akademik", "Jabatan Akademik", "academic"),
     ("academic", "pendidikan_tertinggi", "Pendidikan Tertinggi", "academic"),
@@ -37,11 +38,13 @@ _FIELD_MAP: list[tuple[str, str, str, str]] = [
     ("academic", "tenure_years", "Masa Kerja (tahun)", "academic"),
     ("academic", "research_topics", "Topik Riset", "academic"),
     ("academic", "publications", "Publikasi", "academic"),
-    # Social
+    # Social / Contact
     ("social_profile", "linkedin_url", "LinkedIn", "social"),
     ("social_profile", "instagram_handle", "Instagram", "social"),
     ("social_profile", "facebook_url", "Facebook", "social"),
     ("social_profile", "twitter_handle", "Twitter/X", "social"),
+    ("social_profile", "email", "Email", "social"),
+    ("social_profile", "phone", "Telepon", "social"),
     # Campus Context
     ("campus_context", "campus_problems", "Masalah Kampus", "campus"),
     ("campus_context", "campus_concerns", "Kekhawatiran Kampus", "campus"),
@@ -112,12 +115,18 @@ async def profile_compiler_agent(state: CrmState) -> dict:
         source = None
         if agent_result and hasattr(agent_result, "sources"):
             srcs = agent_result.sources
-            source = ", ".join(srcs) if srcs else None
+            # Deduplicate sources preserving order
+            source = ", ".join(list(dict.fromkeys(srcs))) if srcs else None
 
         # Determine confidence from agent
         confidence = 0.0
         if agent_result and hasattr(agent_result, "confidence"):
             confidence = agent_result.confidence
+
+        # Extract source URLs for this specific field
+        field_urls: list[str] = []
+        if agent_result and hasattr(agent_result, "source_urls"):
+            field_urls = agent_result.source_urls.get(attr, [])
 
         status = _determine_status(value, source)
 
@@ -134,6 +143,7 @@ async def profile_compiler_agent(state: CrmState) -> dict:
                 field_name=display_name,
                 value=_serialize_value(value),
                 source=source,
+                source_urls=field_urls,
                 status=status,
                 confidence=confidence,
             )

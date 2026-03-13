@@ -12,8 +12,10 @@ from typing import Any
 
 from orchestrator.config import log
 from orchestrator.crm.state import CrmState, IdentityResult
+from orchestrator.crm.name_utils import strip_academic_titles, ai_strip_titles, build_name_variants
 from orchestrator.crm.tools import (
     ddg_search,
+    fetch_page,
     gpt_extract_structured,
     pddikti_search_dosen,
     pddikti_get_dosen_profile,
@@ -35,40 +37,97 @@ async def identity_resolver_agent(state: CrmState) -> dict:
 
     result = IdentityResult()
     sources: list[str] = []
+    collected_urls: dict[str, list[str]] = {}  # field → urls
     earliest_study_year: int | None = None
 
+    # ── Build name variants for agentic retry ──────────────────────────
+    name_variants = build_name_variants(pic_name)
+    cleaned_name = await ai_strip_titles(pic_name)
+    log.info("[IdentityResolver] AI-cleaned name: '%s', variants: %s", cleaned_name, name_variants[:5])
+
     # ── 1. PDDIKTI dosen search (PRIMARY — goldmine) ──────────────────
+    # Try multiple name variants until we get a match
     dosen_id = None
-    dosen_results = await pddikti_search_dosen(pic_name)
-    if dosen_results:
-        # Match by university name
-        for d in dosen_results:
-            nama_pt = (d.get("nama_pt") or "").lower()
-            singkat_pt = (d.get("sinkatan_pt") or "").lower()
-            if uni_name.lower() in nama_pt or uni_name.lower() in singkat_pt:
+    for variant_idx, search_name in enumerate(name_variants):
+        if dosen_id:
+            break
+        log.info("[IdentityResolver] PDDIKTI attempt %d/%d: '%s'", variant_idx + 1, len(name_variants), search_name)
+        dosen_results = await pddikti_search_dosen(search_name)
+        if not dosen_results:
+            continue
+
+        # AI-based matching: let AI pick the correct dosen from results
+        if len(dosen_results) == 1:
+            # Single result — still verify with AI
+            d = dosen_results[0]
+            candidates_text = (
+                f"Name: {d.get('nama', 'N/A')}, "
+                f"University: {d.get('nama_pt', 'N/A')} ({d.get('sinkatan_pt', '')}), "
+                f"NIDN: {d.get('nidn', 'N/A')}"
+            )
+        else:
+            candidates_text = "\n".join(
+                f"[{i+1}] Name: {d.get('nama', 'N/A')}, "
+                f"University: {d.get('nama_pt', 'N/A')} ({d.get('sinkatan_pt', '')}), "
+                f"NIDN: {d.get('nidn', 'N/A')}"
+                for i, d in enumerate(dosen_results)
+            )
+
+        ai_match = await gpt_extract_structured(
+            candidates_text,
+            (
+                f"We're looking for a lecturer named '{cleaned_name}' "
+                f"(role: {pic_title}) at '{uni_name}'.\n"
+                f"From the PDDIKTI results below, which one is the correct person?\n\n"
+                f"IMPORTANT: In Indonesian academia, PDDIKTI lists a lecturer's HOME "
+                f"institution (where they are formally registered), which may DIFFER "
+                f"from where they currently serve. A lecturer registered at University A "
+                f"can hold positions (Dekan, Wakil Dekan, Dosen Tamu, etc.) at University B. "
+                f"Therefore:\n"
+                f"- NAME MATCH is the PRIMARY criterion\n"
+                f"- University match is a SOFT bonus signal, not a requirement\n"
+                f"- If the name matches well but university differs, still accept with moderate confidence\n\n"
+                f"Return JSON: {{\"best_index\": <1-based index or null>, "
+                f"\"confidence\": <0.0-1.0>, \"reason\": \"...\"}}\n"
+                f"Return null for best_index ONLY if the name clearly does not match any candidate."
+            ),
+        )
+
+        if ai_match and ai_match.get("best_index"):
+            idx = ai_match["best_index"] - 1
+            if 0 <= idx < len(dosen_results):
+                d = dosen_results[idx]
                 dosen_id = d.get("id")
                 result.full_name = d.get("nama")
                 result.nidn = d.get("nidn")
                 result.pddikti_dosen_id = dosen_id
+                ai_conf = ai_match.get("confidence", 0.7)
+                result.confidence = ai_conf
+                pddikti_url = f"https://pddikti.kemdiktisaintek.go.id/data_dosen/{dosen_id}"
+                collected_urls["full_name"] = [pddikti_url]
+                collected_urls["nidn"] = [pddikti_url]
                 sources.append("pddikti_search")
-                log.info("[IdentityResolver] PDDIKTI match: %s (NIDN: %s)", result.full_name, result.nidn)
-                break
+                log.info(
+                    "[IdentityResolver] PDDIKTI AI match (variant '%s'): %s (NIDN: %s, confidence: %.2f, reason: %s)",
+                    search_name, result.full_name, result.nidn, ai_conf, ai_match.get("reason", ""),
+                )
 
-        # Fallback: if no exact match, try partial
-        if not dosen_id and len(dosen_results) == 1:
-            d = dosen_results[0]
-            dosen_id = d.get("id")
-            result.full_name = d.get("nama")
-            result.nidn = d.get("nidn")
-            result.pddikti_dosen_id = dosen_id
-            result.confidence = 0.5  # Lower confidence for non-exact match
-            sources.append("pddikti_search_partial")
+    if not dosen_id:
+        log.warning("[IdentityResolver] PDDIKTI: no match after %d variants", len(name_variants))
 
-    # ── 2. PDDIKTI profile (gender, jabatan, pendidikan) ──────────────
+    # ── 2. PDDIKTI profile (gender, jabatan, pendidikan, photo) ──────
     if dosen_id:
+        pddikti_url = f"https://pddikti.kemdiktisaintek.go.id/data_dosen/{dosen_id}"
         profile = await pddikti_get_dosen_profile(dosen_id)
         if profile:
             result.gender = profile.get("jenis_kelamin")
+            if result.gender:
+                collected_urls["gender"] = [pddikti_url]
+            # PDDIKTI sometimes has photo URL
+            pddikti_photo = profile.get("foto") or profile.get("photo_url") or profile.get("foto_url")
+            if pddikti_photo and pddikti_photo.startswith("http"):
+                result.photo_url = pddikti_photo
+                collected_urls["photo_url"] = [pddikti_url]
             sources.append("pddikti_profile")
 
     # ── 3. PDDIKTI study history (birth region inference, tenure) ──────
@@ -86,6 +145,7 @@ async def identity_resolver_agent(state: CrmState) -> dict:
                     if origin:
                         result.origin_region = origin
                         result.origin_region_source = "inferred_from_s1"
+                        collected_urls.setdefault("origin_region", []).append(pddikti_url)
 
                 # Calculate tenure: years since first study entry
                 first_year = s1.get("tahun_masuk")
@@ -119,21 +179,31 @@ async def identity_resolver_agent(state: CrmState) -> dict:
 
     # ── 4. DDG search for birth info and personal details ──────────────
     if not result.birth_date or not result.origin_region:
-        name_to_search = result.full_name or pic_name
-        # Try multiple query strategies for better coverage
+        # Use cleaned name (no titles) for DDG — titles pollute search results
+        name_to_search = result.full_name or cleaned_name
+        # Try multiple query strategies with progressively relaxed names
         ddg_queries = [
             f'"tanggal lahir" "{name_to_search}" "{uni_name}"',
             f'"{name_to_search}" lahir OR "tempat tanggal lahir" dosen',
         ]
+        # Also try cleaned variant if different from name_to_search
+        if cleaned_name.lower() != name_to_search.lower():
+            ddg_queries.append(f'"tanggal lahir" "{cleaned_name}" "{uni_name}"')
         if result.nidn:
             ddg_queries.append(f'"{result.nidn}" "tanggal lahir" OR lahir')
+        # Broadest fallback: shorter name + university
+        short_variants = [v for v in name_variants if v.lower() != name_to_search.lower() and len(v.split()) <= 2]
+        for sv in short_variants[:1]:
+            ddg_queries.append(f'"{sv}" lahir dosen "{uni_name}"')
         all_snippets = []
+        ddg_links: list[str] = []
         for q in ddg_queries:
             if result.birth_date:  # Already found in a previous query
                 break
             ddg_results = await ddg_search(q, max_results=5)
             if ddg_results:
                 all_snippets.extend(r.get("snippet", "") for r in ddg_results)
+                ddg_links.extend(r.get("link", "") for r in ddg_results if r.get("link"))
         ddg_results = bool(all_snippets)  # reuse name to keep downstream code working
         if ddg_results:
             combined = "\n".join(all_snippets)
@@ -153,19 +223,22 @@ async def identity_resolver_agent(state: CrmState) -> dict:
                 if extracted.get("birth_date") and not result.birth_date:
                     result.birth_date = extracted["birth_date"]
                     result.birth_date_source = "ddg_search"
+                    collected_urls.setdefault("birth_date", []).extend(ddg_links)
                 if extracted.get("origin_region") and not result.origin_region:
                     result.origin_region = extracted["origin_region"]
                     result.origin_region_source = "ddg_search"
+                    collected_urls.setdefault("origin_region", []).extend(ddg_links)
                 if extracted.get("birth_place") and not result.origin_region:
                     result.origin_region = extracted["birth_place"]
                     result.origin_region_source = "ddg_search"
+                    collected_urls.setdefault("origin_region", []).extend(ddg_links)
                 if extracted.get("photo_url"):
                     result.photo_url = extracted["photo_url"]
             sources.append("ddg_personal")
 
     # ── 4b. Gemini grounded research for birth/origin (fills DDG gaps) ─
     if not result.birth_date or not result.origin_region:
-        name_to_search = result.full_name or pic_name
+        name_to_search = result.full_name or cleaned_name
         # Build education context for the Gemini prompt to constrain answers
         edu_context = ""
         if earliest_study_year:
@@ -192,6 +265,7 @@ async def identity_resolver_agent(state: CrmState) -> dict:
         )
         from orchestrator.crm.tools import gemini_research
         gemini_resp = await gemini_research(gemini_q)
+        gemini_urls = [u for u in (gemini_resp.get("urls") or []) if u] if gemini_resp else []
         if gemini_resp and gemini_resp.get("text"):
             gpt_parsed = await gpt_extract_structured(
                 gemini_resp["text"],
@@ -208,12 +282,15 @@ async def identity_resolver_agent(state: CrmState) -> dict:
                 if gpt_parsed.get("birth_date") and not result.birth_date:
                     result.birth_date = gpt_parsed["birth_date"]
                     result.birth_date_source = "gemini_grounded"
+                    collected_urls.setdefault("birth_date", []).extend(gemini_urls)
                 if gpt_parsed.get("origin_region") and not result.origin_region:
                     result.origin_region = gpt_parsed["origin_region"]
                     result.origin_region_source = "gemini_grounded"
+                    collected_urls.setdefault("origin_region", []).extend(gemini_urls)
                 if gpt_parsed.get("birth_place") and not result.origin_region:
                     result.origin_region = gpt_parsed["birth_place"]
                     result.origin_region_source = "gemini_grounded"
+                    collected_urls.setdefault("origin_region", []).extend(gemini_urls)
             sources.append("gemini_personal")
 
     # ── 5. Compute age from birth_date (with cross-validation) ──────────
@@ -245,9 +322,70 @@ async def identity_resolver_agent(state: CrmState) -> dict:
             earliest_study_year, result.age,
         )
 
+    # ── 6. Photo URL fallback (SINTA, Scholar, DDG image) ────────────
+    if not result.photo_url:
+        name_for_photo = result.full_name or cleaned_name
+        # Try SINTA author page for photo
+        if result.nidn:
+            sinta_hits = await ddg_search(
+                f'site:sinta.kemdikbud.go.id "{name_for_photo}" OR "{result.nidn}"',
+                max_results=2,
+            )
+            for sh in (sinta_hits or []):
+                link = sh.get("link", "")
+                if "sinta.kemdikbud.go.id/authors" in link:
+                    html = await fetch_page(link)
+                    if html:
+                        # Look for avatar/profile image in the HTML
+                        img_match = re.search(
+                            r'<img[^>]+(?:avatar|profile|photo|author)[^>]*src=["\']([^"\']+)["\']',
+                            html, re.IGNORECASE,
+                        )
+                        if not img_match:
+                            img_match = re.search(
+                                r'src=["\']([^"\']+)["\'][^>]*(?:avatar|profile|photo|author)',
+                                html, re.IGNORECASE,
+                            )
+                        if img_match:
+                            photo = img_match.group(1)
+                            if photo.startswith("http") and "default" not in photo.lower():
+                                result.photo_url = photo
+                                collected_urls["photo_url"] = [link]
+                                sources.append("sinta_photo")
+                                log.info("[IdentityResolver] Photo from SINTA: %s", photo)
+                    break
+        # Try Google Scholar profile for photo
+        if not result.photo_url:
+            scholar_hits = await ddg_search(
+                f'site:scholar.google.com "{name_for_photo}"', max_results=2,
+            )
+            for sh in (scholar_hits or []):
+                link = sh.get("link", "")
+                if "scholar.google.com" in link:
+                    html = await fetch_page(link)
+                    if html:
+                        img_match = re.search(
+                            r'<img[^>]+id=["\']gsc_prf_pup["\'][^>]*src=["\']([^"\']+)["\']',
+                            html, re.IGNORECASE,
+                        )
+                        if img_match:
+                            photo = img_match.group(1)
+                            if not photo.endswith("avatar_scholar_56.png"):
+                                if not photo.startswith("http"):
+                                    photo = "https://scholar.google.com" + photo
+                                result.photo_url = photo
+                                collected_urls["photo_url"] = [link]
+                                sources.append("scholar_photo")
+                                log.info("[IdentityResolver] Photo from Scholar: %s", photo)
+                    break
+
+    # ── Source URLs per field ──────────────────────────────────────────
+    for field, urls in collected_urls.items():
+        result.source_urls[field] = list(dict.fromkeys(urls))  # dedupe
+
     # ── Finalize ───────────────────────────────────────────────────────
     if not result.full_name:
-        result.full_name = pic_name
+        result.full_name = cleaned_name or pic_name
 
     result.confidence = max(result.confidence, 0.3 if sources else 0.0)
     if "pddikti_search" in sources:
@@ -258,21 +396,32 @@ async def identity_resolver_agent(state: CrmState) -> dict:
         "[IdentityResolver] Done for %s: name=%s, nidn=%s, confidence=%.2f",
         pic_name, result.full_name, result.nidn, result.confidence,
     )
-    return {"identity": result}
+    return {"identity": result, "cleaned_name": cleaned_name, "name_variants": name_variants}
 
 
 async def _infer_origin_from_pt(pt_name: str) -> str | None:
-    """Infer geographic origin from the university name."""
-    # Common patterns: "Universitas Negeri Yogyakarta" → "Yogyakarta"
-    city_patterns = [
-        r'universitas\s+(?:negeri\s+)?(\w+)$',
-        r'institut\s+teknologi\s+(\w+)$',
-        r'universitas\s+(\w+)$',
-    ]
-    for pattern in city_patterns:
-        match = re.search(pattern, pt_name, re.IGNORECASE)
-        if match:
-            return match.group(1)
+    """Use AI to infer the city/region where a university is located.
+
+    AI knows that ITS → Surabaya, UGM → Yogyakarta, UIN Sunan Kalijaga → Yogyakarta,
+    etc. — no need for fragile regex patterns.
+    """
+    result = await gpt_extract_structured(
+        pt_name,
+        (
+            "This is an Indonesian university name. "
+            "What city or region is this university located in?\n"
+            'Return JSON: {"city": "..."}\n'
+            "Examples:\n"
+            '- "Universitas Negeri Yogyakarta" → "Yogyakarta"\n'
+            '- "Institut Teknologi Sepuluh Nopember" → "Surabaya"\n'
+            '- "UIN Sunan Kalijaga" → "Yogyakarta"\n'
+            '- "Universitas Prima Indonesia" → "Medan"\n'
+            '- "Universitas Indonesia" → "Depok"\n'
+            "If you don't know, return null."
+        ),
+    )
+    if result and result.get("city"):
+        return result["city"]
     return None
 
 

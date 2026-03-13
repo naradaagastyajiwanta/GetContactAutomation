@@ -11,7 +11,8 @@ from typing import Any
 
 from orchestrator.config import log
 from orchestrator.crm.state import CrmState, PersonalInterestResult
-from orchestrator.crm.tools import ddg_search, gpt_extract_structured, fetch_page, extract_text_from_html
+from orchestrator.crm.name_utils import strip_academic_titles, ai_strip_titles, build_name_variants
+from orchestrator.crm.tools import ddg_search, ddg_search, gpt_extract_structured, fetch_page, extract_text_from_html
 
 
 async def personal_interest_agent(state: CrmState) -> dict:
@@ -32,29 +33,45 @@ async def personal_interest_agent(state: CrmState) -> dict:
 
     full_name = (identity.full_name if identity else None) or pic_name
     nidn = identity.nidn if identity else None
+    # Use cleaned name for DDG queries (strip titles → better search hits)
+    cleaned_name = state.get("cleaned_name") or await ai_strip_titles(pic_name)
+    search_name = cleaned_name if cleaned_name != full_name else full_name
 
-    log.info("[PersonalInterest] Starting for %s", full_name)
+    log.info("[PersonalInterest] Starting for %s (search_name=%s)", full_name, search_name)
 
     snippets: list[str] = []
     sources: list[str] = []
+    collected_urls: list[str] = []
+    ig_urls: list[str] = []
+    scholar_sinta_urls: list[str] = []
 
-    # ── 1. Google dorking for interviews, profiles, bios ───────────────
+    # ── 1. Google dorking for interviews, profiles, bios (agentic) ────
+    # Use cleaned name (no titles) for better search results
     dork_queries = [
-        f'"{full_name}" wawancara OR interview "{uni_name}"',
-        f'"{full_name}" profil OR biografi OR tentang "{uni_name}"',
-        f'"{full_name}" hobi OR hobby OR "waktu luang" OR "di luar kampus"',
-        f'intitle:"{full_name}" profil OR wawancara',
+        f'"{search_name}" wawancara OR interview "{uni_name}"',
+        f'"{search_name}" profil OR biografi OR tentang "{uni_name}"',
+        f'"{search_name}" hobi OR hobby OR "waktu luang" OR "di luar kampus"',
+        f'"{search_name}" makanan favorit OR kuliner OR restoran OR "suka makan"',
+        f'intitle:"{search_name}" profil OR wawancara',
     ]
     # NIDN-based search is very precise
     if nidn:
         dork_queries.append(f'"{nidn}" profil OR wawancara OR biografi')
+    # If cleaned name differs from search_name, add fallback queries
+    name_variants = state.get("name_variants") or build_name_variants(pic_name)
+    short_variants = [v for v in name_variants if v.lower() != search_name.lower() and len(v.split()) <= 2]
+    for sv in short_variants[:1]:
+        dork_queries.append(f'"{sv}" dosen "{uni_name}" profil OR wawancara')
 
     for q in dork_queries:
         hits = await ddg_search(q, max_results=3)
         for h in (hits or []):
             snippet = h.get("snippet", "") or h.get("body", "")
+            link = h.get("link", "")
             if snippet and len(snippet) > 30:
                 snippets.append(snippet)
+            if link:
+                collected_urls.append(link)
         # Also try to fetch full page for most relevant results
         if hits and len(snippets) < 5:
             best_link = hits[0].get("link", "")
@@ -74,6 +91,7 @@ async def personal_interest_agent(state: CrmState) -> dict:
     # ── 2. Social media content (from social profiler) ─────────────────
     if social:
         if social.instagram_handle:
+            ig_urls.append(f"https://instagram.com/{social.instagram_handle}")
             # Strategy A: Try Playwright for real IG bio + recent posts
             ig_scraped = False
             try:
@@ -136,6 +154,7 @@ async def personal_interest_agent(state: CrmState) -> dict:
                     sources.append("instagram_bio")
 
         if social.linkedin_url:
+            collected_urls.append(social.linkedin_url)
             ln_hits = await ddg_search(
                 f'"{full_name}" site:linkedin.com',
                 max_results=2,
@@ -148,6 +167,7 @@ async def personal_interest_agent(state: CrmState) -> dict:
                 sources.append("linkedin")
 
         if social.facebook_url:
+            collected_urls.append(social.facebook_url)
             fb_hits = await ddg_search(
                 f'"{full_name}" site:facebook.com tentang OR about',
                 max_results=2,
@@ -163,12 +183,14 @@ async def personal_interest_agent(state: CrmState) -> dict:
         sinta_url = social.other_social.get("sinta", "")
         scholar_url = social.other_social.get("google_scholar", "")
         if sinta_url:
+            scholar_sinta_urls.append(sinta_url)
             sinta_html = await fetch_page(sinta_url)
             if sinta_html:
                 sinta_text = extract_text_from_html(sinta_html, max_chars=3000)
                 snippets.append(f"SINTA Profile:\n{sinta_text}")
                 sources.append("sinta_profile")
         if scholar_url:
+            scholar_sinta_urls.append(scholar_url)
             scholar_html = await fetch_page(scholar_url)
             if scholar_html:
                 scholar_text = extract_text_from_html(scholar_html, max_chars=3000)
@@ -178,20 +200,34 @@ async def personal_interest_agent(state: CrmState) -> dict:
     # ── 3. Gemini grounded research for personal details ────────────────
     try:
         from orchestrator.crm.tools import gemini_research
-        gemini_q = (
-            f"Cari informasi personal tentang {full_name}, "
-            f"dosen di {uni_name}. "
-            f"Saya ingin tahu: hobi, kegiatan di luar kampus, "
-            f"makanan favorit, sifat kepribadian, "
-            f"aktivitas sehari-hari, dan hal menarik tentang beliau."
-        )
-        log.info("[PersonalInterest] Calling Gemini for %s (snippets so far: %d)", full_name, len(snippets))
-        gemini_resp = await gemini_research(gemini_q)
-        if gemini_resp and gemini_resp.get("text"):
-            snippets.append(f"Gemini research:\n{gemini_resp['text']}")
-            sources.append("gemini_personal")
-        else:
-            log.warning("[PersonalInterest] Gemini returned empty for %s", full_name)
+        # Multi-query approach: different angles for better coverage
+        gemini_queries = [
+            (
+                f"Cari informasi personal tentang {search_name}, "
+                f"dosen di {uni_name}. "
+                f"Saya ingin tahu: hobi, kegiatan di luar kampus, "
+                f"makanan favorit, sifat kepribadian. "
+                f"SANGAT PENTING: JANGAN MENGARANG (halusinasi). Jika tidak ada informasi eksplisit di internet mengenai hobi beliau, kembalikan 'Tidak dketahui' daripada menyambungkan dengan orang lain yang kebetulan memiliki nama yang sama."
+            ),
+        ]
+        # Add targeted query if we're missing hobbies/activities
+        if len(snippets) < 3:
+            gemini_queries.append(
+                f'"{search_name}" dosen {uni_name} - '
+                f"Cari informasi tentang kegiatan beliau di luar kampus, "
+                f"atau hobi. JANGAN MENGARANG JAWABAN. HARUS BERDASARKAN SUMBER YANG VALID TENTANG DOSEN INI."
+            )
+        for gq in gemini_queries:
+            log.info("[PersonalInterest] Calling Gemini for %s (snippets so far: %d)", search_name, len(snippets))
+            gemini_resp = await gemini_research(gq)
+            if gemini_resp and gemini_resp.get("text"):
+                snippets.append(f"Gemini research:\n{gemini_resp['text']}")
+                sources.append("gemini_personal")
+                for u in (gemini_resp.get("urls") or []):
+                    if u:
+                        collected_urls.append(u)
+            else:
+                log.warning("[PersonalInterest] Gemini returned empty for %s", full_name)
     except Exception as e:
         log.warning("[PersonalInterest] Gemini failed for %s: %s", full_name, e)
 
@@ -233,7 +269,13 @@ async def personal_interest_agent(state: CrmState) -> dict:
                 "publications, teaching style, and any interviews\n\n"
                 "For personality_traits: you may infer from research topics and academic "
                 "behavior (e.g., someone doing AI + Biology is likely 'interdisciplinary' "
-                "and 'innovative'). For hobbies, only include if explicitly mentioned."
+                "and 'innovative').\n"
+                "For hobbies: include if mentioned OR reasonably inferable from their activities, "
+                "social media posts, or organizations they belong to. "
+                "Example: if they post about running events → 'lari/jogging'.\n"
+                "For outside_activities: include community, organizational, or social activities "
+                "visible from any source (e.g., committee memberships, community service, conference organizing).\n"
+                "For favorite_food: only include if explicitly mentioned."
             ),
         )
         if extracted:
@@ -241,6 +283,17 @@ async def personal_interest_agent(state: CrmState) -> dict:
             result.favorite_food = extracted.get("favorite_food")
             result.outside_activities = extracted.get("outside_activities") or []
             result.personality_traits = extracted.get("personality_traits") or []
+
+    # ── Source URLs per field ──────────────────────────────────────────
+    unique_urls = list(dict.fromkeys(collected_urls))
+    if result.hobbies:
+        result.source_urls["hobbies"] = unique_urls + ig_urls
+    if result.favorite_food:
+        result.source_urls["favorite_food"] = unique_urls
+    if result.outside_activities:
+        result.source_urls["outside_activities"] = unique_urls + ig_urls
+    if result.personality_traits:
+        result.source_urls["personality_traits"] = unique_urls + scholar_sinta_urls
 
     # ── Confidence ─────────────────────────────────────────────────────
     filled = sum([

@@ -1,9 +1,10 @@
-import { useState, useEffect } from 'react'
-import { Card, CardHeader, CardTitle, CardContent } from '../ui/Card'
+import { useState, useEffect, useMemo } from 'react'
+import { Card, CardTitle, CardContent } from '../ui/Card'
 import { useConfig, useUpdateConfig, useResetConfig, useModels } from '../../hooks/useConfig'
 import { Spinner } from '../ui/Spinner'
 import type { ConfigSetting } from '../../api/config'
-import { RotateCcw, Save, Eye, EyeOff, CheckCircle, XCircle } from 'lucide-react'
+import { RotateCcw, Save, Eye, EyeOff, CheckCircle, XCircle, ChevronDown, Search, Sliders, ToggleRight as ToggleRightIcon, Hash, Type, KeyRound, FileText } from 'lucide-react'
+import { cn } from '../../lib/utils'
 
 function groupSettings(settings: ConfigSetting[]): Record<string, ConfigSetting[]> {
   const groups: Record<string, ConfigSetting[]> = {}
@@ -163,14 +164,16 @@ function SettingInput({
         role="switch"
         aria-checked={!!value}
         onClick={() => onChange(!value)}
-        className={`relative inline-flex h-6 w-11 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors ${
-          value ? 'bg-blue-600' : 'bg-gray-300 dark:bg-gray-600'
-        }`}
+        className={cn(
+          'relative inline-flex h-6 w-11 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors',
+          value ? 'bg-blue-600' : 'bg-gray-300 dark:bg-gray-600',
+        )}
       >
         <span
-          className={`pointer-events-none inline-block h-5 w-5 rounded-full bg-white shadow ring-0 transition-transform ${
-            value ? 'translate-x-5' : 'translate-x-0'
-          }`}
+          className={cn(
+            'pointer-events-none inline-block h-5 w-5 rounded-full bg-white shadow ring-0 transition-transform',
+            value ? 'translate-x-5' : 'translate-x-0',
+          )}
         />
       </button>
     )
@@ -214,6 +217,265 @@ function SettingInput({
   )
 }
 
+// ---------------------------------------------------------------------------
+// Sub-group settings by visual type
+// ---------------------------------------------------------------------------
+
+type SettingCategory = 'toggle' | 'number' | 'credential' | 'text' | 'textarea'
+
+function categorize(s: ConfigSetting): SettingCategory {
+  if (s.key.endsWith('_CUSTOM_INSTRUCTIONS')) return 'textarea'
+  if (s.sensitive) return 'credential'
+  if (s.type === 'bool') return 'toggle'
+  if (s.type === 'int' || s.type === 'float') return 'number'
+  return 'text'
+}
+
+const CATEGORY_META: Record<SettingCategory, { icon: React.ReactNode; label: string }> = {
+  toggle: { icon: <ToggleRightIcon className="h-3.5 w-3.5" />, label: 'Toggles' },
+  number: { icon: <Hash className="h-3.5 w-3.5" />, label: 'Values' },
+  credential: { icon: <KeyRound className="h-3.5 w-3.5" />, label: 'Credentials' },
+  text: { icon: <Type className="h-3.5 w-3.5" />, label: 'Text' },
+  textarea: { icon: <FileText className="h-3.5 w-3.5" />, label: 'Custom Instructions' },
+}
+
+const CATEGORY_ORDER: SettingCategory[] = ['toggle', 'number', 'text', 'credential', 'textarea']
+
+function subGroupSettings(settings: ConfigSetting[]): { category: SettingCategory; items: ConfigSetting[] }[] {
+  const map = new Map<SettingCategory, ConfigSetting[]>()
+  for (const s of settings) {
+    const cat = categorize(s)
+    if (!map.has(cat)) map.set(cat, [])
+    map.get(cat)!.push(s)
+  }
+  return CATEGORY_ORDER.filter((c) => map.has(c)).map((c) => ({ category: c, items: map.get(c)! }))
+}
+
+// ---------------------------------------------------------------------------
+// Setting row component
+// ---------------------------------------------------------------------------
+
+function SettingRow({
+  setting,
+  localValues,
+  dirty,
+  onChangeValue,
+  onReset,
+  isDefault,
+  resetPending,
+  isToggle,
+}: {
+  setting: ConfigSetting
+  localValues: Record<string, string | number | boolean>
+  dirty: Set<string>
+  onChangeValue: (key: string, value: string | number | boolean) => void
+  onReset: (key: string) => void
+  isDefault: (setting: ConfigSetting) => boolean
+  resetPending: boolean
+  isToggle?: boolean
+}) {
+  const isDirty = dirty.has(setting.key)
+
+  if (isToggle) {
+    // Compact toggle row: label + description on left, toggle on right
+    return (
+      <div
+        className={cn(
+          'flex items-center justify-between gap-4 rounded-lg px-3 py-2.5 transition-colors',
+          isDirty
+            ? 'bg-amber-50 ring-1 ring-amber-200 dark:bg-amber-900/10 dark:ring-amber-800'
+            : 'hover:bg-gray-50 dark:hover:bg-gray-700/20',
+        )}
+      >
+        <div className="min-w-0 flex-1">
+          <div className="flex items-center gap-2">
+            <span className="text-sm font-medium text-gray-900 dark:text-gray-100">
+              {setting.label}
+            </span>
+            {isDirty && (
+              <span className="rounded bg-amber-100 px-1.5 py-0.5 text-xs text-amber-700 dark:bg-amber-900/30 dark:text-amber-400">
+                modified
+              </span>
+            )}
+          </div>
+          <p className="text-xs text-gray-500 dark:text-gray-400">{setting.description}</p>
+        </div>
+        <SettingInput
+          setting={setting}
+          value={localValues[setting.key] ?? setting.value}
+          onChange={(v) => onChangeValue(setting.key, v)}
+        />
+      </div>
+    )
+  }
+
+  // Standard row for inputs/text/credentials
+  return (
+    <div
+      className={cn(
+        'rounded-lg px-3 py-2.5 transition-colors',
+        isDirty
+          ? 'bg-amber-50 ring-1 ring-amber-200 dark:bg-amber-900/10 dark:ring-amber-800'
+          : 'hover:bg-gray-50 dark:hover:bg-gray-700/20',
+      )}
+    >
+      <div className="flex items-center justify-between gap-4">
+        <div className="min-w-0 flex-1">
+          <div className="flex items-center gap-2">
+            <span className="text-sm font-medium text-gray-900 dark:text-gray-100">
+              {setting.label}
+            </span>
+            {setting.sensitive && setting.has_value && !isDirty && (
+              <span className="rounded bg-green-100 px-1.5 py-0.5 text-xs text-green-700 dark:bg-green-900/30 dark:text-green-400">
+                set
+              </span>
+            )}
+            {setting.sensitive && !setting.has_value && !isDirty && (
+              <span className="rounded bg-red-100 px-1.5 py-0.5 text-xs text-red-700 dark:bg-red-900/30 dark:text-red-400">
+                not set
+              </span>
+            )}
+            {isDirty && (
+              <span className="rounded bg-amber-100 px-1.5 py-0.5 text-xs text-amber-700 dark:bg-amber-900/30 dark:text-amber-400">
+                modified
+              </span>
+            )}
+          </div>
+          <p className="text-xs text-gray-500 dark:text-gray-400">
+            {setting.description}
+            {setting.min_value != null && setting.max_value != null && (
+              <span className="ml-1">({setting.min_value} – {setting.max_value})</span>
+            )}
+          </p>
+        </div>
+        <div className="flex items-center gap-2">
+          <SettingInput
+            setting={setting}
+            value={localValues[setting.key] ?? setting.value}
+            onChange={(v) => onChangeValue(setting.key, v)}
+          />
+          {!setting.sensitive && !isDefault(setting) && (
+            <button
+              onClick={() => onReset(setting.key)}
+              disabled={resetPending}
+              title={`Reset to default (${setting.default})`}
+              className="rounded p-1 text-gray-400 hover:text-gray-600 dark:hover:text-gray-300"
+            >
+              <RotateCcw className="h-3.5 w-3.5" />
+            </button>
+          )}
+        </div>
+      </div>
+    </div>
+  )
+}
+
+// ---------------------------------------------------------------------------
+// Accordion group — now with sub-grouping by type
+// ---------------------------------------------------------------------------
+
+function AccordionGroup({
+  group,
+  settings,
+  localValues,
+  dirty,
+  onChangeValue,
+  onReset,
+  isDefault,
+  resetPending,
+  defaultOpen,
+  searchQuery,
+}: {
+  group: string
+  settings: ConfigSetting[]
+  localValues: Record<string, string | number | boolean>
+  dirty: Set<string>
+  onChangeValue: (key: string, value: string | number | boolean) => void
+  onReset: (key: string) => void
+  isDefault: (setting: ConfigSetting) => boolean
+  resetPending: boolean
+  defaultOpen: boolean
+  searchQuery: string
+}) {
+  const [open, setOpen] = useState(defaultOpen)
+
+  const dirtyCount = settings.filter((s) => dirty.has(s.key)).length
+  const subGroups = useMemo(() => subGroupSettings(settings), [settings])
+
+  // Auto-open when search matches
+  useEffect(() => {
+    if (searchQuery && settings.length > 0) setOpen(true)
+  }, [searchQuery, settings.length])
+
+  return (
+    <div className="border-b border-gray-100 last:border-b-0 dark:border-gray-700/50">
+      <button
+        type="button"
+        onClick={() => setOpen(!open)}
+        className="flex w-full items-center justify-between px-5 py-3 text-left transition-colors hover:bg-gray-50 dark:hover:bg-gray-700/20"
+      >
+        <div className="flex items-center gap-2">
+          <h4 className="text-sm font-semibold uppercase tracking-wider text-gray-500 dark:text-gray-400">
+            {group}
+          </h4>
+          <span className="text-xs text-gray-400">({settings.length})</span>
+          {dirtyCount > 0 && (
+            <span className="rounded-full bg-amber-100 px-2 py-0.5 text-xs font-medium text-amber-700 dark:bg-amber-900/30 dark:text-amber-400">
+              {dirtyCount} modified
+            </span>
+          )}
+        </div>
+        <ChevronDown
+          className={cn(
+            'h-4 w-4 text-gray-400 transition-transform',
+            open && 'rotate-180',
+          )}
+        />
+      </button>
+
+      {open && (
+        <div className="px-5 pb-4 space-y-4">
+          {subGroups.map(({ category, items }) => {
+            const meta = CATEGORY_META[category]
+            const showSubHeader = subGroups.length > 1
+
+            return (
+              <div key={category}>
+                {showSubHeader && (
+                  <div className="mb-2 flex items-center gap-1.5 text-xs font-medium text-gray-400 dark:text-gray-500">
+                    {meta.icon}
+                    <span>{meta.label}</span>
+                    <div className="ml-1 flex-1 border-t border-gray-100 dark:border-gray-700/50" />
+                  </div>
+                )}
+                <div className="space-y-1">
+                  {items.map((setting) => (
+                    <SettingRow
+                      key={setting.key}
+                      setting={setting}
+                      localValues={localValues}
+                      dirty={dirty}
+                      onChangeValue={onChangeValue}
+                      onReset={onReset}
+                      isDefault={isDefault}
+                      resetPending={resetPending}
+                      isToggle={category === 'toggle'}
+                    />
+                  ))}
+                </div>
+              </div>
+            )
+          })}
+        </div>
+      )}
+    </div>
+  )
+}
+
+// ---------------------------------------------------------------------------
+// Main component
+// ---------------------------------------------------------------------------
+
 export function ConfigDisplay() {
   const { data, isLoading, error } = useConfig()
   const updateMutation = useUpdateConfig()
@@ -221,13 +483,12 @@ export function ConfigDisplay() {
 
   const [localValues, setLocalValues] = useState<Record<string, string | number | boolean>>({})
   const [dirty, setDirty] = useState<Set<string>>(new Set())
+  const [searchQuery, setSearchQuery] = useState('')
 
   useEffect(() => {
     if (data?.settings) {
       const vals: Record<string, string | number | boolean> = {}
       for (const s of data.settings) {
-        // For sensitive fields, don't put the masked value into local state
-        // since the user will enter a brand-new value when editing
         vals[s.key] = s.value
       }
       setLocalValues(vals)
@@ -235,10 +496,27 @@ export function ConfigDisplay() {
     }
   }, [data])
 
+  const filteredGroups = useMemo(() => {
+    if (!data?.settings) return {}
+    const groups = groupSettings(data.settings)
+    if (!searchQuery.trim()) return groups
+    const q = searchQuery.toLowerCase()
+    const result: Record<string, ConfigSetting[]> = {}
+    for (const [group, settings] of Object.entries(groups)) {
+      const matched = settings.filter(
+        (s) =>
+          s.label.toLowerCase().includes(q) ||
+          s.key.toLowerCase().includes(q) ||
+          s.description.toLowerCase().includes(q),
+      )
+      if (matched.length > 0) result[group] = matched
+    }
+    return result
+  }, [data, searchQuery])
+
   if (isLoading) {
     return (
       <Card>
-        <CardHeader><CardTitle>Configuration</CardTitle></CardHeader>
         <CardContent>
           <div className="flex items-center justify-center py-8"><Spinner /></div>
         </CardContent>
@@ -249,15 +527,12 @@ export function ConfigDisplay() {
   if (error || !data) {
     return (
       <Card>
-        <CardHeader><CardTitle>Configuration</CardTitle></CardHeader>
         <CardContent>
           <p className="text-sm text-red-500">Failed to load configuration.</p>
         </CardContent>
       </Card>
     )
   }
-
-  const groups = groupSettings(data.settings)
 
   const handleChange = (key: string, value: string | number | boolean) => {
     setLocalValues((prev) => ({ ...prev, [key]: value }))
@@ -284,89 +559,70 @@ export function ConfigDisplay() {
     return localValues[setting.key] === setting.default && !dirty.has(setting.key)
   }
 
+  const groupEntries = Object.entries(filteredGroups)
+
   return (
     <Card padding={false}>
-      <div className="p-6 pb-0">
-        <div className="mb-4 flex items-center justify-between">
+      {/* Header */}
+      <div className="flex items-center justify-between gap-3 px-5 pt-5 pb-3">
+        <div className="flex items-center gap-2">
+          <Sliders className="h-5 w-5 text-indigo-500" />
           <CardTitle>Configuration</CardTitle>
-          {dirty.size > 0 && (
-            <button
-              onClick={handleSave}
-              disabled={updateMutation.isPending}
-              className="inline-flex items-center gap-1.5 rounded-md bg-blue-600 px-3 py-1.5 text-sm font-medium text-white hover:bg-blue-700 disabled:opacity-50"
-            >
-              <Save className="h-4 w-4" />
-              {updateMutation.isPending ? 'Saving...' : `Save (${dirty.size})`}
-            </button>
-          )}
+        </div>
+        {/* Search */}
+        <div className="relative">
+          <Search className="pointer-events-none absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-gray-400" />
+          <input
+            type="text"
+            value={searchQuery}
+            onChange={(e) => setSearchQuery(e.target.value)}
+            placeholder="Search settings..."
+            className="w-52 rounded-lg border border-gray-200 bg-gray-50 py-1.5 pl-8 pr-3 text-xs text-gray-700 placeholder-gray-400 focus:border-indigo-400 focus:bg-white focus:outline-none dark:border-gray-700 dark:bg-gray-800 dark:text-gray-300 dark:placeholder-gray-500 dark:focus:border-indigo-500"
+          />
         </div>
       </div>
 
-      <div className="divide-y divide-gray-200 dark:divide-gray-700">
-        {Object.entries(groups).map(([group, settings]) => (
-          <div key={group} className="px-6 py-4">
-            <h4 className="mb-3 text-sm font-semibold uppercase tracking-wider text-gray-500 dark:text-gray-400">
-              {group}
-            </h4>
-            <div className="space-y-3">
-              {settings.map((setting) => (
-                <div
-                  key={setting.key}
-                  className="flex items-center justify-between gap-4"
-                >
-                  <div className="min-w-0 flex-1">
-                    <div className="flex items-center gap-2">
-                      <span className="text-sm font-medium text-gray-900 dark:text-gray-100">
-                        {setting.label}
-                      </span>
-                      {setting.sensitive && setting.has_value && !dirty.has(setting.key) && (
-                        <span className="rounded bg-green-100 px-1.5 py-0.5 text-xs text-green-700 dark:bg-green-900/30 dark:text-green-400">
-                          set
-                        </span>
-                      )}
-                      {setting.sensitive && !setting.has_value && !dirty.has(setting.key) && (
-                        <span className="rounded bg-red-100 px-1.5 py-0.5 text-xs text-red-700 dark:bg-red-900/30 dark:text-red-400">
-                          not set
-                        </span>
-                      )}
-                      {dirty.has(setting.key) && (
-                        <span className="rounded bg-amber-100 px-1.5 py-0.5 text-xs text-amber-700 dark:bg-amber-900/30 dark:text-amber-400">
-                          modified
-                        </span>
-                      )}
-                    </div>
-                    <p className="text-xs text-gray-500 dark:text-gray-400">
-                      {setting.description}
-                      {setting.min_value != null && setting.max_value != null && (
-                        <span className="ml-1">
-                          ({setting.min_value} - {setting.max_value})
-                        </span>
-                      )}
-                    </p>
-                  </div>
-                  <div className="flex items-center gap-2">
-                    <SettingInput
-                      setting={setting}
-                      value={localValues[setting.key] ?? setting.value}
-                      onChange={(v) => handleChange(setting.key, v)}
-                    />
-                    {!setting.sensitive && !isDefault(setting) && (
-                      <button
-                        onClick={() => handleReset(setting.key)}
-                        disabled={resetMutation.isPending}
-                        title={`Reset to default (${setting.default})`}
-                        className="rounded p-1 text-gray-400 hover:text-gray-600 dark:hover:text-gray-300"
-                      >
-                        <RotateCcw className="h-3.5 w-3.5" />
-                      </button>
-                    )}
-                  </div>
-                </div>
-              ))}
-            </div>
-          </div>
-        ))}
-      </div>
+      {/* Accordion groups */}
+      {groupEntries.length === 0 ? (
+        <div className="px-5 pb-5 text-center text-sm text-gray-400">
+          No settings match "{searchQuery}"
+        </div>
+      ) : (
+        <div>
+          {groupEntries.map(([group, settings]) => (
+            <AccordionGroup
+              key={group}
+              group={group}
+              settings={settings}
+              localValues={localValues}
+              dirty={dirty}
+              onChangeValue={handleChange}
+              onReset={handleReset}
+              isDefault={isDefault}
+              resetPending={resetMutation.isPending}
+              defaultOpen={settings.some((s) => dirty.has(s.key))}
+              searchQuery={searchQuery}
+            />
+          ))}
+        </div>
+      )}
+
+      {/* Sticky save bar */}
+      {dirty.size > 0 && (
+        <div className="sticky bottom-0 flex items-center justify-between rounded-b-xl border-t border-gray-200 bg-white/90 px-5 py-3 backdrop-blur dark:border-gray-700 dark:bg-gray-800/90">
+          <span className="text-sm text-gray-500 dark:text-gray-400">
+            {dirty.size} unsaved {dirty.size === 1 ? 'change' : 'changes'}
+          </span>
+          <button
+            onClick={handleSave}
+            disabled={updateMutation.isPending}
+            className="inline-flex items-center gap-1.5 rounded-lg bg-blue-600 px-4 py-2 text-sm font-medium text-white shadow-sm hover:bg-blue-700 disabled:opacity-50"
+          >
+            <Save className="h-4 w-4" />
+            {updateMutation.isPending ? 'Saving...' : `Save (${dirty.size})`}
+          </button>
+        </div>
+      )}
     </Card>
   )
 }

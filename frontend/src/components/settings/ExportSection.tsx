@@ -1,8 +1,8 @@
 import { useState } from 'react'
-import { Download } from 'lucide-react'
+import { Download, FileSpreadsheet } from 'lucide-react'
 import toast from 'react-hot-toast'
 import { downloadCsv } from '../../api/export'
-import { Card, CardHeader, CardTitle, CardContent } from '../ui/Card'
+import { Card } from '../ui/Card'
 import { Button } from '../ui/Button'
 
 export function ExportSection() {
@@ -21,19 +21,24 @@ export function ExportSection() {
   }
 
   return (
-    <Card>
-      <CardHeader>
-        <CardTitle>Export Data</CardTitle>
-      </CardHeader>
-      <CardContent>
-        <p className="mb-4 text-sm text-gray-500 dark:text-gray-400">
-          Download all university data and contact information as a CSV file.
-        </p>
-        <Button variant="secondary" loading={loading} onClick={handleExport}>
+    <Card padding={false}>
+      <div className="flex items-center justify-between px-5 py-4">
+        <div className="flex items-center gap-3">
+          <div className="flex h-9 w-9 items-center justify-center rounded-lg bg-emerald-100 dark:bg-emerald-900/30">
+            <FileSpreadsheet className="h-5 w-5 text-emerald-600 dark:text-emerald-400" />
+          </div>
+          <div>
+            <p className="text-sm font-semibold text-gray-900 dark:text-gray-100">Export Data</p>
+            <p className="text-xs text-gray-500 dark:text-gray-400">
+              Download all university data &amp; contacts as CSV
+            </p>
+          </div>
+        </div>
+        <Button variant="secondary" size="sm" loading={loading} onClick={handleExport}>
           <Download className="h-4 w-4" />
           Download CSV
         </Button>
-      </CardContent>
+      </div>
     </Card>
   )
 }

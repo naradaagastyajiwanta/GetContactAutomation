@@ -11,6 +11,7 @@ from typing import Any
 
 from orchestrator.config import log
 from orchestrator.crm.state import CrmState, AcademicResult
+from orchestrator.crm.name_utils import strip_academic_titles, ai_strip_titles, build_name_variants
 from orchestrator.crm.tools import (
     pddikti_get_dosen_profile,
     pddikti_get_dosen_study_history,
@@ -36,11 +37,15 @@ async def academic_profiler_agent(state: CrmState) -> dict:
 
     dosen_id = identity.pddikti_dosen_id if identity else None
     full_name = (identity.full_name if identity else None) or pic_name
+    # Use cleaned name for search queries (strip titles)
+    cleaned_name = state.get("cleaned_name") or await ai_strip_titles(pic_name)
+    search_name = cleaned_name if cleaned_name != full_name else full_name
 
-    log.info("[AcademicProfiler] Starting for %s (dosen_id=%s)", full_name, dosen_id)
+    log.info("[AcademicProfiler] Starting for %s (dosen_id=%s, search_name=%s)", full_name, dosen_id, search_name)
 
     result = AcademicResult()
     sources: list[str] = []
+    pddikti_url = f"https://pddikti.kemdiktisaintek.go.id/data_dosen/{dosen_id}" if dosen_id else None
 
     # ── 1. PDDIKTI profile (jabatan, pendidikan) ──────────────────────
     if dosen_id:
@@ -65,17 +70,22 @@ async def academic_profiler_agent(state: CrmState) -> dict:
                 }
                 for s in study_hist
             ]
-            # Compute tenure from earliest record
-            years = [s.get("tahun_masuk") for s in study_hist if s.get("tahun_masuk")]
-            if years:
-                try:
-                    earliest = min(int(y) for y in years if y)
-                    result.tenure_years = datetime.now().year - earliest
-                except (ValueError, TypeError):
-                    pass
+            # Estimate tenure from highest-degree graduation year
+            # (masa kerja ≈ years since completing final degree)
+            grad_years = []
+            for s in study_hist:
+                y = s.get("tahun_lulus")
+                if y:
+                    try:
+                        grad_years.append(int(str(y)[:4]))
+                    except (ValueError, TypeError):
+                        pass
+            if grad_years:
+                latest_grad = max(grad_years)
+                result.tenure_years = datetime.now().year - latest_grad
             sources.append("pddikti_study_history")
 
-    # ── 3. PDDIKTI teaching history (current courses) ─────────────────
+    # ── 3. PDDIKTI teaching history (current courses + tenure) ─────────
     if dosen_id:
         teaching = await pddikti_get_dosen_teaching(dosen_id)
         if teaching:
@@ -86,6 +96,20 @@ async def academic_profiler_agent(state: CrmState) -> dict:
                 if name:
                     courses.add(name)
             result.teaching_subjects = sorted(courses)
+            # Better tenure: years since earliest teaching semester
+            teach_years = []
+            for t in teaching:
+                sem = t.get("semester", "") or t.get("nama_semester", "")
+                if sem:
+                    try:
+                        y = int(str(sem)[:4])
+                        if 1970 <= y <= datetime.now().year:
+                            teach_years.append(y)
+                    except (ValueError, TypeError):
+                        pass
+            if teach_years:
+                earliest_teach = min(teach_years)
+                result.tenure_years = datetime.now().year - earliest_teach
             sources.append("pddikti_teaching")
 
     # ── 4. PDDIKTI research publications ───────────────────────────────
@@ -132,25 +156,42 @@ async def academic_profiler_agent(state: CrmState) -> dict:
         sources.append("pddikti_publications")
 
     # ── 5. SINTA search (h-index, sinta score) ────────────────────────
-    sinta = await sinta_search(full_name)
-    if sinta:
-        result.sinta_id = sinta.get("sinta_id")
-        sources.append("sinta")
+    # Try with cleaned name first, then full name; pass university for AI verification
+    sinta_url: str | None = None
+    for sinta_name in [search_name, full_name] if search_name != full_name else [full_name]:
+        sinta = await sinta_search(sinta_name, uni_name)
+        if sinta:
+            result.sinta_id = sinta.get("sinta_id")
+            sinta_url = sinta.get("url")
+            sources.append("sinta")
+            break
 
-    # ── 6. Google Scholar ──────────────────────────────────────────────
-    scholar = await scholar_search(full_name, uni_name)
-    if scholar:
-        result.scholar_id = scholar.get("url")
-        sources.append("google_scholar")
+    # ── 6. Google Scholar ──────────────────────────────────────────
+    scholar_url: str | None = None
+    for scholar_name in [search_name, full_name] if search_name != full_name else [full_name]:
+        scholar = await scholar_search(scholar_name, uni_name)
+        if scholar:
+            result.scholar_id = scholar.get("url")
+            scholar_url = scholar.get("url")
+            sources.append("google_scholar")
+            break
 
-    # ── 7. DDG fallback for teaching/expertise ─────────────────────────
+    # ── 7. DDG fallback for teaching/expertise (agentic retry) ─────────
     if not result.teaching_subjects:
-        ddg_results = await ddg_search(
-            f'"{full_name}" "{uni_name}" mengajar OR "mata kuliah" OR dosen',
-            max_results=3,
-        )
+        # Try progressively relaxed name variants
+        name_variants = state.get("name_variants") or build_name_variants(pic_name)
+        ddg_results = None
+        for variant in [search_name] + [v for v in name_variants if v.lower() != search_name.lower()][:2]:
+            ddg_results = await ddg_search(
+                f'"{variant}" "{uni_name}" mengajar OR "mata kuliah" OR dosen',
+                max_results=3,
+            )
+            if ddg_results:
+                log.info("[AcademicProfiler] DDG hit with variant: '%s'", variant)
+                break
         if ddg_results:
             combined = "\n".join(r.get("snippet", "") for r in ddg_results)
+            ddg_links = [r.get("link", "") for r in ddg_results if r.get("link")]
             extracted = await gpt_extract_structured(
                 combined,
                 (
@@ -163,7 +204,22 @@ async def academic_profiler_agent(state: CrmState) -> dict:
             )
             if extracted and extracted.get("teaching_subjects"):
                 result.teaching_subjects = extracted["teaching_subjects"]
+                if ddg_links:
+                    result.source_urls["teaching_subjects"] = ddg_links
             sources.append("ddg_academic")
+
+    # ── Source URLs per field ──────────────────────────────────────────
+    if pddikti_url:
+        for field in ("jabatan_akademik", "pendidikan_tertinggi", "education_history",
+                       "teaching_subjects", "publications", "research_topics", "tenure_years"):
+            if getattr(result, field, None) and field not in result.source_urls:
+                result.source_urls[field] = [pddikti_url]
+    if sinta_url:
+        if result.sinta_id:
+            result.source_urls["sinta_id"] = [sinta_url]
+    if scholar_url:
+        if result.scholar_id:
+            result.source_urls["scholar_id"] = [scholar_url]
 
     # ── Confidence ─────────────────────────────────────────────────────
     filled = sum([

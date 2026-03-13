@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useState, useEffect, useRef, useCallback } from 'react'
 import { AlertTriangle, X, ExternalLink, RefreshCw } from 'lucide-react'
 import { useHealth } from '../../hooks/useHealth'
 import { resetIgSessions } from '../../api/health'
@@ -15,7 +15,15 @@ export function IgSessionBanner() {
   const { data: health } = useHealth()
   const queryClient = useQueryClient()
   const [dismissed, setDismissed] = useState(false)
+  const [isExiting, setIsExiting] = useState(false)
   const [resetting, setResetting] = useState(false)
+  const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const hoveredRef = useRef(false)
+
+  const dismiss = useCallback(() => {
+    setIsExiting(true)
+    setTimeout(() => setDismissed(true), 300)
+  }, [])
 
   const ig = health?.instagram
   const igOk = ig?.ok ?? true
@@ -23,6 +31,17 @@ export function IgSessionBanner() {
   const healthy = ig?.healthy ?? 0
   const sessions = ig?.sessions ?? []
   const fallbacks = ig?.fallbacks
+
+  useEffect(() => {
+    if (igOk || dismissed || total === 0) return
+    const startTimer = () => {
+      timerRef.current = setTimeout(() => {
+        if (!hoveredRef.current) dismiss()
+      }, 15000)
+    }
+    startTimer()
+    return () => { if (timerRef.current) clearTimeout(timerRef.current) }
+  }, [igOk, dismissed, total, dismiss])
 
   // Count configured fallback providers
   const fbApify = fallbacks?.apify?.configured ?? false
@@ -59,107 +78,101 @@ export function IgSessionBanner() {
   }
 
   return (
-    <div className={`relative mb-4 rounded-lg border px-4 py-3 ${
-      allDown
-        ? 'border-red-300 bg-red-50 dark:border-red-700 dark:bg-red-950/40'
-        : 'border-amber-300 bg-amber-50 dark:border-amber-700 dark:bg-amber-950/40'
-    }`}>
-      <div className="flex items-start gap-3">
-        <AlertTriangle className={`mt-0.5 h-5 w-5 shrink-0 ${
-          allDown
-            ? 'text-red-600 dark:text-red-400'
-            : 'text-amber-600 dark:text-amber-400'
-        }`} />
-        <div className="flex-1 min-w-0">
+    <div
+      onMouseEnter={() => {
+        hoveredRef.current = true
+        if (timerRef.current) clearTimeout(timerRef.current)
+      }}
+      onMouseLeave={() => {
+        hoveredRef.current = false
+        timerRef.current = setTimeout(dismiss, 5000)
+      }}
+      className={`${isExiting ? 'animate-slide-out-right' : 'animate-slide-in-right'} rounded-xl border shadow-lg backdrop-blur-sm ${
+        allDown
+          ? 'border-red-200 bg-red-50/95 dark:border-red-800 dark:bg-red-950/90'
+          : 'border-amber-200 bg-amber-50/95 dark:border-amber-800 dark:bg-amber-950/90'
+      }`}
+    >
+      {/* Header */}
+      <div className="flex items-center justify-between gap-2 px-4 pt-3 pb-1">
+        <div className="flex items-center gap-2">
+          <AlertTriangle className={`h-4 w-4 shrink-0 ${
+            allDown ? 'text-red-500 dark:text-red-400' : 'text-amber-500 dark:text-amber-400'
+          }`} />
           <p className={`text-sm font-semibold ${
-            allDown
-              ? 'text-red-800 dark:text-red-200'
-              : 'text-amber-800 dark:text-amber-200'
+            allDown ? 'text-red-800 dark:text-red-200' : 'text-amber-800 dark:text-amber-200'
           }`}>
             {title}
           </p>
-          <p className={`mt-0.5 text-sm ${
-            allDown
-              ? 'text-red-700 dark:text-red-300'
-              : 'text-amber-700 dark:text-amber-300'
-          }`}>
-            {description}
-          </p>
-
-          {/* Per-session status pills */}
-          {sessions.length > 1 && (
-            <div className="mt-2 flex flex-wrap gap-1.5">
-              {sessions.map((s, i) => (
-                <span
-                  key={i}
-                  className={`inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[10px] font-medium ${
-                    s.ok
-                      ? 'bg-green-100 text-green-700 dark:bg-green-900/30 dark:text-green-400'
-                      : 'bg-red-100 text-red-700 dark:bg-red-900/30 dark:text-red-400'
-                  }`}
-                >
-                  <span className={`h-1.5 w-1.5 rounded-full ${s.ok ? 'bg-green-500' : 'bg-red-500'}`} />
-                  {s.label}
-                  {!s.ok && s.error && ` (${s.error === 'login_required' ? 'expired' : s.error})`}
-                </span>
-              ))}
-            </div>
-          )}
-
-          {/* Fallback provider pills */}
-          {fbCount > 0 && allDown && (
-            <div className="mt-1.5 flex flex-wrap gap-1.5">
-              {fbApify && (
-                <span className="inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[10px] font-medium bg-blue-100 text-blue-700 dark:bg-blue-900/30 dark:text-blue-400">
-                  <span className="h-1.5 w-1.5 rounded-full bg-blue-500" />
-                  Apify fallback active
-                </span>
-              )}
-              {fbSbot && (
-                <span className="inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[10px] font-medium bg-purple-100 text-purple-700 dark:bg-purple-900/30 dark:text-purple-400">
-                  <span className="h-1.5 w-1.5 rounded-full bg-purple-500" />
-                  ScrapingBot fallback active
-                </span>
-              )}
-            </div>
-          )}
-
-          <div className={`mt-2 flex items-center gap-3 text-xs ${
-            allDown
-              ? 'text-red-600 dark:text-red-400'
-              : 'text-amber-600 dark:text-amber-400'
-          }`}>
-            <span>
-              <strong>Fix:</strong> Get sessionid from browser (F12 → Cookies → instagram.com) →{' '}
-              <a
-                href="/settings"
-                className="inline-flex items-center gap-0.5 font-medium underline hover:opacity-80"
-              >
-                Settings <ExternalLink className="h-3 w-3" />
-              </a>
-              {' '}→ IG Session ID(s). Use commas for multiple sessions.
-            </span>
-            <button
-              onClick={handleReset}
-              disabled={resetting}
-              className="inline-flex items-center gap-1 rounded-md border border-current px-2 py-0.5 font-medium hover:opacity-80 disabled:opacity-50"
-            >
-              <RefreshCw className={`h-3 w-3 ${resetting ? 'animate-spin' : ''}`} />
-              Reset
-            </button>
-          </div>
         </div>
         <button
-          onClick={() => setDismissed(true)}
-          className={`shrink-0 rounded p-1 hover:opacity-80 ${
-            allDown
-              ? 'text-red-600 dark:text-red-400'
-              : 'text-amber-600 dark:text-amber-400'
+          onClick={dismiss}
+          className={`shrink-0 rounded-lg p-1 hover:bg-black/5 dark:hover:bg-white/10 ${
+            allDown ? 'text-red-400 dark:text-red-500' : 'text-amber-400 dark:text-amber-500'
           }`}
-          title="Dismiss (will reappear on page refresh)"
+          title="Dismiss"
         >
-          <X className="h-4 w-4" />
+          <X className="h-3.5 w-3.5" />
         </button>
+      </div>
+
+      {/* Body */}
+      <div className="px-4 pb-3">
+        <p className={`text-xs leading-relaxed ${
+          allDown ? 'text-red-600 dark:text-red-300' : 'text-amber-600 dark:text-amber-300'
+        }`}>
+          {description}
+        </p>
+
+        {/* Status pills */}
+        <div className="mt-2 flex flex-wrap gap-1.5">
+          {sessions.length > 1 && sessions.map((s, i) => (
+            <span
+              key={i}
+              className={`inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[10px] font-medium ${
+                s.ok
+                  ? 'bg-green-100 text-green-700 dark:bg-green-900/30 dark:text-green-400'
+                  : 'bg-red-100 text-red-700 dark:bg-red-900/30 dark:text-red-400'
+              }`}
+            >
+              <span className={`h-1.5 w-1.5 rounded-full ${s.ok ? 'bg-green-500' : 'bg-red-500'}`} />
+              {s.label}
+              {!s.ok && s.error && ` (${s.error === 'login_required' ? 'expired' : s.error})`}
+            </span>
+          ))}
+          {fbCount > 0 && allDown && fbApify && (
+            <span className="inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[10px] font-medium bg-blue-100 text-blue-700 dark:bg-blue-900/30 dark:text-blue-400">
+              <span className="h-1.5 w-1.5 rounded-full bg-blue-500" />
+              Apify fallback
+            </span>
+          )}
+          {fbCount > 0 && allDown && fbSbot && (
+            <span className="inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[10px] font-medium bg-purple-100 text-purple-700 dark:bg-purple-900/30 dark:text-purple-400">
+              <span className="h-1.5 w-1.5 rounded-full bg-purple-500" />
+              ScrapingBot fallback
+            </span>
+          )}
+        </div>
+
+        {/* Actions */}
+        <div className={`mt-2 flex items-center justify-between text-xs ${
+          allDown ? 'text-red-600 dark:text-red-400' : 'text-amber-600 dark:text-amber-400'
+        }`}>
+          <a
+            href="/settings"
+            className="inline-flex items-center gap-1 font-medium underline hover:opacity-80"
+          >
+            Fix in Settings <ExternalLink className="h-3 w-3" />
+          </a>
+          <button
+            onClick={handleReset}
+            disabled={resetting}
+            className="inline-flex items-center gap-1 rounded-md border border-current px-2 py-0.5 font-medium hover:opacity-80 disabled:opacity-50"
+          >
+            <RefreshCw className={`h-3 w-3 ${resetting ? 'animate-spin' : ''}`} />
+            Reset
+          </button>
+        </div>
       </div>
     </div>
   )

@@ -3126,6 +3126,17 @@ async def crm_stats():
     return await get_crm_stats()
 
 
+@app.get("/dms/pics/search")
+async def dms_search_pics(q: str = "", limit: int = 50):
+    """Search PICs across all DMS sources (universitas, kontak_universitas, schedule_pic_audiensi)."""
+    try:
+        from orchestrator.dms_mysql import search_dms_pics
+        results = await search_dms_pics(keyword=q, limit=limit)
+        return {"total": len(results), "pics": results}
+    except Exception as e:
+        return JSONResponse(status_code=500, content={"detail": str(e)})
+
+
 @app.get("/dms/universities/search")
 async def dms_search_universities(q: str = "", limit: int = 20):
     """Search universities in DMS by keyword."""

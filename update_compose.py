@@ -1,0 +1,146 @@
+import shutil
+
+src = "docker-compose.yml"
+dst = "docker-compose_backup.yml"
+shutil.copy(src, dst)
+
+with open(src, "r", encoding="utf-8") as f:
+    orig = f.read()
+
+# I will just write exactly the yaml I want
+new_yaml = """services:
+  # ---------------------------------------------------------------
+  # WhatsApp Service (must start first — orchestrator registers webhook)
+  # ---------------------------------------------------------------
+  whatsapp:
+    build:
+      context: .
+      dockerfile: Dockerfile.whatsapp
+    image: naradaagastya/gc-whatsapp:latest
+    container_name: gc-whatsapp
+    restart: unless-stopped
+    ports:
+      - "3100:3100"
+    volumes:
+      - ./whatsapp-service/auth_store:/app/auth_store
+      - ./whatsapp-service/auth_store_backup:/app/auth_store_backup
+      - ./whatsapp-service/auth_store_device_1:/app/auth_store_device_1
+      - ./whatsapp-service/auth_store_device_2:/app/auth_store_device_2
+      - ./whatsapp-service/auth_store_device_3:/app/auth_store_device_3
+      - ./whatsapp-service/auth_store_device_4:/app/auth_store_device_4
+      - ./whatsapp-service/auth_store_device_5:/app/auth_store_device_5
+      - ./whatsapp-service/data:/app/data
+    environment:
+      - NODE_ENV=production
+    networks:
+      - gc-network
+    healthcheck:
+      test: ["CMD", "node", "-e", "require('http').get('http://localhost:3100/status', r => { r.on('data', () => {}); process.exit(r.statusCode === 200 ? 0 : 1) }).on('error', () => process.exit(1))"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+
+  # ---------------------------------------------------------------
+  # Cloudflare WARP — SOCKS5 proxy to bypass ISP DPI blocking
+  # (Indonesian ISPs block DuckDuckGo via TLS/SNI inspection)
+  # ---------------------------------------------------------------
+  warp:
+    image: caomingjun/warp:latest
+    container_name: gc-warp
+    restart: unless-stopped
+    environment:
+      - WARP_SLEEP=2
+    cap_add:
+      - NET_ADMIN
+    sysctls:
+      - net.ipv6.conf.all.disable_ipv6=0
+      - net.ipv4.conf.all.src_valid_mark=1
+    volumes:
+      - warp-data:/var/lib/cloudflare-warp
+    networks:
+      - gc-network
+    healthcheck:
+      test: ["CMD", "curl", "-f", "--socks5", "127.0.0.1:1080", "https://cloudflare.com/cdn-cgi/trace"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 15s
+
+  # ---------------------------------------------------------------
+  # PinchTab (Headless browser automation via HTTP)
+  # ---------------------------------------------------------------
+  pinchtab:
+    image: pinchtab/pinchtab:latest
+    container_name: gc-pinchtab
+    restart: unless-stopped
+    ports:
+      - "9867:9867"
+    volumes:
+      - pinchtab-data:/data
+    shm_size: '2gb'
+    networks:
+      - gc-network
+
+  # ---------------------------------------------------------------
+  # Orchestrator (Python FastAPI)
+  # ---------------------------------------------------------------
+  orchestrator:
+    build:
+      context: .
+      dockerfile: Dockerfile.orchestrator
+    image: naradaagastya/gc-orchestrator:latest
+    container_name: gc-orchestrator
+    restart: unless-stopped
+    dns:
+      - 1.1.1.1
+      - 8.8.8.8
+    expose:
+      - "8000"
+    volumes:
+      - ./data:/app/data
+    env_file:
+      - .env.production
+    environment:
+      - WA_SERVICE_URL=http://whatsapp:3100
+      - WEBHOOK_URL=http://orchestrator:8000/webhook/incoming
+      - DATABASE_PATH=data/getcontact.db
+      - DDG_PROXY=socks5h://warp:1080
+      - DDGS_PROXY=socks5h://warp:1080
+      - PINCHTAB_URL=http://pinchtab:9867
+    depends_on:
+      whatsapp:
+        condition: service_healthy
+      warp:
+        condition: service_healthy
+    networks:
+      - gc-network
+
+  # ---------------------------------------------------------------
+  # Frontend (React built → served by internal Nginx)
+  # ---------------------------------------------------------------
+  frontend:
+    build:
+      context: .
+      dockerfile: Dockerfile.frontend
+    image: naradaagastya/gc-frontend:latest
+    container_name: gc-frontend
+    restart: unless-stopped
+    ports:
+      - "3200:80"
+    depends_on:
+      - orchestrator
+    networks:
+      - gc-network
+
+networks:
+  gc-network:
+    driver: bridge
+
+volumes:
+  warp-data:
+  pinchtab-data:
+"""
+
+with open(src, "w", encoding="utf-8") as f:
+    f.write(new_yaml)

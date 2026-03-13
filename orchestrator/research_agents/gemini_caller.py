@@ -151,7 +151,16 @@ def parse_json_response(text: str) -> dict[str, Any]:
         except json.JSONDecodeError:
             pass
 
-    log.warning("Could not parse Gemini response as JSON (len=%d)", len(text))
+    # Find JSON list in text
+    start_list = text.find("[")
+    end_list = text.rfind("]") + 1
+    if start_list >= 0 and end_list > start_list:
+        try:
+            return json.loads(text[start_list:end_list])
+        except json.JSONDecodeError:
+            pass
+
+    log.warning("Could not parse Gemini response as JSON (len=%d). Raw: %s", len(text), text[:500])
     return {"_raw": text[:3000], "_parse_failed": True}
 
 
