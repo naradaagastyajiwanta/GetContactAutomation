@@ -3982,3 +3982,63 @@ async def test_smtp_connection():
     success = smtp.connect()
     smtp.disconnect()
     return {"success": success, "message": "SMTP connected" if success else "SMTP failed"}
+
+
+@app.post("/email-blast/campaigns/{campaign_id}/attachment")
+async def upload_attachment(
+    campaign_id: int,
+    file: UploadFile = File(...),
+    variables: str = Form("")
+):
+    """Upload DOCX template and set variables for campaign"""
+    from orchestrator.email_blast import TEMPLATE_DIR, extract_docx_variables, save_campaign_attachment
+
+    # Validate file type
+    if not file.filename.endswith('.docx'):
+        raise HTTPException(status_code=400, detail="Only .docx files allowed")
+
+    # Save uploaded file
+    filename = f"{campaign_id}_{file.filename}"
+    filepath = TEMPLATE_DIR / filename
+
+    content = await file.read()
+    with open(filepath, 'wb') as f:
+        f.write(content)
+
+    # Extract variables from document
+    detected_vars = extract_docx_variables(str(filepath))
+
+    # Parse user-provided variables (JSON string like {"nomor_surat": "123/2024"})
+    user_vars = {}
+    if variables:
+        try:
+            user_vars = json.loads(variables)
+        except:
+            pass
+
+    # Merge: detected + user (user overrides detected if same key)
+    all_vars = {v: "" for v in detected_vars}
+    all_vars.update(user_vars)
+
+    # Save to campaign
+    await save_campaign_attachment(campaign_id, filename, json.dumps(all_vars))
+
+    return {
+        "success": True,
+        "filename": filename,
+        "variables": all_vars,
+        "detected_variables": detected_vars
+    }
+
+
+@app.get("/email-blast/campaigns/{campaign_id}/attachment")
+async def get_attachment(campaign_id: int):
+    """Get attachment info for campaign"""
+    from orchestrator.email_blast import get_campaign_attachment
+
+    attachment = await get_campaign_attachment(campaign_id)
+    return {
+        "success": True,
+        "filename": attachment['filename'],
+        "variables": attachment['variables']
+    }

@@ -3,12 +3,19 @@ Email Blast Module - Send bulk emails via SMTP
 """
 import asyncio
 import json
+import os
+import re
 import smtplib
 import ssl
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
+from email.mime.base import MIMEBase
+from email import encoders
 from datetime import datetime
 from typing import Optional
+from pathlib import Path
+
+from docx import Document
 
 from orchestrator.config import cfg, log
 from orchestrator.db import get_db
@@ -59,15 +66,16 @@ class SMTPClient:
             self._connection = None
 
     def send_email(self, to_email: str, subject: str, body: str,
-                   from_email: str = None, from_name: str = None) -> tuple[bool, str]:
-        """Send single email"""
+                   from_email: str = None, from_name: str = None,
+                   attachment_path: str = None) -> tuple[bool, str]:
+        """Send single email with optional attachment"""
         if not self._connection:
             success = self.connect()
             if not success:
                 return False, "SMTP not connected"
 
         try:
-            msg = MIMEMultipart('alternative')
+            msg = MIMEMultipart('mixed')
             if from_email:
                 msg['From'] = f"{from_name or 'Sekretariat Asosiasi AI'} <{from_email}>"
             else:
@@ -76,14 +84,30 @@ class SMTPClient:
             msg['Subject'] = subject
             msg['Reply-To'] = from_email or 'sekretariat@asosiasi.ai'
 
+            # Create multipart/alternative for body
+            msg_alt = MIMEMultipart('alternative')
+
             # Plain text part
             text_part = MIMEText(body, 'plain', 'utf-8')
-            msg.attach(text_part)
+            msg_alt.attach(text_part)
 
             # HTML part (simple conversion)
             html_body = body.replace('\n', '<br>\n')
             html_part = MIMEText(html_body, 'html', 'utf-8')
-            msg.attach(html_part)
+            msg_alt.attach(html_part)
+
+            msg.attach(msg_alt)
+
+            # Add attachment if provided
+            if attachment_path and os.path.exists(attachment_path):
+                with open(attachment_path, 'rb') as f:
+                    part = MIMEBase('application', 'octet-stream')
+                    part.set_payload(f.read())
+                    encoders.encode_base64(part)
+                    filename = os.path.basename(attachment_path)
+                    part.add_header('Content-Disposition', f'attachment; filename="{filename}"')
+                    msg.attach(part)
+                    log.debug(f"[EmailBlast] Attached: {filename}")
 
             # Use sendmail with proper envelope from
             from_addr = from_email if from_email else self.username
@@ -105,6 +129,98 @@ def get_smtp_client() -> SMTPClient:
     if _smtp_client is None:
         _smtp_client = SMTPClient()
     return _smtp_client
+
+
+# ---------------------------------------------------------------------------
+# Template Functions
+# ---------------------------------------------------------------------------
+
+TEMPLATE_DIR = Path("data/email_attachments")
+TEMPLATE_DIR.mkdir(parents=True, exist_ok=True)
+
+
+def detect_variables(text: str) -> list[str]:
+    """Detect all {{variable}} patterns in text"""
+    pattern = r'\{\{(\w+)\}\}'
+    return list(set(re.findall(pattern, text)))
+
+
+def extract_docx_variables(doc_path: str) -> list[str]:
+    """Extract variables from DOCX template"""
+    variables = set()
+    try:
+        doc = Document(doc_path)
+        for para in doc.paragraphs:
+            variables.update(detect_variables(para.text))
+        for table in doc.tables:
+            for row in table.rows:
+                for cell in row.cells:
+                    for para in cell.paragraphs:
+                        variables.update(detect_variables(para.text))
+    except Exception as e:
+        log.error(f"[EmailBlast] Error reading DOCX: {e}")
+    return sorted(list(variables))
+
+
+def generate_docx(doc_path: str, variables: dict, output_path: str) -> bool:
+    """Generate DOCX from template with replaced variables"""
+    try:
+        doc = Document(doc_path)
+
+        # Replace in paragraphs
+        for para in doc.paragraphs:
+            for run in para.runs:
+                text = run.text
+                for key, value in variables.items():
+                    text = text.replace(f'{{{{{key}}}}}', str(value))
+                run.text = text
+
+        # Replace in tables
+        for table in doc.tables:
+            for row in table.rows:
+                for cell in row.cells:
+                    for para in cell.paragraphs:
+                        for run in para.runs:
+                            text = run.text
+                            for key, value in variables.items():
+                                text = text.replace(f'{{{{{key}}}}}', str(value))
+                            run.text = text
+
+        doc.save(output_path)
+        return True
+    except Exception as e:
+        log.error(f"[EmailBlast] Error generating DOCX: {e}")
+        return False
+
+
+async def save_campaign_attachment(campaign_id: int, filename: str, variables: str) -> bool:
+    """Save attachment info to campaign"""
+    async with get_db() as db:
+        await db.execute(
+            """UPDATE email_blast_campaigns
+               SET attachment_filename = ?, attachment_variables = ?
+               WHERE id = ?""",
+            (filename, variables, campaign_id)
+        )
+        await db.commit()
+        return True
+
+
+async def get_campaign_attachment(campaign_id: int) -> dict:
+    """Get attachment info for campaign"""
+    async with get_db() as db:
+        cursor = await db.execute(
+            """SELECT attachment_filename, attachment_variables
+               FROM email_blast_campaigns WHERE id = ?""",
+            (campaign_id,)
+        )
+        row = await cursor.fetchone()
+        if row:
+            return {
+                'filename': row[0],
+                'variables': json.loads(row[1]) if row[1] else {}
+            }
+        return {'filename': None, 'variables': {}}
 
 
 # ---------------------------------------------------------------------------
@@ -229,7 +345,9 @@ async def run_email_blast_campaign(campaign_id: int,
     async with get_db() as db:
         # Get campaign info
         cursor = await db.execute(
-            "SELECT name, subject, template_message, from_email, from_name, delay_between_ms, status FROM email_blast_campaigns WHERE id = ?",
+            """SELECT name, subject, template_message, from_email, from_name,
+               delay_between_ms, status, attachment_filename, attachment_variables
+               FROM email_blast_campaigns WHERE id = ?""",
             (campaign_id,)
         )
         campaign = await cursor.fetchone()
@@ -237,11 +355,20 @@ async def run_email_blast_campaign(campaign_id: int,
             log.error(f"[EmailBlast] Campaign {campaign_id} not found")
             return
 
-        name, subject, template, from_email, from_name, delay_ms, status = campaign
+        (name, subject, template, from_email, from_name, delay_ms, status,
+         attachment_filename, attachment_variables) = campaign
 
         if status != 'running':
             log.error(f"[EmailBlast] Campaign {campaign_id} is not running (status: {status})")
             return
+
+        # Parse attachment variables
+        attachment_vars = {}
+        if attachment_variables:
+            try:
+                attachment_vars = json.loads(attachment_variables)
+            except:
+                pass
 
         # Get pending recipients
         query = """SELECT id, email, university_name FROM email_blast_recipients
@@ -271,6 +398,13 @@ async def run_email_blast_campaign(campaign_id: int,
             log.error("[EmailBlast] Failed to connect SMTP")
             return
 
+    # Prepare attachment path
+    attachment_path = None
+    if attachment_filename:
+        attachment_path = TEMPLATE_DIR / attachment_filename
+        if not attachment_path.exists():
+            attachment_path = None
+
     sent = 0
     failed = 0
 
@@ -281,10 +415,40 @@ async def run_email_blast_campaign(campaign_id: int,
             email, subject
         )
 
+        # Generate attachment if needed
+        final_attachment = None
+        if attachment_path and attachment_vars:
+            try:
+                # Build variables for this recipient
+                vars_for_recipient = {
+                    'university_name': uni_name or '',
+                    'email': email,
+                    'tanggal': datetime.now().strftime('%d %B %Y'),
+                }
+                # Add custom variables
+                vars_for_recipient.update(attachment_vars)
+
+                # Generate unique output path
+                output_name = f"{campaign_id}_{recipient_id}_{attachment_filename}"
+                output_path = TEMPLATE_DIR / output_name
+
+                if generate_docx(str(attachment_path), vars_for_recipient, str(output_path)):
+                    final_attachment = str(output_path)
+            except Exception as e:
+                log.error(f"[EmailBlast] Error generating attachment: {e}")
+
         # Send email
         success, error = smtp_client.send_email(
-            email, rendered_subject, rendered_msg, from_email, from_name
+            email, rendered_subject, rendered_msg, from_email, from_name,
+            attachment_path=final_attachment
         )
+
+        # Cleanup generated attachment
+        if final_attachment and final_attachment != str(attachment_path):
+            try:
+                os.remove(final_attachment)
+            except:
+                pass
 
         async with get_db() as db:
             if success:

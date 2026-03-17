@@ -18,6 +18,9 @@ import {
   Search,
   Check,
   Square,
+  Paperclip,
+  Upload,
+  X,
 } from 'lucide-react'
 import { cn } from '../lib/utils'
 import {
@@ -28,6 +31,8 @@ import {
   useCancelEmailCampaign,
   useAddAllRecipients,
   useUpdateEmailCampaign,
+  useUploadAttachment,
+  useCampaignAttachment,
 } from '../hooks/useEmailBlast'
 import type { EmailBlastCampaign, EmailBlastRecipient } from '../api/emailBlast'
 import { useUniversitiesWithEmails, useProvinces } from '../hooks/useUniversities'
@@ -65,6 +70,8 @@ export default function EmailBlastCampaignDetailPage() {
   const [uniSearch, setUniSearch] = useState('')
   const [uniProvince, setUniProvince] = useState('')
   const [selectedUniIds, setSelectedUniIds] = useState<Set<number>>(new Set())
+  const [attachmentFile, setAttachmentFile] = useState<File | null>(null)
+  const [attachmentVars, setAttachmentVars] = useState<Record<string, string>>({})
 
   const { data: campaignData, isLoading: campaignLoading } = useEmailBlastCampaign(campaignId)
   const { data: recipientsData, isLoading: recipientsLoading, refetch } = useEmailBlastRecipients(campaignId, statusFilter)
@@ -75,6 +82,8 @@ export default function EmailBlastCampaignDetailPage() {
   const addRecipientsMutation = useAddAllRecipients()
   const addSelectedRecipientsMutation = useAddSelectedRecipients()
   const updateMutation = useUpdateEmailCampaign()
+  const uploadAttachmentMutation = useUploadAttachment()
+  const { data: attachmentData } = useCampaignAttachment(campaignId)
 
   // University selector queries
   const { data: provinces } = useProvinces()
@@ -176,6 +185,36 @@ export default function EmailBlastCampaignDetailPage() {
         { onSuccess: () => setShowSelectUni(false) }
       )
     }
+  }
+
+  const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0]
+    if (file && file.name.endsWith('.docx')) {
+      setAttachmentFile(file)
+    } else {
+      alert('Hanya file .docx yang diizinkan')
+    }
+  }
+
+  const handleUploadAttachment = () => {
+    if (!attachmentFile) return
+    uploadAttachmentMutation.mutate(
+      { campaignId, file: attachmentFile, variables: attachmentVars },
+      {
+        onSuccess: (result) => {
+          setAttachmentFile(null)
+          setAttachmentVars(result.variables || {})
+          alert('Template berhasil diupload!')
+        },
+        onError: () => {
+          alert('Gagal upload template')
+        }
+      }
+    )
+  }
+
+  const handleVarChange = (key: string, value: string) => {
+    setAttachmentVars(prev => ({ ...prev, [key]: value }))
   }
 
   const pendingCount = recipients.filter(r => r.status === 'pending').length
@@ -367,6 +406,87 @@ export default function EmailBlastCampaignDetailPage() {
                 {campaign.from_name} &lt;{campaign.from_email}&gt;
               </div>
             </div>
+          </div>
+
+          {/* Attachment (DOCX Template) */}
+          <div className="mt-4 pt-4 border-t dark:border-gray-700">
+            <div className="flex items-center gap-2 mb-3">
+              <Paperclip className="w-4 h-4" />
+              <label className="text-sm font-medium">Lampiran (DOCX Template)</label>
+            </div>
+
+            {/* Current attachment info */}
+            {attachmentData?.filename && (
+              <div className="mb-3 p-3 bg-blue-50 dark:bg-blue-900/20 rounded-lg">
+                <div className="flex items-center justify-between">
+                  <div className="flex items-center gap-2">
+                    <CheckCircle2 className="w-4 h-4 text-blue-600" />
+                    <span className="text-sm">{attachmentData.filename}</span>
+                  </div>
+                </div>
+                {attachmentData.variables && Object.keys(attachmentData.variables).length > 0 && (
+                  <div className="mt-2 text-xs text-gray-500">
+                    Variables: {Object.keys(attachmentData.variables).join(', ')}
+                  </div>
+                )}
+              </div>
+            )}
+
+            {/* Upload new file */}
+            {(campaign.status === 'draft' || campaign.status === 'paused') && (
+              <div className="space-y-3">
+                <div className="flex items-center gap-3">
+                  <input
+                    type="file"
+                    accept=".docx"
+                    onChange={handleFileChange}
+                    className="flex-1 text-sm file:mr-4 file:py-2 file:px-4 file:rounded-lg file:border-0 file:text-sm file:font-semibold file:bg-blue-50 file:text-blue-700 hover:file:bg-blue-100 dark:file:bg-blue-900/30 dark:file:text-blue-300"
+                  />
+                  {attachmentFile && (
+                    <button
+                      onClick={handleUploadAttachment}
+                      disabled={uploadAttachmentMutation.isPending}
+                      className="px-3 py-2 text-sm bg-blue-600 hover:bg-blue-700 text-white rounded-lg disabled:opacity-50 flex items-center gap-1"
+                    >
+                      <Upload className="w-4 h-4" />
+                      {uploadAttachmentMutation.isPending ? 'Uploading...' : 'Upload'}
+                    </button>
+                  )}
+                </div>
+
+                {/* Variable inputs if template has variables */}
+                {attachmentData?.variables && Object.keys(attachmentData.variables).length > 0 && (
+                  <div className="p-3 bg-gray-50 dark:bg-gray-800 rounded-lg">
+                    <p className="text-xs text-gray-500 mb-2">Isi variabel untuk template:</p>
+                    <div className="grid grid-cols-2 gap-2">
+                      {Object.keys(attachmentData.variables).map(key => (
+                        <div key={key}>
+                          <label className="block text-xs text-gray-500 mb-1">{key}</label>
+                          <input
+                            type="text"
+                            value={attachmentVars[key] || ''}
+                            onChange={(e) => handleVarChange(key, e.target.value)}
+                            placeholder={key}
+                            className="w-full px-2 py-1 text-sm border rounded dark:bg-gray-700 dark:border-gray-600"
+                          />
+                        </div>
+                      ))}
+                    </div>
+                    <button
+                      onClick={handleUploadAttachment}
+                      disabled={uploadAttachmentMutation.isPending}
+                      className="mt-2 px-3 py-1.5 text-xs bg-blue-600 hover:bg-blue-700 text-white rounded-lg disabled:opacity-50"
+                    >
+                      Simpan Variabel
+                    </button>
+                  </div>
+                )}
+
+                <p className="text-xs text-gray-500">
+                  Gunakan placeholder di dalam DOCX: {'{{university_name}}'}, {'{{email}}'}, {'{{tanggal}}'}, dll
+                </p>
+              </div>
+            )}
           </div>
 
           {/* Save Button */}

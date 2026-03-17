@@ -349,6 +349,8 @@ CREATE TABLE IF NOT EXISTS email_blast_campaigns (
     total_recipients INTEGER DEFAULT 0,
     sent_count INTEGER DEFAULT 0,
     failed_count INTEGER DEFAULT 0,
+    attachment_filename TEXT,
+    attachment_variables TEXT,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     started_at TIMESTAMP,
     completed_at TIMESTAMP,

@@ -11,6 +11,8 @@ import {
   getEmailRecipients,
   testSmtpConnection,
   updateEmailCampaign,
+  uploadAttachment,
+  getAttachment,
   type EmailBlastCampaign,
   type EmailBlastRecipient,
   type CreateEmailCampaignRequest,
@@ -127,5 +129,24 @@ export function useUpdateEmailCampaign() {
       queryClient.invalidateQueries({ queryKey: ['email-blast-campaigns'] })
       queryClient.invalidateQueries({ queryKey: ['email-blast-campaign'] })
     },
+  })
+}
+
+export function useUploadAttachment() {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: ({ campaignId, file, variables }: { campaignId: number; file: File; variables: Record<string, string> }) =>
+      uploadAttachment(campaignId, file, variables),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['email-blast-campaign'] })
+    },
+  })
+}
+
+export function useCampaignAttachment(campaignId: number) {
+  return useQuery({
+    queryKey: ['email-blast-attachment', campaignId],
+    queryFn: () => getAttachment(campaignId),
+    enabled: !!campaignId,
   })
 }

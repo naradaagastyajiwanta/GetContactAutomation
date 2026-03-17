@@ -116,3 +116,28 @@ export async function updateEmailCampaign(id: number, data: UpdateEmailCampaignR
   const response = await apiClient.patch(`/email-blast/campaigns/${id}`, data)
   return response.data
 }
+
+export interface AttachmentInfo {
+  filename: string | null
+  variables: Record<string, string>
+}
+
+export async function uploadAttachment(
+  campaignId: number,
+  file: File,
+  variables: Record<string, string> = {}
+): Promise<{ success: boolean; filename: string; variables: Record<string, string> }> {
+  const formData = new FormData()
+  formData.append('file', file)
+  formData.append('variables', JSON.stringify(variables))
+
+  const response = await apiClient.post(`/email-blast/campaigns/${campaignId}/attachment`, formData, {
+    headers: { 'Content-Type': 'multipart/form-data' },
+  })
+  return response.data
+}
+
+export async function getAttachment(campaignId: number): Promise<{ success: boolean } & AttachmentInfo> {
+  const response = await apiClient.get(`/email-blast/campaigns/${campaignId}/attachment`)
+  return response.data
+}
