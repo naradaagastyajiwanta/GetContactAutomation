@@ -53,7 +53,7 @@ async def key_people_agent(state: OsintState) -> dict:
             url = website.rstrip("/") + path
             html = await fetch_page(url)
             if html:
-                text = extract_text_from_html(html, max_chars=6000)
+                text = extract_text_from_html(html, max_chars=12000)
                 extracted = await gpt_extract_structured(
                     text,
                     (

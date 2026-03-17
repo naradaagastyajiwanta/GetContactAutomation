@@ -279,6 +279,20 @@ async def _persist_results(state: OsintState) -> dict:
             last_run_id=run_id,
         )
 
+        # Also save email to universities table for easy access
+        if wp.email_official:
+            from orchestrator.db import update_university_email
+            await update_university_email(
+                university_id,
+                wp.email_official,
+                wp.email_source or "osint"
+            )
+
+        # Also save student count to universities table
+        if wp.student_count and wp.student_count > 0:
+            from orchestrator.db import update_student_count
+            await update_student_count(university_id, wp.student_count)
+
     # ── Save social media ─────────────────────────────────────────────
     si = state.get("social_intel")
     if si:

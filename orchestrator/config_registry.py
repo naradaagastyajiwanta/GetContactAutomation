@@ -29,6 +29,7 @@ class ConfigGroup(str, Enum):
     KNOWLEDGE_BASE = "Knowledge Base"
     PLAYWRIGHT = "Playwright Browser"
     DMS_INTEGRATION = "DMS Integration"
+    GENERAL = "General"
 
 
 @dataclass(frozen=True)
@@ -454,6 +455,32 @@ CONFIG_DEFINITIONS: list[ConfigDef] = [
             "Setiap pertanyaan didedikasikan ke 1 agent + reviewer. "
             "Jika false, gunakan single-prompt legacy."
         ),
+    ),
+    # Email Blast SMTP Settings
+    ConfigDef(
+        key="SMTP_HOST", type=ConfigType.STRING, default="mail.asosiasi.ai",
+        group=ConfigGroup.GENERAL, label="SMTP Host",
+        description="SMTP server hostname for email blast"
+    ),
+    ConfigDef(
+        key="SMTP_PORT", type=ConfigType.INT, default=465,
+        group=ConfigGroup.GENERAL, label="SMTP Port",
+        description="SMTP server port (465 for SSL, 587 for TLS)"
+    ),
+    ConfigDef(
+        key="SMTP_USERNAME", type=ConfigType.STRING, default="sekretariat@asosiasi.ai",
+        group=ConfigGroup.GENERAL, label="SMTP Username",
+        description="SMTP authentication username"
+    ),
+    ConfigDef(
+        key="SMTP_PASSWORD", type=ConfigType.STRING, default="SekertariatAInew343*",
+        group=ConfigGroup.GENERAL, label="SMTP Password",
+        description="SMTP authentication password"
+    ),
+    ConfigDef(
+        key="SMTP_USE_SSL", type=ConfigType.BOOL, default=True,
+        group=ConfigGroup.GENERAL, label="SMTP Use SSL",
+        description="Use SSL for SMTP connection (default: true for port 465)"
     ),
 ]
 

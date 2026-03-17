@@ -23,6 +23,8 @@ CREATE TABLE IF NOT EXISTS universities (
     ig_handle TEXT,
     ig_verified BOOLEAN DEFAULT 0,
     secretariat_phone TEXT,
+    email_kampus TEXT,
+    email_source TEXT,
     rector_name TEXT,
     student_count INTEGER DEFAULT NULL,
     status TEXT DEFAULT 'pending',
@@ -331,6 +333,49 @@ CREATE INDEX IF NOT EXISTS idx_blast_recipients_status ON blast_recipients(statu
 """
 
 # ---------------------------------------------------------------------------
+# Email Blast Tables
+# ---------------------------------------------------------------------------
+
+_DDL_EMAIL_BLAST = """
+CREATE TABLE IF NOT EXISTS email_blast_campaigns (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    name TEXT NOT NULL,
+    subject TEXT NOT NULL DEFAULT '',
+    template_message TEXT NOT NULL DEFAULT '',
+    from_email TEXT NOT NULL DEFAULT 'sekretariat@asosiasi.ai',
+    from_name TEXT NOT NULL DEFAULT 'Sekretariat Asosiasi AI',
+    delay_between_ms INTEGER DEFAULT 8000,
+    status TEXT NOT NULL DEFAULT 'draft',
+    total_recipients INTEGER DEFAULT 0,
+    sent_count INTEGER DEFAULT 0,
+    failed_count INTEGER DEFAULT 0,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    started_at TIMESTAMP,
+    completed_at TIMESTAMP,
+    paused_at TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS email_blast_recipients (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    campaign_id INTEGER NOT NULL REFERENCES email_blast_campaigns(id) ON DELETE CASCADE,
+    university_id INTEGER REFERENCES universities(id),
+    email TEXT NOT NULL,
+    university_name TEXT,
+    rendered_subject TEXT,
+    rendered_message TEXT,
+    status TEXT NOT NULL DEFAULT 'pending',
+    error_message TEXT,
+    sent_at TIMESTAMP,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE(campaign_id, email)
+);
+
+CREATE INDEX IF NOT EXISTS idx_email_blast_campaigns_status ON email_blast_campaigns(status);
+CREATE INDEX IF NOT EXISTS idx_email_blast_recipients_campaign ON email_blast_recipients(campaign_id);
+CREATE INDEX IF NOT EXISTS idx_email_blast_recipients_status ON email_blast_recipients(status);
+"""
+
+# ---------------------------------------------------------------------------
 # OSINT Tables
 # ---------------------------------------------------------------------------
 
@@ -570,6 +615,7 @@ async def init_db() -> None:
         await db.executescript(_DDL_IG_ACCOUNTS)
         await db.executescript(_DDL_BLAST)
         await db.executescript(_INDEXES_BLAST)
+        await db.executescript(_DDL_EMAIL_BLAST)
         await db.executescript(_DDL_OSINT)
         await db.executescript(_INDEXES_OSINT)
         await db.executescript(_DDL_CRM)
@@ -732,6 +778,33 @@ async def init_db() -> None:
             pass  # Column already exists
         # Migration: add updated_at to universities (older DBs may lack it)
         # Note: SQLite ALTER TABLE doesn't allow DEFAULT CURRENT_TIMESTAMP, so we add without default then backfill
+        # Migration: add email_kampus to universities (from OSINT web profiler)
+        try:
+            await db.execute(
+                "ALTER TABLE universities ADD COLUMN email_kampus TEXT"
+            )
+            await db.commit()
+        except Exception:
+            pass  # Column already exists
+
+        # Migration: add email_source to track source of email
+        try:
+            await db.execute(
+                "ALTER TABLE universities ADD COLUMN email_source TEXT"
+            )
+            await db.commit()
+        except Exception:
+            pass  # Column already exists
+
+        # Migration: add student_count (from OSINT PDDIKTI)
+        try:
+            await db.execute(
+                "ALTER TABLE universities ADD COLUMN student_count INTEGER"
+            )
+            await db.commit()
+        except Exception:
+            pass  # Column already exists
+
         try:
             await db.execute(
                 "ALTER TABLE universities ADD COLUMN updated_at TIMESTAMP"
@@ -1002,6 +1075,17 @@ async def update_secretariat_phone(uni_id: int, phone: str) -> None:
         await db.commit()
     # Broadcast got_number event
     await ws_manager.broadcast_type("got_number", uni_id=uni_id, phone=phone)
+
+
+async def update_university_email(uni_id: int, email: str, source: str = "osint") -> None:
+    """Update the campus email on the university record."""
+    async with get_db() as db:
+        await db.execute(
+            "UPDATE universities SET email_kampus = ?, email_source = ?, updated_at = datetime('now') WHERE id = ?",
+            (email, source, uni_id),
+        )
+        await db.commit()
+    log.info("[DB] Updated email_kampus for university %d: %s (source: %s)", uni_id, email, source)
 
 
 async def update_university_rector_name(uni_id: int, rector_name: str) -> None:

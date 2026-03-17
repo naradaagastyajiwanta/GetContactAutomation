@@ -6,7 +6,9 @@ from typing import Any
 
 from dotenv import load_dotenv
 
+# Load .env first, then .env.production to override
 load_dotenv()
+load_dotenv(".env.production", override=True)
 
 # Base paths
 BASE_DIR = Path(__file__).resolve().parent.parent
@@ -77,6 +79,13 @@ PHONE_PATTERNS = [
     r'[\s\-.]?'
     r'(?:\d{3,5})',
 ]
+
+# Email Blast SMTP settings
+SMTP_HOST = os.getenv("SMTP_HOST", "mail.asosiasi.ai")
+SMTP_PORT = int(os.getenv("SMTP_PORT", "465"))
+SMTP_USERNAME = os.getenv("SMTP_USERNAME", "sekretariat@asosiasi.ai")
+SMTP_PASSWORD = os.getenv("SMTP_PASSWORD", "SekertariatAInew343*")
+SMTP_USE_SSL = os.getenv("SMTP_USE_SSL", "true").lower() == "true"
 
 
 # ---------------------------------------------------------------------------

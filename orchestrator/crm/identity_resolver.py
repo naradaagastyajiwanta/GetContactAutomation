@@ -23,9 +23,51 @@ from orchestrator.crm.tools import (
 )
 
 
+def _build_osint_context(
+    osint_social_media: list[dict],
+    osint_contacts: list[dict],
+    osint_profile: dict | None,
+) -> str:
+    """Build OSINT context string for AI prompts."""
+    if not osint_social_media and not osint_contacts and not osint_profile:
+        return "No OSINT data available."
+
+    ctx = []
+
+    # Social media handles
+    if osint_social_media:
+        handles = [f"  - {s['platform']}: {s['handle']}" for s in osint_social_media]
+        ctx.append("University Social Media:")
+        ctx.extend(handles)
+
+    # Contacts
+    if osint_contacts:
+        ctx.append("Known Contacts from OSINT:")
+        for c in osint_contacts[:5]:  # Limit to 5
+            name = c.get("name") or "Unknown"
+            phone = c.get("phone") or ""
+            email = c.get("email") or ""
+            info = f"  - {name}"
+            if phone:
+                info += f", phone: {phone}"
+            if email:
+                info += f", email: {email}"
+            ctx.append(info)
+
+    # Profile info
+    if osint_profile:
+        addr = osint_profile.get("address") or ""
+        city = osint_profile.get("city") or ""
+        if addr or city:
+            ctx.append(f"University Location: {addr}, {city}".strip(", "))
+
+    return "\n".join(ctx)
+
+
 async def identity_resolver_agent(state: CrmState) -> dict:
     """
     Resolve PIC identity using PDDIKTI first, then web search.
+    Uses OSINT data for validation when available.
 
     Returns partial state update with `identity`.
     """
@@ -33,7 +75,17 @@ async def identity_resolver_agent(state: CrmState) -> dict:
     pic_title = state.get("pic_title", "")
     uni_name = state.get("university_name", "")
 
+    # Load OSINT data for validation
+    osint_social_media = state.get("osint_social_media", [])
+    osint_contacts = state.get("osint_contacts", [])
+    osint_profile = state.get("osint_profile")
+
     log.info("[IdentityResolver] Starting for %s (%s) at %s", pic_name, pic_title, uni_name)
+    log.info("[IdentityResolver] OSINT available: social=%d, contacts=%d",
+             len(osint_social_media), len(osint_contacts))
+
+    # Build OSINT context for AI prompts
+    osint_context = _build_osint_context(osint_social_media, osint_contacts, osint_profile)
 
     result = IdentityResult()
     sources: list[str] = []
@@ -77,7 +129,9 @@ async def identity_resolver_agent(state: CrmState) -> dict:
             candidates_text,
             (
                 f"We're looking for a lecturer named '{cleaned_name}' "
-                f"(role: {pic_title}) at '{uni_name}'.\n"
+                f"(role: {pic_title}) at '{uni_name}'.\n\n"
+                f"OSINT CONTEXT (use for validation - the person may be associated with these):\n"
+                f"{osint_context}\n\n"
                 f"From the PDDIKTI results below, which one is the correct person?\n\n"
                 f"IMPORTANT: In Indonesian academia, PDDIKTI lists a lecturer's HOME "
                 f"institution (where they are formally registered), which may DIFFER "
@@ -86,6 +140,7 @@ async def identity_resolver_agent(state: CrmState) -> dict:
                 f"Therefore:\n"
                 f"- NAME MATCH is the PRIMARY criterion\n"
                 f"- University match is a SOFT bonus signal, not a requirement\n"
+                f"- Use OSINT data to VALIDATE - if PDDIKTI name matches someone associated with the OSINT handles/contacts, that's a strong signal\n"
                 f"- If the name matches well but university differs, still accept with moderate confidence\n\n"
                 f"Return JSON: {{\"best_index\": <1-based index or null>, "
                 f"\"confidence\": <0.0-1.0>, \"reason\": \"...\"}}\n"

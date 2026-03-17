@@ -14,6 +14,7 @@ import {
   Megaphone,
   CalendarClock,
   UserSearch,
+  Mail,
 } from 'lucide-react'
 import { cn } from '../../lib/utils'
 
@@ -28,6 +29,7 @@ const navItems = [
   { to: '/api-logs', label: 'API Logs', icon: ScrollText },
   { to: '/whatsapp', label: 'WhatsApp', icon: Smartphone },
   { to: '/blast', label: 'WA Blast', icon: Megaphone },
+  { to: '/email-blast', label: 'Email Blast', icon: Mail },
   { to: '/dms-schedules', label: 'DMS Schedules', icon: CalendarClock },
   { to: '/crm', label: 'PIC Profiling', icon: UserSearch },
   { to: '/settings', label: 'Settings', icon: Settings },

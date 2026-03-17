@@ -98,13 +98,14 @@ async def profile_compiler_agent(state: CrmState) -> dict:
     log.info("[ProfileCompiler] Compiling profile for request %s", state.get("request_id"))
 
     # Gather agent outputs
-    agent_outputs: dict[str, Any] = {
+    log.info("[DEBUG] social_profile: %s", state.get("social_profile")); agent_outputs: dict[str, Any] = {
         "identity": state.get("identity"),
         "academic": state.get("academic"),
         "social_profile": state.get("social_profile"),
         "campus_context": state.get("campus_context"),
         "personal_interest": state.get("personal_interest"),
         "family_info": state.get("family_info"),
+        "social_post_analysis": state.get("social_post_analysis"),
     }
 
     fields: list[ProfileFieldStatus] = []

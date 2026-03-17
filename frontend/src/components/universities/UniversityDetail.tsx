@@ -100,6 +100,26 @@ export function UniversityDetail({ university }: UniversityDetailProps) {
             {university.secretariat_phone || '-'}
           </InfoRow>
 
+          <InfoRow label="Email">
+            {university.email_kampus ? (
+              <span className="inline-flex items-center gap-2">
+                <a
+                  href={`mailto:${university.email_kampus}`}
+                  className="inline-flex items-center gap-1 text-indigo-600 hover:text-indigo-800 dark:text-indigo-400 dark:hover:text-indigo-300"
+                >
+                  {university.email_kampus}
+                </a>
+                {university.email_source && (
+                  <span className="text-xs text-gray-400 dark:text-gray-500">
+                    ({university.email_source})
+                  </span>
+                )}
+              </span>
+            ) : (
+              '-'
+            )}
+          </InfoRow>
+
           <InfoRow label="IG Verified">
             {university.ig_verified ? 'Yes' : 'No'}
           </InfoRow>

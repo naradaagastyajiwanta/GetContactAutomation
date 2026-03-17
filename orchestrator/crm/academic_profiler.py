@@ -23,6 +23,7 @@ from orchestrator.crm.tools import (
     ddg_search,
     gpt_extract_structured,
 )
+from orchestrator.osint.tavily_client import tavily_deep_search
 
 
 async def academic_profiler_agent(state: CrmState) -> dict:
@@ -208,31 +209,54 @@ async def academic_profiler_agent(state: CrmState) -> dict:
                     result.source_urls["teaching_subjects"] = ddg_links
             sources.append("ddg_academic")
 
-    # ── 8. DDG fallback for education history ─────────
-    if not result.education_history:
-        ddg_results = await ddg_search(
-            f'"{search_name}" "pendidikan" OR "alumni" OR "lulusan" OR "universitas"',
-            max_results=5,
-        )
-        if ddg_results:
-            log.info("[AcademicProfiler] Deep diving for education history with DDG...")
-            combined = "\n".join(r.get("snippet", "") for r in ddg_results)
-            extracted = await gpt_extract_structured(
-                combined,
-                (
-                    f"Extract academic education history (S1, S2, S3, etc) for {full_name}:\n"
-                    "Search comprehensively for any mention of schools or universities attended. Don't be rigid.\n"
-                    "Return JSON with keys:\n"
-                    "- education_history: array of dicts with 'jenjang' (level), 'nama_pt' (institute name), 'gelar' (title).\n"
-                    "Return null/empty list if not found. Ignore other info."
-                ),
+    # ── 8. Tavily/DDG fallback for education & academic details ─
+    if not result.education_history or not result.teaching_subjects or not result.jabatan_akademik:
+        log.info("[AcademicProfiler] Deep diving for academic and education history with Tavily...")
+        tavily_q = f'"{search_name}" Indonesia academic OR education OR profil OR alumni'
+        tavily_results = await tavily_deep_search(tavily_q, max_results=7)
+        
+        fallback_text = ""
+        fallback_links = []
+        if tavily_results and len(tavily_results) > 100:
+            fallback_text = tavily_results
+            fallback_links = ["https://tavily.com/search?q=" + tavily_q]
+        else:
+            log.info("[AcademicProfiler] Tavily fallback failed or small, using DDG...")
+            ddg_results = await ddg_search(
+                f'"{search_name}" "pendidikan" OR "alumni" OR "lulusan" OR "universitas"',
+                max_results=5,
             )
-            if extracted and extracted.get("education_history"):
-                result.education_history = extracted["education_history"]
-                ddg_links = [r.get("link", "") for r in ddg_results if r.get("link")]
-                if ddg_links:
-                    result.source_urls["education_history"] = ddg_links
-                sources.append("ddg_education_dive")
+            if ddg_results:
+                fallback_text = "\n".join(r.get("snippet", "") for r in ddg_results)
+                fallback_links = [r.get("link", "") for r in ddg_results if r.get("link")]
+
+        if fallback_text:
+            prompt = (
+                f"Extract academic and education history for {full_name}:\n"
+                "Search comprehensively for any mention of schools, universities attended, current/past roles, job titles, or subjects taught.\n"
+                "If the person is not a lecturer (dosen) but rather a student, professional, or employee, extract their academic background and professional title anyway.\n"
+                "Return JSON with keys:\n"
+                "- education_history: array of dicts with 'jenjang' (level/degree like S1, SMA, Bootcamp), 'nama_pt' (institute name), 'gelar' (title/major).\n"
+                "- jabatan_akademik: their professional or academic role (e.g. Mahasiswa, Web Developer, Dosen, etc).\n"
+                "- teaching_subjects: list of their skills, courses taught, or field of expertise.\n"
+                "Return null/empty for fields not found. Output pure JSON without markdown blocks."
+            )
+            extracted = await gpt_extract_structured(fallback_text[:25000], prompt)
+            
+            if extracted:
+                if not result.education_history and extracted.get("education_history"):
+                    result.education_history = extracted["education_history"]
+                    if fallback_links:
+                        result.source_urls["education_history"] = fallback_links
+                    sources.append("tavily_education")
+                if not result.jabatan_akademik and extracted.get("jabatan_akademik"):
+                    result.jabatan_akademik = extracted["jabatan_akademik"]
+                    if fallback_links:
+                        result.source_urls["jabatan_akademik"] = fallback_links
+                if not result.teaching_subjects and extracted.get("teaching_subjects"):
+                    result.teaching_subjects = extracted["teaching_subjects"]
+                    if fallback_links:
+                        result.source_urls["teaching_subjects"] = fallback_links
 
     # ── Source URLs per field ──────────────────────────────────────────
     if pddikti_url:

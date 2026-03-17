@@ -47,18 +47,20 @@ async def social_intel_agent(state: OsintState) -> dict:
         html = await fetch_page(website)
         if html:
             social_links = extract_social_links(html)
-            for platform, url in social_links.items():
+            for platform, urls in social_links.items():
                 if platform.lower() not in known_platforms:
-                    handle = _extract_handle(url, platform)
-                    accounts.append(SocialMediaEntry(
-                        platform=platform,
-                        handle=handle or url,
-                        url=url,
-                        confidence=0.8,
-                        source=website,
-                    ))
+                    # Iterate over all URLs found for this platform
+                    for url in urls:
+                        handle = _extract_handle(url, platform)
+                        accounts.append(SocialMediaEntry(
+                            platform=platform,
+                            handle=handle or url,
+                            url=url,
+                            confidence=0.8,
+                            source=website,
+                        ))
+                        log.info("[SocialIntel] Found %s from website: %s", platform, url)
                     known_platforms.add(platform.lower())
-                    log.info("[SocialIntel] Found %s from website: %s", platform, url)
 
     # ── 2. DDG search for each missing platform ────────────────────────
     search_targets = {

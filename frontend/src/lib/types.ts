@@ -7,6 +7,8 @@ export interface University {
   ig_handle: string | null
   ig_verified: boolean
   secretariat_phone: string | null
+  email_kampus: string | null
+  email_source: string | null
   rector_name: string | null
   student_count: number | null
   status: UniversityStatus

@@ -8,9 +8,9 @@ pic_name: Narada Agastya Jiwanta
 pic_title: None
 priority: normal
 notes: None
-run_id: 25
+run_id: 46
 created_at: 2026-03-13 03:10:45
-updated_at: 2026-03-13 06:36:10
+updated_at: 2026-03-13 13:37:03
 
 === CRM PIC Profiles ===
 
@@ -69,6 +69,10 @@ fields_total: 31
 fields_manual: 11
 last_updated: 2026-03-13 04:44:35
 created_at: 2026-03-13 04:44:35
+personality_summary: None
+recent_topics: None
+communication_style: None
+social_behavior_insights: None
 
 --- Profile 2 ---
 id: 25
@@ -125,3 +129,971 @@ fields_total: 31
 fields_manual: 11
 last_updated: 2026-03-13 06:36:10
 created_at: 2026-03-13 06:36:10
+personality_summary: None
+recent_topics: None
+communication_style: None
+social_behavior_insights: None
+
+--- Profile 3 ---
+id: 27
+request_id: 5
+university_id: None
+full_name: Narada Agastya Jiwanta
+full_name_source: search
+title: None
+title_source: search
+teaching_subjects: None
+teaching_subjects_source: search
+tenure_years: None
+tenure_years_source: search
+birth_date: None
+birth_date_source: None
+age: None
+origin_region: None
+origin_region_source: None
+education_history: None
+education_history_source: pddikti
+photo_url: None
+marital_status: None
+marital_status_source: ddg_dork, facebook, gemini_grounded, gap_filler_gemini
+spouse_name: None
+spouse_name_source: ddg_dork, facebook, gemini_grounded, gap_filler_gemini
+children_count: None
+children_count_source: ddg_dork, facebook, gemini_grounded, gap_filler_gemini
+family_residence: None
+family_residence_source: ddg_dork, facebook, gemini_grounded, gap_filler_gemini
+campus_problems: None
+campus_problems_source: ddg_news, gemini_grounded
+campus_concerns: None
+campus_concerns_source: ddg_news, gemini_grounded
+campus_hopes: None
+campus_hopes_source: ddg_news, gemini_grounded
+hobbies: ["reading", "listening to music", "editing photos or videos", "watching", "writing"]
+hobbies_source: ddg_dork, instagram_bio, facebook, gemini_personal
+favorite_food: None
+favorite_food_source: ddg_dork, instagram_bio, facebook, gemini_personal
+outside_activities: None
+outside_activities_source: ddg_dork, instagram_bio, facebook, gemini_personal
+linkedin_url: None
+instagram_handle: najiwan09
+facebook_url: https://www.facebook.com/jiwanta.narada/
+twitter_handle: None
+other_social: None
+home_address: None
+home_address_source: None
+phone: None
+email: None
+overall_confidence: 0.13
+fields_found: 4
+fields_total: 31
+fields_manual: 12
+last_updated: 2026-03-13 08:09:04
+created_at: 2026-03-13 08:09:04
+personality_summary: None
+recent_topics: None
+communication_style: None
+social_behavior_insights: None
+
+--- Profile 4 ---
+id: 28
+request_id: 5
+university_id: None
+full_name: Narada Agastya Jiwanta
+full_name_source: search
+title: None
+title_source: search
+teaching_subjects: None
+teaching_subjects_source: search
+tenure_years: None
+tenure_years_source: search
+birth_date: None
+birth_date_source: None
+age: None
+origin_region: None
+origin_region_source: None
+education_history: None
+education_history_source: pddikti
+photo_url: None
+marital_status: None
+marital_status_source: ddg_dork, facebook, gemini_grounded, gap_filler_inferred, gap_filler_gemini
+spouse_name: None
+spouse_name_source: ddg_dork, facebook, gemini_grounded, gap_filler_inferred, gap_filler_gemini
+children_count: None
+children_count_source: ddg_dork, facebook, gemini_grounded, gap_filler_inferred, gap_filler_gemini
+family_residence: Solo
+family_residence_source: ddg_dork, facebook, gemini_grounded, gap_filler_inferred, gap_filler_gemini
+campus_problems: None
+campus_problems_source: ddg_news, gemini_grounded
+campus_concerns: None
+campus_concerns_source: ddg_news, gemini_grounded
+campus_hopes: None
+campus_hopes_source: ddg_news, gemini_grounded
+hobbies: ["reading", "listening to music", "editing photos or videos", "watching", "writing"]
+hobbies_source: ddg_dork, instagram_bio, facebook, gemini_personal
+favorite_food: None
+favorite_food_source: ddg_dork, instagram_bio, facebook, gemini_personal
+outside_activities: None
+outside_activities_source: ddg_dork, instagram_bio, facebook, gemini_personal
+linkedin_url: None
+instagram_handle: najiwan09
+facebook_url: https://www.facebook.com/jiwanta.narada/
+twitter_handle: None
+other_social: None
+home_address: None
+home_address_source: None
+phone: None
+email: None
+overall_confidence: 0.16
+fields_found: 5
+fields_total: 31
+fields_manual: 12
+last_updated: 2026-03-13 08:21:25
+created_at: 2026-03-13 08:21:25
+personality_summary: None
+recent_topics: None
+communication_style: None
+social_behavior_insights: None
+
+--- Profile 5 ---
+id: 29
+request_id: 5
+university_id: None
+full_name: Narada Agastya Jiwanta
+full_name_source: search
+title: None
+title_source: search
+teaching_subjects: None
+teaching_subjects_source: search
+tenure_years: None
+tenure_years_source: search
+birth_date: None
+birth_date_source: None
+age: None
+origin_region: None
+origin_region_source: None
+education_history: None
+education_history_source: pddikti
+photo_url: None
+marital_status: None
+marital_status_source: ddg_dork, facebook, gemini_grounded, gap_filler_gemini
+spouse_name: None
+spouse_name_source: ddg_dork, facebook, gemini_grounded, gap_filler_gemini
+children_count: None
+children_count_source: ddg_dork, facebook, gemini_grounded, gap_filler_gemini
+family_residence: None
+family_residence_source: ddg_dork, facebook, gemini_grounded, gap_filler_gemini
+campus_problems: None
+campus_problems_source: ddg_news, gemini_grounded
+campus_concerns: None
+campus_concerns_source: ddg_news, gemini_grounded
+campus_hopes: None
+campus_hopes_source: ddg_news, gemini_grounded
+hobbies: ["reading", "listening to music", "editing photos or videos", "watching", "writing"]
+hobbies_source: ddg_dork, instagram_bio, facebook, gemini_personal
+favorite_food: None
+favorite_food_source: ddg_dork, instagram_bio, facebook, gemini_personal
+outside_activities: ["part-time work"]
+outside_activities_source: ddg_dork, instagram_bio, facebook, gemini_personal
+linkedin_url: None
+instagram_handle: najiwan09
+facebook_url: https://www.facebook.com/jiwanta.narada/
+twitter_handle: None
+other_social: None
+home_address: None
+home_address_source: None
+phone: None
+email: None
+overall_confidence: 0.19
+fields_found: 6
+fields_total: 31
+fields_manual: 12
+last_updated: 2026-03-13 08:26:25
+created_at: 2026-03-13 08:26:25
+personality_summary: None
+recent_topics: None
+communication_style: None
+social_behavior_insights: None
+
+--- Profile 6 ---
+id: 30
+request_id: 5
+university_id: None
+full_name: Narada Agastya Jiwanta
+full_name_source: search
+title: None
+title_source: search
+teaching_subjects: None
+teaching_subjects_source: search
+tenure_years: None
+tenure_years_source: search
+birth_date: None
+birth_date_source: None
+age: None
+origin_region: None
+origin_region_source: None
+education_history: [{"jenjang": "Pelajar/Mahasiswa", "nama_pt": "One Earth School"}, {"jenjang": "Alumni", "nama_pt": "IELTSpresso"}]
+education_history_source: pddikti
+photo_url: None
+marital_status: None
+marital_status_source: ddg_dork, facebook, gemini_grounded, gap_filler_gemini
+spouse_name: None
+spouse_name_source: ddg_dork, facebook, gemini_grounded, gap_filler_gemini
+children_count: None
+children_count_source: ddg_dork, facebook, gemini_grounded, gap_filler_gemini
+family_residence: None
+family_residence_source: ddg_dork, facebook, gemini_grounded, gap_filler_gemini
+campus_problems: None
+campus_problems_source: ddg_news, gemini_grounded
+campus_concerns: None
+campus_concerns_source: ddg_news, gemini_grounded
+campus_hopes: None
+campus_hopes_source: ddg_news, gemini_grounded
+hobbies: ["Yoga", "Meditasi", "Melantunkan mantra puja", "Bermain game", "Membuat konten digital", "Videografi", "Produksi musik", "Belajar pemrograman website"]
+hobbies_source: ddg_dork, instagram_bio, facebook, gemini_personal, gap_filler_gemini
+favorite_food: None
+favorite_food_source: ddg_dork, instagram_bio, facebook, gemini_personal, gap_filler_gemini
+outside_activities: ["Kegiatan spiritual", "Pelayanan sosial", "Cameraman dalam pembuatan video klip musik", "Live streaming di YouTube", "Mengikuti bootcamp pemrograman", "Persiapan IELTS"]
+outside_activities_source: ddg_dork, instagram_bio, facebook, gemini_personal, gap_filler_gemini
+linkedin_url: None
+instagram_handle: najiwan09
+facebook_url: https://www.facebook.com/jiwanta.narada/
+twitter_handle: None
+other_social: None
+home_address: None
+home_address_source: None
+phone: None
+email: None
+overall_confidence: 0.23
+fields_found: 7
+fields_total: 31
+fields_manual: 11
+last_updated: 2026-03-13 08:38:45
+created_at: 2026-03-13 08:38:45
+personality_summary: None
+recent_topics: None
+communication_style: None
+social_behavior_insights: None
+
+--- Profile 7 ---
+id: 31
+request_id: 5
+university_id: None
+full_name: Narada Agastya Jiwanta
+full_name_source: search
+title: None
+title_source: search
+teaching_subjects: None
+teaching_subjects_source: search
+tenure_years: None
+tenure_years_source: search
+birth_date: None
+birth_date_source: None
+age: None
+origin_region: None
+origin_region_source: None
+education_history: None
+education_history_source: pddikti
+photo_url: None
+marital_status: None
+marital_status_source: ddg_dork, gemini_grounded, gap_filler_gemini
+spouse_name: None
+spouse_name_source: ddg_dork, gemini_grounded, gap_filler_gemini
+children_count: None
+children_count_source: ddg_dork, gemini_grounded, gap_filler_gemini
+family_residence: None
+family_residence_source: ddg_dork, gemini_grounded, gap_filler_gemini
+campus_problems: None
+campus_problems_source: ddg_news, gemini_grounded
+campus_concerns: None
+campus_concerns_source: ddg_news, gemini_grounded
+campus_hopes: None
+campus_hopes_source: ddg_news, gemini_grounded
+hobbies: ["Aktivitas Spiritual dan Sosial", "Videografi dan Produksi Kreatif", "Pemrograman (Coding) & Web Development", "Content Creator dan Live Streaming Game", "Pengembangan Bahasa Inggris"]
+hobbies_source: ddg_dork, gemini_personal, gap_filler_gemini
+favorite_food: None
+favorite_food_source: ddg_dork, gemini_personal, gap_filler_gemini
+outside_activities: ["Pendalaman Hindu Dharma", "Praktik yoga", "Meditasi", "Melantunkan mantra puja", "Pelayanan sosial", "Bergabung dalam tim produksi One Earth Music", "Bertugas sebagai Cameraman untuk Official Music Video", "Mengikuti bootcamp dari Sanbercode", "Live streaming di channel YouTube Itisjiwan", "Bermain game Infinite Craft", "Mengasah kemampuan bahasa Inggris di IELTSpresso"]
+outside_activities_source: ddg_dork, gemini_personal, gap_filler_gemini
+linkedin_url: None
+instagram_handle: None
+facebook_url: None
+twitter_handle: None
+other_social: None
+home_address: None
+home_address_source: None
+phone: None
+email: None
+overall_confidence: 0.09
+fields_found: 3
+fields_total: 35
+fields_manual: 12
+last_updated: 2026-03-13 09:08:50
+created_at: 2026-03-13 09:08:50
+personality_summary: Narada Agastya Jiwanta adalah seorang mahasiswa di bidang Aplikasi Komputer yang menunjukkan ketertarikan yang kuat terhadap teknologi dan pembelajaran online. Dengan penggunaan tagar seperti #TipsAI dan #Komputer, ia tampak berfokus pada pengembangan diri dan berbagi pengetahuan di bidang teknologi. Hal ini menunjukkan bahwa ia memiliki minat yang mendalam dalam memahami dan memanfaatkan teknologi untuk meningkatkan keterampilan dan pengetahuannya.
+recent_topics: ["Tips AI", "Komputer", "Teknologi"]
+communication_style: Santai
+social_behavior_insights: Narada tampaknya aktif dalam berbagi informasi dan pengetahuan di media sosial, meskipun jumlah postingannya relatif sedikit. Dengan lebih banyak pengikut dibandingkan yang diikuti, ia mungkin memiliki kecenderungan untuk menarik perhatian dan membangun jaringan sosial yang lebih luas. Namun, ia juga menjaga privasi dengan tidak terlalu banyak membagikan aspek pribadi dari hidupnya.
+
+--- Profile 8 ---
+id: 32
+request_id: 5
+university_id: None
+full_name: Narada Agastya Jiwanta
+full_name_source: search
+title: None
+title_source: search
+teaching_subjects: None
+teaching_subjects_source: search
+tenure_years: None
+tenure_years_source: search
+birth_date: None
+birth_date_source: None
+age: None
+origin_region: None
+origin_region_source: None
+education_history: None
+education_history_source: pddikti
+photo_url: None
+marital_status: None
+marital_status_source: ddg_dork, gemini_grounded, gap_filler_gemini
+spouse_name: None
+spouse_name_source: ddg_dork, gemini_grounded, gap_filler_gemini
+children_count: None
+children_count_source: ddg_dork, gemini_grounded, gap_filler_gemini
+family_residence: None
+family_residence_source: ddg_dork, gemini_grounded, gap_filler_gemini
+campus_problems: None
+campus_problems_source: ddg_news, gemini_grounded
+campus_concerns: None
+campus_concerns_source: ddg_news, gemini_grounded
+campus_hopes: None
+campus_hopes_source: ddg_news, gemini_grounded
+hobbies: ["reading", "listening to music", "editing photos or videos", "watching", "writing"]
+hobbies_source: ddg_dork, gemini_personal
+favorite_food: None
+favorite_food_source: ddg_dork, gemini_personal
+outside_activities: ["part-time work"]
+outside_activities_source: ddg_dork, gemini_personal
+linkedin_url: None
+instagram_handle: None
+facebook_url: None
+twitter_handle: None
+other_social: None
+home_address: None
+home_address_source: None
+phone: None
+email: None
+overall_confidence: 0.11
+fields_found: 4
+fields_total: 35
+fields_manual: 12
+last_updated: 2026-03-13 09:14:11
+created_at: 2026-03-13 09:14:11
+personality_summary: Narada Agastya Jiwanta adalah seorang mahasiswa di bidang Aplikasi Komputer yang menunjukkan minat yang kuat dalam teknologi dan pembelajaran online. Dengan latar belakang ini, dia tampaknya memiliki rasa ingin tahu yang tinggi dan dedikasi untuk terus belajar dan berkembang. Narada juga terinspirasi oleh ajaran spiritual, seperti yang terlihat dari ucapan selamat ulang tahunnya yang mengacu pada Guruji Anand Krishna, menunjukkan bahwa dia menghargai nilai-nilai spiritual dan filosofi dalam hidupnya.
+recent_topics: ["Tips AI", "Komputer", "Teknologi"]
+communication_style: Santai dan inspiratif
+social_behavior_insights: Narada tampaknya memiliki pendekatan yang positif terhadap interaksi sosial, terlihat dari jumlah pengikut yang cukup banyak dan cara dia merayakan momen penting seperti ulang tahun dengan pesan yang mendalam. Dia tidak terlalu aktif dalam membagikan pencapaian pribadi, tetapi lebih fokus pada berbagi inspirasi dan pengetahuan, menunjukkan bahwa dia lebih suka menjaga privasi sambil tetap terhubung dengan komunitasnya.
+
+--- Profile 9 ---
+id: 33
+request_id: 5
+university_id: None
+full_name: Narada Agastya Jiwanta
+full_name_source: search
+title: None
+title_source: search
+teaching_subjects: None
+teaching_subjects_source: search
+tenure_years: None
+tenure_years_source: search
+birth_date: 23 November 2000
+birth_date_source: ddg_search
+age: 25
+origin_region: Mumbai, Maharashtra, India
+origin_region_source: ddg_search
+education_history: None
+education_history_source: pddikti
+photo_url: None
+marital_status: None
+marital_status_source: ddg_dork, facebook, facebook_page, gemini_grounded, gap_filler_gemini
+spouse_name: None
+spouse_name_source: ddg_dork, facebook, facebook_page, gemini_grounded, gap_filler_gemini
+children_count: None
+children_count_source: ddg_dork, facebook, facebook_page, gemini_grounded, gap_filler_gemini
+family_residence: None
+family_residence_source: ddg_dork, facebook, facebook_page, gemini_grounded, gap_filler_gemini
+campus_problems: None
+campus_problems_source: ddg_news, gemini_grounded
+campus_concerns: None
+campus_concerns_source: ddg_news, gemini_grounded
+campus_hopes: None
+campus_hopes_source: ddg_news, gemini_grounded
+hobbies: ["Pendalaman nilai-nilai Sanatana Dharma", "Berlatih yoga", "Meditasi", "Melantunkan mantra", "Bermain game", "Live streaming", "Produksi kreatif", "Video musik"]
+hobbies_source: ddg_dork, instagram_bio, facebook, gemini_personal, gap_filler_gemini
+favorite_food: None
+favorite_food_source: ddg_dork, instagram_bio, facebook, gemini_personal, gap_filler_gemini
+outside_activities: ["Aktif di One Earth School", "Pelayanan sosial", "Live stream di YouTube", "Proyek seni visual", "Persiapan studi dengan mengikuti tes IELTS"]
+outside_activities_source: ddg_dork, instagram_bio, facebook, gemini_personal, gap_filler_gemini
+linkedin_url: None
+instagram_handle: najiwan09
+facebook_url: https://www.facebook.com/jiwanta.narada/
+twitter_handle: None
+other_social: None
+home_address: None
+home_address_source: None
+phone: None
+email: None
+overall_confidence: 0.23
+fields_found: 8
+fields_total: 35
+fields_manual: 9
+last_updated: 2026-03-13 09:24:53
+created_at: 2026-03-13 09:24:53
+personality_summary: Narada Agastya Jiwanta tampaknya memiliki kepribadian yang cenderung terbuka dan sosial. Meskipun tidak ada informasi spesifik mengenai postingan atau interaksi di media sosialnya, keberadaan akun di platform seperti Facebook dan Instagram menunjukkan bahwa ia mungkin menikmati berbagi momen-momen penting dalam hidupnya. Hal ini bisa mencerminkan sifat ekstrovert yang suka berinteraksi dengan orang lain dan berbagi pengalaman. Selain itu, penggunaan bahasa Inggris sebagai bahasa tampilan di Instagram menunjukkan bahwa ia mungkin memiliki ketertarikan terhadap budaya global atau berkomunikasi dengan audiens internasional.
+
+Dari segi minat, Narada mungkin tertarik pada berbagai topik yang berkaitan dengan kehidupan sehari-hari, seperti momen bersama teman-teman dekat, yang dapat dilihat dari deskripsi di Instagram. Ini menunjukkan bahwa ia menghargai hubungan sosial dan pengalaman bersama orang-orang terdekatnya. Dengan demikian, ia mungkin juga memiliki minat dalam kegiatan sosial atau komunitas yang melibatkan interaksi dengan orang lain.
+recent_topics: ["momen bersama teman", "kegiatan sosial", "budaya global"]
+communication_style: santai dan terbuka
+social_behavior_insights: Narada tampaknya memiliki perilaku sosial yang aktif, cenderung berbagi pengalaman dan momen penting dalam hidupnya. Ia mungkin tidak terlalu menjaga privasi, mengingat keberadaan akun di platform publik. Hal ini menunjukkan bahwa ia nyaman berinteraksi dengan orang lain dan mungkin suka mendapatkan perhatian dari teman-teman atau pengikutnya.
+
+--- Profile 10 ---
+id: 34
+request_id: 5
+university_id: None
+full_name: Narada Agastya Jiwanta
+full_name_source: search
+title: None
+title_source: search
+teaching_subjects: None
+teaching_subjects_source: search
+tenure_years: None
+tenure_years_source: search
+birth_date: None
+birth_date_source: None
+age: None
+origin_region: None
+origin_region_source: None
+education_history: None
+education_history_source: pddikti
+photo_url: None
+marital_status: None
+marital_status_source: ddg_dork, gemini_grounded, gap_filler_inferred, gap_filler_gemini
+spouse_name: None
+spouse_name_source: ddg_dork, gemini_grounded, gap_filler_inferred, gap_filler_gemini
+children_count: None
+children_count_source: ddg_dork, gemini_grounded, gap_filler_inferred, gap_filler_gemini
+family_residence: Jakarta Selatan
+family_residence_source: ddg_dork, gemini_grounded, gap_filler_inferred, gap_filler_gemini
+campus_problems: None
+campus_problems_source: ddg_news, gemini_grounded
+campus_concerns: None
+campus_concerns_source: ddg_news, gemini_grounded
+campus_hopes: None
+campus_hopes_source: ddg_news, gemini_grounded
+hobbies: ["membaca", "mendengarkan musik", "mengedit foto", "mengedit video", "menonton", "menulis"]
+hobbies_source: ddg_dork, gemini_personal
+favorite_food: None
+favorite_food_source: ddg_dork, gemini_personal
+outside_activities: None
+outside_activities_source: ddg_dork, gemini_personal
+linkedin_url: None
+instagram_handle: None
+facebook_url: None
+twitter_handle: None
+other_social: None
+home_address: None
+home_address_source: None
+phone: None
+email: None
+overall_confidence: 0.09
+fields_found: 3
+fields_total: 35
+fields_manual: 12
+last_updated: 2026-03-13 09:32:05
+created_at: 2026-03-13 09:32:05
+personality_summary: Narada Agastya Jiwanta adalah seorang mahasiswa di bidang Aplikasi Komputer yang menunjukkan ketertarikan yang kuat terhadap teknologi dan pembelajaran online. Dengan latar belakang sebagai pelajar, dia tampaknya memiliki semangat untuk terus belajar dan mengembangkan keterampilan di bidangnya. Penggunaan tagar seperti #TipsAI dan #Komputer menunjukkan bahwa dia aktif mencari dan berbagi informasi terkait kecerdasan buatan dan teknologi komputer, yang mencerminkan minatnya yang mendalam dalam inovasi dan perkembangan teknologi terkini.
+recent_topics: ["Tips AI", "Komputer", "Teknologi"]
+communication_style: Santai dan informatif
+social_behavior_insights: Narada tampaknya memiliki perilaku sosial yang terbuka dan aktif, terlihat dari jumlah pengikut dan orang yang diikuti di media sosial. Dia tidak ragu untuk berbagi minat dan pengetahuannya tentang teknologi, yang menunjukkan bahwa dia mungkin suka berinteraksi dan berdiskusi dengan orang lain mengenai topik-topik yang relevan. Meskipun demikian, dengan hanya dua postingan, dia mungkin juga menjaga privasi dan tidak terlalu memamerkan kehidupan pribadinya.
+
+--- Profile 11 ---
+id: 35
+request_id: 5
+university_id: None
+full_name: Narada Agastya Jiwanta
+full_name_source: search
+title: None
+title_source: search
+teaching_subjects: None
+teaching_subjects_source: search
+tenure_years: None
+tenure_years_source: search
+birth_date: None
+birth_date_source: None
+age: None
+origin_region: None
+origin_region_source: None
+education_history: None
+education_history_source: pddikti
+photo_url: None
+marital_status: unknown
+marital_status_source: ddg_dork, gemini_grounded, gap_filler_inferred, gap_filler_gemini
+spouse_name: None
+spouse_name_source: ddg_dork, gemini_grounded, gap_filler_inferred, gap_filler_gemini
+children_count: None
+children_count_source: ddg_dork, gemini_grounded, gap_filler_inferred, gap_filler_gemini
+family_residence: Solo
+family_residence_source: ddg_dork, gemini_grounded, gap_filler_inferred, gap_filler_gemini
+campus_problems: None
+campus_problems_source: ddg_news, gemini_grounded
+campus_concerns: None
+campus_concerns_source: ddg_news, gemini_grounded
+campus_hopes: ["Hidup untuk menginspirasi orang lain dalam segala hal", "Membangun masa depan yang baik"]
+campus_hopes_source: ddg_news, gemini_grounded
+hobbies: ["membaca", "mendengarkan musik", "mengedit foto atau video", "menonton", "menulis"]
+hobbies_source: ddg_dork, gemini_personal
+favorite_food: None
+favorite_food_source: ddg_dork, gemini_personal
+outside_activities: None
+outside_activities_source: ddg_dork, gemini_personal
+linkedin_url: None
+instagram_handle: None
+facebook_url: None
+twitter_handle: None
+other_social: None
+home_address: None
+home_address_source: None
+phone: None
+email: None
+overall_confidence: 0.23
+fields_found: 8
+fields_total: 35
+fields_manual: 12
+last_updated: 2026-03-13 09:41:25
+created_at: 2026-03-13 09:41:25
+personality_summary: Narada Agastya Jiwanta adalah seorang mahasiswa di bidang Aplikasi Komputer yang menunjukkan ketertarikan yang kuat terhadap teknologi dan pembelajaran online. Dengan latar belakang ini, ia tampaknya memiliki pemikiran analitis dan kemampuan untuk memahami konsep-konsep kompleks dalam dunia digital. Minatnya terhadap AI dan komputer menunjukkan bahwa ia adalah individu yang selalu ingin belajar dan beradaptasi dengan perkembangan teknologi terkini. Selain itu, referensi terhadap 'perjalanan surgawi' dan 'wawasan ilahi' dalam teks menunjukkan bahwa ia mungkin memiliki ketertarikan terhadap spiritualitas dan filosofi, yang dapat memberikan dimensi tambahan pada kepribadiannya.
+
+Dalam interaksinya di media sosial, Narada tampaknya berusaha untuk membagikan pengetahuan dan tips yang berkaitan dengan teknologi, menunjukkan bahwa ia ingin berkontribusi pada komunitasnya. Dengan jumlah pengikut yang cukup banyak, ia mungkin memiliki pengaruh yang signifikan di kalangan teman-teman dan pengikutnya, yang menunjukkan bahwa ia adalah sosok yang dihormati dan diakui dalam lingkungannya.
+recent_topics: ["Tips AI", "Komputer", "Teknologi"]
+communication_style: Santai dan informatif
+social_behavior_insights: Narada cenderung aktif dalam membagikan pengetahuan dan tips, menunjukkan bahwa ia tidak hanya ingin belajar tetapi juga berbagi dengan orang lain. Ia tampaknya memiliki sikap terbuka dan bersahabat, meskipun tetap menjaga privasi dengan jumlah postingan yang terbatas.
+
+--- Profile 12 ---
+id: 36
+request_id: 5
+university_id: None
+full_name: Narada Agastya Jiwanta
+full_name_source: search
+title: None
+title_source: search
+teaching_subjects: None
+teaching_subjects_source: search
+tenure_years: None
+tenure_years_source: search
+birth_date: 23 November 2000
+birth_date_source: ddg_search
+age: 25
+origin_region: Mumbai, Maharashtra, India
+origin_region_source: ddg_search
+education_history: None
+education_history_source: pddikti
+photo_url: None
+marital_status: None
+marital_status_source: ddg_dork, gemini_grounded, gap_filler_gemini
+spouse_name: None
+spouse_name_source: ddg_dork, gemini_grounded, gap_filler_gemini
+children_count: None
+children_count_source: ddg_dork, gemini_grounded, gap_filler_gemini
+family_residence: None
+family_residence_source: ddg_dork, gemini_grounded, gap_filler_gemini
+campus_problems: None
+campus_problems_source: ddg_news, gemini_grounded
+campus_concerns: None
+campus_concerns_source: ddg_news, gemini_grounded
+campus_hopes: None
+campus_hopes_source: ddg_news, gemini_grounded
+hobbies: ["reading", "listening to music", "editing photos or videos", "watching", "writing"]
+hobbies_source: ddg_dork, gemini_personal
+favorite_food: None
+favorite_food_source: ddg_dork, gemini_personal
+outside_activities: None
+outside_activities_source: ddg_dork, gemini_personal
+linkedin_url: None
+instagram_handle: None
+facebook_url: None
+twitter_handle: None
+other_social: None
+home_address: None
+home_address_source: None
+phone: None
+email: None
+overall_confidence: 0.17
+fields_found: 6
+fields_total: 35
+fields_manual: 9
+last_updated: 2026-03-13 09:47:03
+created_at: 2026-03-13 09:47:03
+personality_summary: None
+recent_topics: None
+communication_style: None
+social_behavior_insights: None
+
+--- Profile 13 ---
+id: 37
+request_id: 5
+university_id: None
+full_name: Narada Agastya Jiwanta
+full_name_source: search
+title: None
+title_source: search
+teaching_subjects: None
+teaching_subjects_source: search
+tenure_years: None
+tenure_years_source: search
+birth_date: None
+birth_date_source: None
+age: None
+origin_region: None
+origin_region_source: None
+education_history: None
+education_history_source: pddikti
+photo_url: None
+marital_status: None
+marital_status_source: ddg_dork, facebook, gemini_grounded, gap_filler_inferred, gap_filler_gemini
+spouse_name: None
+spouse_name_source: ddg_dork, facebook, gemini_grounded, gap_filler_inferred, gap_filler_gemini
+children_count: None
+children_count_source: ddg_dork, facebook, gemini_grounded, gap_filler_inferred, gap_filler_gemini
+family_residence: Jakarta Selatan
+family_residence_source: ddg_dork, facebook, gemini_grounded, gap_filler_inferred, gap_filler_gemini
+campus_problems: None
+campus_problems_source: ddg_news, gemini_grounded
+campus_concerns: None
+campus_concerns_source: ddg_news, gemini_grounded
+campus_hopes: None
+campus_hopes_source: ddg_news, gemini_grounded
+hobbies: ["membaca", "mendengarkan musik", "mengedit foto", "mengedit video", "menonton", "menulis"]
+hobbies_source: ddg_dork, instagram_bio, linkedin, facebook, gemini_personal
+favorite_food: None
+favorite_food_source: ddg_dork, instagram_bio, linkedin, facebook, gemini_personal
+outside_activities: ["bekerja part-time"]
+outside_activities_source: ddg_dork, instagram_bio, linkedin, facebook, gemini_personal
+linkedin_url: https://www.linkedin.com/in/narada-agastya-jiwanta-607387219/
+instagram_handle: najiwan09
+facebook_url: https://www.facebook.com/jiwanta.narada/
+twitter_handle: None
+other_social: None
+home_address: None
+home_address_source: None
+phone: None
+email: None
+overall_confidence: 0.34
+fields_found: 12
+fields_total: 35
+fields_manual: 12
+last_updated: 2026-03-13 09:56:53
+created_at: 2026-03-13 09:56:53
+personality_summary: Narada Agastya Jiwanta adalah seorang mahasiswa di bidang Aplikasi Komputer yang menunjukkan minat yang kuat terhadap teknologi dan pembelajaran online. Dengan latar belakang ini, ia tampaknya memiliki ketertarikan yang mendalam terhadap inovasi dan perkembangan dalam dunia digital. Selain itu, penggunaan tagar seperti #TipsAI dan #Komputer menunjukkan bahwa ia aktif mencari dan berbagi informasi terkait kecerdasan buatan dan teknologi komputer, yang mencerminkan sikap proaktif dalam belajar dan berbagi pengetahuan.
+recent_topics: ["Tips AI", "Komputer", "Teknologi"]
+communication_style: Santai dan informatif
+social_behavior_insights: Narada tampaknya memiliki perilaku sosial yang aktif, terlihat dari jumlah pengikut dan orang yang diikuti di Instagram. Ia tidak ragu untuk membagikan minat dan pengetahuannya tentang teknologi, menunjukkan bahwa ia lebih suka berbagi informasi daripada menjaga privasi. Hal ini menunjukkan bahwa ia mungkin memiliki kepribadian yang terbuka dan ingin terhubung dengan orang lain melalui minat yang sama.
+
+--- Profile 14 ---
+id: 38
+request_id: 5
+university_id: None
+full_name: Narada Agastya Jiwanta
+full_name_source: search
+title: None
+title_source: search
+teaching_subjects: None
+teaching_subjects_source: search
+tenure_years: None
+tenure_years_source: search
+birth_date: None
+birth_date_source: None
+age: None
+origin_region: None
+origin_region_source: None
+education_history: None
+education_history_source: pddikti
+photo_url: None
+marital_status: None
+marital_status_source: ddg_dork, facebook, gemini_grounded, gap_filler_inferred, gap_filler_gemini
+spouse_name: None
+spouse_name_source: ddg_dork, facebook, gemini_grounded, gap_filler_inferred, gap_filler_gemini
+children_count: None
+children_count_source: ddg_dork, facebook, gemini_grounded, gap_filler_inferred, gap_filler_gemini
+family_residence: Jakarta Selatan
+family_residence_source: ddg_dork, facebook, gemini_grounded, gap_filler_inferred, gap_filler_gemini
+campus_problems: None
+campus_problems_source: ddg_news, gemini_grounded
+campus_concerns: None
+campus_concerns_source: ddg_news, gemini_grounded
+campus_hopes: None
+campus_hopes_source: ddg_news, gemini_grounded
+hobbies: ["membaca", "mendengarkan musik", "mengedit foto", "mengedit video", "menonton", "menulis"]
+hobbies_source: ddg_dork, instagram_bio, linkedin, facebook, gemini_personal
+favorite_food: None
+favorite_food_source: ddg_dork, instagram_bio, linkedin, facebook, gemini_personal
+outside_activities: ["bekerja part-time"]
+outside_activities_source: ddg_dork, instagram_bio, linkedin, facebook, gemini_personal
+linkedin_url: https://www.linkedin.com/in/narada-agastya-jiwanta-607387219/
+instagram_handle: najiwan09
+facebook_url: https://www.facebook.com/jiwanta.narada/
+twitter_handle: None
+other_social: None
+home_address: None
+home_address_source: None
+phone: None
+email: None
+overall_confidence: 0.23
+fields_found: 8
+fields_total: 35
+fields_manual: 12
+last_updated: 2026-03-13 12:13:49
+created_at: 2026-03-13 12:13:49
+personality_summary: None
+recent_topics: None
+communication_style: None
+social_behavior_insights: None
+
+--- Profile 15 ---
+id: 39
+request_id: 5
+university_id: None
+full_name: Narada Agastya Jiwanta
+full_name_source: search
+title: None
+title_source: search
+teaching_subjects: None
+teaching_subjects_source: search
+tenure_years: None
+tenure_years_source: search
+birth_date: None
+birth_date_source: None
+age: None
+origin_region: None
+origin_region_source: None
+education_history: None
+education_history_source: pddikti
+photo_url: None
+marital_status: None
+marital_status_source: ddg_dork, facebook, gemini_grounded, gap_filler_gemini
+spouse_name: None
+spouse_name_source: ddg_dork, facebook, gemini_grounded, gap_filler_gemini
+children_count: None
+children_count_source: ddg_dork, facebook, gemini_grounded, gap_filler_gemini
+family_residence: None
+family_residence_source: ddg_dork, facebook, gemini_grounded, gap_filler_gemini
+campus_problems: None
+campus_problems_source: ddg_news, gemini_grounded
+campus_concerns: None
+campus_concerns_source: ddg_news, gemini_grounded
+campus_hopes: None
+campus_hopes_source: ddg_news, gemini_grounded
+hobbies: ["reading", "listening to music", "photo editing", "video editing", "watching", "writing"]
+hobbies_source: ddg_dork, instagram_bio, linkedin, facebook, gemini_personal
+favorite_food: None
+favorite_food_source: ddg_dork, instagram_bio, linkedin, facebook, gemini_personal
+outside_activities: ["part-time work"]
+outside_activities_source: ddg_dork, instagram_bio, linkedin, facebook, gemini_personal
+linkedin_url: https://at.linkedin.com/in/alexander-laimer-928985133
+instagram_handle: najiwan09
+facebook_url: https://www.facebook.com/jiwanta.narada/
+twitter_handle: None
+other_social: None
+home_address: None
+home_address_source: None
+phone: None
+email: None
+overall_confidence: 0.31
+fields_found: 11
+fields_total: 35
+fields_manual: 12
+last_updated: 2026-03-13 12:27:42
+created_at: 2026-03-13 12:27:42
+personality_summary: Narada Agastya Jiwanta tampaknya memiliki kepribadian yang cenderung terbuka dan aktif di media sosial. Dengan kehadirannya di platform seperti Facebook dan Instagram, ia menunjukkan minat untuk berbagi momen-momen penting dalam hidupnya, meskipun detail spesifik tentang konten yang dibagikan tidak tersedia. Hal ini mengindikasikan bahwa ia mungkin menghargai interaksi sosial dan memiliki keinginan untuk terhubung dengan orang lain melalui berbagai platform digital. Narada juga mungkin memiliki ketertarikan dalam visual, mengingat adanya gambar di akun Instagram-nya, yang bisa menunjukkan sisi kreatif atau estetis dari kepribadiannya.
+recent_topics: [null, null, null]
+communication_style: Gaya komunikasi Narada tampaknya cenderung santai dan informal, mengingat platform yang digunakannya adalah media sosial yang biasanya digunakan untuk interaksi yang lebih personal dan tidak formal.
+social_behavior_insights: Narada menunjukkan perilaku sosial yang aktif, dengan kecenderungan untuk berbagi pengalaman dan momen dalam hidupnya. Ia mungkin tidak terlalu menjaga privasi, mengingat ia memiliki akun publik di media sosial, yang menunjukkan bahwa ia nyaman untuk berbagi dengan audiens yang lebih luas.
+
+--- Profile 16 ---
+id: 40
+request_id: 5
+university_id: None
+full_name: Narada Agastya Jiwanta
+full_name_source: search
+title: None
+title_source: search
+teaching_subjects: None
+teaching_subjects_source: search
+tenure_years: None
+tenure_years_source: search
+birth_date: None
+birth_date_source: None
+age: None
+origin_region: None
+origin_region_source: None
+education_history: None
+education_history_source: pddikti
+photo_url: None
+marital_status: None
+marital_status_source: ddg_dork, facebook, gemini_grounded, gap_filler_gemini
+spouse_name: None
+spouse_name_source: ddg_dork, facebook, gemini_grounded, gap_filler_gemini
+children_count: None
+children_count_source: ddg_dork, facebook, gemini_grounded, gap_filler_gemini
+family_residence: None
+family_residence_source: ddg_dork, facebook, gemini_grounded, gap_filler_gemini
+campus_problems: None
+campus_problems_source: ddg_news, gemini_grounded
+campus_concerns: None
+campus_concerns_source: ddg_news, gemini_grounded
+campus_hopes: None
+campus_hopes_source: ddg_news, gemini_grounded
+hobbies: ["membaca", "mendengarkan musik", "mengedit foto", "mengedit video", "menonton", "menulis"]
+hobbies_source: ddg_dork, instagram_bio, linkedin, facebook, gemini_personal
+favorite_food: None
+favorite_food_source: ddg_dork, instagram_bio, linkedin, facebook, gemini_personal
+outside_activities: ["Marketing Staff at Asosiasi Meditasi Aushadh Yoga Indonesia", "part-time work"]
+outside_activities_source: ddg_dork, instagram_bio, linkedin, facebook, gemini_personal
+linkedin_url: https://www.linkedin.com/in/narada-agastya-jiwanta-607387219/
+instagram_handle: najiwan09
+facebook_url: https://www.facebook.com/jiwanta.narada/
+twitter_handle: None
+other_social: None
+home_address: None
+home_address_source: None
+phone: None
+email: None
+overall_confidence: 0.31
+fields_found: 11
+fields_total: 35
+fields_manual: 12
+last_updated: 2026-03-13 12:33:48
+created_at: 2026-03-13 12:33:48
+personality_summary: Narada Agastya Jiwanta tampaknya memiliki kepribadian yang terbuka dan sosial. Meskipun informasi yang tersedia terbatas, keberadaan akun media sosialnya di Facebook dan Instagram menunjukkan bahwa ia mungkin aktif dalam berbagi momen-momen penting dalam hidupnya. Hal ini mencerminkan sifat yang cenderung ekstrovert, di mana ia merasa nyaman untuk berinteraksi dengan orang lain dan berbagi pengalaman. Narada mungkin juga memiliki minat dalam berkomunikasi dan terlibat dalam komunitas, baik secara online maupun offline.
+recent_topics: ["media sosial", "interaksi sosial", "pengalaman pribadi"]
+communication_style: santai dan terbuka
+social_behavior_insights: Narada tampaknya memiliki kecenderungan untuk berbagi pengalaman dan momen penting dalam hidupnya, menunjukkan bahwa ia tidak terlalu menjaga privasi. Ia mungkin aktif dalam berinteraksi dengan teman-teman dan pengikutnya, serta menikmati berbagi pencapaian atau momen berharga.
+
+--- Profile 17 ---
+id: 41
+request_id: 5
+university_id: None
+full_name: Narada Agastya Jiwanta
+full_name_source: search
+title: None
+title_source: search
+teaching_subjects: None
+teaching_subjects_source: search
+tenure_years: None
+tenure_years_source: search
+birth_date: None
+birth_date_source: None
+age: None
+origin_region: None
+origin_region_source: None
+education_history: None
+education_history_source: pddikti
+photo_url: None
+marital_status: None
+marital_status_source: ddg_dork, facebook, gemini_grounded, gap_filler_gemini
+spouse_name: None
+spouse_name_source: ddg_dork, facebook, gemini_grounded, gap_filler_gemini
+children_count: None
+children_count_source: ddg_dork, facebook, gemini_grounded, gap_filler_gemini
+family_residence: None
+family_residence_source: ddg_dork, facebook, gemini_grounded, gap_filler_gemini
+campus_problems: None
+campus_problems_source: ddg_news, gemini_grounded
+campus_concerns: None
+campus_concerns_source: ddg_news, gemini_grounded
+campus_hopes: None
+campus_hopes_source: ddg_news, gemini_grounded
+hobbies: ["reading", "listening to music", "photo editing", "video editing", "watching", "writing"]
+hobbies_source: ddg_dork, instagram_bio, facebook, gemini_personal
+favorite_food: None
+favorite_food_source: ddg_dork, instagram_bio, facebook, gemini_personal
+outside_activities: ["part-time work"]
+outside_activities_source: ddg_dork, instagram_bio, facebook, gemini_personal
+linkedin_url: None
+instagram_handle: najiwan09
+facebook_url: https://www.facebook.com/jiwanta.narada/
+twitter_handle: None
+other_social: None
+home_address: None
+home_address_source: None
+phone: None
+email: None
+overall_confidence: 0.17
+fields_found: 6
+fields_total: 35
+fields_manual: 12
+last_updated: 2026-03-13 13:15:07
+created_at: 2026-03-13 13:15:07
+personality_summary: None
+recent_topics: None
+communication_style: None
+social_behavior_insights: None
+
+--- Profile 18 ---
+id: 42
+request_id: 5
+university_id: None
+full_name: Narada Agastya Jiwanta
+full_name_source: search
+title: None
+title_source: search
+teaching_subjects: None
+teaching_subjects_source: search
+tenure_years: None
+tenure_years_source: search
+birth_date: None
+birth_date_source: None
+age: None
+origin_region: None
+origin_region_source: None
+education_history: None
+education_history_source: pddikti
+photo_url: None
+marital_status: None
+marital_status_source: ddg_dork, facebook, gemini_grounded, gemini_grounded, gap_filler_gemini
+spouse_name: None
+spouse_name_source: ddg_dork, facebook, gemini_grounded, gemini_grounded, gap_filler_gemini
+children_count: None
+children_count_source: ddg_dork, facebook, gemini_grounded, gemini_grounded, gap_filler_gemini
+family_residence: None
+family_residence_source: ddg_dork, facebook, gemini_grounded, gemini_grounded, gap_filler_gemini
+campus_problems: None
+campus_problems_source: ddg_news, gemini_grounded
+campus_concerns: None
+campus_concerns_source: ddg_news, gemini_grounded
+campus_hopes: None
+campus_hopes_source: ddg_news, gemini_grounded
+hobbies: ["membaca", "mendengarkan musik", "mengedit foto", "mengedit video", "menonton", "menulis"]
+hobbies_source: ddg_dork, instagram_bio, facebook, gemini_personal
+favorite_food: None
+favorite_food_source: ddg_dork, instagram_bio, facebook, gemini_personal
+outside_activities: None
+outside_activities_source: ddg_dork, instagram_bio, facebook, gemini_personal
+linkedin_url: None
+instagram_handle: najiwan09
+facebook_url: https://www.facebook.com/jiwanta.narada/
+twitter_handle: None
+other_social: None
+home_address: None
+home_address_source: None
+phone: None
+email: None
+overall_confidence: 0.14
+fields_found: 5
+fields_total: 35
+fields_manual: 12
+last_updated: 2026-03-13 13:37:03
+created_at: 2026-03-13 13:37:03
+personality_summary: None
+recent_topics: None
+communication_style: None
+social_behavior_insights: None

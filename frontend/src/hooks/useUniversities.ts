@@ -13,6 +13,8 @@ import {
   toggleUniversityEnabled,
   bulkToggleUniversities,
   toggleContactContacted,
+  getUniversitiesWithEmails,
+  type PaginatedUniversitiesWithEmail,
 } from '../api/universities'
 import type { PaginatedUniversities } from '../api/universities'
 import { queryKeys } from '../lib/queryKeys'
@@ -54,6 +56,13 @@ export function useProvinces() {
     queryKey: ['universities', 'provinces'],
     queryFn: getProvinces,
     staleTime: 5 * 60 * 1000, // cache for 5 min
+  })
+}
+
+export function useUniversitiesWithEmails(province?: string, search?: string, limit = 100, offset = 0) {
+  return useQuery<PaginatedUniversitiesWithEmail>({
+    queryKey: ['universities', 'with-emails', province, search, limit, offset],
+    queryFn: () => getUniversitiesWithEmails(province, search, limit, offset),
   })
 }
 

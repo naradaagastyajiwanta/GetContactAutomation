@@ -25,10 +25,13 @@ class WebProfileResult(BaseModel):
     city: str | None = None
     postal_code: str | None = None
     phone_official: str | None = None
+    phone_source: str | None = None  # 'pddikti', 'website', 'ddg'
     fax: str | None = None
     email_official: str | None = None
+    email_source: str | None = None  # 'pddikti', 'website', 'ddg'
     vision_mission: str | None = None
     faculty_count: int | None = None
+    student_count: int | None = None  # Total students from all prodi
     faculty_list: list[dict[str, Any]] = Field(default_factory=list)
     org_structure: dict[str, Any] | None = None
     confidence: float = 0.0

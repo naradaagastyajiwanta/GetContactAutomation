@@ -511,6 +511,8 @@ async def _ai_pick_best_url(
             f"belongs to this specific person.\n"
             f"Consider:\n"
             f"- Does the name in the result match? (beware of partial matches)\n"
+            f"- ALWAYS reject if the name in the URL or snippet is completely different from {full_name} (e.g. returning someone else's profile).\n"
+            f"- If the URL itself contains the person's exact name slug (e.g. narada-agastya), consider it a VERY STRONG match even if the snippet is empty or says 'We cannot provide a description'.\n"
             f"- If University is provided, does it match or make sense? If University is None/Unknown, just match based on Name uniqueness!\n"
             f"- For Instagram: must be PERSONAL. REJECT if title/snippet contains 'Rumah Sakit', 'RS', 'Klinik', 'BEM', 'Hima', 'Official', 'Hospital', 'Business'\n"
             f"- For Facebook: must be the actual person, not a fan page or business\n"
@@ -579,20 +581,32 @@ async def _verify_and_enrich(
         """Verify a single profile using AI. Returns True if verified."""
         html = await fetch_page(url)
         if not html:
-            return False
+            log.info("[SocialProfiler] %s URL unfetchable (%s), assuming valid from search.", platform, url)
+            return True
         text = extract_text_from_html(html, max_chars=3000)
+
+        # Fallback to simple name matching if page text indicates a login wall
+        # or if the title contains the target name.
+        if full_name.lower() in text.lower():
+            return True
+            
+        # If it's heavily JS/Login guarded (typical IG/LinkedIn), trust the search result
+        if "login" in text.lower() or "log in" in text.lower() or len(text) < 200:
+            log.info("[SocialProfiler] %s URL %s appears to be a login wall, assuming valid.", platform, url)
+            return True
 
         verification = await gpt_extract_structured(
             text,
             (
                 f"Verify if this {platform} profile page belongs to:\n"
                 f"- Name: {full_name}\n"
-                  f"- University: {uni_name}\n\n"
-                  f"Check:\n"
-                  f"1. Does the name on this page match the person we're looking for?\n"
-                  f"2. Is there any university or professional context? (Don't be too strict, if it's just their name it can be them)\n"
+                f"- University: {uni_name}\n\n"
+                f"Check:\n"
+                f"1. Does the name on this page match the person we're looking for?\n"
+                f"2. Is there any university or professional context? (Don't be too strict, if it's just their name it can be them)\n"
                 f"3. Is this a PERSONAL profile (not a business, hospital, organization)?\n"
                 f"4. Could this be a different person with a similar name?\n\n"
+                f"NOTE: Social media platforms often return 'Log in' pages to bots. If the text appears to be a login page BUT their name is present, consider it a MATCH.\n\n"
                 f'Return JSON: {{"is_match": true/false, "reason": "..."}}'
             ),
         )
@@ -624,16 +638,23 @@ async def _verify_and_enrich(
         html = await fetch_page(result.facebook_url)
         if html:
             text = extract_text_from_html(html, max_chars=3000)
-            verification = await gpt_extract_structured(
-                text,
-                (
-                    f"Verify if this Facebook page belongs to:\n"
-                    f"- Name: {full_name}\n"
-                      f"- Context: Associated with {uni_name} or another role.\n\n"
-                    f'Return JSON: {{"is_match": true/false, "reason": "..."}}'
-                ),
-            )
-            if not (verification and verification.get("is_match")):
+            
+            # Simple match
+            if full_name.lower() in text.lower() or "login" in text.lower() or "log in" in text.lower() or len(text) < 200:
+                is_match = True
+            else:
+                verification = await gpt_extract_structured(
+                    text,
+                    (
+                        f"Verify if this Facebook page belongs to:\n"
+                        f"- Name: {full_name}\n"
+                        f"- Context: Associated with {uni_name} or another role.\n\n"
+                        f'Return JSON: {{"is_match": true/false, "reason": "..."}}'
+                    ),
+                )
+                is_match = bool(verification and verification.get("is_match"))
+
+            if not is_match:
                 log.info("[SocialProfiler] AI rejected Facebook: %s", result.facebook_url)
                 result.facebook_url = None
                 if "dork_facebook" in sources:
@@ -655,15 +676,8 @@ async def _verify_and_enrich(
                                 result.instagram_handle,
                             )
         else:
-            log.info("[SocialProfiler] Facebook URL unfetchable, removing")
-            result.facebook_url = None
-            if "dork_facebook" in sources:
-                sources.remove("dork_facebook")
-
-
-# ---------------------------------------------------------------------------
-# Instagram handle-variant discovery
-# ---------------------------------------------------------------------------
+            log.info("[SocialProfiler] Facebook URL unfetchable, assuming valid from search hit.")
+            # We don't remove the facebook_url here, just accept it
 
 async def _ai_generate_ig_handle_variants(full_name: str, uni_name: str = "") -> list[str]:
     """Use AI to generate plausible IG handle variants based on Indonesian naming culture.

@@ -38,7 +38,7 @@ _DDG_PROXY: str | None = os.environ.get("DDG_PROXY")
 _DDG_BACKENDS = "auto"
 
 # Minimum seconds between DDG queries to avoid rate-limiting
-_MIN_QUERY_GAP = 2.5
+_MIN_QUERY_GAP = 1.5
 _last_query_time: float = 0.0
 
 # Runtime status tracking (mirrors Serper status shape)
@@ -118,22 +118,26 @@ def search_text(
             _ddg_status["ok"] = False
             _ddg_status["error"] = "rate_limited"
             log.warning("[DDG] Rate limited on query '%s': %s", query[:60], e)
-            # Back off and retry once
-            _time.sleep(10)
-            try:
-                from ddgs import DDGS as _DDGS2
-                with _DDGS2(proxy=_DDG_PROXY, timeout=10) as ddgs:
-                    raw = list(ddgs.text(query, region=region, max_results=max_results, backend=_DDG_BACKENDS))
-                _ddg_status["ok"] = True
-                _ddg_status["error"] = None
-                _last_query_time = _time.monotonic()
-                return [
-                    {"title": r.get("title", ""), "link": r.get("href", ""), "snippet": r.get("body", "")}
-                    for r in raw
-                ]
-            except Exception as e2:
-                log.warning("[DDG] Retry also failed: %s", e2)
-                return []
+            # Back off with exponential backoff and retry up to 2 times
+            for backoff_attempt in range(3):
+                wait_time = 15 * (2 ** backoff_attempt)
+                log.info(f"[DDG] Rate limit backoff: waiting {wait_time}s before retry...")
+                _time.sleep(wait_time)
+                try:
+                    from ddgs import DDGS as _DDGS2
+                    with _DDGS2(proxy=_DDG_PROXY, timeout=10) as ddgs:
+                        raw = list(ddgs.text(query, region=region, max_results=max_results, backend=_DDG_BACKENDS))
+                    _ddg_status["ok"] = True
+                    _ddg_status["error"] = None
+                    _last_query_time = _time.monotonic()
+                    return [
+                        {"title": r.get("title", ""), "link": r.get("href", ""), "snippet": r.get("body", "")}
+                        for r in raw
+                    ]
+                except Exception as e2:
+                    log.warning(f"[DDG] Rate limit retry {backoff_attempt + 1} also failed: {e2}")
+                    continue
+            return []
         elif "timeout" in err_str or "timed out" in err_str:
             _ddg_status["error"] = "timeout"
             log.warning("[DDG] Timeout for '%s', retrying after 5s...", query[:60])

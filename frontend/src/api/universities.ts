@@ -21,6 +21,34 @@ export async function getUniversities(params?: UniversityParams): Promise<Pagina
   return data
 }
 
+export interface UniversityWithEmail {
+  id: number
+  name: string
+  province: string | null
+  email: string
+  website: string | null
+}
+
+export interface PaginatedUniversitiesWithEmail {
+  data: UniversityWithEmail[]
+  total: number
+  limit: number
+  offset: number
+}
+
+export async function getUniversitiesWithEmails(
+  province?: string,
+  search?: string,
+  limit: number = 100,
+  offset: number = 0
+): Promise<PaginatedUniversitiesWithEmail> {
+  const params: Record<string, string | number> = { limit, offset }
+  if (province) params.province = province
+  if (search) params.search = search
+  const { data } = await apiClient.get<PaginatedUniversitiesWithEmail>('/universities/with-emails', { params })
+  return data
+}
+
 export async function getProvinces(): Promise<string[]> {
   const { data } = await apiClient.get<string[]>('/universities/provinces')
   return data

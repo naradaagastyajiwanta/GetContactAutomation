@@ -174,11 +174,12 @@ async def family_info_agent(state: CrmState) -> dict:
                 "- spouse_name: string or null\n"
                 "- children_count: integer or null\n"
                 "- family_residence: city/region or null\n\n"
-                "IMPORTANT:\n"
-                "- For marital_status, spouse_name, children_count: only include if EXPLICITLY stated.\n"
-                "- For family_residence: you may infer the city/region from their university location "
-                "or any mention of where they live/work. Example: a professor at 'Universitas Gadjah Mada' "
-                "likely resides in 'Yogyakarta'. Return the city name."
+                "CRITICAL RULES:\n"
+                "- ONLY include marital_status/spouse_name/children_count if EXPLICITLY stated in the text\n"
+                "- Do NOT guess or infer - if not clearly stated, return 'unknown' or null\n"
+                "- For family_residence: ONLY include if the person explicitly mentions living in a city\n"
+                "- Do NOT infer from university location - professors may work in one city but live elsewhere\n"
+                "- Better to return 'unknown' than to guess incorrectly\n"
             ),
         )
         if extracted:
@@ -200,13 +201,16 @@ async def family_info_agent(state: CrmState) -> dict:
             result.source_urls[field] = unique_urls
 
     # ── Confidence ─────────────────────────────────────────────────────
+    # Family info is sensitive - use lower confidence by default
     filled = sum([
         result.marital_status not in (None, "unknown"),
         bool(result.spouse_name),
         result.children_count is not None,
         bool(result.family_residence),
     ])
-    result.confidence = round(filled / 4, 2)
+    # Apply penalty: family info is hard to verify, cap confidence at 0.5
+    base_confidence = round(filled / 4, 2)
+    result.confidence = min(base_confidence, 0.5)
     result.sources = sources
 
     log.info(

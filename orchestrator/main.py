@@ -71,6 +71,7 @@ from orchestrator.db import (
     get_pipeline_logs,
     get_pipeline_log_by_id,
     cleanup_old_pipeline_logs,
+    get_db,
 )
 from orchestrator.config_registry import (
     CONFIG_DEFINITIONS,
@@ -79,6 +80,7 @@ from orchestrator.config_registry import (
 )
 from orchestrator.agent.learning import LearningSystem
 from orchestrator import blast_service
+from orchestrator import email_blast
 from orchestrator.conversation import conversation_manager, ConvState
 from orchestrator.message_queue import message_queue
 from orchestrator.scheduler import (
@@ -560,6 +562,64 @@ async def match_names_endpoint(body: dict):
 async def universities_provinces():
     """Return distinct province values for filter dropdown."""
     return await get_university_provinces()
+
+
+@app.get("/universities/with-emails")
+async def universities_with_emails(
+    province: str | None = None,
+    search: str | None = None,
+    limit: int = 100,
+    offset: int = 0
+):
+    """Return universities that have email_kampus, for email blast selection."""
+    try:
+        async with get_db() as db:
+            base_query = "SELECT id, name, province, email_kampus, website FROM universities WHERE email_kampus IS NOT NULL AND email_kampus != '' AND enabled = 1"
+            params = []
+
+            if province:
+                base_query += " AND province = ?"
+                params.append(province)
+
+            if search:
+                base_query += " AND name LIKE ?"
+                params.append(f"%{search}%")
+
+            # Get total count
+            count_query = "SELECT COUNT(*) FROM universities WHERE email_kampus IS NOT NULL AND email_kampus != '' AND enabled = 1"
+            if province:
+                count_query += " AND province = ?"
+                params_count = [province]
+            else:
+                params_count = []
+            cursor = await db.execute(count_query, params_count)
+            total = (await cursor.fetchone())[0]
+
+            # Get data
+            data_query = base_query + " ORDER BY name LIMIT ? OFFSET ?"
+            query_params = params + [limit, offset]
+            cursor = await db.execute(data_query, query_params)
+            rows = await cursor.fetchall()
+
+            return {
+                "data": [
+                    {
+                        "id": r[0],
+                        "name": r[1],
+                        "province": r[2],
+                        "email": r[3],
+                        "website": r[4]
+                    }
+                    for r in rows
+                ],
+                "total": total,
+                "limit": limit,
+                "offset": offset
+            }
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        return JSONResponse({"error": str(e)}, status_code=500)
 
 
 @app.patch("/universities/{university_id}/toggle-enabled")
@@ -3748,3 +3808,177 @@ async def blast_cancel_campaign(campaign_id: int):
     if not result.get("success"):
         return JSONResponse(result, status_code=400)
     return result
+
+
+# ---------------------------------------------------------------------------
+# Email Blast Endpoints
+# ---------------------------------------------------------------------------
+
+class EmailBlastCampaignCreate(BaseModel):
+    name: str
+    subject: str = ""
+    template_message: str = ""
+    from_email: str | None = None
+    from_name: str | None = None
+    delay_between_ms: int | None = None
+
+
+class EmailBlastStartRequest(BaseModel):
+    campaign_id: int
+    max_recipients: int | None = None
+
+
+@app.post("/email-blast/campaigns")
+async def create_email_campaign(request: EmailBlastCampaignCreate):
+    """Create new email blast campaign."""
+    campaign_id = await email_blast.create_email_campaign(
+        name=request.name,
+        subject=request.subject,
+        template=request.template_message,
+        from_email=request.from_email or "sekretariat@asosiasi.ai",
+        from_name=request.from_name or "Sekretariat Asosiasi AI",
+        delay_ms=request.delay_between_ms or 8000
+    )
+    return {"success": True, "campaign_id": campaign_id}
+
+
+@app.get("/email-blast/campaigns")
+async def list_email_campaigns(status: str | None = None):
+    """List email blast campaigns."""
+    campaigns = await email_blast.list_campaigns(status)
+    return {"success": True, "campaigns": campaigns}
+
+
+@app.get("/email-blast/campaigns/{campaign_id}")
+async def get_email_campaign(campaign_id: int):
+    """Get email campaign details."""
+    campaign = await email_blast.get_campaign_status(campaign_id)
+    if not campaign:
+        return JSONResponse({"success": False, "error": "Campaign not found"}, status_code=404)
+    return {"success": True, "campaign": campaign}
+
+
+@app.patch("/email-blast/campaigns/{campaign_id}")
+async def update_email_campaign(campaign_id: int, request: dict):
+    """Update email campaign details."""
+    async with get_db() as db:
+        updates = []
+        params = []
+
+        if 'subject' in request:
+            updates.append("subject = ?")
+            params.append(request['subject'])
+        if 'template_message' in request:
+            updates.append("template_message = ?")
+            params.append(request['template_message'])
+        if 'delay_between_ms' in request:
+            updates.append("delay_between_ms = ?")
+            params.append(request['delay_between_ms'])
+
+        if not updates:
+            return {"success": False, "error": "No fields to update"}
+
+        params.append(campaign_id)
+        query = f"UPDATE email_blast_campaigns SET {', '.join(updates)} WHERE id = ?"
+        await db.execute(query, params)
+        await db.commit()
+
+    campaign = await email_blast.get_campaign_status(campaign_id)
+    return {"success": True, "campaign": campaign}
+
+
+@app.post("/email-blast/campaigns/{campaign_id}/recipients/add-all")
+async def add_all_recipients_to_email_campaign(
+    campaign_id: int,
+    request: dict | None = None
+):
+    """Add all universities with emails as recipients."""
+    provinces = request.get("provinces") if request else None
+    count = await email_blast.add_all_emails_to_campaign(campaign_id, provinces)
+    return {"success": True, "recipients_added": count}
+
+
+@app.post("/email-blast/campaigns/{campaign_id}/recipients/add")
+async def add_selected_recipients(
+    campaign_id: int,
+    request: dict
+):
+    university_ids = request.get("university_ids", [])
+    """Add selected universities as recipients."""
+    count = await email_blast.add_recipients_to_campaign(campaign_id, university_ids)
+    return {"success": True, "recipients_added": count}
+
+
+@app.post("/email-blast/campaigns/{campaign_id}/start")
+async def start_email_campaign(campaign_id: int, request: EmailBlastStartRequest):
+    """Start email blast campaign."""
+    db = await get_db()
+    await db.execute(
+        "UPDATE email_blast_campaigns SET status = 'running', started_at = datetime('now') WHERE id = ?",
+        (campaign_id,)
+    )
+    await db.commit()
+
+    # Run async
+    asyncio.create_task(
+        email_blast.run_email_blast_campaign(
+            campaign_id,
+            max_recipients=request.max_recipients
+        )
+    )
+
+    return {"success": True, "message": "Campaign started"}
+
+
+@app.post("/email-blast/campaigns/{campaign_id}/pause")
+async def pause_email_campaign(campaign_id: int):
+    """Pause email campaign."""
+    await email_blast.pause_campaign(campaign_id)
+    return {"success": True, "message": "Campaign paused"}
+
+
+@app.post("/email-blast/campaigns/{campaign_id}/cancel")
+async def cancel_email_campaign(campaign_id: int):
+    """Cancel email campaign."""
+    await email_blast.cancel_campaign(campaign_id)
+    return {"success": True, "message": "Campaign cancelled"}
+
+
+@app.get("/email-blast/campaigns/{campaign_id}/recipients")
+async def get_email_recipients(campaign_id: int, status: str | None = None):
+    """Get recipients of an email campaign."""
+    async with get_db() as db:
+        query = """SELECT id, email, university_name, status, error_message, sent_at
+                   FROM email_blast_recipients WHERE campaign_id = ?"""
+        params = [campaign_id]
+
+        if status:
+            query += " AND status = ?"
+            params.append(status)
+
+        cursor = await db.execute(query + " ORDER BY id", params)
+        recipients = await cursor.fetchall()
+
+        return {
+            "success": True,
+            "recipients": [
+                {
+                    "id": r[0],
+                    "email": r[1],
+                    "university_name": r[2],
+                    "status": r[3],
+                    "error_message": r[4],
+                    "sent_at": r[5]
+                }
+                for r in recipients
+            ]
+        }
+
+
+@app.post("/email-blast/test-smtp")
+async def test_smtp_connection():
+    """Test SMTP connection."""
+    smtp = email_blast.get_smtp_client()
+    success = smtp.connect()
+    smtp.disconnect()
+    return {"success": success, "message": "SMTP connected" if success else "SMTP failed"}

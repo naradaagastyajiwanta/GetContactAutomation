@@ -152,6 +152,12 @@ class CrmState(TypedDict, total=False):
     university_data: dict[str, Any] | None
     existing_conversations: list[dict[str, Any]]
 
+    # ── OSINT data (loaded in load_existing) ────────────────────────────
+    # These are from the OSINT pipeline and can be used for validation
+    osint_social_media: list[dict[str, Any]]  # University social handles
+    osint_contacts: list[dict[str, Any]]       # Contacts from OSINT
+    osint_profile: dict[str, Any] | None       # University profile from OSINT
+
     # ── Name variants (from identity resolver → all downstream agents) ──
     cleaned_name: str | None   # Academic-title-stripped name
     name_variants: list[str]   # Progressive search variants

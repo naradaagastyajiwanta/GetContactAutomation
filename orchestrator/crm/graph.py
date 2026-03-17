@@ -131,10 +131,43 @@ async def _load_existing(state: CrmState) -> dict:
     if university_id:
         async with get_db() as db:
             cursor = await db.execute(
-                "SELECT phone, status, analysis FROM conversations WHERE university_id = ? LIMIT 10",
+                "SELECT contact_phone as phone, state as status, message_history FROM conversations WHERE university_id = ? LIMIT 10",
                 (university_id,),
             )
             existing_conversations = [dict(r) for r in await cursor.fetchall()]
+
+    # Load OSINT data for the university (for identity validation)
+    osint_social_media: list[dict] = []
+    osint_contacts: list[dict] = []
+    osint_profile: dict | None = None
+    if university_id:
+        async with get_db() as db:
+            # Load social media handles
+            cursor = await db.execute(
+                "SELECT platform, handle, url, source FROM osint_social_media WHERE university_id = ?",
+                (university_id,),
+            )
+            osint_social_media = [dict(r) for r in await cursor.fetchall()]
+
+            # Load contacts
+            cursor = await db.execute(
+                "SELECT name, phone, email, title, department, source FROM osint_contacts WHERE university_id = ?",
+                (university_id,),
+            )
+            osint_contacts = [dict(r) for r in await cursor.fetchall()]
+
+            # Load profile
+            cursor = await db.execute(
+                "SELECT * FROM osint_profiles WHERE university_id = ?",
+                (university_id,),
+            )
+            row = await cursor.fetchone()
+            osint_profile = dict(row) if row else None
+
+    log.info(
+        "[CRM Graph] OSINT data loaded: social=%d, contacts=%d, profile=%s",
+        len(osint_social_media), len(osint_contacts), bool(osint_profile),
+    )
 
     # Create a run log
     run_id = await create_crm_profile_run(request_id)
@@ -155,6 +188,9 @@ async def _load_existing(state: CrmState) -> dict:
         "faculty": None,
         "university_data": university_data,
         "existing_conversations": existing_conversations,
+        "osint_social_media": osint_social_media,
+        "osint_contacts": osint_contacts,
+        "osint_profile": osint_profile,
         "run_id": run_id,
         "agents_completed": [],
         "agents_failed": [],
@@ -321,7 +357,7 @@ async def _persist_results(state: CrmState) -> dict:
         profile_data["tenure_years"] = academic.tenure_years
         profile_data["tenure_years_source"] = "pddikti" if "pddikti_study_history" in academic.sources else "search"
         profile_data["education_history"] = json.dumps(academic.education_history) if academic.education_history else None
-        profile_data["education_history_source"] = "pddikti"
+        profile_data["education_history_source"] = "pddikti" if "pddikti_study_history" in academic.sources else "search"
 
     if social:
         profile_data["linkedin_url"] = social.linkedin_url
@@ -445,11 +481,15 @@ async def _gap_filler(state: CrmState) -> dict:
         full_name, compiled.fields_found, compiled.fields_total,
     )
 
-    # Identity which fields are missing
+    # Identify which fields are missing
     missing_fields = [f.field_name for f in compiled.fields if f.status == "not_found"]
     log.info("[CRM Graph] Missing fields: %s", missing_fields)
 
     updates: dict = {}
+
+    # ── Gap: family_residence — DISABLED ────────────────────────────────────
+    # DO NOT infer family_residence from university location - this is unreliable!
+    # Only accept explicit mentions from verified sources
 
     # ── Gap: Facebook Deep Dive ──────
     fb_url = social.facebook_url if social else None
