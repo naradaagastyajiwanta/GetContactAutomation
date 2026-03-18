@@ -125,6 +125,7 @@ export async function updateEmailCampaign(id: number, data: UpdateEmailCampaignR
 export interface AttachmentInfo {
   filename: string | null
   variables: Record<string, string>
+  detected_variables?: string[]
 }
 
 export async function uploadAttachment(

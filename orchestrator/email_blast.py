@@ -322,12 +322,22 @@ async def get_campaign_attachment(campaign_id: int) -> dict:
             (campaign_id,)
         )
         row = await cursor.fetchone()
-        if row:
+        if row and row[0]:
+            # Re-extract variables from the uploaded DOCX file
+            filepath = TEMPLATE_DIR / row[0]
+            detected_vars = []
+            if filepath.exists():
+                try:
+                    detected_vars = extract_docx_variables(str(filepath))
+                except Exception as e:
+                    log.error(f"Error extracting variables: {e}")
+
             return {
                 'filename': row[0],
-                'variables': json.loads(row[1]) if row[1] else {}
+                'variables': json.loads(row[1]) if row[1] else {},
+                'detected_variables': detected_vars
             }
-        return {'filename': None, 'variables': {}}
+        return {'filename': None, 'variables': {}, 'detected_variables': []}
 
 
 # ---------------------------------------------------------------------------

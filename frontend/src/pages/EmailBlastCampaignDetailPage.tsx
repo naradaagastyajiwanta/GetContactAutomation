@@ -29,6 +29,7 @@ import {
   ChevronUp,
   AlertTriangle,
   CheckSquare,
+  Trash2,
 } from 'lucide-react'
 import { cn } from '../lib/utils'
 import {
@@ -41,6 +42,7 @@ import {
   useUpdateEmailCampaign,
   useUploadAttachment,
   useCampaignAttachment,
+  useDeleteEmailRecipient,
 } from '../hooks/useEmailBlast'
 import type { EmailBlastCampaign, EmailBlastRecipient } from '../api/emailBlast'
 import { useUniversitiesWithEmails, useProvinces } from '../hooks/useUniversities'
@@ -135,6 +137,7 @@ export default function EmailBlastCampaignDetailPage() {
   const addSelectedRecipientsMutation = useAddSelectedRecipients()
   const updateMutation = useUpdateEmailCampaign()
   const uploadAttachmentMutation = useUploadAttachment()
+  const deleteRecipientMutation = useDeleteEmailRecipient()
   const { data: attachmentData } = useCampaignAttachment(campaignId)
 
   // University selector queries
@@ -208,7 +211,17 @@ export default function EmailBlastCampaignDetailPage() {
   }
 
   const handleStart = () => {
-    startMutation.mutate({ campaign_id: campaignId, max_recipients: maxRecipients })
+    startMutation.mutate(
+      { campaign_id: campaignId, max_recipients: maxRecipients },
+      {
+        onSuccess: () => {
+          alert('Campaign dimulai! Mengirim email...')
+        },
+        onError: (error: any) => {
+          alert('Gagal memulai campaign: ' + (error?.message || 'Error tidak diketahui'))
+        }
+      }
+    )
   }
 
   const handlePause = () => {
@@ -302,6 +315,12 @@ export default function EmailBlastCampaignDetailPage() {
     setAttachmentVars(prev => ({ ...prev, [key]: value }))
   }
 
+  const handleDeleteRecipient = (recipientId: number) => {
+    if (confirm('Hapus penerima ini dari campaign?')) {
+      deleteRecipientMutation.mutate({ campaignId, recipientId })
+    }
+  }
+
   const pendingCount = recipients.filter(r => r.status === 'pending').length
   const sentCount = recipients.filter(r => r.status === 'sent').length
   const failedCount = recipients.filter(r => r.status === 'failed').length
@@ -354,11 +373,20 @@ export default function EmailBlastCampaignDetailPage() {
               </button>
               <button
                 onClick={handleStart}
-                className="px-3 py-2 text-sm bg-green-600 hover:bg-green-700 text-white rounded-lg flex items-center gap-2"
-                disabled={startMutation.isPending}
+                className="px-3 py-2 text-sm bg-green-600 hover:bg-green-700 text-white rounded-lg flex items-center gap-2 disabled:opacity-50"
+                disabled={startMutation.isPending || campaign.total_recipients === 0}
               >
-                <Play className="w-4 h-4" />
-                Mulai Kirim
+                {startMutation.isPending ? (
+                  <>
+                    <RefreshCw className="w-4 h-4 animate-spin" />
+                    <span>Mengirim...</span>
+                  </>
+                ) : (
+                  <>
+                    <Play className="w-4 h-4" />
+                    Mulai Kirim
+                  </>
+                )}
               </button>
             </>
           )}
@@ -441,9 +469,15 @@ export default function EmailBlastCampaignDetailPage() {
                   className="w-full px-3 py-2 border rounded-lg dark:bg-gray-800 dark:border-gray-700 h-32"
                   placeholder="Yth. Bagian Sekretariat {{university_name}}, ..."
                 />
-                <p className="text-xs text-gray-500 mt-1">
-                  Available: {'{{university_name}}'}, {'{{email}}'}, {'{{tanggal}}'}
-                </p>
+                <div className="mt-2 p-2 bg-blue-50 dark:bg-blue-900/20 rounded-lg">
+                  <p className="text-xs font-medium text-blue-600 dark:text-blue-400 mb-1">Placeholder yang tersedia:</p>
+                  <p className="text-xs text-blue-500 dark:text-blue-300">
+                    {'{{university_name}}'} = Nama Universitas<br/>
+                    {'{{email}}'} = Email Universitas<br/>
+                    {'{{tanggal}}'} = Tanggal Hari Ini<br/>
+                    {'{{nomor_surat}}'} = Nomor Surat Otomatis
+                  </p>
+                </div>
               </>
             ) : (
               <pre className="p-3 bg-gray-50 dark:bg-gray-800 rounded-lg text-xs whitespace-pre-wrap max-h-40 overflow-y-auto">
@@ -495,9 +529,9 @@ export default function EmailBlastCampaignDetailPage() {
                     <span className="text-sm">{attachmentData.filename}</span>
                   </div>
                 </div>
-                {attachmentData.variables && Object.keys(attachmentData.variables).length > 0 && (
-                  <div className="mt-2 text-xs text-gray-500">
-                    Variables: {Object.keys(attachmentData.variables).join(', ')}
+                {attachmentData.detected_variables && attachmentData.detected_variables.length > 0 && (
+                  <div className="mt-2 text-xs text-blue-600 dark:text-blue-400">
+                    Placeholder terdeteksi: {attachmentData.detected_variables.map(v => `{{${v}}}`).join(', ')}
                   </div>
                 )}
               </div>
@@ -519,6 +553,14 @@ export default function EmailBlastCampaignDetailPage() {
                       <span>Mengupload...</span>
                     </div>
                   )}
+                </div>
+
+                {/* Placeholder info for DOCX */}
+                <div className="p-2 bg-amber-50 dark:bg-amber-900/20 rounded-lg">
+                  <p className="text-xs font-medium text-amber-600 dark:text-amber-400 mb-1">Placeholder untuk DOCX:</p>
+                  <p className="text-xs text-amber-500 dark:text-amber-300">
+                    {'{{university_name}}'} • {'{{email}}'} • {'{{tanggal}}'} • {'{{nomor_surat}}'}
+                  </p>
                 </div>
 
                 {/* Variable inputs if template has variables */}
@@ -618,7 +660,16 @@ export default function EmailBlastCampaignDetailPage() {
                     <div className="text-xs font-medium truncate">{recipient.university_name || '-'}</div>
                     <div className="text-xs text-gray-500 truncate">{recipient.email}</div>
                   </div>
-                  <div className="flex-shrink-0">
+                  <div className="flex-shrink-0 flex items-center gap-2">
+                    {recipient.status === 'pending' && campaign.status === 'draft' && (
+                      <button
+                        onClick={() => handleDeleteRecipient(recipient.id)}
+                        className="p-1 hover:bg-red-100 dark:hover:bg-red-900/30 rounded"
+                        title="Hapus"
+                      >
+                        <Trash2 className="w-3 h-3 text-red-500" />
+                      </button>
+                    )}
                     {recipient.status === 'pending' && (
                       <span className="text-xs text-gray-400">⏳</span>
                     )}

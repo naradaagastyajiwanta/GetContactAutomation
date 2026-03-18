@@ -4019,6 +4019,12 @@ async def upload_attachment(
         # Extract variables from document
         detected_vars = extract_docx_variables(str(filepath))
 
+        # Auto-generated variables (should NOT be shown as user input)
+        AUTO_VARS = {"university_name", "email", "tanggal", "nomor_surat"}
+
+        # Filter out auto-generated variables - only show custom variables
+        custom_vars = [v for v in detected_vars if v not in AUTO_VARS]
+
         # Parse user-provided variables (JSON string like {"nomor_surat": "123/2024"})
         user_vars = {}
         if variables:
@@ -4027,8 +4033,8 @@ async def upload_attachment(
             except:
                 pass
 
-        # Merge: detected + user (user overrides detected if same key)
-        all_vars = {v: "" for v in detected_vars}
+        # Merge: custom detected + user (user overrides detected if same key)
+        all_vars = {v: "" for v in custom_vars}
         all_vars.update(user_vars)
 
         # Save to campaign
@@ -4063,7 +4069,8 @@ async def get_attachment(campaign_id: int):
     return {
         "success": True,
         "filename": attachment['filename'],
-        "variables": attachment['variables']
+        "variables": attachment['variables'],
+        "detected_variables": attachment.get('detected_variables', [])
     }
 
 
