@@ -1195,7 +1195,7 @@ export default function EmailBlastCampaignDetailPage() {
               </div>
 
               {/* Error message if failed */}
-              {!selectedEmail.type && selectedEmail.status === 'failed' && selectedEmail.error_message && (
+              {selectedEmail.type === 'sent' && selectedEmail.status === 'failed' && selectedEmail.error_message && (
                 <div>
                   <label className="block text-xs text-red-500 mb-1">Pesan Error</label>
                   <div className="p-3 bg-red-50 dark:bg-red-900/20 rounded-lg text-sm text-red-600 dark:text-red-400">

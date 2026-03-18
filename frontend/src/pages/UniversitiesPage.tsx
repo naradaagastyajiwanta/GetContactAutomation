@@ -28,6 +28,7 @@ export default function UniversitiesPage() {
   const initialProvince = searchParams.get('province') || ''
   const initialHasIg = searchParams.get('has_ig') || ''
   const initialEnabled = searchParams.get('enabled') || ''
+  const initialSort = searchParams.get('sort') || ''
   const initialPage = Math.max(1, parseInt(searchParams.get('page') || '1'))
 
   const [search, setSearch] = useState(initialSearch)
@@ -35,6 +36,7 @@ export default function UniversitiesPage() {
   const [province, setProvince] = useState(initialProvince)
   const [hasIg, setHasIg] = useState(initialHasIg)
   const [enabledFilter, setEnabledFilter] = useState(initialEnabled)
+  const [sort, setSort] = useState(initialSort)
   const [page, setPage] = useState(initialPage)
   const [importOpen, setImportOpen] = useState(false)
   const [addOpen, setAddOpen] = useState(false)
@@ -64,8 +66,8 @@ export default function UniversitiesPage() {
 
   // Check if any filters are active
   const hasActiveFilters = useMemo(() => {
-    return !!(search || status || province || hasIg || enabledFilter)
-  }, [search, status, province, hasIg, enabledFilter])
+    return !!(search || status || province || hasIg || enabledFilter || sort)
+  }, [search, status, province, hasIg, enabledFilter, sort])
 
   // Clear all filters
   const clearFilters = () => {
@@ -74,6 +76,7 @@ export default function UniversitiesPage() {
     setProvince('')
     setHasIg('')
     setEnabledFilter('')
+    setSort('')
     setPage(1)
     setSelected(new Set())
 
@@ -89,6 +92,8 @@ export default function UniversitiesPage() {
     enabled: enabledFilter === 'yes' ? true : enabledFilter === 'no' ? false : undefined,
     limit: ITEMS_PER_PAGE,
     offset: (page - 1) * ITEMS_PER_PAGE,
+    sort_by: sort ? sort.replace(/_desc$|_asc$/, '') : undefined,
+    order: sort?.endsWith('_desc') ? 'desc' : sort?.endsWith('_asc') ? 'asc' : undefined,
   }
 
   const { data: result, isLoading, isFetching, refetch } = useUniversities(params, isAutoRefreshing)
@@ -132,6 +137,12 @@ export default function UniversitiesPage() {
     setEnabledFilter(value)
     setPage(1)
     updateUrlParams({ enabled: value || null, page: 1 })
+  }
+
+  const handleSortChange = (value: string) => {
+    setSort(value)
+    setPage(1)
+    updateUrlParams({ sort: value || null, page: 1 })
   }
 
   const handlePageChange = (newPage: number) => {
@@ -203,6 +214,8 @@ export default function UniversitiesPage() {
         onHasIgChange={handleHasIgChange}
         enabled={enabledFilter}
         onEnabledChange={handleEnabledChange}
+        sort={sort}
+        onSortChange={handleSortChange}
       />
 
       {/* Active filters bar */}

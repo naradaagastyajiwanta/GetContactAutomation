@@ -253,6 +253,7 @@ export function UniversityTable({ universities, selected, onSelectedChange }: Un
             </TableHead>
             <TableHead>Name</TableHead>
             <TableHead>Province</TableHead>
+            <TableHead className="text-right">Mahasiswa</TableHead>
             <TableHead>IG Handle</TableHead>
             <TableHead>Status</TableHead>
             <TableHead className="w-28 text-center">Contacts</TableHead>
@@ -287,6 +288,15 @@ export function UniversityTable({ universities, selected, onSelectedChange }: Un
                   </button>
                 </TableCell>
                 <TableCell>{uni.province || '-'}</TableCell>
+                <TableCell className="text-right">
+                  {uni.student_count ? (
+                    <span className="font-mono text-sm text-gray-600 dark:text-gray-400">
+                      {uni.student_count.toLocaleString('id-ID')}
+                    </span>
+                  ) : (
+                    <span className="text-xs text-gray-400">—</span>
+                  )}
+                </TableCell>
                 <TableCell>
                   {uni.ig_handle ? (
                     <span className="text-gray-700 dark:text-gray-300">@{uni.ig_handle}</span>
