@@ -101,6 +101,11 @@ export async function getEmailRecipients(id: number, status?: string): Promise<{
   return response.data
 }
 
+export async function deleteEmailRecipient(campaignId: number, recipientId: number): Promise<{ success: boolean; message: string }> {
+  const response = await apiClient.delete(`/email-blast/campaigns/${campaignId}/recipients/${recipientId}`)
+  return response.data
+}
+
 export async function testSmtpConnection(): Promise<{ success: boolean; message: string }> {
   const response = await apiClient.post('/email-blast/test-smtp')
   return response.data
@@ -139,5 +144,26 @@ export async function uploadAttachment(
 
 export async function getAttachment(campaignId: number): Promise<{ success: boolean } & AttachmentInfo> {
   const response = await apiClient.get(`/email-blast/campaigns/${campaignId}/attachment`)
+  return response.data
+}
+
+export interface LetterConfig {
+  format_template: string
+  last_number: number
+}
+
+export async function getLetterConfig(): Promise<{ success: boolean } & LetterConfig> {
+  const response = await apiClient.get('/email-blast/letter-config')
+  return response.data
+}
+
+export async function updateLetterConfig(
+  format_template?: string,
+  last_number?: number
+): Promise<{ success: boolean } & LetterConfig> {
+  const response = await apiClient.post('/email-blast/letter-config', {
+    format_template,
+    last_number,
+  })
   return response.data
 }

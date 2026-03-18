@@ -18,7 +18,7 @@ from typing import Any, Optional
 _pw_executor = ThreadPoolExecutor(max_workers=2, thread_name_prefix="pw-login")
 
 import httpx
-from fastapi import FastAPI, BackgroundTasks, UploadFile, File as FastAPIFile, Form, Query, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, BackgroundTasks, UploadFile, File as FastAPIFile, Form, Query, WebSocket, WebSocketDisconnect, Request, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel
@@ -3824,7 +3824,6 @@ class EmailBlastCampaignCreate(BaseModel):
 
 
 class EmailBlastStartRequest(BaseModel):
-    campaign_id: int
     max_recipients: int | None = None
 
 
@@ -3912,12 +3911,12 @@ async def add_selected_recipients(
 @app.post("/email-blast/campaigns/{campaign_id}/start")
 async def start_email_campaign(campaign_id: int, request: EmailBlastStartRequest):
     """Start email blast campaign."""
-    db = await get_db()
-    await db.execute(
-        "UPDATE email_blast_campaigns SET status = 'running', started_at = datetime('now') WHERE id = ?",
-        (campaign_id,)
-    )
-    await db.commit()
+    async with get_db() as db:
+        await db.execute(
+            "UPDATE email_blast_campaigns SET status = 'running', started_at = datetime('now') WHERE id = ?",
+            (campaign_id,)
+        )
+        await db.commit()
 
     # Run async
     asyncio.create_task(
@@ -3975,6 +3974,17 @@ async def get_email_recipients(campaign_id: int, status: str | None = None):
         }
 
 
+@app.delete("/email-blast/campaigns/{campaign_id}/recipients/{recipient_id}")
+async def delete_email_recipient(campaign_id: int, recipient_id: int):
+    """Delete a recipient from campaign"""
+    from orchestrator.email_blast import delete_recipient
+
+    success = await delete_recipient(recipient_id)
+    if success:
+        return {"success": True, "message": "Recipient deleted"}
+    return {"success": False, "message": "Recipient not found"}
+
+
 @app.post("/email-blast/test-smtp")
 async def test_smtp_connection():
     """Test SMTP connection."""
@@ -3987,41 +3997,54 @@ async def test_smtp_connection():
 @app.post("/email-blast/campaigns/{campaign_id}/attachment")
 async def upload_attachment(
     campaign_id: int,
-    file: UploadFile = File(...),
+    file: UploadFile = FastAPIFile(...),
     variables: str = Form("")
 ):
     """Upload DOCX template and set variables for campaign"""
-    from orchestrator.email_blast import TEMPLATE_DIR, extract_docx_variables, save_campaign_attachment
+    try:
+        from orchestrator.email_blast import TEMPLATE_DIR, extract_docx_variables, save_campaign_attachment
 
-    # Validate file type
-    if not file.filename.endswith('.docx'):
-        raise HTTPException(status_code=400, detail="Only .docx files allowed")
+        # Validate file type
+        if not file.filename.endswith('.docx'):
+            raise HTTPException(status_code=400, detail="Only .docx files allowed")
 
-    # Save uploaded file
-    filename = f"{campaign_id}_{file.filename}"
-    filepath = TEMPLATE_DIR / filename
+        # Save uploaded file
+        filename = f"{campaign_id}_{file.filename}"
+        filepath = TEMPLATE_DIR / filename
 
-    content = await file.read()
-    with open(filepath, 'wb') as f:
-        f.write(content)
+        content = await file.read()
+        with open(filepath, 'wb') as f:
+            f.write(content)
 
-    # Extract variables from document
-    detected_vars = extract_docx_variables(str(filepath))
+        # Extract variables from document
+        detected_vars = extract_docx_variables(str(filepath))
 
-    # Parse user-provided variables (JSON string like {"nomor_surat": "123/2024"})
-    user_vars = {}
-    if variables:
-        try:
-            user_vars = json.loads(variables)
-        except:
-            pass
+        # Parse user-provided variables (JSON string like {"nomor_surat": "123/2024"})
+        user_vars = {}
+        if variables:
+            try:
+                user_vars = _json.loads(variables)
+            except:
+                pass
 
-    # Merge: detected + user (user overrides detected if same key)
-    all_vars = {v: "" for v in detected_vars}
-    all_vars.update(user_vars)
+        # Merge: detected + user (user overrides detected if same key)
+        all_vars = {v: "" for v in detected_vars}
+        all_vars.update(user_vars)
 
-    # Save to campaign
-    await save_campaign_attachment(campaign_id, filename, json.dumps(all_vars))
+        # Save to campaign
+        await save_campaign_attachment(campaign_id, filename, _json.dumps(all_vars))
+
+        return {
+            "success": True,
+            "filename": filename,
+            "variables": all_vars,
+            "detected_variables": detected_vars
+        }
+    except Exception as e:
+        log.error(f"[EmailBlast] Error uploading attachment: {e}")
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=f"Error uploading attachment: {str(e)}")
 
     return {
         "success": True,
@@ -4041,4 +4064,34 @@ async def get_attachment(campaign_id: int):
         "success": True,
         "filename": attachment['filename'],
         "variables": attachment['variables']
+    }
+
+
+@app.get("/email-blast/letter-config")
+async def get_letter_config():
+    """Get letter number configuration"""
+    from orchestrator.email_blast import get_letter_config
+
+    config = await get_letter_config()
+    return {
+        "success": True,
+        "format_template": config['format_template'],
+        "last_number": config['last_number']
+    }
+
+
+@app.post("/email-blast/letter-config")
+async def update_letter_config(request: Request):
+    """Update letter number configuration"""
+    from orchestrator.email_blast import update_letter_config
+
+    body = await request.json()
+    format_template = body.get('format_template')
+    last_number = body.get('last_number')
+
+    config = await update_letter_config(format_template, last_number)
+    return {
+        "success": True,
+        "format_template": config['format_template'],
+        "last_number": config['last_number']
     }

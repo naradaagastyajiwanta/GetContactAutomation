@@ -21,6 +21,14 @@ import {
   Paperclip,
   Upload,
   X,
+  Users,
+  Clock,
+  Send,
+  FileText,
+  ChevronDown,
+  ChevronUp,
+  AlertTriangle,
+  CheckSquare,
 } from 'lucide-react'
 import { cn } from '../lib/utils'
 import {
@@ -39,21 +47,64 @@ import { useUniversitiesWithEmails, useProvinces } from '../hooks/useUniversitie
 import { useAddSelectedRecipients } from '../hooks/useEmailBlast'
 
 const statusConfig: Record<string, { label: string; color: string; bg: string; icon: React.ElementType }> = {
-  draft: { label: 'Draft', color: 'text-gray-600 dark:text-gray-400', bg: 'bg-gray-100 dark:bg-gray-800', icon: RefreshCw },
-  running: { label: 'Sending', color: 'text-blue-600 dark:text-blue-400', bg: 'bg-blue-50 dark:bg-blue-900/30', icon: Play },
-  paused: { label: 'Paused', color: 'text-amber-600 dark:text-amber-400', bg: 'bg-amber-50 dark:bg-amber-900/30', icon: Pause },
-  completed: { label: 'Completed', color: 'text-green-600 dark:text-green-400', bg: 'bg-green-50 dark:bg-green-900/30', icon: CheckCircle2 },
-  cancelled: { label: 'Cancelled', color: 'text-red-600 dark:text-red-400', bg: 'bg-red-50 dark:bg-red-900/30', icon: XCircle },
+  draft: { label: 'Draft', color: 'text-gray-600 dark:text-gray-400', bg: 'bg-gray-100 dark:bg-gray-800', icon: FileText },
+  running: { label: 'Sedang Berjalan', color: 'text-blue-600 dark:text-blue-400', bg: 'bg-blue-100 dark:bg-blue-900/40', icon: Send },
+  paused: { label: 'Dijeda', color: 'text-amber-600 dark:text-amber-400', bg: 'bg-amber-100 dark:bg-amber-900/40', icon: Pause },
+  completed: { label: 'Selesai', color: 'text-green-600 dark:text-green-400', bg: 'bg-green-100 dark:bg-green-900/40', icon: CheckCircle2 },
+  cancelled: { label: 'Dibatalkan', color: 'text-red-600 dark:text-red-400', bg: 'bg-red-100 dark:bg-red-900/40', icon: XCircle },
 }
 
 function StatusBadge({ status }: { status: string }) {
   const cfg = statusConfig[status] || statusConfig.draft
   const Icon = cfg.icon
   return (
-    <span className={cn('inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-semibold', cfg.bg, cfg.color)}>
-      <Icon className="w-3 h-3" />
+    <span className={cn('inline-flex items-center gap-1.5 px-3 py-1.5 rounded-full text-sm font-medium', cfg.bg, cfg.color)}>
+      <Icon className="w-4 h-4" />
       {cfg.label}
     </span>
+  )
+}
+
+function CollapsibleSection({ title, icon: Icon, children, defaultOpen = true }: { title: string, icon: React.ElementType, children: React.ReactNode, defaultOpen?: boolean }) {
+  const [isOpen, setIsOpen] = useState(defaultOpen)
+
+  return (
+    <div className="bg-white dark:bg-gray-900 border dark:border-gray-800 rounded-xl overflow-hidden mb-4">
+      <button
+        onClick={() => setIsOpen(!isOpen)}
+        className="w-full px-5 py-4 flex items-center justify-between bg-gradient-to-r from-gray-50 to-white dark:from-gray-800 dark:to-gray-900 hover:from-gray-100 dark:hover:from-gray-750 transition-all"
+      >
+        <div className="flex items-center gap-3">
+          <div className="p-2 bg-blue-100 dark:bg-blue-900/40 rounded-lg">
+            <Icon className="w-5 h-5 text-blue-600 dark:text-blue-400" />
+          </div>
+          <span className="font-semibold text-gray-900 dark:text-white">{title}</span>
+        </div>
+        {isOpen ? (
+          <ChevronUp className="w-5 h-5 text-gray-400" />
+        ) : (
+          <ChevronDown className="w-5 h-5 text-gray-400" />
+        )}
+      </button>
+      {isOpen && <div className="p-5 border-t dark:border-gray-800">{children}</div>}
+    </div>
+  )
+}
+
+function StatCard({ icon: Icon, label, value, color, subtext }: { icon: React.ElementType, label: string, value: string | number, color?: string, subtext?: string }) {
+  return (
+    <div className="bg-white dark:bg-gray-900 border dark:border-gray-800 rounded-xl p-4 flex items-center gap-4 shadow-sm hover:shadow-md transition-shadow">
+      <div className={cn('p-3 rounded-xl', color || 'bg-blue-100 dark:bg-blue-900/40')}>
+        <Icon className={cn('w-5 h-5', color?.replace('bg-', 'text-') || 'text-blue-600 dark:text-blue-400')} />
+      </div>
+      <div>
+        <div className={cn('text-2xl font-bold', color?.replace('bg-', 'text-') || 'text-gray-900 dark:text-white')}>
+          {value}
+        </div>
+        <div className="text-sm text-gray-500 dark:text-gray-400">{label}</div>
+        {subtext && <div className="text-xs text-gray-400 mt-0.5">{subtext}</div>}
+      </div>
+    </div>
   )
 }
 
@@ -72,6 +123,7 @@ export default function EmailBlastCampaignDetailPage() {
   const [selectedUniIds, setSelectedUniIds] = useState<Set<number>>(new Set())
   const [attachmentFile, setAttachmentFile] = useState<File | null>(null)
   const [attachmentVars, setAttachmentVars] = useState<Record<string, string>>({})
+  const [isInitialized, setIsInitialized] = useState(false)
 
   const { data: campaignData, isLoading: campaignLoading } = useEmailBlastCampaign(campaignId)
   const { data: recipientsData, isLoading: recipientsLoading, refetch } = useEmailBlastRecipients(campaignId, statusFilter)
@@ -95,12 +147,32 @@ export default function EmailBlastCampaignDetailPage() {
 
   // Initialize edit fields when campaign loads
   useEffect(() => {
-    if (campaign) {
+    if (campaign && !isInitialized) {
       setEditSubject(campaign.subject || '')
       setEditTemplate(campaign.template_message || '')
       setEditDelay(campaign.delay_between_ms || 8000)
+      setIsInitialized(true)
     }
-  }, [campaign])
+  }, [campaign, isInitialized])
+
+  // Auto-save for email content
+  useEffect(() => {
+    if (!isInitialized || !campaign) return
+    if (campaign.status !== 'draft' && campaign.status !== 'paused') return
+
+    const timer = setTimeout(() => {
+      updateMutation.mutate({
+        id: campaignId,
+        data: {
+          subject: editSubject,
+          template_message: editTemplate,
+          delay_between_ms: editDelay,
+        },
+      })
+    }, 1500)
+
+    return () => clearTimeout(timer)
+  }, [editSubject, editTemplate, editDelay])
 
   const handleSaveEdit = () => {
     updateMutation.mutate({
@@ -126,9 +198,9 @@ export default function EmailBlastCampaignDetailPage() {
       <div className="p-6">
         <div className="text-center py-12">
           <Mail className="w-12 h-12 mx-auto mb-4 opacity-50" />
-          <p className="text-gray-500">Campaign not found</p>
+          <p className="text-gray-500">Campaign tidak ditemukan</p>
           <Link to="/email-blast" className="mt-4 text-blue-600 hover:underline">
-            Back to campaigns
+            Kembali ke daftar campaign
           </Link>
         </div>
       </div>
@@ -144,7 +216,7 @@ export default function EmailBlastCampaignDetailPage() {
   }
 
   const handleCancel = () => {
-    if (confirm('Are you sure you want to cancel this campaign?')) {
+    if (confirm('Apakah Anda yakin ingin membatalkan campaign ini?')) {
       cancelMutation.mutate(campaignId)
     }
   }
@@ -191,7 +263,20 @@ export default function EmailBlastCampaignDetailPage() {
     const file = e.target.files?.[0]
     if (file && file.name.endsWith('.docx')) {
       setAttachmentFile(file)
-    } else {
+      // Auto-upload when file is selected
+      uploadAttachmentMutation.mutate(
+        { campaignId, file, variables: attachmentVars },
+        {
+          onSuccess: (result) => {
+            setAttachmentFile(null)
+            setAttachmentVars(result.variables || {})
+          },
+          onError: () => {
+            setAttachmentFile(null)
+          }
+        }
+      )
+    } else if (file) {
       alert('Hanya file .docx yang diizinkan')
     }
   }
@@ -265,7 +350,7 @@ export default function EmailBlastCampaignDetailPage() {
                 disabled={addRecipientsMutation.isPending}
               >
                 <RefreshCw className={cn("w-4 h-4", addRecipientsMutation.isPending && "animate-spin")} />
-                Add All
+                Tambah Semua
               </button>
               <button
                 onClick={handleStart}
@@ -273,7 +358,7 @@ export default function EmailBlastCampaignDetailPage() {
                 disabled={startMutation.isPending}
               >
                 <Play className="w-4 h-4" />
-                Start
+                Mulai Kirim
               </button>
             </>
           )}
@@ -285,7 +370,7 @@ export default function EmailBlastCampaignDetailPage() {
               disabled={pauseMutation.isPending}
             >
               <Pause className="w-4 h-4" />
-              Pause
+              Jeda
             </button>
           )}
 
@@ -297,7 +382,7 @@ export default function EmailBlastCampaignDetailPage() {
                 disabled={startMutation.isPending}
               >
                 <Play className="w-4 h-4" />
-                Resume
+                Lanjutkan
               </button>
               <button
                 onClick={handleCancel}
@@ -305,7 +390,7 @@ export default function EmailBlastCampaignDetailPage() {
                 disabled={cancelMutation.isPending}
               >
                 <XCircle className="w-4 h-4" />
-                Cancel
+                Batalkan
               </button>
             </>
           )}
@@ -314,36 +399,22 @@ export default function EmailBlastCampaignDetailPage() {
 
       {/* Stats */}
       <div className="grid grid-cols-4 gap-4 mb-6">
-        <div className="bg-white dark:bg-gray-900 border dark:border-gray-800 rounded-xl p-4">
-          <div className="text-2xl font-bold">{campaign.total_recipients}</div>
-          <div className="text-sm text-gray-500">Total</div>
-        </div>
-        <div className="bg-white dark:bg-gray-900 border dark:border-gray-800 rounded-xl p-4">
-          <div className="text-2xl font-bold text-green-600">{campaign.sent_count}</div>
-          <div className="text-sm text-gray-500">Sent</div>
-        </div>
-        <div className="bg-white dark:bg-gray-900 border dark:border-gray-800 rounded-xl p-4">
-          <div className="text-2xl font-bold text-red-600">{campaign.failed_count}</div>
-          <div className="text-sm text-gray-500">Failed</div>
-        </div>
-        <div className="bg-white dark:bg-gray-900 border dark:border-gray-800 rounded-xl p-4">
-          <div className="text-2xl font-bold">
-            {campaign.total_recipients > 0
-              ? Math.round((campaign.sent_count / campaign.total_recipients) * 100)
-              : 0}%
-          </div>
-          <div className="text-sm text-gray-500">Progress</div>
-        </div>
+        <StatCard icon={Users} label="Total" value={campaign.total_recipients} color="bg-blue-100 dark:bg-blue-900/40" subtext="Semua penerima" />
+        <StatCard icon={Send} label="Terkirim" value={campaign.sent_count} color="bg-green-100 dark:bg-green-900/40" />
+        <StatCard icon={AlertTriangle} label="Gagal" value={campaign.failed_count} color="bg-red-100 dark:bg-red-900/40" />
+        <StatCard icon={CheckCircle2} label="Progres" value={campaign.total_recipients > 0 ? Math.round((campaign.sent_count / campaign.total_recipients) * 100) : 0} color="bg-purple-100 dark:bg-purple-900/40" subtext="persen" />
       </div>
 
-      {/* Campaign Details - with inline editing for draft/paused */}
-      <div className="bg-white dark:bg-gray-900 border dark:border-gray-800 rounded-xl p-4 mb-6">
-        <h3 className="font-semibold mb-4">Campaign Details</h3>
+      {/* 2 Column Layout - 75/25 */}
+      <div className="grid grid-cols-4 gap-6">
+        {/* Left Column - Email Content (75%) */}
+        <div className="col-span-3">
+          <CollapsibleSection title="Konten Email" icon={Mail}>
 
         <div className="space-y-4">
           {/* Subject */}
           <div>
-            <label className="block text-sm font-medium mb-1">Subject</label>
+            <label className="block text-sm font-medium mb-1">Subjek Email</label>
             {campaign.status === 'draft' || campaign.status === 'paused' ? (
               <input
                 type="text"
@@ -361,7 +432,7 @@ export default function EmailBlastCampaignDetailPage() {
 
           {/* Template Message */}
           <div>
-            <label className="block text-sm font-medium mb-1">Template Message</label>
+            <label className="block text-sm font-medium mb-1">Isi Pesan</label>
             {campaign.status === 'draft' || campaign.status === 'paused' ? (
               <>
                 <textarea
@@ -384,7 +455,7 @@ export default function EmailBlastCampaignDetailPage() {
           {/* Delay and From */}
           <div className="grid grid-cols-2 gap-4">
             <div>
-              <label className="block text-sm font-medium mb-1">Delay (ms)</label>
+              <label className="block text-sm font-medium mb-1">Jeda antar email</label>
               {campaign.status === 'draft' || campaign.status === 'paused' ? (
                 <input
                   type="number"
@@ -401,7 +472,7 @@ export default function EmailBlastCampaignDetailPage() {
               )}
             </div>
             <div>
-              <label className="block text-sm font-medium mb-1">From</label>
+              <label className="block text-sm font-medium mb-1">Pengirim</label>
               <div className="px-3 py-2 bg-gray-50 dark:bg-gray-800 rounded-lg text-sm">
                 {campaign.from_name} &lt;{campaign.from_email}&gt;
               </div>
@@ -443,14 +514,10 @@ export default function EmailBlastCampaignDetailPage() {
                     className="flex-1 text-sm file:mr-4 file:py-2 file:px-4 file:rounded-lg file:border-0 file:text-sm file:font-semibold file:bg-blue-50 file:text-blue-700 hover:file:bg-blue-100 dark:file:bg-blue-900/30 dark:file:text-blue-300"
                   />
                   {attachmentFile && (
-                    <button
-                      onClick={handleUploadAttachment}
-                      disabled={uploadAttachmentMutation.isPending}
-                      className="px-3 py-2 text-sm bg-blue-600 hover:bg-blue-700 text-white rounded-lg disabled:opacity-50 flex items-center gap-1"
-                    >
-                      <Upload className="w-4 h-4" />
-                      {uploadAttachmentMutation.isPending ? 'Uploading...' : 'Upload'}
-                    </button>
+                    <div className="flex items-center gap-2 text-sm text-gray-500">
+                      <RefreshCw className="w-4 h-4 animate-spin" />
+                      <span>Mengupload...</span>
+                    </div>
                   )}
                 </div>
 
@@ -489,88 +556,93 @@ export default function EmailBlastCampaignDetailPage() {
             )}
           </div>
 
-          {/* Save Button */}
+          {/* Auto-save indicator */}
           {(campaign.status === 'draft' || campaign.status === 'paused') && (
-            <div className="flex justify-end">
-              <button
-                onClick={handleSaveEdit}
-                disabled={updateMutation.isPending}
-                className="px-4 py-2 text-sm bg-blue-600 hover:bg-blue-700 text-white rounded-lg disabled:opacity-50 flex items-center gap-2"
-              >
-                <Save className="w-4 h-4" />
-                {updateMutation.isPending ? 'Saving...' : 'Save Changes'}
-              </button>
+            <div className="flex items-center gap-2 text-sm text-gray-500 pt-2">
+              {updateMutation.isPending ? (
+                <>
+                  <RefreshCw className="w-4 h-4 animate-spin" />
+                  <span>Menyimpan...</span>
+                </>
+              ) : (
+                <>
+                  <Check className="w-4 h-4 text-green-500" />
+                  <span>Tersimpan otomatis</span>
+                </>
+              )}
             </div>
           )}
         </div>
-      </div>
-
-      {/* Recipients */}
-      <div className="bg-white dark:bg-gray-900 border dark:border-gray-800 rounded-xl">
-        <div className="p-4 border-b dark:border-gray-800 flex items-center justify-between">
-          <h3 className="font-semibold">Recipients</h3>
-          <div className="flex items-center gap-2">
-            <Filter className="w-4 h-4 text-gray-400" />
-            <select
-              value={statusFilter || ''}
-              onChange={(e) => setStatusFilter(e.target.value || undefined)}
-              className="text-sm border rounded px-2 py-1 dark:bg-gray-800 dark:border-gray-700"
-            >
-              <option value="">All</option>
-              <option value="pending">Pending</option>
-              <option value="sent">Sent</option>
-              <option value="failed">Failed</option>
-            </select>
-            <button
-              onClick={() => refetch()}
-              className="p-1 hover:bg-gray-100 dark:hover:bg-gray-800 rounded"
-            >
-              <RefreshCw className="w-4 h-4" />
-            </button>
-          </div>
+      </CollapsibleSection>
         </div>
 
-        {recipientsLoading ? (
-          <div className="flex items-center justify-center py-12">
-            <RefreshCw className="w-6 h-6 animate-spin text-gray-400" />
-          </div>
-        ) : recipients.length === 0 ? (
-          <div className="text-center py-12 text-gray-500">
-            No recipients found
-          </div>
-        ) : (
-          <div className="divide-y dark:divide-gray-800">
-            {recipients.slice(0, 100).map((recipient: EmailBlastRecipient) => (
-              <div key={recipient.id} className="p-4 flex items-center justify-between">
-                <div>
-                  <div className="font-medium">{recipient.university_name || 'Unknown'}</div>
-                  <div className="text-sm text-gray-500">{recipient.email}</div>
-                </div>
-                <div className="flex items-center gap-2">
-                  {recipient.status === 'pending' && (
-                    <span className="text-xs text-gray-500">Pending</span>
-                  )}
-                  {recipient.status === 'sent' && (
-                    <span className="inline-flex items-center gap-1 text-xs text-green-600">
-                      <CheckCircle2 className="w-3 h-3" /> Sent
-                    </span>
-                  )}
-                  {recipient.status === 'failed' && (
-                    <span className="inline-flex items-center gap-1 text-xs text-red-600" title={recipient.error_message || ''}>
-                      <AlertCircle className="w-3 h-3" /> Failed
-                    </span>
-                  )}
-                </div>
-              </div>
-            ))}
-          </div>
-        )}
+        {/* Right Column - Recipients (20%) */}
+        <div className="col-span-1">
+          <CollapsibleSection title={`Penerima (${recipients.length})`} icon={Users}>
+          <div className="bg-white dark:bg-gray-900 border dark:border-gray-800 rounded-xl">
+            {/* Compact filter row */}
+            <div className="p-2 border-b dark:border-gray-800 flex items-center gap-2">
+              <select
+                value={statusFilter || ''}
+                onChange={(e) => setStatusFilter(e.target.value || undefined)}
+                className="text-xs border rounded px-2 py-1 dark:bg-gray-800 dark:border-gray-700 flex-1"
+              >
+                <option value="">Semua</option>
+                <option value="pending">Menunggu</option>
+                <option value="sent">Terkirim</option>
+                <option value="failed">Gagal</option>
+              </select>
+              <button
+                onClick={() => refetch()}
+                className="p-1 hover:bg-gray-100 dark:hover:bg-gray-800 rounded"
+              >
+                <RefreshCw className="w-3 h-3" />
+              </button>
+            </div>
 
-        {recipients.length > 100 && (
-          <div className="p-4 text-center text-sm text-gray-500 border-t dark:border-gray-800">
-            Showing 100 of {recipients.length} recipients
+        {/* Compact recipient list */}
+        <div className="max-h-80 overflow-y-auto">
+          {recipientsLoading ? (
+            <div className="flex items-center justify-center py-6">
+              <RefreshCw className="w-4 h-4 animate-spin text-gray-400" />
+            </div>
+          ) : recipients.length === 0 ? (
+            <div className="text-center py-6 text-xs text-gray-500">
+              Tidak ada penerima
+            </div>
+          ) : (
+            <div className="divide-y dark:divide-gray-800">
+              {recipients.slice(0, 30).map((recipient: EmailBlastRecipient) => (
+                <div key={recipient.id} className="p-2 flex items-center justify-between gap-2">
+                  <div className="min-w-0 flex-1">
+                    <div className="text-xs font-medium truncate">{recipient.university_name || '-'}</div>
+                    <div className="text-xs text-gray-500 truncate">{recipient.email}</div>
+                  </div>
+                  <div className="flex-shrink-0">
+                    {recipient.status === 'pending' && (
+                      <span className="text-xs text-gray-400">⏳</span>
+                    )}
+                    {recipient.status === 'sent' && (
+                      <span className="text-xs text-green-600">✓</span>
+                    )}
+                    {recipient.status === 'failed' && (
+                      <span className="text-xs text-red-500" title={recipient.error_message || ''}>✕</span>
+                    )}
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+
+        {recipients.length > 30 && (
+          <div className="p-2 text-center text-xs text-gray-500 border-t dark:border-gray-800">
+            +{recipients.length - 30} lagi
           </div>
         )}
+      </div>
+      </CollapsibleSection>
+        </div>
       </div>
 
       {/* Select University Modal */}
@@ -601,7 +673,7 @@ export default function EmailBlastCampaignDetailPage() {
                 onChange={(e) => setUniProvince(e.target.value)}
                 className="px-3 py-2 border rounded-lg dark:bg-gray-800 dark:border-gray-700"
               >
-                <option value="">All Provinces</option>
+                <option value="">Semua Provinsi</option>
                 {provinces?.map(p => (
                   <option key={p} value={p}>{p}</option>
                 ))}
@@ -619,10 +691,10 @@ export default function EmailBlastCampaignDetailPage() {
                 ) : (
                   <Square className="w-4 h-4" />
                 )}
-                Select All ({universities.length})
+                Pilih Semua ({universities.length})
               </button>
               {selectedUniIds.size > 0 && (
-                <span className="text-sm text-blue-600">{selectedUniIds.size} selected</span>
+                <span className="text-sm text-blue-600">{selectedUniIds.size} dipilih</span>
               )}
             </div>
 
@@ -633,7 +705,7 @@ export default function EmailBlastCampaignDetailPage() {
                   <RefreshCw className="w-6 h-6 animate-spin text-gray-400" />
                 </div>
               ) : universities.length === 0 ? (
-                <div className="text-center py-8 text-gray-500">No universities found</div>
+                <div className="text-center py-8 text-gray-500">Tidak ada universitas ditemukan</div>
               ) : (
                 <div className="divide-y dark:divide-gray-800">
                   {universities.map((uni) => (
@@ -664,21 +736,21 @@ export default function EmailBlastCampaignDetailPage() {
             {/* Actions */}
             <div className="flex justify-between items-center mt-4 pt-4 border-t dark:border-gray-800">
               <div className="text-sm text-gray-500">
-                {selectedUniIds.size > 0 ? `${selectedUniIds.size} selected` : `${universities.length} universities`}
+                {selectedUniIds.size > 0 ? `${selectedUniIds.size} dipilih` : `${universities.length} universitas`}
               </div>
               <div className="flex gap-2">
                 <button
                   onClick={() => setShowSelectUni(false)}
                   className="px-4 py-2 text-sm bg-gray-100 dark:bg-gray-800 rounded-lg"
                 >
-                  Cancel
+                  Batal
                 </button>
                 <button
                   onClick={handleConfirmSelectUni}
                   disabled={selectedUniIds.size === 0 || addSelectedRecipientsMutation.isPending}
                   className="px-4 py-2 text-sm bg-blue-600 hover:bg-blue-700 text-white rounded-lg disabled:opacity-50"
                 >
-                  {addSelectedRecipientsMutation.isPending ? 'Adding...' : 'Add to Campaign'}
+                  {addSelectedRecipientsMutation.isPending ? 'Menambahkan...' : 'Tambah ke Campaign'}
                 </button>
               </div>
             </div>

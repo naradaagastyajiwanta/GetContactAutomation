@@ -375,6 +375,15 @@ CREATE TABLE IF NOT EXISTS email_blast_recipients (
 CREATE INDEX IF NOT EXISTS idx_email_blast_campaigns_status ON email_blast_campaigns(status);
 CREATE INDEX IF NOT EXISTS idx_email_blast_recipients_campaign ON email_blast_recipients(campaign_id);
 CREATE INDEX IF NOT EXISTS idx_email_blast_recipients_status ON email_blast_recipients(status);
+
+-- Letter Number Config
+CREATE TABLE IF NOT EXISTS email_blast_letter_config (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    format_template TEXT NOT NULL DEFAULT '{{NUMBER}}/ASOSIASI/{{YEAR}}',
+    last_number INTEGER DEFAULT 0,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
 """
 
 # ---------------------------------------------------------------------------

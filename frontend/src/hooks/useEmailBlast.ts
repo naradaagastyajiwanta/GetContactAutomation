@@ -9,10 +9,13 @@ import {
   pauseEmailCampaign,
   cancelEmailCampaign,
   getEmailRecipients,
+  deleteEmailRecipient,
   testSmtpConnection,
   updateEmailCampaign,
   uploadAttachment,
   getAttachment,
+  getLetterConfig,
+  updateLetterConfig,
   type EmailBlastCampaign,
   type EmailBlastRecipient,
   type CreateEmailCampaignRequest,
@@ -68,6 +71,7 @@ export function useStartEmailCampaign() {
     mutationFn: (data: StartEmailCampaignRequest) => startEmailCampaign(data),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['email-blast-campaigns'] })
+      queryClient.invalidateQueries({ queryKey: ['email-blast-campaign'] })
       queryClient.invalidateQueries({ queryKey: ['email-blast-recipients'] })
     },
   })
@@ -79,6 +83,8 @@ export function usePauseEmailCampaign() {
     mutationFn: (id: number) => pauseEmailCampaign(id),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['email-blast-campaigns'] })
+      queryClient.invalidateQueries({ queryKey: ['email-blast-campaign'] })
+      queryClient.invalidateQueries({ queryKey: ['email-blast-recipients'] })
     },
   })
 }
@@ -89,6 +95,8 @@ export function useCancelEmailCampaign() {
     mutationFn: (id: number) => cancelEmailCampaign(id),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['email-blast-campaigns'] })
+      queryClient.invalidateQueries({ queryKey: ['email-blast-campaign'] })
+      queryClient.invalidateQueries({ queryKey: ['email-blast-recipients'] })
     },
   })
 }
@@ -99,6 +107,8 @@ export function useAddAllRecipients() {
     mutationFn: (id: number) => addAllRecipientsToCampaign(id),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['email-blast-campaigns'] })
+      queryClient.invalidateQueries({ queryKey: ['email-blast-campaign'] })
+      queryClient.invalidateQueries({ queryKey: ['email-blast-recipients'] })
     },
   })
 }
@@ -110,6 +120,8 @@ export function useAddSelectedRecipients() {
       addSelectedRecipients(id, universityIds),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['email-blast-campaigns'] })
+      queryClient.invalidateQueries({ queryKey: ['email-blast-campaign'] })
+      queryClient.invalidateQueries({ queryKey: ['email-blast-recipients'] })
     },
   })
 }
@@ -139,6 +151,7 @@ export function useUploadAttachment() {
       uploadAttachment(campaignId, file, variables),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['email-blast-campaign'] })
+      queryClient.invalidateQueries({ queryKey: ['email-blast-attachment'] })
     },
   })
 }
@@ -148,5 +161,36 @@ export function useCampaignAttachment(campaignId: number) {
     queryKey: ['email-blast-attachment', campaignId],
     queryFn: () => getAttachment(campaignId),
     enabled: !!campaignId,
+  })
+}
+
+export function useLetterConfig() {
+  return useQuery({
+    queryKey: ['email-blast-letter-config'],
+    queryFn: () => getLetterConfig(),
+  })
+}
+
+export function useUpdateLetterConfig() {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: ({ format_template, last_number }: { format_template?: string; last_number?: number }) =>
+      updateLetterConfig(format_template, last_number),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['email-blast-letter-config'] })
+    },
+  })
+}
+
+export function useDeleteEmailRecipient() {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: ({ campaignId, recipientId }: { campaignId: number; recipientId: number }) =>
+      deleteEmailRecipient(campaignId, recipientId),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['email-blast-recipients'] })
+      queryClient.invalidateQueries({ queryKey: ['email-blast-campaign'] })
+      queryClient.invalidateQueries({ queryKey: ['email-blast-campaigns'] })
+    },
   })
 }

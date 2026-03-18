@@ -7,6 +7,7 @@ import os
 import re
 import smtplib
 import ssl
+import subprocess
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 from email.mime.base import MIMEBase
@@ -139,6 +140,71 @@ TEMPLATE_DIR = Path("data/email_attachments")
 TEMPLATE_DIR.mkdir(parents=True, exist_ok=True)
 
 
+def convert_docx_to_pdf(docx_path: str, pdf_path: str) -> bool:
+    """Convert DOCX to PDF using multiple methods"""
+    import platform
+
+    system = platform.system()
+
+    # Convert paths to Windows format with raw strings
+    docx_path_abs = os.path.abspath(docx_path)
+    pdf_path_abs = os.path.abspath(pdf_path)
+
+    # Method 1: Try comtypes on Windows (most reliable)
+    if system == "Windows":
+        try:
+            import comtypes.client
+            import comtypes
+            import time
+
+            log.info(f"[EmailBlast] Attempting comtypes conversion: {docx_path_abs}")
+
+            # Create COM object
+            word = comtypes.client.CreateObject('Word.Application')
+            word.Visible = False
+
+            # Convert - use absolute path with raw string
+            doc = word.Documents.Open(docx_path_abs)
+            time.sleep(0.5)  # Brief delay to ensure file is loaded
+            doc.SaveAs(pdf_path_abs, FileFormat=17)  # 17 = PDF format
+            doc.Close()
+            word.Quit()
+            time.sleep(0.5)  # Brief delay for cleanup
+
+            if os.path.exists(pdf_path_abs):
+                log.info(f"[EmailBlast] PDF created via comtypes: {pdf_path_abs}")
+                return True
+        except Exception as e:
+            log.warning(f"[EmailBlast] comtypes failed: {e}")
+
+    # Method 2: Try docx2pdf (works on Windows with Word installed)
+    try:
+        from docx2pdf import convert
+        log.info(f"[EmailBlast] Attempting docx2pdf conversion: {docx_path_abs}")
+        convert(docx_path_abs, pdf_path_abs)
+        if os.path.exists(pdf_path_abs):
+            log.info(f"[EmailBlast] PDF created via docx2pdf: {pdf_path_abs}")
+            return True
+    except Exception as e:
+        log.warning(f"[EmailBlast] docx2pdf failed: {e}")
+
+    # Method 3: Try pandoc (if installed)
+    try:
+        result = subprocess.run(
+            ['pandoc', docx_path_abs, '-o', pdf_path_abs],
+            capture_output=True,
+            text=True
+        )
+        if os.path.exists(pdf_path_abs):
+            log.info(f"[EmailBlast] PDF created via pandoc: {pdf_path_abs}")
+            return True
+    except Exception as e:
+        log.warning(f"[EmailBlast] pandoc failed: {e}")
+
+    log.error(f"[EmailBlast] All PDF conversion methods failed!")
+    return False
+
+
 def detect_variables(text: str) -> list[str]:
     """Detect all {{variable}} patterns in text"""
     pattern = r'\{\{(\w+)\}\}'
@@ -165,31 +231,72 @@ def extract_docx_variables(doc_path: str) -> list[str]:
 def generate_docx(doc_path: str, variables: dict, output_path: str) -> bool:
     """Generate DOCX from template with replaced variables"""
     try:
+        log.info(f"[EmailBlast] generate_docx called: {doc_path} -> {output_path}")
+        log.info(f"[EmailBlast] Variables to replace: {variables}")
+
         doc = Document(doc_path)
 
-        # Replace in paragraphs
+        # Debug: print all text in document
+        all_text = []
         for para in doc.paragraphs:
+            all_text.append(f"PARA: {repr(para.text)}")
             for run in para.runs:
-                text = run.text
-                for key, value in variables.items():
-                    text = text.replace(f'{{{{{key}}}}}', str(value))
-                run.text = text
-
-        # Replace in tables
+                all_text.append(f"  RUN: {repr(run.text)}")
         for table in doc.tables:
             for row in table.rows:
                 for cell in row.cells:
                     for para in cell.paragraphs:
+                        all_text.append(f"TABLE PARA: {repr(para.text)}")
                         for run in para.runs:
-                            text = run.text
-                            for key, value in variables.items():
-                                text = text.replace(f'{{{{{key}}}}}', str(value))
-                            run.text = text
+                            all_text.append(f"  TABLE RUN: {repr(run.text)}")
+
+        log.info(f"[EmailBlast] Document text content:\n" + "\n".join(all_text[:50]))  # Limit to first 50 lines
+
+        # Strategy: Work on paragraph level first, then handle runs
+        # First, collect all text and replace in paragraphs
+        replacement_count = 0
+
+        # Replace in paragraphs - rebuild the paragraph text completely
+        for para in doc.paragraphs:
+            full_text = para.text
+            for key, value in variables.items():
+                placeholder = f'{{{{{key}}}}}'
+                if placeholder in full_text:
+                    log.info(f"[EmailBlast] Found placeholder {placeholder} in paragraph, replacing with: {value}")
+                    replacement_count += full_text.count(placeholder)
+                    full_text = full_text.replace(placeholder, str(value))
+            para.text = full_text
+
+        # Replace in tables - rebuild the cell text
+        for table in doc.tables:
+            for row in table.rows:
+                for cell in row.cells:
+                    for para in cell.paragraphs:
+                        full_text = para.text
+                        for key, value in variables.items():
+                            placeholder = f'{{{{{key}}}}}'
+                            if placeholder in full_text:
+                                log.info(f"[EmailBlast] Found placeholder {placeholder} in table, replacing with: {value}")
+                                replacement_count += full_text.count(placeholder)
+                                full_text = full_text.replace(placeholder, str(value))
+                        para.text = full_text
+
+        log.info(f"[EmailBlast] Total replacements made: {replacement_count}")
 
         doc.save(output_path)
+
+        # Verify output file
+        if os.path.exists(output_path):
+            doc2 = Document(output_path)
+            output_text = "\n".join([p.text for p in doc2.paragraphs])
+            log.info(f"[EmailBlast] Output docx verification (first 500 chars): {output_text[:500]}")
+
+        log.info(f"[EmailBlast] DOCX saved successfully to {output_path}")
         return True
     except Exception as e:
         log.error(f"[EmailBlast] Error generating DOCX: {e}")
+        import traceback
+        traceback.print_exc()
         return False
 
 
@@ -221,6 +328,83 @@ async def get_campaign_attachment(campaign_id: int) -> dict:
                 'variables': json.loads(row[1]) if row[1] else {}
             }
         return {'filename': None, 'variables': {}}
+
+
+# ---------------------------------------------------------------------------
+# Letter Number Config
+# ---------------------------------------------------------------------------
+
+async def get_letter_config() -> dict:
+    """Get letter number configuration"""
+    async with get_db() as db:
+        cursor = await db.execute(
+            "SELECT id, format_template, last_number FROM email_blast_letter_config LIMIT 1"
+        )
+        row = await cursor.fetchone()
+        if row:
+            return {
+                'id': row[0],
+                'format_template': row[1],
+                'last_number': row[2]
+            }
+        # Create default if not exists
+        cursor = await db.execute(
+            "INSERT INTO email_blast_letter_config (format_template, last_number) VALUES (?, ?)",
+            ("{{NUMBER}}/ASOSIASI/{{YEAR}}", 0)
+        )
+        await db.commit()
+        return {
+            'id': cursor.lastrowid,
+            'format_template': "{{NUMBER}}/ASOSIASI/{{YEAR}}",
+            'last_number': 0
+        }
+
+
+async def update_letter_config(format_template: str = None, last_number: int = None) -> dict:
+    """Update letter number configuration"""
+    async with get_db() as db:
+        if format_template is not None:
+            await db.execute(
+                "UPDATE email_blast_letter_config SET format_template = ?, updated_at = CURRENT_TIMESTAMP WHERE id = 1",
+                (format_template,)
+            )
+        if last_number is not None:
+            await db.execute(
+                "UPDATE email_blast_letter_config SET last_number = ?, updated_at = CURRENT_TIMESTAMP WHERE id = 1",
+                (last_number,)
+            )
+        await db.commit()
+    return await get_letter_config()
+
+
+def generate_letter_number(format_template: str, last_number: int) -> str:
+    """Generate letter number based on format template"""
+    from datetime import datetime
+
+    year = datetime.now().year
+    next_number = last_number + 1
+
+    result = format_template
+    result = result.replace("{{NUMBER}}", str(next_number).zfill(3))  # 001, 002, etc
+    result = result.replace("{{YEAR}}", str(year))
+    result = result.replace("{{MONTH}}", datetime.now().strftime("%m"))
+    result = result.replace("{{MONTH_NAME}}", datetime.now().strftime("%B"))
+
+    return result
+
+
+async def get_next_letter_number() -> tuple[str, int]:
+    """Get next letter number and increment counter"""
+    config = await get_letter_config()
+    format_template = config['format_template']
+    last_number = config['last_number']
+
+    letter_number = generate_letter_number(format_template, last_number)
+
+    # Increment counter
+    await update_letter_config(last_number=last_number + 1)
+
+    return letter_number, last_number + 1
 
 
 # ---------------------------------------------------------------------------
@@ -324,16 +508,29 @@ async def add_all_emails_to_campaign(campaign_id: int,
 
 
 async def render_template(template: str, university_name: str,
-                          email: str, subject_template: str = None) -> tuple[str, str]:
+                          email: str, subject_template: str = None,
+                          custom_vars: dict = None) -> tuple[str, str]:
     """Render template with university data"""
-    # Replace placeholders
+    # Replace auto placeholders
     rendered_msg = template
-    rendered_msg = rendered_msg.replace('{{university_name}}', university_name)
+    rendered_msg = rendered_msg.replace('{{university_name}}', university_name or 'Pimpinan Universitas')
     rendered_msg = rendered_msg.replace('{{email}}', email)
     rendered_msg = rendered_msg.replace('{{tanggal}}', datetime.now().strftime('%d %B %Y'))
 
+    # Replace custom variables if provided
+    if custom_vars:
+        for key, value in custom_vars.items():
+            placeholder = f'{{{{{key}}}}}'
+            rendered_msg = rendered_msg.replace(placeholder, str(value))
+
     rendered_subj = subject_template or ""
-    rendered_subj = rendered_subj.replace('{{university_name}}', university_name)
+    rendered_subj = rendered_subj.replace('{{university_name}}', university_name or 'Pimpinan Universitas')
+
+    # Replace custom variables in subject too
+    if custom_vars:
+        for key, value in custom_vars.items():
+            placeholder = f'{{{{{key}}}}}'
+            rendered_subj = rendered_subj.replace(placeholder, str(value))
 
     return rendered_subj, rendered_msg
 
@@ -391,6 +588,18 @@ async def run_email_blast_campaign(campaign_id: int,
 
         log.info(f"[EmailBlast] Starting campaign {campaign_id} with {len(recipients)} recipients")
 
+    # Generate letter number for this campaign (once per campaign) if there's an attachment
+    letter_number = None
+    log.info(f"[EmailBlast] DEBUG: attachment_filename='{attachment_filename}' (type: {type(attachment_filename)})")
+    if attachment_filename:  # Only generate letter number if there's an attachment
+        try:
+            letter_number, _ = await get_next_letter_number()
+            log.info(f"[EmailBlast] Generated letter number: {letter_number}")
+        except Exception as e:
+            log.error(f"[EmailBlast] Error generating letter number: {e}")
+    else:
+        log.warning(f"[EmailBlast] No attachment_filename - letter_number will be None!")
+
     # Use provided or create SMTP client
     if smtp_client is None:
         smtp_client = get_smtp_client()
@@ -405,46 +614,151 @@ async def run_email_blast_campaign(campaign_id: int,
         if not attachment_path.exists():
             attachment_path = None
 
+    # Check if we need to generate attachment (even without predefined vars)
+    has_attachment_template = attachment_filename is not None
+
     sent = 0
     failed = 0
 
+    # Default subject and message if not set
+    if not subject:
+        subject = "Kerja Sama - {{university_name}}"
+    if not template:
+        template = """Yth. Bagian Sekretariat {{university_name}},
+
+Dengan hormat,
+
+Kami dari Asosiasi AI ingin mengajukan kerja sama terkait pengembangan teknologi人工智能 untuk kampus Bapak/Ibu.
+
+Hormat kami,
+Sekretariat Asosiasi AI
+"""
+
     for recipient_id, email, uni_name in recipients:
+        log.info(f"[EmailBlast] Processing recipient: id={recipient_id}, email={email}, uni_name={uni_name}")
+
+        # If uni_name is None/empty, try to get from universities table by email
+        if not uni_name:
+            try:
+                async with get_db() as db:
+                    cursor = await db.execute(
+                        "SELECT name FROM universities WHERE email_kampus = ? LIMIT 1",
+                        (email,)
+                    )
+                    row = await cursor.fetchone()
+                    if row:
+                        uni_name = row[0]
+                        log.info(f"[EmailBlast] Found university name from email: {uni_name}")
+            except Exception as e:
+                log.warning(f"[EmailBlast] Could not lookup university name: {e}")
+
         # Render template
+        # Build custom vars for template rendering (only non-empty values)
+        custom_vars = {}
+        if letter_number:
+            custom_vars['nomor_surat'] = letter_number
+        if attachment_vars:
+            for k, v in attachment_vars.items():
+                if v:  # Only add non-empty values
+                    custom_vars[k] = v
+
         rendered_subject, rendered_msg = await render_template(
             template, uni_name or "Yth. Pihak Universitas",
-            email, subject
+            email, subject, custom_vars
         )
 
-        # Generate attachment if needed
+        log.info(f"[EmailBlast] Rendered email body (first 200 chars): {rendered_msg[:200]}")
+
+        log.info(f"[EmailBlast] Sending to {email}: subject='{rendered_subject}'")
+
+        # Generate attachment if needed (always generate if attachment file exists)
         final_attachment = None
-        if attachment_path and attachment_vars:
+        log.info(f"[EmailBlast] Attachment check: attachment_filename={attachment_filename}, attachment_path={attachment_path}")
+        if attachment_path:
             try:
-                # Build variables for this recipient
+                # Build variables for this recipient - ALWAYS include auto variables
                 vars_for_recipient = {
-                    'university_name': uni_name or '',
+                    'university_name': uni_name or 'Pimpinan Universitas',
                     'email': email,
                     'tanggal': datetime.now().strftime('%d %B %Y'),
                 }
-                # Add custom variables
-                vars_for_recipient.update(attachment_vars)
+                log.info(f"[EmailBlast] BEFORE letter_number: vars={vars_for_recipient}, letter_number={letter_number}")
+                # Add letter number if available
+                if letter_number:
+                    vars_for_recipient['nomor_surat'] = letter_number
+                    log.info(f"[EmailBlast] Added nomor_surat: {letter_number}")
+                else:
+                    log.warning(f"[EmailBlast] No letter_number generated!")
+                # Add custom variables from attachment config (but DON'T override auto-generated ones!)
+                auto_vars = {'university_name', 'email', 'tanggal', 'nomor_surat'}
+                if attachment_vars:
+                    for key, value in attachment_vars.items():
+                        if key not in auto_vars and value:  # Only add non-empty custom vars
+                            vars_for_recipient[key] = value
+                    log.info(f"[EmailBlast] Added custom attachment_vars (excluding auto vars)")
 
-                # Generate unique output path
-                output_name = f"{campaign_id}_{recipient_id}_{attachment_filename}"
-                output_path = TEMPLATE_DIR / output_name
+                log.info(f"[EmailBlast] FINAL vars_for_recipient: {vars_for_recipient}")
+                log.info(f"[EmailBlast] Calling generate_docx with vars: {vars_for_recipient}")
 
-                if generate_docx(str(attachment_path), vars_for_recipient, str(output_path)):
-                    final_attachment = str(output_path)
+                log.info(f"[EmailBlast] Generating attachment for {email} with vars: {vars_for_recipient}")
+
+                # Debug: verify attachment file exists
+                log.info(f"[EmailBlast] Reading from: {attachment_path}, exists: {os.path.exists(attachment_path)}")
+
+                # Generate unique output DOCX path
+                docx_filename = attachment_filename.replace('.docx', '')
+                output_docx_name = f"{campaign_id}_{recipient_id}_{docx_filename}.docx"
+                output_docx_path = TEMPLATE_DIR / output_docx_name
+
+                # Generate DOCX with replaced variables
+                docx_result = generate_docx(str(attachment_path), vars_for_recipient, str(output_docx_path))
+                log.info(f"[EmailBlast] generate_docx result: {docx_result}")
+
+                if docx_result and os.path.exists(str(output_docx_path)):
+                    # MUST convert to PDF
+                    output_pdf_name = f"{campaign_id}_{recipient_id}_{docx_filename}.pdf"
+                    output_pdf_path = TEMPLATE_DIR / output_pdf_name
+
+                    log.info(f"[EmailBlast] Converting DOCX to PDF: {output_docx_path} -> {output_pdf_path}")
+                    pdf_result = convert_docx_to_pdf(str(output_docx_path), str(output_pdf_path))
+
+                    if pdf_result and os.path.exists(str(output_pdf_path)):
+                        final_attachment = str(output_pdf_path)
+                        log.info(f"[EmailBlast] PDF created successfully: {output_pdf_path}")
+                        # Remove the intermediate DOCX file
+                        try:
+                            os.remove(str(output_docx_path))
+                        except:
+                            pass
+                    else:
+                        log.error(f"[EmailBlast] PDF conversion FAILED - no attachment will be sent!")
+                        # Remove the DOCX file
+                        try:
+                            os.remove(str(output_docx_path))
+                        except:
+                            pass
+                else:
+                    log.error(f"[EmailBlast] Failed to generate DOCX, no attachment will be sent")
             except Exception as e:
                 log.error(f"[EmailBlast] Error generating attachment: {e}")
+                import traceback
+                traceback.print_exc()
 
         # Send email
-        success, error = smtp_client.send_email(
-            email, rendered_subject, rendered_msg, from_email, from_name,
-            attachment_path=final_attachment
-        )
+        log.info(f"[EmailBlast] About to send email to {email} with attachment: {final_attachment}")
+        try:
+            success, error = smtp_client.send_email(
+                email, rendered_subject, rendered_msg, from_email, from_name,
+                attachment_path=final_attachment
+            )
+            log.info(f"[EmailBlast] Send result: success={success}, error={error}")
+        except Exception as e:
+            log.error(f"[EmailBlast] Exception sending email: {e}")
+            success = False
+            error = str(e)
 
         # Cleanup generated attachment
-        if final_attachment and final_attachment != str(attachment_path):
+        if final_attachment and os.path.exists(final_attachment):
             try:
                 os.remove(final_attachment)
             except:
@@ -479,6 +793,11 @@ async def run_email_blast_campaign(campaign_id: int,
                SET sent_count = sent_count + ?, failed_count = failed_count + ?
                WHERE id = ?""",
             (sent, failed, campaign_id)
+        )
+        # Update status to completed
+        await db.execute(
+            "UPDATE email_blast_campaigns SET status = 'completed', completed_at = ? WHERE id = ?",
+            (datetime.now().isoformat(), campaign_id)
         )
         await db.commit()
 
@@ -566,4 +885,41 @@ async def cancel_campaign(campaign_id: int) -> bool:
             (campaign_id,)
         )
         await db.commit()
+        return True
+
+
+async def delete_recipient(recipient_id: int) -> bool:
+    """Delete a recipient from campaign"""
+    async with get_db() as db:
+        # Get campaign_id first
+        cursor = await db.execute(
+            "SELECT campaign_id FROM email_blast_recipients WHERE id = ?",
+            (recipient_id,)
+        )
+        row = await cursor.fetchone()
+        if not row:
+            return False
+
+        campaign_id = row[0]
+
+        # Delete recipient
+        await db.execute(
+            "DELETE FROM email_blast_recipients WHERE id = ?",
+            (recipient_id,)
+        )
+        await db.commit()
+
+        # Update campaign total count
+        cursor = await db.execute(
+            "SELECT COUNT(*) FROM email_blast_recipients WHERE campaign_id = ?",
+            (campaign_id,)
+        )
+        count = (await cursor.fetchone())[0]
+
+        await db.execute(
+            "UPDATE email_blast_campaigns SET total_recipients = ? WHERE id = ?",
+            (count, campaign_id)
+        )
+        await db.commit()
+
         return True
