@@ -357,31 +357,41 @@ export default function EmailBlastCampaignsPage() {
     }
   }
 
+  // Calculate stats
+  const totalCampaigns = campaigns.length
+  const completedCampaigns = campaigns.filter(c => c.status === 'completed').length
+  const totalSent = campaigns.reduce((sum, c) => sum + c.sent_count, 0)
+  const totalRecipients = campaigns.reduce((sum, c) => sum + c.total_recipients, 0)
+
   return (
     <div className="p-6 max-w-6xl mx-auto">
       {/* Header */}
       <div className="flex items-center justify-between mb-6">
         <div>
           <h1 className="text-2xl font-bold flex items-center gap-3">
-            <Mail className="w-7 h-7 text-blue-600" />
-            Email Blast
+            <div className="p-2 bg-gradient-to-br from-blue-500 to-blue-600 rounded-xl shadow-lg shadow-blue-500/20">
+              <Mail className="w-6 h-6 text-white" />
+            </div>
+            <span className="bg-gradient-to-r from-gray-900 to-gray-700 dark:from-white dark:to-gray-300 bg-clip-text text-transparent">
+              Email Blast
+            </span>
           </h1>
-          <p className="text-sm text-gray-500 dark:text-gray-400 mt-1">
+          <p className="text-sm text-gray-500 dark:text-gray-400 mt-1 ml-14">
             Kirim email massal ke universitas
           </p>
         </div>
         <div className="flex gap-2">
           <button
             onClick={handleTestSmtp}
-            className="px-4 py-2 text-sm bg-white dark:bg-gray-800 border dark:border-gray-700 hover:bg-gray-50 dark:hover:bg-gray-700 rounded-lg flex items-center gap-2 transition-colors"
+            className="px-4 py-2.5 text-sm bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 hover:bg-gray-50 dark:hover:bg-gray-700 rounded-xl flex items-center gap-2 transition-all hover:shadow-md"
             disabled={testSmtpMutation.isPending}
           >
-            <RefreshCw className={cn("w-4 h-4", testSmtpMutation.isPending && "animate-spin")} />
-            Test SMTP
+            <RefreshCw className={cn("w-4 h-4 text-gray-600", testSmtpMutation.isPending && "animate-spin")} />
+            <span className="text-gray-700 dark:text-gray-300">Test SMTP</span>
           </button>
           <button
             onClick={() => setShowCreate(true)}
-            className="px-4 py-2 text-sm bg-blue-600 hover:bg-blue-700 text-white rounded-lg flex items-center gap-2 transition-colors shadow-sm"
+            className="px-5 py-2.5 text-sm bg-gradient-to-r from-blue-600 to-blue-500 hover:from-blue-700 hover:to-blue-600 text-white rounded-xl flex items-center gap-2 transition-all shadow-lg shadow-blue-500/25 hover:shadow-blue-500/40"
           >
             <Plus className="w-4 h-4" />
             Buat Campaign
@@ -389,15 +399,63 @@ export default function EmailBlastCampaignsPage() {
         </div>
       </div>
 
+      {/* Stats Cards */}
+      <div className="grid grid-cols-4 gap-4 mb-8">
+        <div className="bg-white dark:bg-gray-900 rounded-2xl p-5 border border-gray-100 dark:border-gray-800 shadow-sm hover:shadow-md transition-all">
+          <div className="flex items-center gap-4">
+            <div className="p-3 bg-blue-50 dark:bg-blue-900/30 rounded-xl">
+              <Send className="w-5 h-5 text-blue-600 dark:text-blue-400" />
+            </div>
+            <div>
+              <p className="text-2xl font-bold text-gray-900 dark:text-white">{totalCampaigns}</p>
+              <p className="text-xs text-gray-500">Total Campaigns</p>
+            </div>
+          </div>
+        </div>
+        <div className="bg-white dark:bg-gray-900 rounded-2xl p-5 border border-gray-100 dark:border-gray-800 shadow-sm hover:shadow-md transition-all">
+          <div className="flex items-center gap-4">
+            <div className="p-3 bg-green-50 dark:bg-green-900/30 rounded-xl">
+              <CheckCircle2 className="w-5 h-5 text-green-600 dark:text-green-400" />
+            </div>
+            <div>
+              <p className="text-2xl font-bold text-gray-900 dark:text-white">{completedCampaigns}</p>
+              <p className="text-xs text-gray-500">Completed</p>
+            </div>
+          </div>
+        </div>
+        <div className="bg-white dark:bg-gray-900 rounded-2xl p-5 border border-gray-100 dark:border-gray-800 shadow-sm hover:shadow-md transition-all">
+          <div className="flex items-center gap-4">
+            <div className="p-3 bg-purple-50 dark:bg-purple-900/30 rounded-xl">
+              <Mail className="w-5 h-5 text-purple-600 dark:text-purple-400" />
+            </div>
+            <div>
+              <p className="text-2xl font-bold text-gray-900 dark:text-white">{totalSent}</p>
+              <p className="text-xs text-gray-500">Emails Sent</p>
+            </div>
+          </div>
+        </div>
+        <div className="bg-white dark:bg-gray-900 rounded-2xl p-5 border border-gray-100 dark:border-gray-800 shadow-sm hover:shadow-md transition-all">
+          <div className="flex items-center gap-4">
+            <div className="p-3 bg-amber-50 dark:bg-amber-900/30 rounded-xl">
+              <Inbox className="w-5 h-5 text-amber-600 dark:text-amber-400" />
+            </div>
+            <div>
+              <p className="text-2xl font-bold text-gray-900 dark:text-white">{inboxEmails.length}</p>
+              <p className="text-xs text-gray-500">Replies</p>
+            </div>
+          </div>
+        </div>
+      </div>
+
       {/* Tabs */}
-      <div className="flex gap-1 mb-6 bg-gray-100 dark:bg-gray-800 p-1 rounded-lg w-fit">
+      <div className="flex items-center gap-1 mb-6 bg-gray-100/50 dark:bg-gray-800/50 p-1.5 rounded-2xl backdrop-blur-sm">
         <button
           onClick={() => setActiveTab('campaigns')}
           className={cn(
-            "px-4 py-2 text-sm font-medium rounded-md flex items-center gap-2 transition-all",
+            "px-5 py-2.5 text-sm font-semibold rounded-xl flex items-center gap-2.5 transition-all duration-300",
             activeTab === 'campaigns'
-              ? "bg-white dark:bg-gray-700 text-gray-900 dark:text-white shadow-sm"
-              : "text-gray-600 dark:text-gray-400 hover:text-gray-900 dark:hover:text-white"
+              ? "bg-white dark:bg-gray-700 text-blue-600 dark:text-blue-400 shadow-lg shadow-blue-500/10"
+              : "text-gray-500 dark:text-gray-400 hover:text-gray-700 dark:hover:text-gray-200 hover:bg-white/50 dark:hover:bg-gray-700/50"
           )}
         >
           <Send className="w-4 h-4" />
@@ -406,16 +464,16 @@ export default function EmailBlastCampaignsPage() {
         <button
           onClick={() => { setActiveTab('inbox'); refetchInbox(); }}
           className={cn(
-            "px-4 py-2 text-sm font-medium rounded-md flex items-center gap-2 transition-all",
+            "px-5 py-2.5 text-sm font-semibold rounded-xl flex items-center gap-2.5 transition-all duration-300",
             activeTab === 'inbox'
-              ? "bg-white dark:bg-gray-700 text-gray-900 dark:text-white shadow-sm"
-              : "text-gray-600 dark:text-gray-400 hover:text-gray-900 dark:hover:text-white"
+              ? "bg-white dark:bg-gray-700 text-blue-600 dark:text-blue-400 shadow-lg shadow-blue-500/10"
+              : "text-gray-500 dark:text-gray-400 hover:text-gray-700 dark:hover:text-gray-200 hover:bg-white/50 dark:hover:bg-gray-700/50"
           )}
         >
           <Inbox className="w-4 h-4" />
           Inbox
           {inboxEmails.length > 0 && (
-            <span className="ml-1 px-2 py-0.5 bg-green-100 dark:bg-green-900/40 text-green-600 dark:text-green-400 rounded-full text-xs">
+            <span className="ml-1 px-2.5 py-0.5 bg-gradient-to-r from-green-500 to-emerald-500 text-white text-xs font-bold rounded-full shadow-lg shadow-green-500/30">
               {inboxEmails.length}
             </span>
           )}
@@ -547,79 +605,73 @@ export default function EmailBlastCampaignsPage() {
           {campaigns.map((campaign: EmailBlastCampaign) => (
             <div
               key={campaign.id}
-              className="bg-white dark:bg-gray-900 border dark:border-gray-800 rounded-xl p-4 hover:border-blue-300 dark:hover:border-blue-700 transition-all hover:shadow-md"
+              className="group bg-white dark:bg-gray-900 border border-gray-100 dark:border-gray-800 rounded-2xl p-5 hover:border-blue-200 dark:hover:border-blue-700 hover:shadow-xl hover:shadow-blue-500/5 transition-all duration-300"
             >
               <div className="flex items-center justify-between">
-                <div className="flex items-center gap-4 min-w-0">
+                <div className="flex items-center gap-5 min-w-0">
                   <div className={cn(
-                    "w-12 h-12 rounded-xl flex items-center justify-center flex-shrink-0",
-                    campaign.status === 'running' ? "bg-blue-100 dark:bg-blue-900/40" :
-                    campaign.status === 'completed' ? "bg-green-100 dark:bg-green-900/40" :
-                    campaign.status === 'paused' ? "bg-amber-100 dark:bg-amber-900/40" :
-                    campaign.status === 'cancelled' ? "bg-red-100 dark:bg-red-900/40" :
-                    "bg-gray-100 dark:bg-gray-800"
+                    "w-14 h-14 rounded-2xl flex items-center justify-center flex-shrink-0 shadow-lg",
+                    campaign.status === 'running' ? "bg-gradient-to-br from-blue-400 to-blue-600 shadow-blue-500/25" :
+                    campaign.status === 'completed' ? "bg-gradient-to-br from-green-400 to-green-600 shadow-green-500/25" :
+                    campaign.status === 'paused' ? "bg-gradient-to-br from-amber-400 to-amber-600 shadow-amber-500/25" :
+                    campaign.status === 'cancelled' ? "bg-gradient-to-br from-red-400 to-red-600 shadow-red-500/25" :
+                    "bg-gradient-to-br from-gray-100 to-gray-200 dark:from-gray-700 dark:to-gray-800 shadow-gray-500/10"
                   )}>
                     <Mail className={cn(
-                      "w-6 h-6",
-                      campaign.status === 'running' ? "text-blue-600" :
-                      campaign.status === 'completed' ? "text-green-600" :
-                      campaign.status === 'paused' ? "text-amber-600" :
-                      campaign.status === 'cancelled' ? "text-red-600" :
-                      "text-gray-600 dark:text-gray-400"
+                      "w-7 h-7",
+                      campaign.status === 'running' ? "text-white" :
+                      campaign.status === 'completed' ? "text-white" :
+                      campaign.status === 'paused' ? "text-white" :
+                      campaign.status === 'cancelled' ? "text-white" :
+                      "text-gray-500 dark:text-gray-400"
                     )} />
                   </div>
                   <div className="min-w-0">
-                    <h3 className="font-semibold text-lg">{campaign.name}</h3>
-                    <p className="text-sm text-gray-500 dark:text-gray-400 truncate">
+                    <h3 className="font-bold text-lg text-gray-900 dark:text-white group-hover:text-blue-600 dark:group-hover:text-blue-400 transition-colors">
+                      {campaign.name}
+                    </h3>
+                    <p className="text-sm text-gray-500 dark:text-gray-400 truncate mt-0.5">
                       {campaign.subject || 'Belum ada subjek'}
                     </p>
                   </div>
                 </div>
 
-                <div className="flex items-center gap-4 ml-4">
-                  <div className="w-40">
+                <div className="flex items-center gap-6 ml-4">
+                  <div className="w-48">
                     <StatusBadge status={campaign.status} />
                     {campaign.total_recipients > 0 && (
-                      <div className="mt-2">
+                      <div className="mt-3">
                         <ProgressBar
                           sent={campaign.sent_count}
                           failed={campaign.failed_count}
                           total={campaign.total_recipients}
                         />
+                        <div className="flex justify-between mt-1.5 text-[11px] text-gray-400">
+                          <span>{campaign.sent_count} terkirim</span>
+                          <span>{campaign.total_recipients - campaign.sent_count} tersisa</span>
+                        </div>
                       </div>
                     )}
                   </div>
 
-                  <div className="flex items-center gap-1.5">
+                  <div className="flex items-center gap-2">
                     {campaign.status === 'draft' && (
                       <>
                         <button
                           onClick={() => handleSelectUniversities(campaign.id)}
-                          className="px-3 py-2 text-sm hover:bg-gray-100 dark:hover:bg-gray-800 rounded-lg text-blue-600 flex items-center gap-1.5"
+                          className="px-4 py-2.5 text-sm bg-blue-50 dark:bg-blue-900/20 hover:bg-blue-100 dark:hover:bg-blue-900/40 text-blue-600 dark:text-blue-400 rounded-xl flex items-center gap-2 transition-all hover:shadow-lg hover:shadow-blue-500/10"
                           title="Pilih Universitas"
                         >
                           <Filter className="w-4 h-4" />
-                          <span className="hidden sm:inline">Pilih</span>
-                        </button>
-                        <button
-                          onClick={() => {
-                            if (confirm('Tambah semua universitas ke campaign ini?')) {
-                              addRecipientsMutation.mutate(campaign.id)
-                            }
-                          }}
-                          className="px-3 py-2 text-sm hover:bg-gray-100 dark:hover:bg-gray-800 rounded-lg flex items-center gap-1.5"
-                          title="Tambah Semua"
-                        >
-                          <Users className="w-4 h-4" />
-                          <span className="hidden sm:inline">Add All</span>
+                          <span>Pilih</span>
                         </button>
                         <button
                           onClick={() => setShowStart(campaign.id)}
-                          className="px-3 py-2 text-sm bg-green-600 hover:bg-green-700 text-white rounded-lg flex items-center gap-1.5 shadow-sm"
+                          className="px-4 py-2.5 text-sm bg-gradient-to-r from-green-500 to-green-600 hover:from-green-600 hover:to-green-500 text-white rounded-xl flex items-center gap-2 shadow-lg shadow-green-500/25 hover:shadow-green-500/40 transition-all"
                           title="Mulai"
                         >
                           <Play className="w-4 h-4" />
-                          <span className="hidden sm:inline">Mulai</span>
+                          <span>Mulai</span>
                         </button>
                       </>
                     )}
@@ -700,64 +752,84 @@ export default function EmailBlastCampaignsPage() {
       )}
 
       {activeTab === 'inbox' && (
-        <div className="bg-white dark:bg-gray-900 border dark:border-gray-800 rounded-xl overflow-hidden">
-          <div className="p-4 border-b dark:border-gray-800 flex items-center justify-between">
-            <h3 className="font-semibold flex items-center gap-2">
-              <Inbox className="w-5 h-5 text-blue-600" />
-              Semua Email Masuk
-              <span className="ml-2 px-2 py-0.5 bg-green-100 dark:bg-green-900/40 text-green-600 dark:text-green-400 rounded-full text-xs">
+        <div className="bg-white dark:bg-gray-900 border border-gray-100 dark:border-gray-800 rounded-2xl overflow-hidden shadow-lg shadow-gray-500/5">
+          <div className="p-5 border-b border-gray-100 dark:border-gray-800 flex items-center justify-between bg-gradient-to-r from-gray-50 to-white dark:from-gray-800 dark:to-gray-900">
+            <div className="flex items-center gap-3">
+              <div className="p-2.5 bg-gradient-to-br from-blue-500 to-blue-600 rounded-xl shadow-lg shadow-blue-500/25">
+                <Inbox className="w-5 h-5 text-white" />
+              </div>
+              <div>
+                <h3 className="font-bold text-gray-900 dark:text-white">Semua Email Masuk</h3>
+                <p className="text-xs text-gray-500">Email balasan dari recipient</p>
+              </div>
+              <span className="ml-2 px-3 py-1 bg-gradient-to-r from-green-500 to-emerald-500 text-white text-xs font-bold rounded-full shadow-lg shadow-green-500/30">
                 {inboxEmails.length}
               </span>
-            </h3>
+            </div>
             <button
               onClick={() => refetchInbox()}
-              className="p-2 hover:bg-gray-100 dark:hover:bg-gray-800 rounded-lg"
+              className="p-2.5 hover:bg-white dark:hover:bg-gray-700 rounded-xl border border-gray-200 dark:border-gray-700 transition-all hover:shadow-md"
               title="Refresh"
             >
-              <RefreshCw className="w-5 h-5" />
+              <RefreshCw className="w-5 h-5 text-gray-600 dark:text-gray-400" />
             </button>
           </div>
 
           {inboxLoading ? (
             <div className="flex items-center justify-center py-20">
-              <RefreshCw className="w-8 h-8 animate-spin text-gray-400" />
+              <RefreshCw className="w-8 h-8 animate-spin text-blue-500" />
             </div>
           ) : inboxEmails.length === 0 ? (
-            <div className="text-center py-20">
-              <Inbox className="w-16 h-16 mx-auto mb-4 text-gray-300" />
-              <h3 className="text-lg font-medium mb-2">Belum Ada Email Masuk</h3>
-              <p className="text-gray-500 dark:text-gray-400">
+            <div className="text-center py-20 px-5">
+              <div className="w-20 h-20 bg-gradient-to-br from-gray-100 to-gray-200 dark:from-gray-800 dark:to-gray-700 rounded-full flex items-center justify-center mx-auto mb-4 shadow-lg">
+                <Inbox className="w-10 h-10 text-gray-300" />
+              </div>
+              <h3 className="text-lg font-bold text-gray-900 dark:text-white mb-2">Belum Ada Email Masuk</h3>
+              <p className="text-gray-500 dark:text-gray-400 max-w-sm mx-auto">
                 Email balasan dari recipient akan muncul di sini
               </p>
             </div>
           ) : (
-            <div className="divide-y dark:divide-gray-800 max-h-[600px] overflow-y-auto">
+            <div className="divide-y divide-gray-100 dark:divide-gray-800 max-h-[600px] overflow-y-auto">
               {inboxEmails.map((email: any) => (
                 <div
                   key={email.id}
                   onClick={() => setSelectedEmail(email)}
-                  className="p-4 hover:bg-gray-50 dark:hover:bg-gray-800 cursor-pointer transition-colors"
+                  className="p-5 hover:bg-gradient-to-r hover:from-blue-50 hover:to-transparent dark:hover:from-blue-900/20 dark:hover:to-transparent cursor-pointer transition-all duration-200 group"
                 >
                   <div className="flex items-start justify-between gap-4">
                     <div className="min-w-0 flex-1">
-                      <div className="flex items-center gap-2 mb-1">
-                        <Mail className="w-4 h-4 text-blue-500" />
-                        <span className="font-medium text-sm truncate">{email.subject || '(Tanpa Subjek)'}</span>
+                      <div className="flex items-center gap-3 mb-2">
+                        <div className="w-10 h-10 bg-gradient-to-br from-blue-100 to-blue-200 dark:from-blue-900/40 dark:to-blue-800/30 rounded-full flex items-center justify-center shadow-sm">
+                          <Mail className="w-5 h-5 text-blue-600 dark:text-blue-400" />
+                        </div>
+                        <div className="min-w-0">
+                          <span className="font-semibold text-sm text-gray-900 dark:text-white truncate block">
+                            {email.from_name || email.from_email}
+                          </span>
+                          <span className="text-xs text-gray-400">{email.from_email}</span>
+                        </div>
                       </div>
-                      <div className="text-xs text-gray-500 truncate mb-1">
-                        Dari: {email.from_name || email.from_email}
-                      </div>
-                      <div className="text-xs text-gray-400 line-clamp-2">
-                        {email.body?.substring(0, 100)}...
+                      <div className="ml-13">
+                        <p className="font-medium text-sm text-gray-800 dark:text-gray-200 mb-1">{email.subject || '(Tanpa Subjek)'}</p>
+                        <p className="text-xs text-gray-500 line-clamp-2">{email.body?.substring(0, 120)}...</p>
                       </div>
                     </div>
-                    <div className="text-xs text-gray-400 whitespace-nowrap flex-shrink-0">
-                      {email.date ? new Date(email.date).toLocaleString('id-ID', {
-                        day: 'numeric',
-                        month: 'short',
-                        hour: '2-digit',
-                        minute: '2-digit'
-                      }) : '-'}
+                    <div className="text-right flex-shrink-0">
+                      <span className="text-xs text-gray-400 font-medium">
+                        {email.date ? new Date(email.date).toLocaleString('id-ID', {
+                          day: 'numeric',
+                          month: 'short',
+                          hour: '2-digit',
+                          minute: '2-digit'
+                        }) : '-'}
+                      </span>
+                      <div className="mt-2 opacity-0 group-hover:opacity-100 transition-opacity">
+                        <span className="inline-flex items-center gap-1 px-3 py-1.5 bg-blue-600 text-white text-xs font-medium rounded-lg shadow-lg shadow-blue-500/30">
+                          <Eye className="w-3 h-3" />
+                          Lihat
+                        </span>
+                      </div>
                     </div>
                   </div>
                 </div>

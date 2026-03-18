@@ -1169,8 +1169,10 @@ async def list_universities_paginated(
     enabled: bool | None = None,
     limit: int = 25,
     offset: int = 0,
+    sort_by: str | None = None,
+    order: str | None = None,
 ) -> dict:
-    """Return {data: [...], total: N} with combined filters."""
+    """Return {data: [...], total: N} with combined filters and sorting."""
     conditions: list[str] = []
     params: list = []
 
@@ -1195,14 +1197,28 @@ async def list_universities_paginated(
 
     where = ("WHERE " + " AND ".join(conditions)) if conditions else ""
 
+    # Build ORDER BY clause
+    order_by = "COALESCE(u.updated_at, u.created_at) DESC"  # default
+    if sort_by:
+        # Validate sort_by to prevent SQL injection
+        allowed_sorts = {
+            'student_count': 'student_count',
+            'name': 'name',
+            'province': 'province',
+            'created_at': 'created_at',
+            'updated_at': 'updated_at',
+        }
+        sort_column = allowed_sorts.get(sort_by, 'updated_at')
+        sort_order = 'DESC' if order and order.lower() == 'desc' else 'ASC'
+        order_by = f"{sort_column} {sort_order}"
+
     async with get_db() as db:
         # Total count
         cursor = await db.execute(f"SELECT COUNT(*) FROM universities {where}", params)
         row = await cursor.fetchone()
         total = row[0] if row else 0
 
-        # Data page - order by updated_at DESC (most recently updated first), fallback to id
-        # Include contact counts as derived columns via correlated subqueries
+        # Data page - include contact counts as derived columns via correlated subqueries
         cursor = await db.execute(
             f"""SELECT u.*,
                 (SELECT COUNT(*) FROM ig_contacts c WHERE c.university_id = u.id) AS total_contacts,
@@ -1215,7 +1231,7 @@ async def list_universities_paginated(
                          ))
                 ) AS contacted_contacts
             FROM universities u {where}
-            ORDER BY COALESCE(u.updated_at, u.created_at) DESC LIMIT ? OFFSET ?""",
+            ORDER BY {order_by} LIMIT ? OFFSET ?""",
             params + [limit, offset],
         )
         rows = await cursor.fetchall()

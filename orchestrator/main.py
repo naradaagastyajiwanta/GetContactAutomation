@@ -434,8 +434,10 @@ async def list_universities(
     enabled: bool | None = None,
     limit: int = 25,
     offset: int = 0,
+    sort_by: str | None = None,
+    order: str | None = None,
 ):
-    """List universities with combined filters and proper pagination."""
+    """List universities with combined filters, sorting, and proper pagination."""
     return await list_universities_paginated(
         search=search,
         status=status,
@@ -444,6 +446,8 @@ async def list_universities(
         enabled=enabled,
         limit=limit,
         offset=offset,
+        sort_by=sort_by,
+        order=order,
     )
 
 

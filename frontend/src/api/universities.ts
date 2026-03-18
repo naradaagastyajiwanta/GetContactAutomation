@@ -9,6 +9,8 @@ interface UniversityParams {
   enabled?: boolean
   limit?: number
   offset?: number
+  sort_by?: string
+  order?: string
 }
 
 export interface PaginatedUniversities {
