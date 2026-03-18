@@ -1066,7 +1066,7 @@ async def fetch_inbox_emails(limit: int = 50, unread_only: bool = False) -> list
 
         email_ids = messages[0].split()
         log.info(f"Found {len(email_ids)} total emails, fetching last {limit}")
-        email_ids = email_ids[-limit:]  # Get most recent
+        email_ids = email_ids[-limit:][::-1]  # Get most recent, reversed (newest first)
 
         results = []
         for email_id in email_ids:

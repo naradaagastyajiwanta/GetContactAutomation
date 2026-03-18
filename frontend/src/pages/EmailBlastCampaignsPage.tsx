@@ -23,6 +23,8 @@ import {
   AlertTriangle,
   Users,
   FileText,
+  Inbox,
+  Eye,
 } from 'lucide-react'
 import { cn } from '../lib/utils'
 import {
@@ -35,6 +37,8 @@ import {
   useAddAllRecipients,
   useAddSelectedRecipients,
 } from '../hooks/useEmailBlast'
+import { getAllInboxEmails } from '../api/emailBlast'
+import { useQuery } from '@tanstack/react-query'
 import { useUniversitiesWithEmails, useProvinces } from '../hooks/useUniversities'
 import type { EmailBlastCampaign } from '../api/emailBlast'
 
@@ -284,6 +288,8 @@ export default function EmailBlastCampaignsPage() {
   const [showCreate, setShowCreate] = useState(false)
   const [showStart, setShowStart] = useState<number | null>(null)
   const [showSelector, setShowSelector] = useState(false)
+  const [activeTab, setActiveTab] = useState<'campaigns' | 'inbox'>('campaigns')
+  const [selectedEmail, setSelectedEmail] = useState<any>(null)
 
   // Form state
   const [name, setName] = useState('')
@@ -297,7 +303,16 @@ export default function EmailBlastCampaignsPage() {
   const addSelectedRecipientsMutation = useAddSelectedRecipients()
   const testSmtpMutation = useTestSmtp()
 
+  // All inbox emails query
+  const { data: inboxData, isLoading: inboxLoading, refetch: refetchInbox } = useQuery({
+    queryKey: ['email-blast-all-inbox'],
+    queryFn: () => getAllInboxEmails(50),
+    enabled: activeTab === 'inbox',
+    refetchInterval: 30000,
+  })
+
   const campaigns = data?.campaigns || []
+  const inboxEmails = inboxData?.emails || []
 
   const handleCreate = () => {
     if (!name.trim()) return
@@ -374,7 +389,40 @@ export default function EmailBlastCampaignsPage() {
         </div>
       </div>
 
-      {/* Create Modal */}
+      {/* Tabs */}
+      <div className="flex gap-1 mb-6 bg-gray-100 dark:bg-gray-800 p-1 rounded-lg w-fit">
+        <button
+          onClick={() => setActiveTab('campaigns')}
+          className={cn(
+            "px-4 py-2 text-sm font-medium rounded-md flex items-center gap-2 transition-all",
+            activeTab === 'campaigns'
+              ? "bg-white dark:bg-gray-700 text-gray-900 dark:text-white shadow-sm"
+              : "text-gray-600 dark:text-gray-400 hover:text-gray-900 dark:hover:text-white"
+          )}
+        >
+          <Send className="w-4 h-4" />
+          Campaigns
+        </button>
+        <button
+          onClick={() => { setActiveTab('inbox'); refetchInbox(); }}
+          className={cn(
+            "px-4 py-2 text-sm font-medium rounded-md flex items-center gap-2 transition-all",
+            activeTab === 'inbox'
+              ? "bg-white dark:bg-gray-700 text-gray-900 dark:text-white shadow-sm"
+              : "text-gray-600 dark:text-gray-400 hover:text-gray-900 dark:hover:text-white"
+          )}
+        >
+          <Inbox className="w-4 h-4" />
+          Inbox
+          {inboxEmails.length > 0 && (
+            <span className="ml-1 px-2 py-0.5 bg-green-100 dark:bg-green-900/40 text-green-600 dark:text-green-400 rounded-full text-xs">
+              {inboxEmails.length}
+            </span>
+          )}
+        </button>
+      </div>
+
+      {/* Campaign List */}
       {showCreate && (
         <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50">
           <div className="bg-white dark:bg-gray-900 rounded-xl p-6 w-full max-w-md shadow-xl">
@@ -469,12 +517,13 @@ export default function EmailBlastCampaignsPage() {
         onSelect={handleUniversitySelect}
       />
 
-      {/* Campaign List */}
-      {isLoading ? (
+      {activeTab === 'campaigns' && isLoading && (
         <div className="flex items-center justify-center py-20">
           <RefreshCw className="w-8 h-8 animate-spin text-gray-400" />
         </div>
-      ) : campaigns.length === 0 ? (
+      )}
+
+      {activeTab === 'campaigns' && !isLoading && campaigns.length === 0 && (
         <div className="text-center py-20">
           <div className="w-16 h-16 bg-gray-100 dark:bg-gray-800 rounded-full flex items-center justify-center mx-auto mb-4">
             <Mail className="w-8 h-8 text-gray-400" />
@@ -491,7 +540,9 @@ export default function EmailBlastCampaignsPage() {
             Buat Campaign Pertama
           </button>
         </div>
-      ) : (
+      )}
+
+      {activeTab === 'campaigns' && !isLoading && campaigns.length > 0 && (
         <div className="grid gap-3">
           {campaigns.map((campaign: EmailBlastCampaign) => (
             <div
@@ -645,6 +696,149 @@ export default function EmailBlastCampaignsPage() {
               </div>
             </div>
           ))}
+        </div>
+      )}
+
+      {activeTab === 'inbox' && (
+        <div className="bg-white dark:bg-gray-900 border dark:border-gray-800 rounded-xl overflow-hidden">
+          <div className="p-4 border-b dark:border-gray-800 flex items-center justify-between">
+            <h3 className="font-semibold flex items-center gap-2">
+              <Inbox className="w-5 h-5 text-blue-600" />
+              Semua Email Masuk
+              <span className="ml-2 px-2 py-0.5 bg-green-100 dark:bg-green-900/40 text-green-600 dark:text-green-400 rounded-full text-xs">
+                {inboxEmails.length}
+              </span>
+            </h3>
+            <button
+              onClick={() => refetchInbox()}
+              className="p-2 hover:bg-gray-100 dark:hover:bg-gray-800 rounded-lg"
+              title="Refresh"
+            >
+              <RefreshCw className="w-5 h-5" />
+            </button>
+          </div>
+
+          {inboxLoading ? (
+            <div className="flex items-center justify-center py-20">
+              <RefreshCw className="w-8 h-8 animate-spin text-gray-400" />
+            </div>
+          ) : inboxEmails.length === 0 ? (
+            <div className="text-center py-20">
+              <Inbox className="w-16 h-16 mx-auto mb-4 text-gray-300" />
+              <h3 className="text-lg font-medium mb-2">Belum Ada Email Masuk</h3>
+              <p className="text-gray-500 dark:text-gray-400">
+                Email balasan dari recipient akan muncul di sini
+              </p>
+            </div>
+          ) : (
+            <div className="divide-y dark:divide-gray-800 max-h-[600px] overflow-y-auto">
+              {inboxEmails.map((email: any) => (
+                <div
+                  key={email.id}
+                  onClick={() => setSelectedEmail(email)}
+                  className="p-4 hover:bg-gray-50 dark:hover:bg-gray-800 cursor-pointer transition-colors"
+                >
+                  <div className="flex items-start justify-between gap-4">
+                    <div className="min-w-0 flex-1">
+                      <div className="flex items-center gap-2 mb-1">
+                        <Mail className="w-4 h-4 text-blue-500" />
+                        <span className="font-medium text-sm truncate">{email.subject || '(Tanpa Subjek)'}</span>
+                      </div>
+                      <div className="text-xs text-gray-500 truncate mb-1">
+                        Dari: {email.from_name || email.from_email}
+                      </div>
+                      <div className="text-xs text-gray-400 line-clamp-2">
+                        {email.body?.substring(0, 100)}...
+                      </div>
+                    </div>
+                    <div className="text-xs text-gray-400 whitespace-nowrap flex-shrink-0">
+                      {email.date ? new Date(email.date).toLocaleString('id-ID', {
+                        day: 'numeric',
+                        month: 'short',
+                        hour: '2-digit',
+                        minute: '2-digit'
+                      }) : '-'}
+                    </div>
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* Email Detail Modal */}
+      {selectedEmail && (
+        <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50">
+          <div className="bg-white dark:bg-gray-900 rounded-xl p-6 w-full max-w-2xl max-h-[80vh] flex flex-col shadow-2xl">
+            <div className="flex items-center justify-between mb-4 pb-4 border-b dark:border-gray-800">
+              <h2 className="text-lg font-semibold flex items-center gap-2">
+                <Mail className="w-5 h-5 text-blue-500" />
+                Detail Email
+              </h2>
+              <button onClick={() => setSelectedEmail(null)} className="p-1 hover:bg-gray-100 dark:hover:bg-gray-800 rounded">
+                <XCircle className="w-5 h-5" />
+              </button>
+            </div>
+
+            <div className="flex-1 overflow-y-auto space-y-4">
+              {/* Type indicator */}
+              <div className="flex items-center gap-2">
+                <Mail className="w-4 h-4 text-blue-500" />
+                <span className="text-blue-600 dark:text-blue-400">Email Masuk</span>
+              </div>
+
+              {/* Subject */}
+              <div>
+                <label className="block text-xs text-gray-500 mb-1">Subjek</label>
+                <div className="font-medium">{selectedEmail.subject || '(Tanpa Subjek)'}</div>
+              </div>
+
+              {/* From */}
+              <div>
+                <label className="block text-xs text-gray-500 mb-1">Dari</label>
+                <div className="font-medium">{selectedEmail.from_name || '-'}</div>
+                <div className="text-sm text-gray-500">{selectedEmail.from_email}</div>
+              </div>
+
+              {/* To */}
+              <div>
+                <label className="block text-xs text-gray-500 mb-1">Kepada</label>
+                <div className="text-sm text-gray-500">{selectedEmail.to_email}</div>
+              </div>
+
+              {/* Body */}
+              <div>
+                <label className="block text-xs text-gray-500 mb-1">Isi Email</label>
+                <div className="p-3 bg-gray-50 dark:bg-gray-800 rounded-lg text-sm whitespace-pre-wrap max-h-60 overflow-y-auto">
+                  {selectedEmail.body || '(Tidak ada isi email)'}
+                </div>
+              </div>
+
+              {/* Timestamp */}
+              <div>
+                <label className="block text-xs text-gray-500 mb-1">Waktu Diterima</label>
+                <div className="text-sm text-gray-500">
+                  {selectedEmail.date ? new Date(selectedEmail.date).toLocaleString('id-ID', {
+                    day: 'numeric',
+                    month: 'long',
+                    year: 'numeric',
+                    hour: '2-digit',
+                    minute: '2-digit'
+                  }) : '-'}
+                </div>
+              </div>
+            </div>
+
+            <div className="mt-4 pt-4 border-t dark:border-gray-800 flex justify-end">
+              <button
+                onClick={() => setSelectedEmail(null)}
+                className="px-4 py-2 bg-gray-100 dark:bg-gray-800 rounded-lg hover:bg-gray-200 dark:hover:bg-gray-700"
+              >
+                Tutup
+              </button>
+            </div>
+          </div>
         </div>
       )}
     </div>
