@@ -3985,6 +3985,93 @@ async def delete_email_recipient(campaign_id: int, recipient_id: int):
     return {"success": False, "message": "Recipient not found"}
 
 
+@app.get("/email-blast/campaigns/{campaign_id}/sent-emails")
+async def get_sent_emails(campaign_id: int, status: str = None):
+    """Get sent emails for a campaign"""
+    from orchestrator.db import get_db
+    import json
+
+    query = """SELECT id, email, university_name, rendered_subject, rendered_message, status, sent_at, error_message
+               FROM email_blast_recipients
+               WHERE campaign_id = ? AND sent_at IS NOT NULL"""
+    params = [campaign_id]
+
+    if status:
+        query += " AND status = ?"
+        params.append(status)
+
+    query += " ORDER BY sent_at DESC"
+
+    async with get_db() as db:
+        cursor = await db.execute(query, params)
+        rows = await cursor.fetchall()
+
+    emails = []
+    for row in rows:
+        emails.append({
+            "id": row[0],
+            "email": row[1],
+            "university_name": row[2],
+            "subject": row[3],
+            "body": row[4],
+            "status": row[5],
+            "sent_at": row[6],
+            "error_message": row[7]
+        })
+
+    return {"success": True, "emails": emails, "total": len(emails)}
+
+
+@app.get("/email-blast/campaigns/{campaign_id}/sent-emails/{email_id}")
+async def get_sent_email(campaign_id: int, email_id: int):
+    """Get a specific sent email details"""
+    from orchestrator.db import get_db
+
+    async with get_db() as db:
+        cursor = await db.execute(
+            """SELECT id, email, university_name, rendered_subject, rendered_message, status, sent_at, error_message
+               FROM email_blast_recipients
+               WHERE id = ? AND campaign_id = ?""",
+            (email_id, campaign_id)
+        )
+        row = await cursor.fetchone()
+
+    if not row:
+        return {"success": False, "message": "Email not found"}
+
+    return {
+        "success": True,
+        "email": {
+            "id": row[0],
+            "email": row[1],
+            "university_name": row[2],
+            "subject": row[3],
+            "body": row[4],
+            "status": row[5],
+            "sent_at": row[6],
+            "error_message": row[7]
+        }
+    }
+
+
+@app.get("/email-blast/campaigns/{campaign_id}/inbox")
+async def get_inbox_emails(campaign_id: int, limit: int = 50):
+    """Get inbound emails (replies) for a campaign"""
+    from orchestrator import email_blast
+
+    replies = await email_blast.get_campaign_replies(campaign_id, limit)
+    return {"success": True, "emails": replies, "total": len(replies)}
+
+
+@app.get("/email-blast/inbox")
+async def get_all_inbox_emails(limit: int = 50):
+    """Get all inbound emails from INBOX"""
+    from orchestrator import email_blast
+
+    emails = await email_blast.fetch_inbox_emails(limit)
+    return {"success": True, "emails": emails, "total": len(emails)}
+
+
 @app.post("/email-blast/test-smtp")
 async def test_smtp_connection():
     """Test SMTP connection."""
@@ -3992,6 +4079,71 @@ async def test_smtp_connection():
     success = smtp.connect()
     smtp.disconnect()
     return {"success": success, "message": "SMTP connected" if success else "SMTP failed"}
+
+
+@app.post("/email-blast/test-imap")
+async def test_imap_connection():
+    """Test IMAP connection."""
+    from orchestrator import email_blast
+
+    conn = email_blast.get_imap_connection()
+    if conn:
+        conn.close()
+        conn.logout()
+        return {"success": True, "message": "IMAP connected successfully"}
+    return {"success": False, "message": "IMAP connection failed - check credentials and host"}
+
+
+@app.get("/email-blast/test-inbox")
+async def test_inbox_fetch(limit: int = 10):
+    """Test fetching from INBOX - debug endpoint."""
+    from orchestrator import email_blast
+
+    emails = await email_blast.fetch_inbox_emails(limit=limit)
+    return {
+        "success": True,
+        "message": f"Found {len(emails)} emails",
+        "emails": emails
+    }
+
+
+@app.get("/email-blast/debug-campaign-replies/{campaign_id}")
+async def debug_campaign_replies(campaign_id: int):
+    """Debug endpoint to see campaign recipients and matching inbox emails."""
+    from orchestrator import email_blast
+
+    # Get recipient emails
+    async with get_db() as db:
+        cursor = await db.execute(
+            "SELECT id, email, university_name FROM email_blast_recipients WHERE campaign_id = ?",
+            (campaign_id,)
+        )
+        rows = await cursor.fetchall()
+        recipient_emails = [{'id': row[0], 'email': row[1], 'name': row[2]} for row in rows]
+
+    # Fetch inbox
+    all_inbox = await email_blast.fetch_inbox_emails(limit=100)
+
+    # Debug matching
+    matched = []
+    for inbox_email in all_inbox:
+        from_email = inbox_email.get('from_email', '').lower()
+        for recipient in recipient_emails:
+            if from_email == recipient['email'].lower():
+                matched.append({
+                    'inbox_email': inbox_email,
+                    'matched_recipient': recipient
+                })
+                break
+
+    return {
+        "success": True,
+        "campaign_id": campaign_id,
+        "recipient_emails": recipient_emails,
+        "inbox_count": len(all_inbox),
+        "matched_count": len(matched),
+        "matched": matched
+    }
 
 
 @app.post("/email-blast/campaigns/{campaign_id}/attachment")

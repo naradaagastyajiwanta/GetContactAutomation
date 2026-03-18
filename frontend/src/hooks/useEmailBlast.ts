@@ -16,6 +16,9 @@ import {
   getAttachment,
   getLetterConfig,
   updateLetterConfig,
+  getSentEmails,
+  getSentEmail,
+  getInboxEmails,
   type EmailBlastCampaign,
   type EmailBlastRecipient,
   type CreateEmailCampaignRequest,
@@ -161,6 +164,32 @@ export function useCampaignAttachment(campaignId: number) {
     queryKey: ['email-blast-attachment', campaignId],
     queryFn: () => getAttachment(campaignId),
     enabled: !!campaignId,
+  })
+}
+
+export function useSentEmails(campaignId: number, status?: string) {
+  return useQuery<{ success: boolean; emails: any[]; total: number }>({
+    queryKey: ['email-blast-sent-emails', campaignId, status],
+    queryFn: () => getSentEmails(campaignId, status),
+    enabled: !!campaignId,
+    refetchInterval: 10_000, // Refresh every 10 seconds
+  })
+}
+
+export function useSentEmail(campaignId: number, emailId: number) {
+  return useQuery<{ success: boolean; email: any }>({
+    queryKey: ['email-blast-sent-email', campaignId, emailId],
+    queryFn: () => getSentEmail(campaignId, emailId),
+    enabled: !!campaignId && !!emailId,
+  })
+}
+
+export function useInboxEmails(campaignId: number, limit?: number) {
+  return useQuery<{ success: boolean; emails: any[]; total: number }>({
+    queryKey: ['email-blast-inbox', campaignId, limit],
+    queryFn: () => getInboxEmails(campaignId, limit),
+    enabled: !!campaignId,
+    refetchInterval: 30_000, // Refresh every 30 seconds
   })
 }
 

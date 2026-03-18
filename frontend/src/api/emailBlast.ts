@@ -148,6 +148,55 @@ export async function getAttachment(campaignId: number): Promise<{ success: bool
   return response.data
 }
 
+// Sent Emails (Inbox)
+export interface SentEmail {
+  id: number
+  email: string
+  university_name: string | null
+  subject: string | null
+  body: string | null
+  status: string
+  sent_at: string | null
+  error_message: string | null
+}
+
+export async function getSentEmails(campaignId: number, status?: string): Promise<{ success: boolean; emails: SentEmail[]; total: number }> {
+  const params = status ? `?status=${status}` : ''
+  const response = await apiClient.get(`/email-blast/campaigns/${campaignId}/sent-emails${params}`)
+  return response.data
+}
+
+export async function getSentEmail(campaignId: number, emailId: number): Promise<{ success: boolean; email: SentEmail }> {
+  const response = await apiClient.get(`/email-blast/campaigns/${campaignId}/sent-emails/${emailId}`)
+  return response.data
+}
+
+// Inbound Emails (Replies)
+export interface InboundEmail {
+  id: number
+  message_id: string
+  in_reply_to: string
+  from_email: string
+  from_name: string
+  to_email: string
+  subject: string
+  body: string
+  date: string
+  campaign_id?: number
+}
+
+export async function getInboxEmails(campaignId: number, limit?: number): Promise<{ success: boolean; emails: InboundEmail[]; total: number }> {
+  const params = limit ? `?limit=${limit}` : ''
+  const response = await apiClient.get(`/email-blast/campaigns/${campaignId}/inbox${params}`)
+  return response.data
+}
+
+export async function getAllInboxEmails(limit?: number): Promise<{ success: boolean; emails: InboundEmail[]; total: number }> {
+  const params = limit ? `?limit=${limit}` : ''
+  const response = await apiClient.get(`/email-blast/inbox${params}`)
+  return response.data
+}
+
 export interface LetterConfig {
   format_template: string
   last_number: number

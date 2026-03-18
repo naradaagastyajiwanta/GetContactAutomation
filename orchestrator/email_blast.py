@@ -778,8 +778,8 @@ Sekretariat Asosiasi AI
             if success:
                 await db.execute(
                     """UPDATE email_blast_recipients
-                       SET status = 'sent', sent_at = ? WHERE id = ?""",
-                    (datetime.now().isoformat(), recipient_id)
+                       SET status = 'sent', sent_at = ?, rendered_subject = ?, rendered_message = ? WHERE id = ?""",
+                    (datetime.now().isoformat(), rendered_subject, rendered_msg, recipient_id)
                 )
                 sent += 1
             else:
@@ -933,3 +933,218 @@ async def delete_recipient(recipient_id: int) -> bool:
         await db.commit()
 
         return True
+
+
+# -----------------------------------------------------------------------------
+# IMAP Functions for receiving email replies
+# -----------------------------------------------------------------------------
+
+import imaplib
+import email
+from email.header import decode_header
+
+
+def get_imap_connection():
+    """Create IMAP connection"""
+    try:
+        imap_host = cfg.IMAP_HOST
+        imap_port = cfg.IMAP_PORT
+        imap_user = cfg.IMAP_USERNAME
+        imap_pass = cfg.IMAP_PASSWORD
+        use_ssl = cfg.IMAP_USE_SSL
+
+        log.info(f"Connecting to IMAP: {imap_host}:{imap_port} (SSL: {use_ssl})")
+
+        if use_ssl:
+            conn = imaplib.IMAP4_SSL(imap_host, imap_port)
+        else:
+            conn = imaplib.IMAP4(imap_host, imap_port)
+
+        conn.login(imap_user, imap_pass)
+        log.info(f"IMAP login successful for {imap_user}")
+        return conn
+    except Exception as e:
+        log.error(f"Failed to connect to IMAP: {e}")
+        import traceback
+        log.error(traceback.format_exc())
+        return None
+
+
+def parse_email_message(msg):
+    """Parse email message and extract relevant fields"""
+    result = {
+        'subject': '',
+        'from': '',
+        'to': '',
+        'date': '',
+        'body_text': '',
+        'body_html': '',
+        'message_id': '',
+        'in_reply_to': '',
+    }
+
+    # Get subject
+    if msg['Subject']:
+        decoded = decode_header(msg['Subject'])
+        subject = ''
+        for part, encoding in decoded:
+            if isinstance(part, bytes):
+                subject += part.decode(encoding or 'utf-8')
+            else:
+                subject += part
+        result['subject'] = subject
+
+    # Get from
+    if msg['From']:
+        result['from'] = msg['From']
+
+    # Get to
+    if msg['To']:
+        result['to'] = msg['To']
+
+    # Get date
+    if msg['Date']:
+        result['date'] = msg['Date']
+
+    # Get message-id
+    if msg['Message-ID']:
+        result['message_id'] = msg['Message-ID']
+
+    # Get in-reply-to (for threading)
+    if msg['In-Reply-To']:
+        result['in_reply_to'] = msg['In-Reply-To']
+
+    # Get body
+    if msg.is_multipart():
+        for part in msg.walk():
+            content_type = part.get_content_type()
+            content_disposition = str(part.get('Content-Disposition'))
+
+            if content_type == 'text/plain' and 'attachment' not in content_disposition:
+                try:
+                    result['body_text'] = part.get_payload(decode=True).decode('utf-8', errors='ignore')
+                except:
+                    pass
+            elif content_type == 'text/html' and 'attachment' not in content_disposition:
+                try:
+                    result['body_html'] = part.get_payload(decode=True).decode('utf-8', errors='ignore')
+                except:
+                    pass
+    else:
+        try:
+            result['body_text'] = msg.get_payload(decode=True).decode('utf-8', errors='ignore')
+        except:
+            pass
+
+    return result
+
+
+async def fetch_inbox_emails(limit: int = 50, unread_only: bool = False) -> list[dict]:
+    """Fetch emails from INBOX (replies)"""
+    log.info(f"Fetching inbox emails (limit: {limit}, unread_only: {unread_only})")
+
+    conn = get_imap_connection()
+    if not conn:
+        log.error("Failed to get IMAP connection")
+        return []
+
+    try:
+        status, folder_count = conn.select('INBOX')
+        log.info(f"INBOX select status: {status}, messages: {folder_count}")
+
+        # Search criteria
+        if unread_only:
+            search_criteria = 'UNSEEN'
+        else:
+            search_criteria = 'ALL'
+
+        # Search emails
+        status, messages = conn.search(None, search_criteria)
+        if status != 'OK':
+            log.error(f"IMAP search failed: {status}")
+            return []
+
+        email_ids = messages[0].split()
+        log.info(f"Found {len(email_ids)} total emails, fetching last {limit}")
+        email_ids = email_ids[-limit:]  # Get most recent
+
+        results = []
+        for email_id in email_ids:
+            try:
+                status, msg_data = conn.fetch(email_id, '(RFC822)')
+                if status != 'OK':
+                    continue
+
+                msg = email.message_from_bytes(msg_data[0][1])
+                parsed = parse_email_message(msg)
+
+                # Extract email address from "From" field
+                # Handle formats: "Name <email@domain>" or just "email@domain"
+                from_field = parsed['from']
+                from_match = re.search(r'<([^>]+)>', from_field)
+                if from_match:
+                    from_email = from_match.group(1)
+                else:
+                    # No angle brackets, try to extract email directly
+                    email_match = re.search(r'[\w\.-]+@[\w\.-]+', from_field)
+                    from_email = email_match.group(0) if email_match else from_field
+
+                results.append({
+                    'id': int(email_id),
+                    'message_id': parsed['message_id'],
+                    'in_reply_to': parsed['in_reply_to'],
+                    'from_email': from_email,
+                    'from_name': re.sub(r'<.+?>', '', parsed['from']).strip(),
+                    'to_email': parsed['to'],
+                    'subject': parsed['subject'],
+                    'body': parsed['body_text'][:2000],  # Limit body length
+                    'date': parsed['date'],
+                    'is_read': True,  # Since we're fetching, mark as read
+                })
+            except Exception as e:
+                log.error(f"Error parsing email {email_id}: {e}")
+                continue
+
+        conn.close()
+        conn.logout()
+        return results
+
+    except Exception as e:
+        log.error(f"Error fetching inbox emails: {e}")
+        try:
+            conn.close()
+            conn.logout()
+        except:
+            pass
+        return []
+
+
+async def get_campaign_replies(campaign_id: int, limit: int = 50) -> list[dict]:
+    """Get replies for a specific campaign by matching recipient emails"""
+    # First get the campaign's recipient emails
+    async with get_db() as db:
+        cursor = await db.execute(
+            "SELECT email FROM email_blast_recipients WHERE campaign_id = ?",
+            (campaign_id,)
+        )
+        rows = await cursor.fetchall()
+        recipient_emails = [row[0] for row in rows]
+
+    if not recipient_emails:
+        return []
+
+    # Fetch all inbox emails
+    all_inbox = await fetch_inbox_emails(limit=100)
+
+    # Filter emails that are replies from recipients
+    replies = []
+    for inbox_email in all_inbox:
+        from_email = inbox_email.get('from_email', '').lower()
+        # Check if from email is one of our recipients
+        for recipient_email in recipient_emails:
+            if from_email == recipient_email.lower():
+                inbox_email['campaign_id'] = campaign_id
+                replies.append(inbox_email)
+                break
+
+    return replies

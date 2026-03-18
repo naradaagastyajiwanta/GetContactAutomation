@@ -482,6 +482,32 @@ CONFIG_DEFINITIONS: list[ConfigDef] = [
         group=ConfigGroup.GENERAL, label="SMTP Use SSL",
         description="Use SSL for SMTP connection (default: true for port 465)"
     ),
+    # Email Blast IMAP Settings (for receiving replies)
+    ConfigDef(
+        key="IMAP_HOST", type=ConfigType.STRING, default="mail.asosiasi.ai",
+        group=ConfigGroup.GENERAL, label="IMAP Host",
+        description="IMAP server hostname for receiving email replies"
+    ),
+    ConfigDef(
+        key="IMAP_PORT", type=ConfigType.INT, default=993,
+        group=ConfigGroup.GENERAL, label="IMAP Port",
+        description="IMAP server port (993 for SSL, 143 for TLS)"
+    ),
+    ConfigDef(
+        key="IMAP_USERNAME", type=ConfigType.STRING, default="sekretariat@asosiasi.ai",
+        group=ConfigGroup.GENERAL, label="IMAP Username",
+        description="IMAP authentication username"
+    ),
+    ConfigDef(
+        key="IMAP_PASSWORD", type=ConfigType.STRING, default="SekertariatAInew343*",
+        group=ConfigGroup.GENERAL, label="IMAP Password",
+        description="IMAP authentication password"
+    ),
+    ConfigDef(
+        key="IMAP_USE_SSL", type=ConfigType.BOOL, default=True,
+        group=ConfigGroup.GENERAL, label="IMAP Use SSL",
+        description="Use SSL for IMAP connection (default: true for port 993)"
+    ),
 ]
 
 CONFIG_DEFINITIONS_MAP: dict[str, ConfigDef] = {d.key: d for d in CONFIG_DEFINITIONS}
