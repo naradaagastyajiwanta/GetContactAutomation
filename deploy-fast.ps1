@@ -43,7 +43,7 @@ function Write-Info($msg) {
 # ---------------------------------------------------------------
 function Upload-Orchestrator {
     Write-Info "Uploading orchestrator files..."
-    foreach ($f in @("requirements.txt", "Dockerfile.orchestrator", "docker-compose.yml", "docker-compose.override.yml")) {
+    foreach ($f in @("requirements.txt", "Dockerfile.orchestrator", "docker-compose.yml")) {
         $localPath = Join-Path $PSScriptRoot $f
         if (Test-Path $localPath) {
             scp $localPath "${VPS}:${RemoteDir}/${f}" 2>$null
@@ -62,7 +62,7 @@ function Upload-Orchestrator {
 
 function Upload-Frontend {
     Write-Info "Uploading frontend files..."
-    foreach ($f in @("Dockerfile.frontend", "docker-compose.yml", "docker-compose.override.yml")) {
+    foreach ($f in @("Dockerfile.frontend", "docker-compose.yml")) {
         $localPath = Join-Path $PSScriptRoot $f
         if (Test-Path $localPath) { scp $localPath "${VPS}:${RemoteDir}/${f}" 2>$null }
     }
@@ -79,7 +79,7 @@ function Upload-Frontend {
 
 function Upload-Whatsapp {
     Write-Info "Uploading whatsapp-service files..."
-    foreach ($f in @("Dockerfile.whatsapp", "docker-compose.yml", "docker-compose.override.yml")) {
+    foreach ($f in @("Dockerfile.whatsapp", "docker-compose.yml")) {
         $localPath = Join-Path $PSScriptRoot $f
         if (Test-Path $localPath) { scp $localPath "${VPS}:${RemoteDir}/${f}" 2>$null }
     }
@@ -98,20 +98,22 @@ function Upload-Whatsapp {
 # Deploy helper
 # ---------------------------------------------------------------
 function Deploy-Service($svc, $deployMode) {
+    $composeCmd = "docker compose -f docker-compose.yml"
+
     switch ($deployMode) {
         "quick" {
             Write-Info "Restarting $svc (no rebuild)..."
-            ssh $VPS "cd $RemoteDir && docker compose restart $svc"
+            ssh $VPS "cd $RemoteDir && $composeCmd restart $svc"
             Write-Ok "$svc restarted"
         }
         "build" {
             Write-Info "Rebuilding $svc (with cache)..."
-            ssh $VPS "cd $RemoteDir && docker compose up -d --build $svc"
+            ssh $VPS "cd $RemoteDir && $composeCmd up -d --build $svc"
             Write-Ok "$svc rebuilt"
         }
         "full" {
             Write-Info "Rebuilding $svc (NO cache)..."
-            ssh $VPS "cd $RemoteDir && docker compose build --no-cache $svc && docker compose up -d $svc"
+            ssh $VPS "cd $RemoteDir && $composeCmd build --no-cache $svc && $composeCmd up -d $svc"
             Write-Ok "$svc rebuilt from scratch"
         }
     }
@@ -219,17 +221,17 @@ Write-Host "=============================================" -ForegroundColor Cyan
 # Quick health check
 Write-Host "`n  Checking health..." -ForegroundColor Gray
 Start-Sleep -Seconds 3
-$health = ssh $VPS "curl -s http://localhost:8000/health 2>/dev/null | head -c 200"
+$health = ssh $VPS "curl -s http://localhost:3200/api/health 2>/dev/null | head -c 200"
 if ($health -match '"status"') {
     Write-Ok "API healthy: $health"
 } else {
     Write-Host "  Waiting for startup..." -ForegroundColor DarkGray
     Start-Sleep -Seconds 5
-    $health = ssh $VPS "curl -s http://localhost:8000/health 2>/dev/null | head -c 200"
+    $health = ssh $VPS "curl -s http://localhost:3200/api/health 2>/dev/null | head -c 200"
     if ($health -match '"status"') {
         Write-Ok "API healthy: $health"
     } else {
         Write-Host "  WARNING: Health check failed. Check logs:" -ForegroundColor Red
-        Write-Host "  ssh $VPS `"docker compose -f $RemoteDir/docker-compose.yml logs --tail=20`"" -ForegroundColor White
+        Write-Host "  ssh $VPS `"cd $RemoteDir && docker compose -f docker-compose.yml logs --tail=20 orchestrator frontend whatsapp`"" -ForegroundColor White
     }
 }

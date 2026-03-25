@@ -7,6 +7,7 @@ import os
 import re
 import smtplib
 import ssl
+import socket
 import subprocess
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
@@ -16,6 +17,7 @@ from datetime import datetime
 from typing import Optional
 from pathlib import Path
 
+import socks
 from docx import Document
 
 from orchestrator.config import cfg, log
@@ -23,11 +25,52 @@ from orchestrator.db import get_db
 
 
 # ---------------------------------------------------------------------------
+# SOCKS Proxy Support
+# ---------------------------------------------------------------------------
+
+def _get_socks_config() -> dict:
+    """Get SOCKS5 proxy configuration from environment/config."""
+    return {
+        "host": os.environ.get("SMTP_SOCKS_HOST", "172.18.0.2"),
+        "port": int(os.environ.get("SMTP_SOCKS_PORT", "1080")),
+        "enabled": os.environ.get("SMTP_SOCKS_ENABLED", "true").lower() in ("true", "1", "yes"),
+    }
+
+
+_original_create_connection: Optional[callable] = None
+
+
+def _socks_create_connection(address, timeout=None, source_address=None, socket_options=None):
+    """Wrapper around socket.create_connection that routes through SOCKS5."""
+    socks_config = _get_socks_config()
+    if not socks_config["enabled"]:
+        return _original_create_connection(address, timeout, source_address, socket_options)
+
+    log.debug(f"[EmailBlast] SOCKS5 routing {address} through {socks_config['host']}:{socks_config['port']}")
+    sock = socks.socksocket(socket.AF_INET, socket.SOCK_STREAM)
+    sock.set_proxy(
+        proxy_type=socks.SOCKS5,
+        addr=socks_config["host"],
+        port=socks_config["port"],
+        username=os.environ.get("SMTP_SOCKS_USER"),
+        password=os.environ.get("SMTP_SOCKS_PASSWORD"),
+    )
+    # Ensure timeout is a float (pysocks has a bug with None timeout in Python 3.11)
+    if timeout is not None:
+        try:
+            sock.settimeout(float(timeout))
+        except (TypeError, ValueError):
+            sock.settimeout(30.0)
+    sock.connect(address)
+    return sock
+
+
+# ---------------------------------------------------------------------------
 # SMTP Client
 # ---------------------------------------------------------------------------
 
 class SMTPClient:
-    """SMTP client for sending emails"""
+    """SMTP client for sending emails via SOCKS5 proxy (WARP) when needed."""
 
     def __init__(self):
         self.host = cfg.get("SMTP_HOST", "mail.asosiasi.ai")
@@ -38,9 +81,20 @@ class SMTPClient:
         self._connection: Optional[smtplib.SMTP_SSL] = None
 
     def connect(self) -> bool:
-        """Establish SMTP connection"""
+        """Establish SMTP connection (optionally via SOCKS5 proxy)."""
+        global _original_create_connection
+
+        socks_config = _get_socks_config()
+        should_patch = socks_config["enabled"]
+
         try:
-            log.info(f"[EmailBlast] Connecting to SMTP {self.host}:{self.port}")
+            if should_patch:
+                if _original_create_connection is None:
+                    _original_create_connection = socket.create_connection
+                    socket.create_connection = _socks_create_connection
+                log.info(f"[EmailBlast] SOCKS5 proxy active: {socks_config['host']}:{socks_config['port']}")
+
+            log.info(f"[EmailBlast] Connecting to SMTP {self.host}:{self.port} (SOCKS5={socks_config['enabled']})")
 
             if self.use_ssl:
                 context = ssl.create_default_context()
@@ -56,6 +110,10 @@ class SMTPClient:
         except Exception as e:
             log.error(f"[EmailBlast] SMTP connection failed: {e}")
             return False
+        finally:
+            if should_patch and _original_create_connection is not None:
+                socket.create_connection = _original_create_connection
+                _original_create_connection = None
 
     def disconnect(self):
         """Close SMTP connection"""
@@ -598,17 +656,14 @@ async def run_email_blast_campaign(campaign_id: int,
 
         log.info(f"[EmailBlast] Starting campaign {campaign_id} with {len(recipients)} recipients")
 
-    # Generate letter number for this campaign (once per campaign) if there's an attachment
+    # Generate letter number for this campaign (once per campaign)
+    # Always generate it — needed for email body placeholders like {{nomor_surat}}
     letter_number = None
-    log.info(f"[EmailBlast] DEBUG: attachment_filename='{attachment_filename}' (type: {type(attachment_filename)})")
-    if attachment_filename:  # Only generate letter number if there's an attachment
-        try:
-            letter_number, _ = await get_next_letter_number()
-            log.info(f"[EmailBlast] Generated letter number: {letter_number}")
-        except Exception as e:
-            log.error(f"[EmailBlast] Error generating letter number: {e}")
-    else:
-        log.warning(f"[EmailBlast] No attachment_filename - letter_number will be None!")
+    try:
+        letter_number, _ = await get_next_letter_number()
+        log.info(f"[EmailBlast] Generated letter number: {letter_number}")
+    except Exception as e:
+        log.error(f"[EmailBlast] Error generating letter number: {e}")
 
     # Use provided or create SMTP client
     if smtp_client is None:

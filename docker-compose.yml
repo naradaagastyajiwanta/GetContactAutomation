@@ -98,6 +98,9 @@ services:
       - DDG_PROXY=socks5h://warp:1080
       - DDGS_PROXY=socks5h://warp:1080
       - PINCHTAB_URL=http://pinchtab:9867
+      - SMTP_SOCKS_ENABLED=true
+      - SMTP_SOCKS_HOST=warp
+      - SMTP_SOCKS_PORT=1080
     depends_on:
       whatsapp:
         condition: service_healthy
