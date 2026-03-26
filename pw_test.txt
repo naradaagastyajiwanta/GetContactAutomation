@@ -1,8 +1,0 @@
-DDG ERR: Page.goto: net::ERR_CONNECTION_TIMED_OUT at https://html.duckduckgo.com/html/?q=Narada%20Agastya%20Jiwanta%20site%3Ainstagram.com
-Call log:
-  - navigating to "https://html.duckduckgo.com/html/?q=Narada%20Agastya%20Jiwanta%20site%3Ainstagram.com", waiting until "domcontentloaded"
-
-Google ERR: Page.goto: Navigation to "https://www.google.com/search?q=Narada%20Agastya%20Jiwanta%20site%3Ainstagram.com" is interrupted by another navigation to "chrome-error://chromewebdata/"
-Call log:
-  - navigating to "https://www.google.com/search?q=Narada%20Agastya%20Jiwanta%20site%3Ainstagram.com", waiting until "domcontentloaded"
-

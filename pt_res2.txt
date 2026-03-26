@@ -1,1 +1,0 @@
-snapshot?filter=html: 200 {"count":8,"nodes":[{"ref":"e0","role":"RootWebArea","name":"Example Domain","depth":0,"focused":true,"nodeId":5},{"ref":"e1","role":"heading","name":"Example Domain","depth":4,"nodeId":14},{"ref":"e2

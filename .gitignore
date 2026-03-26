@@ -62,3 +62,10 @@ data/pw_sessions/
 
 # Export directories
 data/export_*/
+
+# Scraps / experimental files
+scraps/
+data/test_out.txt
+
+# Test artifacts
+test-results/
