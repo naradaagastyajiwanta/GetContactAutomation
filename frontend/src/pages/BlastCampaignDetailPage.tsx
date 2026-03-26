@@ -52,6 +52,8 @@ import {
 import { useWhatsAppDevices } from '../hooks/useWhatsApp'
 import type { BlastContact, BlastContactsParams, PreviouslyBlastedContact } from '../api/blast'
 import { checkPreviouslyBlasted } from '../api/blast'
+import { useUniversityGroups } from '../hooks/useUniversityGroups'
+import { QuickSelectGroups } from '../components/universityGroups/QuickSelectGroups'
 
 // ---------------------------------------------------------------------------
 // Sub-components
@@ -91,10 +93,13 @@ function ContactSelectorModal({
   const [searchQuery, setSearchQuery] = useState('')
   const [filters, setFilters] = useState<BlastContactsParams>({ limit: PAGE_SIZE })
   const [selectedIds, setSelectedIds] = useState<Set<number>>(new Set())
+  const [selectedGroupIds, setSelectedGroupIds] = useState<Set<number>>(new Set())
   const [page, setPage] = useState(0)
   const [checking, setChecking] = useState(false)
   const [duplicates, setDuplicates] = useState<PreviouslyBlastedContact[] | null>(null)
   const [excludedIds, setExcludedIds] = useState<Set<number>>(new Set())
+
+  const { data: groupsData } = useUniversityGroups()
 
   const debouncedSearch = useMemo(() => {
     return searchQuery.trim() || undefined
@@ -135,7 +140,17 @@ function ContactSelectorModal({
   }
 
   const handleAdd = async () => {
-    if (selectedIds.size === 0) return
+    if (selectedIds.size === 0 && selectedGroupIds.size === 0) return
+
+    // If groups are selected (and no individual contacts), add directly via group_ids
+    if (selectedGroupIds.size > 0 && selectedIds.size === 0) {
+      addMutation.mutate(
+        { campaignId, group_ids: Array.from(selectedGroupIds) },
+        { onSuccess: () => onClose() }
+      )
+      return
+    }
+
     setChecking(true)
     try {
       const result = await checkPreviouslyBlasted({ contact_ids: Array.from(selectedIds) })
@@ -145,14 +160,22 @@ function ContactSelectorModal({
       } else {
         // No duplicates — add directly
         addMutation.mutate(
-          { campaignId, contact_ids: Array.from(selectedIds) },
+          {
+            campaignId,
+            contact_ids: Array.from(selectedIds),
+            group_ids: selectedGroupIds.size > 0 ? Array.from(selectedGroupIds) : undefined,
+          },
           { onSuccess: () => onClose() }
         )
       }
     } catch {
       // If check fails, proceed anyway
       addMutation.mutate(
-        { campaignId, contact_ids: Array.from(selectedIds) },
+        {
+          campaignId,
+          contact_ids: Array.from(selectedIds),
+          group_ids: selectedGroupIds.size > 0 ? Array.from(selectedGroupIds) : undefined,
+        },
         { onSuccess: () => onClose() }
       )
     } finally {
@@ -162,12 +185,16 @@ function ContactSelectorModal({
 
   const handleConfirmAdd = () => {
     const finalIds = Array.from(selectedIds).filter((id) => !excludedIds.has(id))
-    if (finalIds.length === 0) {
+    if (finalIds.length === 0 && selectedGroupIds.size === 0) {
       setDuplicates(null)
       return
     }
     addMutation.mutate(
-      { campaignId, contact_ids: finalIds },
+      {
+        campaignId,
+        contact_ids: finalIds.length > 0 ? finalIds : undefined,
+        group_ids: selectedGroupIds.size > 0 ? Array.from(selectedGroupIds) : undefined,
+      },
       { onSuccess: () => { setDuplicates(null); onClose() } }
     )
   }
@@ -197,6 +224,22 @@ function ContactSelectorModal({
 
         {/* Filters */}
         <div className="p-4 border-b border-gray-100 dark:border-gray-700 space-y-3">
+          {/* Group Quick Select */}
+          {groupsData && groupsData.groups.length > 0 && (
+            <QuickSelectGroups
+              groups={groupsData.groups}
+              selectedGroupIds={selectedGroupIds}
+              onToggle={(groupId) => {
+                setSelectedGroupIds((prev) => {
+                  const next = new Set(prev)
+                  if (next.has(groupId)) next.delete(groupId)
+                  else next.add(groupId)
+                  return next
+                })
+              }}
+            />
+          )}
+
           <div className="relative">
             <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-400" />
             <input
@@ -373,7 +416,7 @@ function ContactSelectorModal({
             </button>
             <button
               onClick={handleAdd}
-              disabled={selectedIds.size === 0 || addMutation.isPending || checking}
+              disabled={(selectedIds.size === 0 && selectedGroupIds.size === 0) || addMutation.isPending || checking}
               className="flex items-center gap-1.5 px-4 py-2 bg-indigo-600 hover:bg-indigo-700 text-white text-sm font-semibold rounded-lg disabled:opacity-50 transition-colors"
             >
               {(addMutation.isPending || checking) ? (
@@ -381,7 +424,9 @@ function ContactSelectorModal({
               ) : (
                 <Plus className="w-4 h-4" />
               )}
-              {checking ? 'Checking...' : `Add ${selectedIds.size} Contacts`}
+              {checking ? 'Checking...' : selectedGroupIds.size > 0 && selectedIds.size === 0
+                ? `Add ${selectedGroupIds.size} Group${selectedGroupIds.size > 1 ? 's' : ''}`
+                : `Add ${selectedIds.size} Contacts${selectedGroupIds.size > 0 ? ` + ${selectedGroupIds.size} Group${selectedGroupIds.size > 1 ? 's' : ''}` : ''}`}
             </button>
           </div>
         </div>
@@ -453,7 +498,7 @@ function ContactSelectorModal({
                       {excludedIds.size} excluded ·{' '}
                     </span>
                   )}
-                  {selectedIds.size - excludedIds.size} will be added
+                  {selectedIds.size - excludedIds.size} will be added{selectedGroupIds.size > 0 && ` + ${selectedGroupIds.size} group(s)`}
                 </span>
                 <div className="flex gap-2">
                   <button

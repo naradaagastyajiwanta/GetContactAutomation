@@ -75,8 +75,16 @@ export async function addAllRecipientsToCampaign(id: number, provinces?: string[
   return response.data
 }
 
-export async function addSelectedRecipients(id: number, universityIds: number[]): Promise<{ success: boolean; recipients_added: number }> {
-  const response = await apiClient.post(`/email-blast/campaigns/${id}/recipients/add`, { university_ids: universityIds })
+export async function addSelectedRecipients(
+  id: number,
+  universityIds: number[],
+  groupIds?: number[]
+): Promise<{ success: boolean; recipients_added: number }> {
+  const body: Record<string, unknown> = { university_ids: universityIds }
+  if (groupIds && groupIds.length > 0) {
+    body.group_ids = groupIds
+  }
+  const response = await apiClient.post(`/email-blast/campaigns/${id}/recipients/add`, body)
   return response.data
 }
 

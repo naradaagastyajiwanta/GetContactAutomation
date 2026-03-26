@@ -123,8 +123,8 @@ export function useAddAllRecipients() {
 export function useAddSelectedRecipients() {
   const queryClient = useQueryClient()
   return useMutation({
-    mutationFn: ({ id, universityIds }: { id: number; universityIds: number[] }) =>
-      addSelectedRecipients(id, universityIds),
+    mutationFn: ({ id, universityIds, groupIds }: { id: number; universityIds: number[]; groupIds?: number[] }) =>
+      addSelectedRecipients(id, universityIds, groupIds),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['email-blast-campaigns'] })
       queryClient.invalidateQueries({ queryKey: ['email-blast-campaign'] })

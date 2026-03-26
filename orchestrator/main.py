@@ -988,6 +988,92 @@ async def get_university_related_igs(university_id: int, relation_type: str | No
 
 
 # ---------------------------------------------------------------------------
+# University Groups endpoints
+# ---------------------------------------------------------------------------
+
+
+@app.get("/university-groups")
+async def list_university_groups():
+    """List all university groups with university counts."""
+    from orchestrator import university_groups as ug
+    groups = await ug.list_groups()
+    return {"success": True, "groups": groups}
+
+
+@app.post("/university-groups")
+async def create_university_group(request: dict):
+    """Create a new university group."""
+    from orchestrator import university_groups as ug
+    name = request.get("name", "").strip()
+    if not name:
+        return JSONResponse({"detail": "name is required"}, status_code=400)
+    group = await ug.create_group(name, request.get("description", ""))
+    return {"success": True, "group": group}, 201
+
+
+@app.get("/university-groups/{group_id}")
+async def get_university_group(group_id: int):
+    """Get a group with its member universities."""
+    from orchestrator import university_groups as ug
+    detail = await ug.get_group_detail(group_id)
+    if not detail:
+        return JSONResponse({"detail": "Group not found"}, status_code=404)
+    return {"success": True, "group": detail}
+
+
+@app.put("/university-groups/{group_id}")
+async def update_university_group(group_id: int, request: dict):
+    """Update a group's name and/or description."""
+    from orchestrator import university_groups as ug
+    name = request.get("name")
+    description = request.get("description")
+    group = await ug.update_group(group_id, name=name, description=description)
+    if not group:
+        return JSONResponse({"detail": "Group not found"}, status_code=404)
+    return {"success": True, "group": group}
+
+
+@app.delete("/university-groups/{group_id}")
+async def delete_university_group(group_id: int):
+    """Delete a group and all its members."""
+    from orchestrator import university_groups as ug
+    deleted = await ug.delete_group(group_id)
+    if not deleted:
+        return JSONResponse({"detail": "Group not found"}, status_code=404)
+    return {"success": True, "message": "Group deleted"}
+
+
+@app.post("/university-groups/{group_id}/universities/add")
+async def group_add_universities(group_id: int, request: dict):
+    """Add universities to a group."""
+    from orchestrator import university_groups as ug
+    university_ids = request.get("university_ids", [])
+    if not isinstance(university_ids, list) or not university_ids:
+        return JSONResponse({"detail": "university_ids must be a non-empty list"}, status_code=400)
+    added = await ug.add_universities_to_group(group_id, university_ids)
+    return {"success": True, "added": added}
+
+
+@app.post("/university-groups/{group_id}/universities/remove")
+async def group_remove_universities(group_id: int, request: dict):
+    """Remove universities from a group."""
+    from orchestrator import university_groups as ug
+    university_ids = request.get("university_ids", [])
+    if not isinstance(university_ids, list) or not university_ids:
+        return JSONResponse({"detail": "university_ids must be a non-empty list"}, status_code=400)
+    removed = await ug.remove_universities_from_group(group_id, university_ids)
+    return {"success": True, "removed": removed}
+
+
+@app.get("/university-groups/{group_id}/university-ids")
+async def get_group_university_ids(group_id: int):
+    """Get just the university IDs for a group (lightweight)."""
+    from orchestrator import university_groups as ug
+    ids = await ug.get_group_university_ids(group_id)
+    return {"success": True, "university_ids": ids}
+
+
+# ---------------------------------------------------------------------------
 # Conversations endpoints
 # ---------------------------------------------------------------------------
 
@@ -3732,6 +3818,7 @@ async def blast_add_recipients(campaign_id: int, payload: dict):
     Body: { contact_ids: [1,2,3] }  — from ig_contacts
     OR:   { university_ids: [10,20] } — all contacts from these universities
     OR:   { recipients: [{phone_number, contact_name?, university_name?, university_id?, contact_id?}] }
+    OR:   { group_ids: [1,2] } — all universities from these groups
     """
     campaign = await blast_service.get_campaign(campaign_id)
     if not campaign:
@@ -3740,6 +3827,7 @@ async def blast_add_recipients(campaign_id: int, payload: dict):
     contact_ids = payload.get("contact_ids", [])
     university_ids = payload.get("university_ids", [])
     recipients = payload.get("recipients", [])
+    group_ids = payload.get("group_ids", [])
 
     if contact_ids:
         result = await blast_service.add_recipients_from_contacts(campaign_id, contact_ids)
@@ -3747,8 +3835,12 @@ async def blast_add_recipients(campaign_id: int, payload: dict):
         result = await blast_service.add_recipients_from_universities(campaign_id, university_ids)
     elif recipients:
         result = await blast_service.add_recipients_bulk(campaign_id, recipients)
+    elif group_ids:
+        from orchestrator.university_groups import get_university_ids_from_groups
+        resolved_ids = await get_university_ids_from_groups(group_ids)
+        result = await blast_service.add_recipients_from_universities(campaign_id, resolved_ids)
     else:
-        return JSONResponse({"success": False, "error": "Provide contact_ids, university_ids, or recipients"}, status_code=400)
+        return JSONResponse({"success": False, "error": "Provide contact_ids, university_ids, recipients, or group_ids"}, status_code=400)
 
     return {"success": True, **result}
 
@@ -3906,9 +3998,22 @@ async def add_selected_recipients(
     campaign_id: int,
     request: dict
 ):
+    """Add selected universities as recipients.
+    Body: { university_ids: [...] }  — specific universities
+    OR:   { group_ids: [...] } — all universities from these groups
+    """
     university_ids = request.get("university_ids", [])
-    """Add selected universities as recipients."""
-    count = await email_blast.add_recipients_to_campaign(campaign_id, university_ids)
+    group_ids = request.get("group_ids", [])
+
+    if group_ids:
+        from orchestrator.university_groups import get_university_ids_from_groups
+        resolved_ids = await get_university_ids_from_groups(group_ids)
+        count = await email_blast.add_recipients_to_campaign(campaign_id, resolved_ids)
+    elif university_ids:
+        count = await email_blast.add_recipients_to_campaign(campaign_id, university_ids)
+    else:
+        return JSONResponse({"success": False, "error": "Provide university_ids or group_ids"}, status_code=400)
+
     return {"success": True, "recipients_added": count}
 
 

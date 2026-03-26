@@ -147,7 +147,7 @@ export async function deleteCampaign(id: number): Promise<{ success: boolean }> 
 
 export async function addRecipients(
   campaignId: number,
-  payload: { contact_ids?: number[]; university_ids?: number[]; recipients?: Array<Record<string, unknown>> }
+  payload: { contact_ids?: number[]; university_ids?: number[]; recipients?: Array<Record<string, unknown>>; group_ids?: number[] }
 ): Promise<{ success: boolean; added: number; skipped: number; total: number }> {
   const { data } = await apiClient.post(`/blast/campaigns/${campaignId}/recipients`, payload)
   return data

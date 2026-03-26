@@ -51,6 +51,8 @@ import {
 import type { EmailBlastCampaign, EmailBlastRecipient } from '../api/emailBlast'
 import { useUniversitiesWithEmails, useProvinces } from '../hooks/useUniversities'
 import { useAddSelectedRecipients } from '../hooks/useEmailBlast'
+import { useUniversityGroups } from '../hooks/useUniversityGroups'
+import { QuickSelectGroups } from '../components/universityGroups/QuickSelectGroups'
 
 const statusConfig: Record<string, { label: string; color: string; bg: string; icon: React.ElementType }> = {
   draft: { label: 'Draft', color: 'text-gray-600 dark:text-gray-400', bg: 'bg-gray-100 dark:bg-gray-800', icon: FileText },
@@ -136,6 +138,9 @@ export default function EmailBlastCampaignDetailPage() {
   const [uniSearch, setUniSearch] = useState('')
   const [uniProvince, setUniProvince] = useState('')
   const [selectedUniIds, setSelectedUniIds] = useState<Set<number>>(new Set())
+  const [selectedGroupIds, setSelectedGroupIds] = useState<Set<number>>(new Set())
+  const [uniPage, setUniPage] = useState(0)
+  const UNI_PAGE_SIZE = 50
   const [attachmentFile, setAttachmentFile] = useState<File | null>(null)
   const [attachmentVars, setAttachmentVars] = useState<Record<string, string>>({})
   const [isInitialized, setIsInitialized] = useState(false)
@@ -156,9 +161,12 @@ export default function EmailBlastCampaignDetailPage() {
   const { data: inboxEmailsData, isLoading: inboxEmailsLoading, refetch: refetchInboxEmails } = useInboxEmails(campaignId)
 
   // University selector queries
+  const { data: groupsData } = useUniversityGroups()
   const { data: provinces } = useProvinces()
-  const { data: uniData, isLoading: uniLoading } = useUniversitiesWithEmails(uniProvince || undefined, uniSearch, 500, 0)
+  const { data: uniData, isLoading: uniLoading } = useUniversitiesWithEmails(uniProvince || undefined, uniSearch, UNI_PAGE_SIZE, uniPage * UNI_PAGE_SIZE)
   const universities = uniData?.data || []
+  const uniTotal = uniData?.total ?? 0
+  const totalPages = Math.max(1, Math.ceil(uniTotal / UNI_PAGE_SIZE))
 
   const campaign = campaignData?.campaign
   const recipients = recipientsData?.recipients || []
@@ -257,7 +265,21 @@ export default function EmailBlastCampaignDetailPage() {
     setSelectedUniIds(new Set())
     setUniSearch('')
     setUniProvince('')
+    setSelectedGroupIds(new Set())
+    setUniPage(0)
     setShowSelectUni(true)
+  }
+
+  const handleGroupToggle = (groupId: number) => {
+    setSelectedGroupIds((prev) => {
+      const next = new Set(prev)
+      if (next.has(groupId)) {
+        next.delete(groupId)
+      } else {
+        next.add(groupId)
+      }
+      return next
+    })
   }
 
   const handleToggleUni = (id: number) => {
@@ -279,9 +301,13 @@ export default function EmailBlastCampaignDetailPage() {
   }
 
   const handleConfirmSelectUni = () => {
-    if (selectedUniIds.size > 0) {
+    if (selectedUniIds.size > 0 || selectedGroupIds.size > 0) {
       addSelectedRecipientsMutation.mutate(
-        { id: campaignId, universityIds: Array.from(selectedUniIds) },
+        {
+          id: campaignId,
+          universityIds: Array.from(selectedUniIds),
+          groupIds: selectedGroupIds.size > 0 ? Array.from(selectedGroupIds) : undefined,
+        },
         { onSuccess: () => setShowSelectUni(false) }
       )
     }
@@ -979,10 +1005,21 @@ export default function EmailBlastCampaignDetailPage() {
           <div className="bg-white dark:bg-gray-900 rounded-xl p-6 w-full max-w-3xl max-h-[80vh] flex flex-col">
             <div className="flex items-center justify-between mb-4">
               <h2 className="text-lg font-semibold">Pilih Universitas</h2>
-              <button onClick={() => setShowSelectUni(false)} className="p-1 hover:bg-gray-100 dark:hover:bg-gray-800 rounded">
+              <button onClick={() => { setShowSelectUni(false); setSelectedGroupIds(new Set()); }} className="p-1 hover:bg-gray-100 dark:hover:bg-gray-800 rounded">
                 <XCircle className="w-5 h-5" />
               </button>
             </div>
+
+            {/* Group Quick Select */}
+            {groupsData && groupsData.groups.length > 0 && (
+              <div className="mb-4">
+                <QuickSelectGroups
+                  groups={groupsData.groups}
+                  selectedGroupIds={selectedGroupIds}
+                  onToggle={handleGroupToggle}
+                />
+              </div>
+            )}
 
             {/* Filters */}
             <div className="flex gap-2 mb-4">
@@ -991,14 +1028,14 @@ export default function EmailBlastCampaignDetailPage() {
                 <input
                   type="text"
                   value={uniSearch}
-                  onChange={(e) => setUniSearch(e.target.value)}
+                  onChange={(e) => { setUniSearch(e.target.value); setUniPage(0); }}
                   placeholder="Cari universitas..."
                   className="w-full pl-9 pr-3 py-2 border rounded-lg dark:bg-gray-800 dark:border-gray-700"
                 />
               </div>
               <select
                 value={uniProvince}
-                onChange={(e) => setUniProvince(e.target.value)}
+                onChange={(e) => { setUniProvince(e.target.value); setUniPage(0); }}
                 className="px-3 py-2 border rounded-lg dark:bg-gray-800 dark:border-gray-700"
               >
                 <option value="">Semua Provinsi</option>
@@ -1019,7 +1056,7 @@ export default function EmailBlastCampaignDetailPage() {
                 ) : (
                   <Square className="w-4 h-4" />
                 )}
-                Pilih Semua ({universities.length})
+                Pilih Semua ({uniTotal})
               </button>
               {selectedUniIds.size > 0 && (
                 <span className="text-sm text-blue-600">{selectedUniIds.size} dipilih</span>
@@ -1059,12 +1096,40 @@ export default function EmailBlastCampaignDetailPage() {
                   ))}
                 </div>
               )}
+
+              {/* Pagination */}
+              {uniTotal > UNI_PAGE_SIZE && (
+                <div className="sticky bottom-0 flex items-center justify-between px-4 py-3 bg-gray-50 dark:bg-gray-800/50 border-t dark:border-gray-700 mt-0">
+                  <span className="text-xs text-gray-500 dark:text-gray-400">
+                    {uniPage * UNI_PAGE_SIZE + 1}–{Math.min((uniPage + 1) * UNI_PAGE_SIZE, uniTotal)} dari {uniTotal}
+                  </span>
+                  <div className="flex items-center gap-1">
+                    <button
+                      onClick={() => setUniPage((p) => Math.max(0, p - 1))}
+                      disabled={uniPage === 0}
+                      className="px-2 py-1 text-xs bg-white dark:bg-gray-700 border border-gray-200 dark:border-gray-600 rounded hover:bg-gray-100 dark:hover:bg-gray-600 disabled:opacity-40 disabled:cursor-not-allowed"
+                    >
+                      ←
+                    </button>
+                    <span className="px-2 py-1 text-xs font-medium text-gray-600 dark:text-gray-300">
+                      {uniPage + 1}/{totalPages}
+                    </span>
+                    <button
+                      onClick={() => setUniPage((p) => Math.min(totalPages - 1, p + 1))}
+                      disabled={uniPage >= totalPages - 1}
+                      className="px-2 py-1 text-xs bg-white dark:bg-gray-700 border border-gray-200 dark:border-gray-600 rounded hover:bg-gray-100 dark:hover:bg-gray-600 disabled:opacity-40 disabled:cursor-not-allowed"
+                    >
+                      →
+                    </button>
+                  </div>
+                </div>
+              )}
             </div>
 
             {/* Actions */}
             <div className="flex justify-between items-center mt-4 pt-4 border-t dark:border-gray-800">
               <div className="text-sm text-gray-500">
-                {selectedUniIds.size > 0 ? `${selectedUniIds.size} dipilih` : `${universities.length} universitas`}
+                {selectedUniIds.size > 0 ? `${selectedUniIds.size} dipilih dari ${uniTotal}` : `${uniTotal} universitas`}
               </div>
               <div className="flex gap-2">
                 <button
@@ -1075,7 +1140,7 @@ export default function EmailBlastCampaignDetailPage() {
                 </button>
                 <button
                   onClick={handleConfirmSelectUni}
-                  disabled={selectedUniIds.size === 0 || addSelectedRecipientsMutation.isPending}
+                  disabled={(selectedUniIds.size === 0 && selectedGroupIds.size === 0) || addSelectedRecipientsMutation.isPending}
                   className="px-4 py-2 text-sm bg-blue-600 hover:bg-blue-700 text-white rounded-lg disabled:opacity-50"
                 >
                   {addSelectedRecipientsMutation.isPending ? 'Menambahkan...' : 'Tambah ke Campaign'}

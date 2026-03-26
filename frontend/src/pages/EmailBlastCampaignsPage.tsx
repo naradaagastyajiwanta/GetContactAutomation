@@ -3,7 +3,7 @@
  * Improved UI/UX version.
  */
 
-import { useState } from 'react'
+import { useState, useEffect } from 'react'
 import { Link, useNavigate } from 'react-router-dom'
 import {
   Mail,
@@ -40,6 +40,8 @@ import {
 import { getAllInboxEmails } from '../api/emailBlast'
 import { useQuery } from '@tanstack/react-query'
 import { useUniversitiesWithEmails, useProvinces } from '../hooks/useUniversities'
+import { useUniversityGroups } from '../hooks/useUniversityGroups'
+import { QuickSelectGroups } from '../components/universityGroups/QuickSelectGroups'
 import type { EmailBlastCampaign } from '../api/emailBlast'
 
 const statusConfig: Record<string, { label: string; color: string; bg: string; border: string; icon: React.ElementType }> = {
@@ -92,20 +94,34 @@ function UniversitySelector({
   isOpen,
   onClose,
   onSelect,
+  selectedGroupIds,
+  onGroupToggle,
 }: {
   isOpen: boolean
   onClose: () => void
-  onSelect: (universityIds: number[], selectAll: boolean) => void
+  onSelect: (universityIds: number[], selectAll: boolean, groupIds?: number[]) => void
+  selectedGroupIds: Set<number>
+  onGroupToggle: (groupId: number) => void
 }) {
   const [search, setSearch] = useState('')
   const [province, setProvince] = useState('')
   const [selectedIds, setSelectedIds] = useState<Set<number>>(new Set())
   const [selectAll, setSelectAll] = useState(false)
+  const [page, setPage] = useState(0)
+  const PAGE_SIZE = 50
 
+  // Reset page when modal opens
+  useEffect(() => {
+    if (isOpen) setPage(0)
+  }, [isOpen])
+
+  const { data: groupsData } = useUniversityGroups()
   const { data: provinces } = useProvinces()
-  const { data, isLoading, refetch } = useUniversitiesWithEmails(province || undefined, search, 500, 0)
+  const { data, isLoading, refetch } = useUniversitiesWithEmails(province || undefined, search, PAGE_SIZE, page * PAGE_SIZE)
 
   const universities = data?.data || []
+  const total = data?.total ?? 0
+  const totalPages = Math.max(1, Math.ceil(total / PAGE_SIZE))
 
   const handleToggle = (id: number) => {
     const newSet = new Set(selectedIds)
@@ -129,10 +145,11 @@ function UniversitySelector({
   }
 
   const handleConfirm = () => {
+    const groupIds = selectedGroupIds.size > 0 ? Array.from(selectedGroupIds) : undefined
     if (selectAll) {
-      onSelect([], true)
+      onSelect([], true, groupIds)
     } else {
-      onSelect(Array.from(selectedIds), false)
+      onSelect(Array.from(selectedIds), false, groupIds)
     }
     setSelectedIds(new Set())
     setSelectAll(false)
@@ -154,6 +171,17 @@ function UniversitySelector({
           </button>
         </div>
 
+        {/* Group Quick Select */}
+        {groupsData && groupsData.groups.length > 0 && (
+          <div className="mb-4">
+            <QuickSelectGroups
+              groups={groupsData.groups}
+              selectedGroupIds={selectedGroupIds}
+              onToggle={onGroupToggle}
+            />
+          </div>
+        )}
+
         {/* Filters */}
         <div className="flex gap-2 mb-4">
           <div className="flex-1 relative">
@@ -161,14 +189,14 @@ function UniversitySelector({
             <input
               type="text"
               value={search}
-              onChange={(e) => setSearch(e.target.value)}
+              onChange={(e) => { setSearch(e.target.value); setPage(0); }}
               placeholder="Cari universitas..."
               className="w-full pl-9 pr-3 py-2.5 border rounded-lg dark:bg-gray-800 dark:border-gray-700"
             />
           </div>
           <select
             value={province}
-            onChange={(e) => setProvince(e.target.value)}
+            onChange={(e) => { setProvince(e.target.value); setPage(0); }}
             className="px-3 py-2.5 border rounded-lg dark:bg-gray-800 dark:border-gray-700"
           >
             <option value="">Semua Provinsi</option>
@@ -199,7 +227,7 @@ function UniversitySelector({
             </span>
           )}
           <span className="text-sm text-gray-500 ml-auto">
-            {universities.length} universitas
+            {universities.length} universitas{total > PAGE_SIZE ? ` dari ${total}` : ''}
           </span>
         </div>
 
@@ -243,6 +271,34 @@ function UniversitySelector({
                   )}
                 </label>
               ))}
+            </div>
+          )}
+
+          {/* Pagination */}
+          {total > PAGE_SIZE && (
+            <div className="sticky bottom-0 flex items-center justify-between px-4 py-3 bg-gray-50 dark:bg-gray-800/50 border-t dark:border-gray-700 mt-0">
+              <span className="text-xs text-gray-500 dark:text-gray-400">
+                {page * PAGE_SIZE + 1}–{Math.min((page + 1) * PAGE_SIZE, total)} dari {total}
+              </span>
+              <div className="flex items-center gap-1">
+                <button
+                  onClick={() => setPage((p) => Math.max(0, p - 1))}
+                  disabled={page === 0}
+                  className="px-2 py-1 text-xs bg-white dark:bg-gray-700 border border-gray-200 dark:border-gray-600 rounded hover:bg-gray-100 dark:hover:bg-gray-600 disabled:opacity-40 disabled:cursor-not-allowed"
+                >
+                  ←
+                </button>
+                <span className="px-2 py-1 text-xs font-medium text-gray-600 dark:text-gray-300">
+                  {page + 1}/{totalPages}
+                </span>
+                <button
+                  onClick={() => setPage((p) => Math.min(totalPages - 1, p + 1))}
+                  disabled={page >= totalPages - 1}
+                  className="px-2 py-1 text-xs bg-white dark:bg-gray-700 border border-gray-200 dark:border-gray-600 rounded hover:bg-gray-100 dark:hover:bg-gray-600 disabled:opacity-40 disabled:cursor-not-allowed"
+                >
+                  →
+                </button>
+              </div>
             </div>
           )}
         </div>
@@ -290,6 +346,7 @@ export default function EmailBlastCampaignsPage() {
   const [showSelector, setShowSelector] = useState(false)
   const [activeTab, setActiveTab] = useState<'campaigns' | 'inbox'>('campaigns')
   const [selectedEmail, setSelectedEmail] = useState<any>(null)
+  const [selectedGroupIds, setSelectedGroupIds] = useState<Set<number>>(new Set())
 
   // Form state
   const [name, setName] = useState('')
@@ -345,16 +402,33 @@ export default function EmailBlastCampaignsPage() {
 
   const handleSelectUniversities = (campaignId: number) => {
     window.localStorage.setItem('emailBlastCampaignId', String(campaignId))
+    setSelectedGroupIds(new Set())
     setShowSelector(true)
   }
 
-  const handleUniversitySelect = (universityIds: number[], selectAll: boolean) => {
+  const handleUniversitySelect = (universityIds: number[], selectAll: boolean, groupIds?: number[]) => {
     const campaignId = Number(window.localStorage.getItem('emailBlastCampaignId'))
     if (selectAll) {
       addRecipientsMutation.mutate(campaignId)
     } else {
-      addSelectedRecipientsMutation.mutate({ id: campaignId, universityIds })
+      addSelectedRecipientsMutation.mutate({
+        id: campaignId,
+        universityIds,
+        groupIds: groupIds && groupIds.length > 0 ? groupIds : undefined,
+      })
     }
+  }
+
+  const handleGroupToggle = (groupId: number) => {
+    setSelectedGroupIds((prev) => {
+      const next = new Set(prev)
+      if (next.has(groupId)) {
+        next.delete(groupId)
+      } else {
+        next.add(groupId)
+      }
+      return next
+    })
   }
 
   // Calculate stats
@@ -571,8 +645,13 @@ export default function EmailBlastCampaignsPage() {
       {/* University Selector Modal */}
       <UniversitySelector
         isOpen={showSelector}
-        onClose={() => setShowSelector(false)}
+        onClose={() => {
+          setShowSelector(false)
+          setSelectedGroupIds(new Set())
+        }}
         onSelect={handleUniversitySelect}
+        selectedGroupIds={selectedGroupIds}
+        onGroupToggle={handleGroupToggle}
       />
 
       {activeTab === 'campaigns' && isLoading && (

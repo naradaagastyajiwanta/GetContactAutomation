@@ -31,6 +31,8 @@ import {
   useCreateCampaign,
   useAddRecipients,
 } from '../../hooks/useBlast'
+import { useUniversityGroups } from '../../hooks/useUniversityGroups'
+import { QuickSelectGroups } from '../universityGroups/QuickSelectGroups'
 import type { BlastCampaign, PreviouslyBlastedContact } from '../../api/blast'
 import { checkPreviouslyBlasted } from '../../api/blast'
 
@@ -54,6 +56,7 @@ export function AddToBlastModal({
   const [newCampaignName, setNewCampaignName] = useState('')
   const [showCreate, setShowCreate] = useState(false)
   const [addedResult, setAddedResult] = useState<{ added: number; skipped: number } | null>(null)
+  const [selectedGroupIds, setSelectedGroupIds] = useState<Set<number>>(new Set())
 
   // Previously-blasted confirmation state
   const [checking, setChecking] = useState(false)
@@ -65,6 +68,7 @@ export function AddToBlastModal({
   const { data: campaignsData, isLoading: loadingCampaigns } = useBlastCampaigns(
     { status: 'draft', limit: 50 },
   )
+  const { data: groupsData, isLoading: loadingGroups } = useUniversityGroups()
   const createMutation = useCreateCampaign()
   const addMutation = useAddRecipients()
 
@@ -75,7 +79,7 @@ export function AddToBlastModal({
   const doAdd = (campaignId: number) => {
     // Determine payload: if we have exclusions from university_ids, use resolved contact_ids instead
     const hasExclusions = excludedIds.size > 0
-    const payload: { campaignId: number; contact_ids?: number[]; university_ids?: number[] } = {
+    const payload: { campaignId: number; contact_ids?: number[]; university_ids?: number[]; group_ids?: number[] } = {
       campaignId,
     }
 
@@ -86,6 +90,10 @@ export function AddToBlastModal({
       payload.contact_ids = contactIds.filter((id) => !excludedIds.has(id))
     } else if (universityIds?.length) {
       payload.university_ids = universityIds
+    }
+
+    if (selectedGroupIds.size > 0) {
+      payload.group_ids = Array.from(selectedGroupIds)
     }
 
     addMutation.mutate(payload, {
@@ -106,6 +114,13 @@ export function AddToBlastModal({
       const params: { contact_ids?: number[]; university_ids?: number[] } = {}
       if (contactIds?.length) params.contact_ids = contactIds
       if (universityIds?.length) params.university_ids = universityIds
+
+      // If only group_ids selected (no explicit university/contact ids), skip duplicate check
+      if (Object.keys(params).length === 0 && selectedGroupIds.size === 0) {
+        setChecking(false)
+        doAdd(campaignId)
+        return
+      }
 
       const result = await checkPreviouslyBlasted(params)
       setAllResolvedContactIds(result.all_contact_ids)
@@ -178,6 +193,7 @@ export function AddToBlastModal({
     setPendingCampaignId(null)
     setChecking(false)
     setAllResolvedContactIds([])
+    setSelectedGroupIds(new Set())
     onClose()
   }
 
@@ -237,6 +253,23 @@ export function AddToBlastModal({
           >
             <X className="w-5 h-5" />
           </button>
+        </div>
+
+        {/* Quick-select by group */}
+        <div className="px-4 pt-3">
+          <QuickSelectGroups
+            groups={groupsData?.groups ?? []}
+            selectedGroupIds={selectedGroupIds}
+            onToggle={(id) => {
+              setSelectedGroupIds((prev) => {
+                const next = new Set(prev)
+                if (next.has(id)) next.delete(id)
+                else next.add(id)
+                return next
+              })
+            }}
+            isLoading={loadingGroups}
+          />
         </div>
 
         {/* Campaign list */}

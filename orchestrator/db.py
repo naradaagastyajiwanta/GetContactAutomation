@@ -647,6 +647,33 @@ CREATE INDEX IF NOT EXISTS idx_crm_profile_sources_profile ON crm_profile_source
 """
 
 # ---------------------------------------------------------------------------
+# University Groups
+# ---------------------------------------------------------------------------
+
+_DDL_UNIVERSITY_GROUPS = """
+CREATE TABLE IF NOT EXISTS university_groups (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    name TEXT NOT NULL,
+    description TEXT DEFAULT '',
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS university_group_members (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    group_id INTEGER NOT NULL REFERENCES university_groups(id) ON DELETE CASCADE,
+    university_id INTEGER NOT NULL REFERENCES universities(id) ON DELETE CASCADE,
+    added_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE(group_id, university_id)
+);
+"""
+
+_INDEXES_UNIVERSITY_GROUPS = """
+CREATE INDEX IF NOT EXISTS idx_group_members_group ON university_group_members(group_id);
+CREATE INDEX IF NOT EXISTS idx_group_members_univ ON university_group_members(university_id);
+"""
+
+# ---------------------------------------------------------------------------
 # Initialization & connection helper
 # ---------------------------------------------------------------------------
 
@@ -679,6 +706,8 @@ async def init_db() -> None:
         await db.executescript(_INDEXES_OSINT)
         await db.executescript(_DDL_CRM)
         await db.executescript(_INDEXES_CRM)
+        await db.executescript(_DDL_UNIVERSITY_GROUPS)
+        await db.executescript(_INDEXES_UNIVERSITY_GROUPS)
         # Migration: add agent_reasoning column to conversations (idempotent)
         try:
             await db.execute(

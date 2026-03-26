@@ -17,6 +17,7 @@ import {
   ScrollText,
   Settings,
   ChevronRight,
+  Folder,
   type LucideIcon,
 } from 'lucide-react'
 import { cn } from '../../lib/utils'
@@ -58,6 +59,7 @@ const NAV_SECTIONS: NavSection[] = [
     icon: GraduationCap,
     items: [
       { to: '/universities', label: 'Universities', icon: GraduationCap },
+      { to: '/university-groups', label: 'Groups', icon: Folder },
       { to: '/conversations', label: 'Conversations', icon: MessageSquare },
       { to: '/audiensi', label: 'Audiensi', icon: Video },
       { to: '/dms-schedules', label: 'Audiensi Schedules', icon: CalendarClock },

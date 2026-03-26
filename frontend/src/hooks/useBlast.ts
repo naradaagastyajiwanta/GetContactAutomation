@@ -119,12 +119,14 @@ export function useAddRecipients() {
       contact_ids,
       university_ids,
       recipients,
+      group_ids,
     }: {
       campaignId: number
       contact_ids?: number[]
       university_ids?: number[]
       recipients?: Array<Record<string, unknown>>
-    }) => addRecipients(campaignId, { contact_ids, university_ids, recipients }),
+      group_ids?: number[]
+    }) => addRecipients(campaignId, { contact_ids, university_ids, recipients, group_ids }),
     onSuccess: (data) => {
       if (data.success) {
         toast.success(`Added ${data.added} recipients (${data.skipped} skipped)`)

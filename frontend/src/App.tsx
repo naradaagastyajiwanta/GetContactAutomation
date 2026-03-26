@@ -28,6 +28,7 @@ const DmsSchedulesPage = lazy(() => import('./pages/DmsSchedulesPage'))
 const DmsScheduleDetailPage = lazy(() => import('./pages/DmsScheduleDetailPage'))
 const CrmPage = lazy(() => import('./pages/CrmPage'))
 const CrmDetailPage = lazy(() => import('./pages/CrmDetailPage'))
+const UniversityGroupsPage = lazy(() => import('./pages/UniversityGroupsPage'))
 
 const queryClient = new QueryClient({
   defaultOptions: { queries: { retry: 1, refetchOnWindowFocus: false } },
@@ -74,6 +75,7 @@ export default function App() {
                   <Route path="dms-schedules/:id" element={<ErrorBoundary><DmsScheduleDetailPage /></ErrorBoundary>} />
                   <Route path="crm" element={<ErrorBoundary><CrmPage /></ErrorBoundary>} />
                   <Route path="crm/:id" element={<ErrorBoundary><CrmDetailPage /></ErrorBoundary>} />
+                  <Route path="university-groups" element={<ErrorBoundary><UniversityGroupsPage /></ErrorBoundary>} />
                   <Route path="settings" element={<ErrorBoundary><SettingsPage /></ErrorBoundary>} />
                 </Route>
               </Routes>

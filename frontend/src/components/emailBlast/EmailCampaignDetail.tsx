@@ -48,6 +48,8 @@ import {
   useSendTestEmail,
 } from '../../hooks/useEmailBlast'
 import { useUniversitiesWithEmails, useProvinces } from '../../hooks/useUniversities'
+import { useUniversityGroups } from '../../hooks/useUniversityGroups'
+import { QuickSelectGroups } from '../universityGroups/QuickSelectGroups'
 import { Spinner } from '../ui/Spinner'
 import { Button } from '../ui/Button'
 import { EmptyState } from '../ui/EmptyState'
@@ -872,13 +874,19 @@ function AddRecipientsModal({ isOpen, onClose, campaignId }: { isOpen: boolean; 
   const [search, setSearch] = useState('')
   const [selectedIds, setSelectedIds] = useState<Set<number>>(new Set())
   const [province, setProvince] = useState('')
+  const [selectedGroupIds, setSelectedGroupIds] = useState<Set<number>>(new Set())
+  const [page, setPage] = useState(0)
+  const PAGE_SIZE = 50
 
-  const { data: univData, isLoading } = useUniversitiesWithEmails(province || undefined, search)
+  const { data: univData, isLoading } = useUniversitiesWithEmails(province || undefined, search, PAGE_SIZE, page * PAGE_SIZE)
   const { data: provinces } = useProvinces()
+  const { data: groupsData, isLoading: loadingGroups } = useUniversityGroups()
   const addSelectedMutation = useAddSelectedRecipients()
   const addAllMutation = useAddAllRecipients()
 
   const universities = univData?.data ?? []
+  const total = univData?.total ?? 0
+  const totalPages = Math.max(1, Math.ceil(total / PAGE_SIZE))
 
   function toggleSelect(id: number) {
     setSelectedIds((prev) => {
@@ -890,11 +898,22 @@ function AddRecipientsModal({ isOpen, onClose, campaignId }: { isOpen: boolean; 
   }
 
   async function handleAddSelected() {
-    if (selectedIds.size === 0) return
-    await addSelectedMutation.mutateAsync({ id: campaignId, universityIds: Array.from(selectedIds) })
+    // If groups are selected, pass group_ids instead
+    if (selectedGroupIds.size > 0) {
+      await addSelectedMutation.mutateAsync({
+        id: campaignId,
+        universityIds: Array.from(selectedIds),
+        groupIds: Array.from(selectedGroupIds),
+      })
+    } else if (selectedIds.size === 0) {
+      return
+    } else {
+      await addSelectedMutation.mutateAsync({ id: campaignId, universityIds: Array.from(selectedIds) })
+    }
     setSelectedIds(new Set())
+    setSelectedGroupIds(new Set())
     onClose()
-    toast.success(`${selectedIds.size} recipients added`)
+    toast.success(`${selectedGroupIds.size > 0 ? selectedGroupIds.size + ' group(s)' : selectedIds.size} recipients added`)
   }
 
   async function handleAddAll() {
@@ -903,62 +922,170 @@ function AddRecipientsModal({ isOpen, onClose, campaignId }: { isOpen: boolean; 
     toast.success('All universities added')
   }
 
+  function handleClose() {
+    setSelectedIds(new Set())
+    setSelectedGroupIds(new Set())
+    setPage(0)
+    onClose()
+  }
+
   return (
-    <Modal isOpen={isOpen} onClose={onClose} title="Add Recipients" size="lg">
-      <div className="space-y-3">
-        <div className="flex gap-2">
+    <Modal isOpen={isOpen} onClose={handleClose} title="Add Recipients" size="lg">
+      <div className="flex flex-col" style={{ height: '70vh' }}>
+        {/* Header: Search + Province */}
+        <div className="flex gap-2 mb-3">
           <div className="relative flex-1">
-            <Search className="absolute left-3 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-gray-400" />
+            <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-gray-400 pointer-events-none" />
             <input
               type="text"
               value={search}
-              onChange={(e) => setSearch(e.target.value)}
-              placeholder="Search universities..."
-              className="w-full rounded-lg border border-gray-200 pl-8 pr-3 py-2 text-sm focus:border-indigo-500 focus:outline-none focus:ring-1 focus:ring-indigo-500 dark:border-gray-700 dark:bg-gray-700 dark:text-gray-100"
+              onChange={(e) => { setSearch(e.target.value); setPage(0); }}
+              placeholder="Cari universitas..."
+              className="w-full rounded-lg border border-gray-200 bg-gray-50 pl-9 pr-3 py-2.5 text-sm focus:border-indigo-500 focus:bg-white focus:outline-none focus:ring-1 focus:ring-indigo-500 dark:border-gray-700 dark:bg-gray-800 dark:text-gray-100"
             />
           </div>
           <select
             value={province}
-            onChange={(e) => setProvince(e.target.value)}
-            className="rounded-lg border border-gray-200 px-3 py-2 text-sm dark:border-gray-700 dark:bg-gray-700 dark:text-gray-100"
+            onChange={(e) => { setProvince(e.target.value); setPage(0); }}
+            className="rounded-lg border border-gray-200 bg-gray-50 px-3 py-2.5 text-sm dark:border-gray-700 dark:bg-gray-800 dark:text-gray-100 min-w-[160px]"
           >
-            <option value="">All Provinces</option>
+            <option value="">Semua Provinsi</option>
             {(provinces ?? []).map((p) => <option key={p} value={p}>{p}</option>)}
           </select>
         </div>
 
-        <div className="max-h-64 overflow-y-auto rounded-lg border border-gray-200 dark:border-gray-700">
+        {/* Group Quick Select */}
+        <QuickSelectGroups
+          groups={groupsData?.groups ?? []}
+          selectedGroupIds={selectedGroupIds}
+          onToggle={(id) => {
+            setSelectedGroupIds((prev) => {
+              const next = new Set(prev)
+              if (next.has(id)) next.delete(id)
+              else next.add(id)
+              return next
+            })
+          }}
+          isLoading={loadingGroups}
+        />
+
+        {/* List */}
+        <div className="flex-1 overflow-y-auto mt-3 -mx-6 px-6">
           {isLoading ? (
-            <div className="flex items-center justify-center py-8"><Spinner /></div>
+            <div className="flex items-center justify-center py-16">
+              <Spinner />
+            </div>
           ) : universities.length === 0 ? (
-            <div className="py-8 text-center text-sm text-gray-500">No universities found</div>
+            <div className="flex flex-col items-center justify-center py-16 text-gray-400">
+              <Search className="w-10 h-10 mb-3 opacity-50" />
+              <p className="text-sm">Tidak ada universitas ditemukan</p>
+            </div>
           ) : (
-            universities.map((uni) => (
-              <label key={uni.id} className="flex cursor-pointer items-center gap-3 px-3 py-2.5 transition-colors hover:bg-gray-50 dark:hover:bg-gray-800">
-                <input
-                  type="checkbox"
-                  checked={selectedIds.has(uni.id)}
-                  onChange={() => toggleSelect(uni.id)}
-                  className="h-4 w-4 rounded border-gray-300 text-indigo-600"
-                />
-                <div className="min-w-0 flex-1">
-                  <p className="text-sm font-medium text-gray-900 dark:text-gray-100">{uni.name}</p>
-                  <p className="text-xs text-gray-400">{uni.email || 'No email'}</p>
-                </div>
-              </label>
-            ))
+            <div className="divide-y divide-gray-100 dark:divide-gray-800/80">
+              {universities.map((uni) => (
+                <label
+                  key={uni.id}
+                  className={cn(
+                    'flex items-center gap-3 px-2 py-3 cursor-pointer transition-colors rounded-lg my-0.5',
+                    selectedIds.has(uni.id)
+                      ? 'bg-indigo-50 dark:bg-indigo-950/20'
+                      : 'hover:bg-gray-50 dark:hover:bg-gray-800/50'
+                  )}
+                >
+                  <input
+                    type="checkbox"
+                    checked={selectedIds.has(uni.id)}
+                    onChange={() => toggleSelect(uni.id)}
+                    className="h-4 w-4 shrink-0 rounded border-gray-300 text-indigo-600 focus:ring-indigo-500"
+                  />
+                  <div className="min-w-0 flex-1">
+                    <p className="text-sm font-medium text-gray-900 dark:text-gray-100 truncate">{uni.name}</p>
+                    <p className="text-xs text-gray-400 truncate">{uni.email || 'Tidak ada email'}</p>
+                  </div>
+                  {uni.province && (
+                    <span className="shrink-0 text-xs px-2 py-1 rounded-full bg-gray-100 text-gray-500 dark:bg-gray-700 dark:text-gray-400">
+                      {uni.province}
+                    </span>
+                  )}
+                </label>
+              ))}
+            </div>
+          )}
+
+          {/* Pagination */}
+          {total > PAGE_SIZE && (
+            <div className="sticky bottom-0 flex items-center justify-between px-2 py-3 bg-white/95 dark:bg-gray-900/95 backdrop-blur-sm border-t border-gray-200 dark:border-gray-700 mt-1">
+              <span className="text-xs text-gray-400">
+                {page * PAGE_SIZE + 1}–{Math.min((page + 1) * PAGE_SIZE, total)} dari {total}
+              </span>
+              <div className="flex items-center gap-1">
+                <button
+                  onClick={() => setPage((p) => Math.max(0, p - 1))}
+                  disabled={page === 0}
+                  className="w-7 h-7 flex items-center justify-center text-xs bg-white dark:bg-gray-700 border border-gray-200 dark:border-gray-600 rounded hover:bg-gray-50 dark:hover:bg-gray-600 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
+                >
+                  ←
+                </button>
+                <span className="px-2 py-0.5 text-xs font-medium text-gray-600 dark:text-gray-300 min-w-[50px] text-center">
+                  {page + 1}/{totalPages}
+                </span>
+                <button
+                  onClick={() => setPage((p) => Math.min(totalPages - 1, p + 1))}
+                  disabled={page >= totalPages - 1}
+                  className="w-7 h-7 flex items-center justify-center text-xs bg-white dark:bg-gray-700 border border-gray-200 dark:border-gray-600 rounded hover:bg-gray-50 dark:hover:bg-gray-600 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
+                >
+                  →
+                </button>
+              </div>
+            </div>
           )}
         </div>
 
-        <div className="flex items-center justify-between pt-2">
-          <span className="text-sm text-gray-500">{selectedIds.size} selected</span>
-          <div className="flex gap-2">
-            <Button variant="secondary" onClick={onClose}>Cancel</Button>
-            <Button variant="secondary" onClick={handleAddAll} loading={addAllMutation.isPending}>
-              Add All ({universities.length})
+        {/* Footer Actions */}
+        <div className="flex items-center justify-between pt-3 mt-3 border-t border-gray-200 dark:border-gray-700 gap-3">
+          <div className="flex items-center gap-2 min-w-0">
+            <input
+              type="checkbox"
+              checked={universities.length > 0 && universities.every((u) => selectedIds.has(u.id))}
+              onChange={() => {
+                if (universities.every((u) => selectedIds.has(u.id))) {
+                  setSelectedIds(new Set())
+                } else {
+                  setSelectedIds((prev) => {
+                    const next = new Set(prev)
+                    universities.forEach((u) => next.add(u.id))
+                    return next
+                  })
+                }
+              }}
+              className="h-4 w-4 rounded border-gray-300 text-indigo-600 focus:ring-indigo-500"
+            />
+            <span className="text-sm text-gray-500 truncate">
+              {selectedIds.size > 0
+                ? `${selectedIds.size} dipilih`
+                : `Pilih semua`}
+            </span>
+          </div>
+          <div className="flex gap-2 shrink-0">
+            <Button variant="secondary" onClick={handleClose}>Batal</Button>
+            <Button
+              variant="secondary"
+              onClick={handleAddAll}
+              loading={addAllMutation.isPending}
+              className="text-xs"
+            >
+              + Semua ({total})
             </Button>
-            <Button onClick={handleAddSelected} loading={addSelectedMutation.isPending} disabled={selectedIds.size === 0}>
-              Add ({selectedIds.size})
+            <Button
+              onClick={handleAddSelected}
+              loading={addSelectedMutation.isPending}
+              disabled={selectedIds.size === 0 && selectedGroupIds.size === 0}
+            >
+              {selectedGroupIds.size > 0
+                ? `Tambah ${selectedGroupIds.size} Group`
+                : selectedIds.size > 0
+                  ? `Tambah ${selectedIds.size}`
+                  : 'Tambah'}
             </Button>
           </div>
         </div>

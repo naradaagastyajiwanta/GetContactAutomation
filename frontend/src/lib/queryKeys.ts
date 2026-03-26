@@ -56,4 +56,6 @@ export const queryKeys = {
   igAccounts: ['ig-accounts'] as const,
   igAccountsHealth: ['ig-accounts', 'health'] as const,
   blast: ['blast'] as const,
+  universityGroups: ['university-groups'] as const,
+  universityGroup: (id: number) => ['university-groups', id] as const,
 }
