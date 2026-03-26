@@ -3947,6 +3947,65 @@ async def cancel_email_campaign(campaign_id: int):
     return {"success": True, "message": "Campaign cancelled"}
 
 
+@app.post("/email-blast/campaigns/{campaign_id}/retry-failed")
+async def retry_failed_email_campaign(campaign_id: int, request: EmailBlastStartRequest):
+    """Retry sending emails to failed recipients in a campaign."""
+    async with get_db() as db:
+        # Count failed recipients
+        cursor = await db.execute(
+            "SELECT COUNT(*) FROM email_blast_recipients WHERE campaign_id = ? AND status = 'failed'",
+            (campaign_id,)
+        )
+        row = await cursor.fetchone()
+        failed_count = row[0] if row else 0
+
+        if failed_count == 0:
+            return {"success": True, "message": "No failed recipients to retry", "recipients_retried": 0}
+
+        # Reset failed recipients to pending
+        await db.execute(
+            "UPDATE email_blast_recipients SET status = 'pending', error_message = NULL WHERE campaign_id = ? AND status = 'failed'",
+            (campaign_id,)
+        )
+        await db.commit()
+
+    # Run async with only failed (now-pending) recipients
+    asyncio.create_task(
+        email_blast.retry_failed_email_blast(campaign_id, max_recipients=request.max_recipients)
+    )
+
+    return {"success": True, "message": f"Retrying {failed_count} failed emails", "recipients_retried": failed_count}
+
+
+class EmailBlastTestEmailRequest(BaseModel):
+    to_email: str
+    subject: str | None = None
+    body: str | None = None
+    from_email: str | None = None
+    from_name: str | None = None
+    attachment_filename: str | None = None
+    custom_vars: dict | None = None
+
+
+@app.post("/email-blast/campaigns/{campaign_id}/test-email")
+async def send_test_email(campaign_id: int, request: EmailBlastTestEmailRequest):
+    """Send a test email to validate campaign template and SMTP connection."""
+    success, message = await email_blast.send_test_email(
+        campaign_id,
+        request.to_email,
+        subject=request.subject,
+        body=request.body,
+        from_email=request.from_email,
+        from_name=request.from_name,
+        attachment_filename=request.attachment_filename,
+        custom_vars=request.custom_vars
+    )
+    if success:
+        return {"success": True, "message": message}
+    return JSONResponse({"success": False, "message": message}, status_code=400)
+
+
+
 @app.get("/email-blast/campaigns/{campaign_id}/recipients")
 async def get_email_recipients(campaign_id: int, status: str | None = None):
     """Get recipients of an email campaign."""
@@ -4059,21 +4118,84 @@ async def get_sent_email(campaign_id: int, email_id: int):
 
 
 @app.get("/email-blast/campaigns/{campaign_id}/inbox")
-async def get_inbox_emails(campaign_id: int, limit: int = 50):
-    """Get inbound emails (replies) for a campaign"""
+async def get_inbox_emails(campaign_id: int, limit: int = 50, offset: int = 0):
+    """Get inbound emails (replies) for a campaign with pagination"""
     from orchestrator import email_blast
 
-    replies = await email_blast.get_campaign_replies(campaign_id, limit)
-    return {"success": True, "emails": replies, "total": len(replies)}
+    replies, total = await email_blast.get_campaign_replies(campaign_id, limit)
+    return {"success": True, "emails": replies, "total": total, "offset": offset, "limit": limit}
 
 
 @app.get("/email-blast/inbox")
-async def get_all_inbox_emails(limit: int = 50):
-    """Get all inbound emails from INBOX"""
+async def get_all_inbox_emails(limit: int = 50, offset: int = 0):
+    """Get all inbound emails from INBOX with pagination"""
     from orchestrator import email_blast
 
-    emails = await email_blast.fetch_inbox_emails(limit)
-    return {"success": True, "emails": emails, "total": len(emails)}
+    emails, total = await email_blast.fetch_inbox_emails(limit, offset=offset)
+    return {"success": True, "emails": emails, "total": total, "offset": offset, "limit": limit}
+
+
+@app.get("/email-blast/sent-emails")
+async def get_all_sent_emails(
+    limit: int = 50,
+    offset: int = 0,
+    status: str = None
+):
+    """Get all sent emails across all campaigns with pagination"""
+    from orchestrator.db import get_db
+
+    # Query from email_outbox (captures campaign emails + test emails)
+    count_query = "SELECT COUNT(*) FROM email_outbox"
+    count_params: list = []
+    if status:
+        count_query += " WHERE status = ?"
+        count_params.append(status)
+
+    async with get_db() as db:
+        count_cursor = await db.execute(count_query, count_params)
+        count_row = await count_cursor.fetchone()
+        total = count_row[0] if count_row else 0
+
+        data_query = """SELECT o.id, o.email, o.university_name, o.rendered_subject,
+                               o.rendered_message, o.status, o.sent_at, o.error_message,
+                               c.name as campaign_name, o.source
+                        FROM email_outbox o
+                        LEFT JOIN email_blast_campaigns c ON o.campaign_id = c.id"""
+        data_params: list = []
+        if status:
+            data_query += " WHERE o.status = ?"
+            data_params.append(status)
+        data_query += " ORDER BY o.sent_at DESC LIMIT ? OFFSET ?"
+        data_params.extend([limit, offset])
+
+        cursor = await db.execute(data_query, data_params)
+        rows = await cursor.fetchall()
+
+    emails = []
+    for row in rows:
+        emails.append({
+            "id": row[0],
+            "email": row[1],
+            "university_name": row[2],
+            "subject": row[3],
+            "body": row[4],
+            "status": row[5],
+            "sent_at": row[6],
+            "error_message": row[7],
+            "campaign_name": row[8],
+            "source": row[9],
+        })
+
+    return {"success": True, "emails": emails, "total": total, "offset": offset, "limit": limit}
+
+
+@app.get("/email-blast/sent-folder")
+async def get_sent_folder_emails(limit: int = 50, offset: int = 0):
+    """Get emails from the Sent folder (IMAP) with pagination."""
+    from orchestrator import email_blast
+
+    emails, total = await email_blast.fetch_sent_emails(limit, offset)
+    return {"success": True, "emails": emails, "total": total, "offset": offset, "limit": limit}
 
 
 @app.post("/email-blast/test-smtp")

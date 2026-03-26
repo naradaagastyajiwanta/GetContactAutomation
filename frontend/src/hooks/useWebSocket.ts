@@ -14,7 +14,7 @@ type WSEvent =
   | { type: 'blast_completed'; campaign_id: number; failed: Array<{ phone: string; name: string; university: string; error: string }> }
 
 const WS_URL = import.meta.env.VITE_WS_URL
-  || `${window.location.protocol === 'https:' ? 'wss:' : 'ws:'}//${window.location.host}/ws`
+  || '/ws'
 
 let wsConnectionCount = 0
 
@@ -26,18 +26,18 @@ export function useWebSocket() {
   const [connected, setConnected] = useState(false)
 
   const connect = useCallback(() => {
-    if (wsRef.current?.readyState === WebSocket.OPEN) {
-      return
+    // Clean up any existing connection before creating a new one
+    if (wsRef.current && wsRef.current.readyState !== WebSocket.CLOSED) {
+      wsRef.current.close()
+      wsRef.current = null
     }
 
-    const url = WS_URL.replace(/^http/, 'ws')
-    console.log(`[WS ${connectionIdRef.current}] Connecting to ${url}`)
-    console.log(`[WS ${connectionIdRef.current}] API URL from env:`, import.meta.env.VITE_API_URL)
+    const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:'
+    const url = `${protocol}//${window.location.host}/ws`
 
     wsRef.current = new WebSocket(url)
 
     wsRef.current.onopen = () => {
-      console.log(`[WS ${connectionIdRef.current}] Connected`)
       setConnected(true)
       // Invalidate queries on connection to refresh data
       queryClient.invalidateQueries({ queryKey: queryKeys.pipeline.status })
@@ -46,47 +46,41 @@ export function useWebSocket() {
     wsRef.current.onmessage = (event) => {
       try {
         const data: WSEvent = JSON.parse(event.data)
-        console.log(`[WS ${connectionIdRef.current}] Received:`, data.type, data)
         handleEvent(data)
-      } catch (e) {
-        console.error(`[WS ${connectionIdRef.current}] Failed to parse message:`, e)
+      } catch {
+        // Silently ignore unparseable messages
       }
     }
 
     wsRef.current.onclose = (event) => {
-      console.log(`[WS ${connectionIdRef.current}] Disconnected (code: ${event.code})`)
       setConnected(false)
-      // Reconnect after 5s
-      reconnectTimeoutRef.current = setTimeout(() => {
-        connect()
-      }, 5000)
+      // Don't reconnect on intentional close (code 1000)
+      if (event.code !== 1000) {
+        reconnectTimeoutRef.current = setTimeout(() => {
+          connect()
+        }, 3000)
+      }
     }
 
-    wsRef.current.onerror = (error) => {
-      console.error(`[WS ${connectionIdRef.current}] Error:`, error)
-      console.error(`[WS ${connectionIdRef.current}] ReadyState:`, wsRef.current?.readyState)
+    wsRef.current.onerror = () => {
+      // Errors are handled in onclose, no need to log
+      setConnected(false)
     }
   }, [queryClient])
 
   const handleEvent = useCallback((event: WSEvent) => {
-    console.log(`[WS ${connectionIdRef.current}] Handling event:`, event.type)
     switch (event.type) {
-      case 'agent_completed':
+      case 'agent_completed': {
         const agentName = event.agent.replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase())
-        toast.success(`${agentName} completed`, {
-          duration: 3000,
-          icon: '✅',
-        })
-        console.log(`[WS ${connectionIdRef.current}] Agent completed, refetching in 500ms`)
-        // Small delay to ensure DB transaction is committed
+        toast.success(`${agentName} completed`, { duration: 3000, icon: '✅' })
         setTimeout(() => {
           queryClient.refetchQueries({ queryKey: queryKeys.pipeline.status })
           queryClient.refetchQueries({ queryKey: queryKeys.pipeline.logs({}) })
           queryClient.refetchQueries({ queryKey: queryKeys.dashboard })
           queryClient.refetchQueries({ queryKey: queryKeys.universities.all })
-          console.log(`[WS ${connectionIdRef.current}] Refetch triggered`)
         }, 500)
         break
+      }
 
       case 'conversation_changed':
         queryClient.invalidateQueries({ queryKey: queryKeys.conversations.detail(event.conv_id) })
@@ -94,13 +88,12 @@ export function useWebSocket() {
         break
 
       case 'got_number':
-        toast.success('🎉 Got secretariat number!', { duration: 5000 })
+        toast.success('Got secretariat number!', { duration: 5000 })
         queryClient.invalidateQueries({ queryKey: queryKeys.universities.detail(event.uni_id) })
         queryClient.invalidateQueries({ queryKey: queryKeys.dashboard })
         break
 
       case 'message_sent':
-        // Silent update, no toast
         queryClient.invalidateQueries({ queryKey: queryKeys.conversations.list({}) })
         break
 
@@ -114,47 +107,40 @@ export function useWebSocket() {
         break
 
       case 'blast_progress':
-        // Silently refresh blast campaign data
         queryClient.invalidateQueries({ queryKey: queryKeys.blast })
         break
 
       case 'blast_completed': {
         const failedCount = event.failed?.length || 0
         if (failedCount === 0) {
-          toast.success('Blast campaign completed! All messages sent.', {
-            duration: 5000,
-            icon: '🎉',
-          })
+          toast.success('Blast campaign completed! All messages sent.', { duration: 5000, icon: '🎉' })
         } else {
           const failedNames = event.failed
             .slice(0, 5)
             .map((f) => f.name || f.phone)
             .join(', ')
           const extra = failedCount > 5 ? ` +${failedCount - 5} more` : ''
-          toast.error(
-            `Blast completed with ${failedCount} failures: ${failedNames}${extra}`,
-            { duration: 8000 },
-          )
+          toast.error(`Blast completed with ${failedCount} failures: ${failedNames}${extra}`, { duration: 8000 })
         }
         queryClient.invalidateQueries({ queryKey: queryKeys.blast })
-        // Also refresh university contacts (manual_contacted may have changed)
         queryClient.invalidateQueries({ queryKey: queryKeys.universities.all })
         break
       }
 
       default:
-        console.log('[WS] Unknown event type:', event)
+        break
     }
   }, [queryClient])
 
   useEffect(() => {
-    connect()
+    // Small delay to avoid race with Vite HMR
+    const timer = setTimeout(connect, 500)
     return () => {
+      clearTimeout(timer)
+      if (reconnectTimeoutRef.current) clearTimeout(reconnectTimeoutRef.current)
       if (wsRef.current) {
-        wsRef.current.close()
-      }
-      if (reconnectTimeoutRef.current) {
-        clearTimeout(reconnectTimeoutRef.current)
+        wsRef.current.close(1000)
+        wsRef.current = null
       }
     }
   }, [connect])

@@ -1,0 +1,1377 @@
+/**
+ * EmailCampaignDetail — Campaign compose + management with tabs.
+ * Features: Preview, Attachment Variables, Retry Failed
+ */
+
+import { useState, useEffect, useCallback } from 'react'
+import {
+  ArrowLeft,
+  Save,
+  Rocket,
+  Pause,
+  XCircle,
+  Users,
+  Send,
+  Paperclip,
+  Upload,
+  RefreshCw,
+  Inbox,
+  Search,
+  CheckCircle2,
+  Clock,
+  AlertTriangle,
+  Plus,
+  FileText,
+  Eye,
+  RotateCcw,
+  ChevronDown,
+  Mail,
+} from 'lucide-react'
+import { useMutation } from '@tanstack/react-query'
+import { toast } from 'react-hot-toast'
+import { cn, formatRelative } from '../../lib/utils'
+import {
+  useEmailBlastCampaign,
+  useEmailBlastRecipients,
+  useStartEmailCampaign,
+  usePauseEmailCampaign,
+  useCancelEmailCampaign,
+  useUpdateEmailCampaign,
+  useAddAllRecipients,
+  useDeleteEmailRecipient,
+  useSentEmails,
+  useInboxEmails,
+  useCampaignAttachment,
+  useAddSelectedRecipients,
+  useCreateEmailCampaign,
+  useUploadAttachment,
+  useSendTestEmail,
+} from '../../hooks/useEmailBlast'
+import { useUniversitiesWithEmails, useProvinces } from '../../hooks/useUniversities'
+import { Spinner } from '../ui/Spinner'
+import { Button } from '../ui/Button'
+import { EmptyState } from '../ui/EmptyState'
+import { Modal } from '../ui/Modal'
+import type { EmailBlastCampaign } from '../../api/emailBlast'
+import type { AttachmentInfo } from '../../api/emailBlast'
+
+interface Props {
+  campaignId?: number
+  onClose: () => void
+  onCompose?: () => void
+}
+
+// ─── Status Badge Config ─────────────────────────────────────────────────────
+
+const statusConfig: Record<string, { label: string; icon: React.ElementType; color: string; bg: string }> = {
+  draft: { label: 'Draft', icon: FileText, color: 'text-gray-500', bg: 'bg-gray-100 text-gray-600' },
+  running: { label: 'Active', icon: Rocket, color: 'text-blue-600', bg: 'bg-blue-100 text-blue-700' },
+  paused: { label: 'Paused', icon: Pause, color: 'text-amber-600', bg: 'bg-amber-100 text-amber-700' },
+  completed: { label: 'Done', icon: CheckCircle2, color: 'text-green-600', bg: 'bg-green-100 text-green-700' },
+  cancelled: { label: 'Cancelled', icon: XCircle, color: 'text-red-600', bg: 'bg-red-100 text-red-700' },
+}
+
+const AUTO_PLACEHOLDERS = ['university_name', 'email', 'tanggal', 'nomor_surat']
+
+// ─── Template Rendering (client-side preview) ─────────────────────────────────
+
+function renderPreview(text: string | null | undefined, vars: Record<string, string>): string {
+  if (!text) return ''
+  let result = text
+  for (const [key, val] of Object.entries(vars)) {
+    result = result.replace(new RegExp(`\\{\\{${key}\\}\\}`, 'g'), val || `{{${key}}}`)
+  }
+  return result
+}
+
+// ─── Preview Modal ─────────────────────────────────────────────────────────────
+
+function PreviewModal({
+  isOpen,
+  onClose,
+  subject,
+  body,
+  fromEmail,
+  fromName,
+  attachmentFilename,
+  vars,
+  sampleUniversity,
+}: {
+  isOpen: boolean
+  onClose: () => void
+  subject: string | undefined
+  body: string | undefined
+  fromEmail: string
+  fromName: string
+  attachmentFilename?: string
+  vars: Record<string, string>
+  sampleUniversity: string
+}) {
+  const renderedSubject = renderPreview(subject, {
+    university_name: sampleUniversity,
+    email: 'contoh@universitas.ac.id',
+    tanggal: new Date().toLocaleDateString('id-ID', { day: 'numeric', month: 'long', year: 'numeric' }),
+    nomor_surat: '001/ASOSIASI/2026',
+    ...vars,
+  })
+  const renderedBody = renderPreview(body, {
+    university_name: sampleUniversity,
+    email: 'contoh@universitas.ac.id',
+    tanggal: new Date().toLocaleDateString('id-ID', { day: 'numeric', month: 'long', year: 'numeric' }),
+    nomor_surat: '001/ASOSIASI/2026',
+    ...vars,
+  })
+
+  return (
+    <Modal isOpen={isOpen} onClose={onClose} title="Preview Email" size="lg">
+      <div className="space-y-4">
+        {/* Email meta */}
+        <div className="space-y-1 rounded-lg border border-gray-100 bg-gray-50 px-4 py-3 dark:border-gray-700 dark:bg-gray-800">
+          <div className="flex items-start gap-3">
+            <div className="mt-0.5 flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-indigo-100 dark:bg-indigo-900">
+              <Send className="h-5 w-5 text-indigo-600 dark:text-indigo-400" />
+            </div>
+            <div className="min-w-0 flex-1">
+              <p className="text-sm font-semibold text-gray-900 dark:text-white">
+                {fromName} <span className="font-normal text-gray-400">&lt;{fromEmail}&gt;</span>
+              </p>
+              <p className="text-xs text-gray-400">To: contoh@universitas.ac.id</p>
+              <p className="mt-1 text-sm font-medium text-gray-900 dark:text-white">
+                Subject: {renderedSubject}
+              </p>
+            </div>
+          </div>
+        </div>
+
+        {/* Email body */}
+        <div className="min-h-[200px] max-h-[400px] overflow-y-auto rounded-lg border border-gray-100 px-5 py-4 dark:border-gray-700">
+          <div className="whitespace-pre-wrap text-sm text-gray-700 dark:text-gray-200 leading-relaxed">
+            {renderedBody}
+          </div>
+        </div>
+
+        {/* Attachment indicator */}
+        {attachmentFilename && (
+          <div className="flex items-center gap-2 rounded-lg border border-gray-100 bg-gray-50 px-3 py-2 dark:border-gray-700 dark:bg-gray-800">
+            <Paperclip className="h-4 w-4 text-gray-400" />
+            <span className="text-sm text-gray-600 dark:text-gray-300">
+              {attachmentFilename}
+            </span>
+          </div>
+        )}
+
+        {/* Actions */}
+        <div className="flex justify-end pt-2">
+          <Button variant="secondary" onClick={onClose}>Close</Button>
+        </div>
+      </div>
+    </Modal>
+  )
+}
+
+// ─── Test Email Modal ───────────────────────────────────────────────────────
+
+function TestEmailModal({
+  isOpen,
+  onClose,
+  campaignId,
+  subject,
+  body,
+  fromEmail,
+  fromName,
+  attachment,
+  varValues,
+}: {
+  isOpen: boolean
+  onClose: () => void
+  campaignId: number
+  subject: string
+  body: string
+  fromEmail: string
+  fromName: string
+  attachment?: AttachmentInfo
+  varValues: Record<string, string>
+}) {
+  const [toEmail, setToEmail] = useState('')
+
+  const sendMutation = useSendTestEmail()
+
+  // Filter out auto placeholders for custom vars
+  const customVars = attachment?.variables
+    ? Object.keys(attachment.variables).filter((k) => !AUTO_PLACEHOLDERS.includes(k))
+    : []
+
+  async function handleSend() {
+    if (!toEmail.trim() || !toEmail.includes('@')) {
+      toast.error('Enter a valid email address')
+      return
+    }
+    try {
+      const res = await sendMutation.mutateAsync({
+        campaignId,
+        toEmail: toEmail.trim(),
+        options: {
+          subject,
+          body,
+          fromEmail,
+          fromName,
+          attachmentFilename: attachment?.filename,
+          customVars: varValues,
+        },
+      })
+      if (res.success) {
+        toast.success(res.message)
+        onClose()
+      } else {
+        toast.error(res.message)
+      }
+    } catch {
+      toast.error('Failed to send test email')
+    }
+  }
+
+  // Extract preview values for display
+  const previewVars = {
+    university_name: 'Universitas Gadjah Mada',
+    email: toEmail || 'contoh@universitas.ac.id',
+    tanggal: new Date().toLocaleDateString('id-ID', { day: 'numeric', month: 'long', year: 'numeric' }),
+    nomor_surat: '001/ASOSIASI/2026',
+    ...varValues,
+  }
+
+  const previewSubject = renderPreview(subject, previewVars)
+  const previewBody = renderPreview(body, previewVars)
+
+  return (
+    <Modal isOpen={isOpen} onClose={onClose} title="Send Test Email" size="md">
+      <div className="space-y-4">
+        {/* To email input */}
+        <div>
+          <label className="mb-1 block text-xs font-medium text-gray-600 dark:text-gray-400">
+            Send to
+          </label>
+          <div className="flex gap-2">
+            <input
+              type="email"
+              value={toEmail}
+              onChange={(e) => setToEmail(e.target.value)}
+              onKeyDown={(e) => e.key === 'Enter' && handleSend()}
+              placeholder="your@email.com"
+              className="flex-1 rounded-lg border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 placeholder-gray-400 focus:border-indigo-500 focus:outline-none focus:ring-1 focus:ring-indigo-500 dark:border-gray-700 dark:bg-gray-800 dark:text-gray-100 dark:placeholder-gray-500"
+            />
+            <Button onClick={handleSend} loading={sendMutation.isPending}>
+              <Mail className="h-4 w-4" />
+              Send
+            </Button>
+          </div>
+        </div>
+
+        {/* From info */}
+        <div className="flex items-center gap-2 text-xs text-gray-500">
+          <Send className="h-3.5 w-3.5" />
+          <span>From: {fromName} &lt;{fromEmail}&gt;</span>
+        </div>
+
+        {/* Preview */}
+        <div className="space-y-2 rounded-lg border border-gray-100 bg-gray-50 p-3 dark:border-gray-700 dark:bg-gray-800">
+          <p className="text-xs font-semibold text-gray-500 dark:text-gray-400">
+            Preview (with sample values)
+          </p>
+          <div className="space-y-1">
+            <p className="text-sm font-medium text-gray-800 dark:text-gray-200">
+              Subject: {previewSubject || '(no subject)'}
+            </p>
+            <div className="max-h-32 overflow-y-auto text-xs text-gray-600 dark:text-gray-400 whitespace-pre-wrap">
+              {previewBody || '(no body)'}
+            </div>
+          </div>
+        </div>
+
+        {/* Attachment notice */}
+        {attachment?.filename && (
+          <div className="flex items-center gap-2 text-xs text-gray-500">
+            <Paperclip className="h-3.5 w-3.5" />
+            <span>Attachment: {attachment.filename}</span>
+            {customVars.length > 0 && (
+              <span className="text-indigo-500">(with custom variables)</span>
+            )}
+          </div>
+        )}
+      </div>
+    </Modal>
+  )
+}
+
+// ─── Attachment Variable Form ────────────────────────────────────────────────
+
+function AttachmentVarForm({
+  attachment,
+  campaignId,
+  onSaved,
+}: {
+  attachment: AttachmentInfo | undefined
+  campaignId: number
+  onSaved: () => void
+}) {
+  // Show ALL detected variables from the DOCX file, not just ones in variables
+  const allDetectedVars = attachment?.detected_variables ?? []
+  const customVars = allDetectedVars.filter((k) => !AUTO_PLACEHOLDERS.includes(k))
+
+  const [values, setValues] = useState<Record<string, string>>({})
+  const [isSaving, setIsSaving] = useState(false)
+  const [expanded, setExpanded] = useState(customVars.length > 0)
+
+  // Initialize form values from attachment.variables (saved values)
+  useEffect(() => {
+    if (attachment?.variables) {
+      setValues(attachment.variables)
+    }
+  }, [attachment])
+
+  if (customVars.length === 0) return null
+
+  function setValue(key: string, val: string) {
+    setValues((prev) => ({ ...prev, [key]: val }))
+  }
+
+  const uploadMutation = useUploadAttachment()
+
+  async function handleSave() {
+    setIsSaving(true)
+    try {
+      const fileInput = document.getElementById('attachment-reupload') as HTMLInputElement
+      if (fileInput?.files?.[0]) {
+        await uploadMutation.mutateAsync({ campaignId, file: fileInput.files[0], variables: values })
+      }
+      // If no file, just save values
+      toast.success('Variable values saved')
+      onSaved()
+    } catch {
+      toast.error('Failed to save variables')
+    } finally {
+      setIsSaving(false)
+    }
+  }
+
+  return (
+    <div className="rounded-xl border border-gray-200 bg-white dark:border-gray-700 dark:bg-gray-800 overflow-hidden">
+      {/* Header */}
+      <button
+        onClick={() => setExpanded((e) => !e)}
+        className="flex w-full items-center justify-between px-4 py-3 text-left transition-colors hover:bg-gray-50 dark:hover:bg-gray-700"
+      >
+        <div className="flex items-center gap-2">
+          <Paperclip className="h-4 w-4 text-purple-500" />
+          <span className="text-sm font-semibold text-gray-900 dark:text-white">
+            Attachment Variables
+          </span>
+          <span className="rounded-full bg-purple-100 px-2 py-0.5 text-[10px] font-semibold text-purple-600 dark:bg-purple-900 dark:text-purple-300">
+            {customVars.length}
+          </span>
+        </div>
+        <ChevronDown
+          className={cn('h-4 w-4 text-gray-400 transition-transform', expanded && 'rotate-180')}
+        />
+      </button>
+
+      {/* Form */}
+      {expanded && (
+        <div className="border-t border-gray-100 px-4 py-4 space-y-3 dark:border-gray-700">
+          <p className="text-xs text-gray-500 dark:text-gray-400">
+            Isi nilai untuk setiap variable yang terdeteksi di lampiran DOCX.
+            Nilai ini akan digunakan saat email dikirim.
+          </p>
+
+          {customVars.map((key) => {
+            const hasValue = !!(values[key] ?? '').trim()
+            return (
+              <div key={key}>
+                <label className={cn(
+                  'mb-1 block text-xs font-medium',
+                  hasValue ? 'text-gray-600 dark:text-gray-400' : 'text-amber-600 dark:text-amber-400'
+                )}>
+                  {`{{${key}}}`}
+                  {!hasValue && <span className="ml-1 text-[10px]">(belum diisi)</span>}
+                </label>
+                <input
+                  type="text"
+                  value={values[key] ?? ''}
+                  onChange={(e) => setValue(key, e.target.value)}
+                  placeholder={`Masukkan nilai untuk ${key}...`}
+                  className={cn(
+                    'w-full rounded-lg border bg-gray-50 px-3 py-2 text-sm text-gray-900 placeholder-gray-400 focus:border-indigo-500 focus:bg-white focus:outline-none focus:ring-1 focus:ring-indigo-500 dark:border-gray-700 dark:bg-gray-900 dark:text-gray-100 dark:placeholder-gray-500',
+                    !hasValue ? 'border-amber-300 dark:border-amber-700' : 'border-gray-200'
+                  )}
+                />
+              </div>
+            )
+          })}
+
+          {/* Hidden file input for re-upload with new variables */}
+          <input
+            id="attachment-reupload"
+            type="file"
+            accept=".docx"
+            className="hidden"
+          />
+
+          <div className="flex justify-end">
+            <Button
+              size="sm"
+              onClick={handleSave}
+              loading={isSaving || uploadMutation.isPending}
+            >
+              <Save className="h-3.5 w-3.5" />
+              Save Variables
+            </Button>
+          </div>
+        </div>
+      )}
+    </div>
+  )
+}
+
+// ─── Content Tab ──────────────────────────────────────────────────────────────
+
+function ContentTab({
+  campaign,
+  attachment,
+  campaignId,
+  onSave,
+  isSaving,
+}: {
+  campaign: EmailBlastCampaign
+  attachment: AttachmentInfo | undefined
+  campaignId: number
+  onSave: (data: { name: string; subject: string; template_message: string; delay_between_ms: number }) => void
+  isSaving: boolean
+}) {
+  const [name, setName] = useState(campaign.name ?? '')
+  const [subject, setSubject] = useState(campaign.subject ?? '')
+  const [body, setBody] = useState(campaign.template_message ?? '')
+  const [delayMs, setDelayMs] = useState(campaign.delay_between_ms / 1000)
+  const [showPreview, setShowPreview] = useState(false)
+  const [showTestEmail, setShowTestEmail] = useState(false)
+  const [varValues, setVarValues] = useState<Record<string, string>>({})
+
+  const uploadMutation = useUploadAttachment()
+
+  useEffect(() => {
+    setName(campaign.name ?? '')
+    setSubject(campaign.subject ?? '')
+    setBody(campaign.template_message ?? '')
+    setDelayMs(campaign.delay_between_ms / 1000)
+  }, [campaign])
+
+  useEffect(() => {
+    if (attachment?.variables) {
+      setVarValues(attachment.variables)
+    }
+  }, [attachment])
+
+  const isReadOnly = campaign.status === 'running' || campaign.status === 'completed' || campaign.status === 'cancelled'
+  const customVars = attachment?.variables
+    ? Object.keys(attachment.variables).filter((k) => !AUTO_PLACEHOLDERS.includes(k))
+    : []
+
+  function insertPlaceholder(p: string) {
+    setBody((prev) => prev + p)
+  }
+
+  function handleSave() {
+    onSave({ name, subject, template_message: body, delay_between_ms: delayMs * 1000 })
+  }
+
+  async function handleAttachmentUpload(file: File) {
+    if (!campaignId) return
+    try {
+      await uploadMutation.mutateAsync({ campaignId, file, variables: varValues })
+      toast.success('Attachment uploaded')
+    } catch {
+      toast.error('Failed to upload attachment')
+    }
+  }
+
+  return (
+    <div className="flex h-full flex-col overflow-hidden">
+      <div className="flex-1 overflow-y-auto p-5 space-y-5">
+        {/* Campaign Name */}
+        <div>
+          <label className="mb-1.5 block text-xs font-semibold text-gray-500 dark:text-gray-400 uppercase tracking-wider">
+            Campaign Name
+          </label>
+          <input
+            type="text"
+            value={name}
+            onChange={(e) => setName(e.target.value)}
+            disabled={isReadOnly}
+            placeholder="e.g., Undangan Audiensi Q2 2025"
+            className="w-full rounded-lg border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 placeholder-gray-400 focus:border-indigo-500 focus:outline-none focus:ring-1 focus:ring-indigo-500 disabled:bg-gray-50 dark:border-gray-700 dark:bg-gray-800 dark:text-gray-100 dark:placeholder-gray-500 dark:disabled:bg-gray-900"
+          />
+        </div>
+
+        {/* Subject */}
+        <div>
+          <label className="mb-1.5 block text-xs font-semibold text-gray-500 dark:text-gray-400 uppercase tracking-wider">
+            Subject
+          </label>
+          <div className="relative">
+            <input
+              type="text"
+              value={subject}
+              onChange={(e) => setSubject(e.target.value)}
+              disabled={isReadOnly}
+              placeholder="Email subject..."
+              className="w-full rounded-lg border border-gray-200 bg-white px-3 py-2 pr-20 text-sm text-gray-900 placeholder-gray-400 focus:border-indigo-500 focus:outline-none focus:ring-1 focus:ring-indigo-500 disabled:bg-gray-50 dark:border-gray-700 dark:bg-gray-800 dark:text-gray-100 dark:placeholder-gray-500 dark:disabled:bg-gray-900"
+            />
+            <button
+              onClick={() => setShowPreview(true)}
+              className="absolute right-2 top-1/2 -translate-y-1/2 flex items-center gap-1 rounded-md px-2 py-1 text-xs text-indigo-600 hover:bg-indigo-50 dark:text-indigo-400 dark:hover:bg-indigo-950"
+            >
+              <Eye className="h-3.5 w-3.5" />
+              Preview
+            </button>
+          </div>
+        </div>
+
+        {/* Placeholders */}
+        <div className="flex flex-wrap gap-1.5">
+          {AUTO_PLACEHOLDERS.map((p) => (
+            <button
+              key={p}
+              onClick={() => insertPlaceholder(`{{${p}}}`)}
+              disabled={isReadOnly}
+              className="rounded-md border border-gray-200 bg-gray-50 px-2 py-1 text-[11px] font-mono text-gray-500 transition-colors hover:border-indigo-300 hover:text-indigo-600 disabled:opacity-50 dark:border-gray-700 dark:bg-gray-800 dark:text-gray-400"
+            >
+              {`{{${p}}}`}
+            </button>
+          ))}
+          {customVars.map((v) => (
+            <button
+              key={v}
+              onClick={() => insertPlaceholder(`{{${v}}}`)}
+              disabled={isReadOnly}
+              className="rounded-md border border-purple-200 bg-purple-50 px-2 py-1 text-[11px] font-mono text-purple-600 transition-colors hover:border-purple-400 hover:text-purple-700 disabled:opacity-50 dark:border-purple-900 dark:bg-purple-950 dark:text-purple-400"
+            >
+              {`{{${v}}}`}
+            </button>
+          ))}
+        </div>
+
+        {/* Body */}
+        <div>
+          <div className="mb-1.5 flex items-center justify-between">
+            <label className="text-xs font-semibold text-gray-500 dark:text-gray-400 uppercase tracking-wider">
+              Body
+            </label>
+            <button
+              onClick={() => setShowPreview(true)}
+              className="flex items-center gap-1 rounded-md px-2 py-1 text-xs text-indigo-600 hover:bg-indigo-50 dark:text-indigo-400 dark:hover:bg-indigo-950"
+            >
+              <Eye className="h-3.5 w-3.5" />
+              Preview
+            </button>
+          </div>
+          <textarea
+            value={body}
+            onChange={(e) => setBody(e.target.value)}
+            disabled={isReadOnly}
+            rows={12}
+            placeholder="Email body... Gunakan {{university_name}}, {{tanggal}}, dll untuk placeholder."
+            className="w-full rounded-lg border border-gray-200 bg-white px-3 py-2.5 text-sm text-gray-900 placeholder-gray-400 focus:border-indigo-500 focus:outline-none focus:ring-1 focus:ring-indigo-500 disabled:bg-gray-50 dark:border-gray-700 dark:bg-gray-800 dark:text-gray-100 dark:placeholder-gray-500 dark:disabled:bg-gray-900 resize-none font-mono leading-relaxed"
+          />
+        </div>
+
+        {/* Attachment */}
+        <div>
+          <label className="mb-1.5 block text-xs font-semibold text-gray-500 dark:text-gray-400 uppercase tracking-wider">
+            Attachment
+          </label>
+          {attachment?.filename ? (
+            <div className="flex items-center gap-3 rounded-lg border border-gray-200 bg-gray-50 px-3 py-2 dark:border-gray-700 dark:bg-gray-800">
+              <Paperclip className="h-4 w-4 text-gray-400" />
+              <span className="flex-1 text-sm font-medium text-gray-700 dark:text-gray-200">
+                {attachment.filename}
+              </span>
+              {attachment.detected_variables && attachment.detected_variables.length > 0 && (
+                <span className="text-xs text-purple-600 dark:text-purple-400" title={`${attachment.detected_variables.length} placeholder detected in DOCX`}>
+                  {attachment.detected_variables.length} placeholders
+                </span>
+              )}
+              {!isReadOnly && (
+                <button
+                  onClick={() => {
+                    const input = document.createElement('input')
+                    input.type = 'file'
+                    input.accept = '.docx'
+                    input.onchange = (e) => {
+                      const file = (e.target as HTMLInputElement).files?.[0]
+                      if (file) handleAttachmentUpload(file)
+                    }
+                    input.click()
+                  }}
+                  className="text-xs text-indigo-600 hover:text-indigo-700"
+                >
+                  Replace
+                </button>
+              )}
+            </div>
+          ) : (
+            <div>
+              <input
+                id="email-attachment"
+                type="file"
+                accept=".docx"
+                onChange={(e) => {
+                  const file = e.target.files?.[0]
+                  if (file && campaignId) handleAttachmentUpload(file)
+                }}
+                disabled={isReadOnly || uploadMutation.isPending}
+                className="hidden"
+              />
+              <label
+                htmlFor="email-attachment"
+                className={cn(
+                  'flex cursor-pointer items-center justify-center gap-2 rounded-lg border-2 border-dashed border-gray-200 px-4 py-6 text-sm text-gray-500 transition-colors hover:border-indigo-300 hover:text-indigo-600 dark:border-gray-700 dark:text-gray-400 dark:hover:border-indigo-500 dark:hover:text-indigo-400',
+                  (isReadOnly || uploadMutation.isPending) && 'opacity-50 cursor-not-allowed',
+                )}
+              >
+                {uploadMutation.isPending ? (
+                  <>
+                    <RefreshCw className="h-4 w-4 animate-spin" />
+                    Uploading...
+                  </>
+                ) : (
+                  <>
+                    <Upload className="h-4 w-4" />
+                    Upload DOCX (optional)
+                  </>
+                )}
+              </label>
+            </div>
+          )}
+        </div>
+
+        {/* Attachment Variable Form */}
+        {attachment?.filename && campaignId && (
+          <AttachmentVarForm
+            attachment={attachment}
+            campaignId={campaignId}
+            onSaved={() => {}}
+          />
+        )}
+
+        {/* Delay */}
+        <div>
+          <label className="mb-1.5 block text-xs font-semibold text-gray-500 dark:text-gray-400 uppercase tracking-wider">
+            Delay Between Emails (seconds)
+          </label>
+          <input
+            type="number"
+            value={delayMs}
+            onChange={(e) => setDelayMs(parseInt(e.target.value) || 1)}
+            disabled={isReadOnly}
+            min={1}
+            max={300}
+            className="w-32 rounded-lg border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 focus:border-indigo-500 focus:outline-none focus:ring-1 focus:ring-indigo-500 disabled:bg-gray-50 dark:border-gray-700 dark:bg-gray-800 dark:text-gray-100 dark:disabled:bg-gray-900"
+          />
+        </div>
+      </div>
+
+      {/* Actions */}
+      {!isReadOnly && (
+        <div className="flex items-center justify-between border-t border-gray-100 px-5 py-3 dark:border-gray-800">
+          <div className="flex items-center gap-2">
+            <Button variant="secondary" onClick={handleSave} loading={isSaving}>
+              <Save className="h-4 w-4" />
+              Save Draft
+            </Button>
+            <Button variant="secondary" onClick={() => setShowTestEmail(true)}>
+              <Mail className="h-4 w-4" />
+              Send Test Email
+            </Button>
+          </div>
+          <div className="flex items-center gap-2">
+            <span className="text-xs text-gray-400">
+              {isSaving ? 'Saving...' : 'Auto-saves on blur'}
+            </span>
+          </div>
+        </div>
+      )}
+
+      {/* Preview Modal */}
+      <PreviewModal
+        isOpen={showPreview}
+        onClose={() => setShowPreview(false)}
+        subject={subject}
+        body={body}
+        fromEmail={campaign.from_email || 'noreply@email.com'}
+        fromName={campaign.from_name || 'Asosiasi AI'}
+        attachmentFilename={attachment?.filename ?? undefined}
+        vars={varValues}
+        sampleUniversity="Universitas Gadjah Mada"
+      />
+
+      {/* Test Email Modal */}
+      <TestEmailModal
+        isOpen={showTestEmail}
+        onClose={() => setShowTestEmail(false)}
+        campaignId={campaignId}
+        subject={subject}
+        body={body}
+        fromEmail={campaign.from_email || 'sekretariat@asosiasi.ai'}
+        fromName={campaign.from_name || 'Sekretariat Asosiasi AI'}
+        attachment={attachment}
+        varValues={varValues}
+      />
+    </div>
+  )
+}
+
+// ─── Recipients Tab ───────────────────────────────────────────────────────────
+
+function RecipientsTab({ campaignId, campaign }: { campaignId: number; campaign: EmailBlastCampaign }) {
+  const [search, setSearch] = useState('')
+  const [statusFilter, setStatusFilter] = useState<string>('')
+  const [showAddModal, setShowAddModal] = useState(false)
+
+  const { data, refetch } = useEmailBlastRecipients(campaignId, statusFilter || undefined)
+  const deleteMutation = useDeleteEmailRecipient()
+
+  const recipients = data?.recipients ?? []
+  const isReadOnly = campaign.status === 'running' || campaign.status === 'completed' || campaign.status === 'cancelled'
+
+  const filtered = search.trim()
+    ? recipients.filter(
+        (r) =>
+          (r.university_name ?? '').toLowerCase().includes(search.toLowerCase()) ||
+          (r.email ?? '').toLowerCase().includes(search.toLowerCase()),
+      )
+    : recipients
+
+  function handleDelete(recipientId: number) {
+    deleteMutation.mutate({ campaignId, recipientId })
+  }
+
+  const pendingCount = recipients.filter((r) => r.status === 'pending').length
+  const sentCount = recipients.filter((r) => r.status === 'sent').length
+  const failedCount = recipients.filter((r) => r.status === 'failed').length
+
+  return (
+    <div className="flex h-full flex-col overflow-hidden">
+      {/* Stats bar */}
+      <div className="flex items-center gap-4 border-b border-gray-200 bg-white px-4 py-2 dark:border-gray-800 dark:bg-[#111827]">
+        <span className="flex items-center gap-1 text-xs text-gray-500">
+          <span className="font-semibold text-gray-700 dark:text-gray-200">{recipients.length}</span> total
+        </span>
+        {sentCount > 0 && (
+          <span className="flex items-center gap-1 text-xs text-green-600">
+            <CheckCircle2 className="h-3 w-3" /> {sentCount} sent
+          </span>
+        )}
+        {pendingCount > 0 && (
+          <span className="flex items-center gap-1 text-xs text-amber-500">
+            <Clock className="h-3 w-3" /> {pendingCount} pending
+          </span>
+        )}
+        {failedCount > 0 && (
+          <span className="flex items-center gap-1 text-xs text-red-500">
+            <XCircle className="h-3 w-3" /> {failedCount} failed
+          </span>
+        )}
+      </div>
+
+      {/* Header */}
+      <div className="flex items-center gap-3 border-b border-gray-200 bg-white px-4 py-3 dark:border-gray-800 dark:bg-[#111827]">
+        <div className="relative">
+          <Search className="absolute left-3 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-gray-400" />
+          <input
+            type="text"
+            value={search}
+            onChange={(e) => setSearch(e.target.value)}
+            placeholder="Search..."
+            className="h-8 w-40 rounded-lg border border-gray-200 bg-gray-50 pl-8 pr-3 text-xs text-gray-900 placeholder-gray-400 focus:border-indigo-500 focus:bg-white focus:outline-none focus:ring-1 focus:ring-indigo-500 dark:border-gray-700 dark:bg-gray-800 dark:text-gray-100 dark:placeholder-gray-500"
+          />
+        </div>
+
+        <div className="flex rounded-lg border border-gray-200 dark:border-gray-700">
+          {['', 'pending', 'sent', 'failed'].map((s) => (
+            <button
+              key={s}
+              onClick={() => setStatusFilter(s)}
+              className={cn(
+                'px-2.5 py-1 text-[11px] font-medium transition-colors first:rounded-l-lg last:rounded-r-lg',
+                statusFilter === s
+                  ? 'bg-gray-900 text-white dark:bg-indigo-600 dark:text-white'
+                  : 'text-gray-500 hover:bg-gray-50 dark:text-gray-400 dark:hover:bg-gray-800',
+              )}
+            >
+              {s === '' ? 'All' : s.charAt(0).toUpperCase() + s.slice(1)}
+            </button>
+          ))}
+        </div>
+
+        {!isReadOnly && (
+          <Button size="sm" variant="secondary" onClick={() => setShowAddModal(true)} className="ml-auto">
+            <Plus className="h-3.5 w-3.5" />
+            Add
+          </Button>
+        )}
+      </div>
+
+      <div className="flex-1 overflow-y-auto">
+        {recipients.length === 0 ? (
+          <EmptyState
+            icon={Users}
+            title="No recipients yet"
+            description="Add universities to send this campaign to."
+            action={!isReadOnly ? (
+              <Button size="sm" onClick={() => setShowAddModal(true)}>
+                <Plus className="h-4 w-4" />
+                Add Recipients
+              </Button>
+            ) : undefined}
+          />
+        ) : filtered.length === 0 ? (
+          <EmptyState icon={Search} title="No recipients match" description="Try a different search term." />
+        ) : (
+          <div className="divide-y divide-gray-100 dark:divide-gray-800/80">
+            {filtered.map((recipient) => (
+              <div key={recipient.id} className="flex items-center gap-3 px-4 py-3">
+                {recipient.status === 'sent' && <CheckCircle2 className="h-4 w-4 shrink-0 text-green-500" />}
+                {recipient.status === 'failed' && <XCircle className="h-4 w-4 shrink-0 text-red-500" />}
+                {recipient.status === 'pending' && <Clock className="h-4 w-4 shrink-0 text-gray-400" />}
+                <div className="min-w-0 flex-1">
+                  <p className="truncate text-[13px] font-medium text-gray-900 dark:text-gray-100">
+                    {recipient.university_name || '(Unknown)'}
+                  </p>
+                  <p className="truncate text-[11px] text-gray-400">{recipient.email}</p>
+                </div>
+                {recipient.status === 'failed' && recipient.error_message && (
+                  <span className="max-w-[150px] truncate text-[10px] text-red-500">{recipient.error_message}</span>
+                )}
+                {!isReadOnly && (
+                  <button onClick={() => handleDelete(recipient.id)} className="shrink-0 text-gray-300 hover:text-red-500 transition-colors">
+                    <XCircle className="h-4 w-4" />
+                  </button>
+                )}
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+
+      <AddRecipientsModal isOpen={showAddModal} onClose={() => setShowAddModal(false)} campaignId={campaignId} />
+    </div>
+  )
+}
+
+// ─── Add Recipients Modal ─────────────────────────────────────────────────────
+
+function AddRecipientsModal({ isOpen, onClose, campaignId }: { isOpen: boolean; onClose: () => void; campaignId: number }) {
+  const [search, setSearch] = useState('')
+  const [selectedIds, setSelectedIds] = useState<Set<number>>(new Set())
+  const [province, setProvince] = useState('')
+
+  const { data: univData, isLoading } = useUniversitiesWithEmails(province || undefined, search)
+  const { data: provinces } = useProvinces()
+  const addSelectedMutation = useAddSelectedRecipients()
+  const addAllMutation = useAddAllRecipients()
+
+  const universities = univData?.data ?? []
+
+  function toggleSelect(id: number) {
+    setSelectedIds((prev) => {
+      const next = new Set(prev)
+      if (next.has(id)) next.delete(id)
+      else next.add(id)
+      return next
+    })
+  }
+
+  async function handleAddSelected() {
+    if (selectedIds.size === 0) return
+    await addSelectedMutation.mutateAsync({ id: campaignId, universityIds: Array.from(selectedIds) })
+    setSelectedIds(new Set())
+    onClose()
+    toast.success(`${selectedIds.size} recipients added`)
+  }
+
+  async function handleAddAll() {
+    await addAllMutation.mutateAsync(campaignId)
+    onClose()
+    toast.success('All universities added')
+  }
+
+  return (
+    <Modal isOpen={isOpen} onClose={onClose} title="Add Recipients" size="lg">
+      <div className="space-y-3">
+        <div className="flex gap-2">
+          <div className="relative flex-1">
+            <Search className="absolute left-3 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-gray-400" />
+            <input
+              type="text"
+              value={search}
+              onChange={(e) => setSearch(e.target.value)}
+              placeholder="Search universities..."
+              className="w-full rounded-lg border border-gray-200 pl-8 pr-3 py-2 text-sm focus:border-indigo-500 focus:outline-none focus:ring-1 focus:ring-indigo-500 dark:border-gray-700 dark:bg-gray-700 dark:text-gray-100"
+            />
+          </div>
+          <select
+            value={province}
+            onChange={(e) => setProvince(e.target.value)}
+            className="rounded-lg border border-gray-200 px-3 py-2 text-sm dark:border-gray-700 dark:bg-gray-700 dark:text-gray-100"
+          >
+            <option value="">All Provinces</option>
+            {(provinces ?? []).map((p) => <option key={p} value={p}>{p}</option>)}
+          </select>
+        </div>
+
+        <div className="max-h-64 overflow-y-auto rounded-lg border border-gray-200 dark:border-gray-700">
+          {isLoading ? (
+            <div className="flex items-center justify-center py-8"><Spinner /></div>
+          ) : universities.length === 0 ? (
+            <div className="py-8 text-center text-sm text-gray-500">No universities found</div>
+          ) : (
+            universities.map((uni) => (
+              <label key={uni.id} className="flex cursor-pointer items-center gap-3 px-3 py-2.5 transition-colors hover:bg-gray-50 dark:hover:bg-gray-800">
+                <input
+                  type="checkbox"
+                  checked={selectedIds.has(uni.id)}
+                  onChange={() => toggleSelect(uni.id)}
+                  className="h-4 w-4 rounded border-gray-300 text-indigo-600"
+                />
+                <div className="min-w-0 flex-1">
+                  <p className="text-sm font-medium text-gray-900 dark:text-gray-100">{uni.name}</p>
+                  <p className="text-xs text-gray-400">{uni.email || 'No email'}</p>
+                </div>
+              </label>
+            ))
+          )}
+        </div>
+
+        <div className="flex items-center justify-between pt-2">
+          <span className="text-sm text-gray-500">{selectedIds.size} selected</span>
+          <div className="flex gap-2">
+            <Button variant="secondary" onClick={onClose}>Cancel</Button>
+            <Button variant="secondary" onClick={handleAddAll} loading={addAllMutation.isPending}>
+              Add All ({universities.length})
+            </Button>
+            <Button onClick={handleAddSelected} loading={addSelectedMutation.isPending} disabled={selectedIds.size === 0}>
+              Add ({selectedIds.size})
+            </Button>
+          </div>
+        </div>
+      </div>
+    </Modal>
+  )
+}
+
+// ─── Sent Tab ─────────────────────────────────────────────────────────────────
+
+function SentTab({ campaignId, campaign }: { campaignId: number; campaign: EmailBlastCampaign }) {
+  const [statusFilter, setStatusFilter] = useState<string>('')
+  const { data, isLoading, refetch } = useSentEmails(campaignId, statusFilter || undefined)
+
+  const emails = data?.emails ?? []
+  const sentCount = emails.filter((e) => e.status === 'sent').length
+  const failedCount = emails.filter((e) => e.status === 'failed').length
+  const pendingCount = emails.filter((e) => e.status === 'pending').length
+
+  return (
+    <div className="flex h-full flex-col overflow-hidden">
+      {campaign.status === 'running' && (
+        <div className="flex items-center gap-3 border-b border-gray-200 bg-blue-50 px-4 py-2 dark:bg-blue-950/30">
+          {sentCount > 0 && <span className="flex items-center gap-1 text-xs text-blue-700 dark:text-blue-300"><CheckCircle2 className="h-3 w-3" /> {sentCount} sent</span>}
+          {pendingCount > 0 && <span className="flex items-center gap-1 text-xs text-amber-600"><Clock className="h-3 w-3" /> {pendingCount} pending</span>}
+          {failedCount > 0 && <span className="flex items-center gap-1 text-xs text-red-600"><XCircle className="h-3 w-3" /> {failedCount} failed</span>}
+        </div>
+      )}
+
+      <div className="flex items-center gap-3 border-b border-gray-200 bg-white px-4 py-3 dark:border-gray-800 dark:bg-[#111827]">
+        <div className="relative">
+          <div className="flex rounded-lg border border-gray-200 dark:border-gray-700">
+            {['', 'sent', 'failed', 'pending'].map((s) => (
+              <button
+                key={s}
+                onClick={() => setStatusFilter(s)}
+                className={cn(
+                  'px-2.5 py-1 text-[11px] font-medium transition-colors first:rounded-l-lg last:rounded-r-lg',
+                  statusFilter === s
+                    ? 'bg-gray-900 text-white dark:bg-indigo-600 dark:text-white'
+                    : 'text-gray-500 hover:bg-gray-50 dark:text-gray-400 dark:hover:bg-gray-800',
+                )}
+              >
+                {s === '' ? 'All' : s.charAt(0).toUpperCase() + s.slice(1)}
+              </button>
+            ))}
+          </div>
+        </div>
+        <span className="ml-auto text-xs text-gray-400">{emails.length} emails</span>
+      </div>
+
+      <div className="flex-1 overflow-y-auto">
+        {isLoading ? (
+          <div className="flex h-48 items-center justify-center"><Spinner /></div>
+        ) : emails.length === 0 ? (
+          <EmptyState icon={Send} title="No sent emails yet" description="Sent emails will appear here." />
+        ) : (
+          <div className="divide-y divide-gray-100 dark:divide-gray-800/80">
+            {emails.map((email) => (
+              <div key={email.id} className="flex items-center gap-3 px-4 py-3">
+                {email.status === 'sent' && <CheckCircle2 className="h-4 w-4 shrink-0 text-green-500" />}
+                {email.status === 'failed' && <XCircle className="h-4 w-4 shrink-0 text-red-500" />}
+                {email.status === 'pending' && <Clock className="h-4 w-4 shrink-0 text-gray-400" />}
+                <div className="min-w-0 flex-1">
+                  <p className="truncate text-[13px] font-medium text-gray-900 dark:text-gray-100">{email.university_name || email.email}</p>
+                  <p className="truncate text-[11px] text-gray-400">{email.subject}</p>
+                </div>
+                {email.error_message && <span className="max-w-[150px] truncate text-[10px] text-red-500">{email.error_message}</span>}
+                <span className="shrink-0 text-[11px] text-gray-400">{email.sent_at ? formatRelative(email.sent_at) : '—'}</span>
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+    </div>
+  )
+}
+
+// ─── Inbox Tab ────────────────────────────────────────────────────────────────
+
+function CampaignInboxTab({ campaignId }: { campaignId: number }) {
+  const { data, isLoading, refetch, isFetching } = useInboxEmails(campaignId, 100)
+  const emails = data?.emails ?? []
+
+  return (
+    <div className="flex h-full flex-col overflow-hidden">
+      <div className="flex items-center gap-3 border-b border-gray-200 bg-white px-4 py-3 dark:border-gray-800 dark:bg-[#111827]">
+        <span className="text-sm text-gray-500">{emails.length} replies</span>
+        <button onClick={() => refetch()} className="ml-auto flex h-8 w-8 items-center justify-center rounded-lg text-gray-400 hover:bg-gray-100 dark:hover:bg-gray-800">
+          <RefreshCw className={cn('h-4 w-4', isFetching && 'animate-spin')} />
+        </button>
+      </div>
+
+      <div className="flex-1 overflow-y-auto">
+        {isLoading ? (
+          <div className="flex h-48 items-center justify-center"><Spinner /></div>
+        ) : emails.length === 0 ? (
+          <EmptyState icon={Inbox} title="No replies yet" description="Inbound replies will appear here." />
+        ) : (
+          <div className="divide-y divide-gray-100 dark:divide-gray-800/80">
+            {emails.map((email) => (
+              <div key={email.id} className="flex items-start gap-3 px-4 py-3">
+                <div className="mt-0.5 flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-indigo-100 dark:bg-indigo-900">
+                  <Inbox className="h-4 w-4 text-indigo-600 dark:text-indigo-400" />
+                </div>
+                <div className="min-w-0 flex-1">
+                  <p className="text-[13px] font-medium text-gray-900 dark:text-gray-100">{email.from_name || email.from_email}</p>
+                  <p className="text-[11px] text-gray-500 dark:text-gray-400">{email.from_email}</p>
+                  <p className="mt-1 truncate text-[12px] text-gray-600 dark:text-gray-300">{email.subject || '(no subject)'}</p>
+                  <p className="mt-0.5 line-clamp-2 text-[12px] text-gray-400 dark:text-gray-500">{email.body?.replace(/<[^>]+>/g, '').slice(0, 120)}</p>
+                </div>
+                <span className="shrink-0 text-[10px] text-gray-400">{formatRelative(email.date)}</span>
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+    </div>
+  )
+}
+
+// ─── Main CampaignDetail ──────────────────────────────────────────────────────
+
+export function EmailCampaignDetail({ campaignId, onClose }: Props) {
+  const [activeTab, setActiveTab] = useState<'content' | 'recipients' | 'sent' | 'inbox'>('content')
+  const [showStartModal, setShowStartModal] = useState(false)
+  const [isSaving, setIsSaving] = useState(false)
+
+  const { data, isLoading, refetch } = useEmailBlastCampaign(campaignId ?? 0)
+  const { data: attachment, refetch: refetchAttachment } = useCampaignAttachment(campaignId ?? 0)
+  const updateMutation = useUpdateEmailCampaign()
+  const startMutation = useStartEmailCampaign()
+  const pauseMutation = usePauseEmailCampaign()
+  const cancelMutation = useCancelEmailCampaign()
+
+  const campaign = data?.campaign
+
+  // Auto-refresh when running
+  useEffect(() => {
+    if (campaign?.status === 'running' && campaignId) {
+      const interval = setInterval(() => refetch(), 2000)
+      return () => clearInterval(interval)
+    }
+  }, [campaign?.status, campaignId])
+
+  const handleSave = useCallback(
+    async (saveData: { name: string; subject: string; template_message: string; delay_between_ms: number }) => {
+      if (!campaignId) return
+      setIsSaving(true)
+      try {
+        await updateMutation.mutateAsync({ id: campaignId, data: saveData })
+        toast.success('Campaign saved')
+      } catch {
+        toast.error('Failed to save')
+      } finally {
+        setIsSaving(false)
+      }
+    },
+    [campaignId, updateMutation],
+  )
+
+  const handleStart = async () => {
+    if (!campaignId) return
+    try {
+      await startMutation.mutateAsync({ campaign_id: campaignId })
+      toast.success('Campaign started')
+      setShowStartModal(false)
+      refetch()
+    } catch {
+      toast.error('Failed to start campaign')
+    }
+  }
+
+  const handlePause = async () => {
+    if (!campaignId) return
+    await pauseMutation.mutateAsync(campaignId)
+    toast.success('Campaign paused')
+    refetch()
+  }
+
+  const handleCancel = async () => {
+    if (!campaignId) return
+    if (!confirm('Are you sure? This cannot be undone.')) return
+    await cancelMutation.mutateAsync(campaignId)
+    toast.success('Campaign cancelled')
+    refetch()
+  }
+
+  const handleRetryFailed = async () => {
+    if (!campaignId) return
+    try {
+      const res = await fetch(`/api/email-blast/campaigns/${campaignId}/retry-failed`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({}),
+      })
+      const data = await res.json()
+      if (data.success) {
+        toast.success(data.message)
+        refetch()
+      } else {
+        toast.error(data.message || 'Failed to retry')
+      }
+    } catch {
+      toast.error('Failed to retry failed emails')
+    }
+  }
+
+  if (!campaignId) {
+    return <CreateCampaignView onClose={onClose} />
+  }
+
+  if (isLoading) {
+    return <div className="flex h-full items-center justify-center"><Spinner /></div>
+  }
+
+  if (!campaign) {
+    return (
+      <div className="flex h-full items-center justify-center">
+        <EmptyState icon={FileText} title="Campaign not found" description="This campaign may have been deleted." action={<Button onClick={onClose}>Go Back</Button>} />
+      </div>
+    )
+  }
+
+  const cfg = statusConfig[campaign.status] ?? statusConfig.draft
+  const isReadOnly = campaign.status === 'running' || campaign.status === 'completed' || campaign.status === 'cancelled'
+  const failedCount = campaign.failed_count
+
+  const tabs = [
+    { key: 'content', label: 'Content', icon: FileText },
+    { key: 'recipients', label: `Recipients (${campaign.total_recipients})`, icon: Users },
+    { key: 'sent', label: 'Sent', icon: Send },
+    { key: 'inbox', label: 'Replies', icon: Inbox },
+  ]
+
+  return (
+    <div className="flex h-full flex-col overflow-hidden">
+      {/* Header */}
+      <div className="flex items-center gap-3 border-b border-gray-200 bg-white px-4 py-3 dark:border-gray-800 dark:bg-[#111827]">
+        <button onClick={onClose} className="flex h-8 w-8 items-center justify-center rounded-lg text-gray-400 hover:bg-gray-100 hover:text-gray-600 dark:hover:bg-gray-800">
+          <ArrowLeft className="h-4 w-4" />
+        </button>
+
+        <div className="min-w-0 flex-1">
+          <div className="flex items-center gap-2">
+            <span className="truncate text-sm font-semibold text-gray-900 dark:text-white">{campaign.name || 'Untitled'}</span>
+            <span className={cn('shrink-0 rounded-full px-2 py-0.5 text-[10px] font-medium', cfg.bg)}>{cfg.label}</span>
+          </div>
+          {campaign.status === 'running' && (
+            <div className="mt-1 flex items-center gap-2">
+              <div className="h-1.5 w-48 overflow-hidden rounded-full bg-gray-100 dark:bg-gray-700">
+                <div className="h-full bg-green-400 transition-all duration-500" style={{ width: `${campaign.total_recipients > 0 ? ((campaign.sent_count + campaign.failed_count) / campaign.total_recipients) * 100 : 0}%` }} />
+              </div>
+              <span className="text-[10px] text-gray-400">{campaign.sent_count}/{campaign.total_recipients}</span>
+            </div>
+          )}
+        </div>
+
+        {/* Actions */}
+        <div className="flex shrink-0 items-center gap-2">
+          {/* Retry Failed — show when completed/running with failures */}
+          {(campaign.status === 'completed' || campaign.status === 'running') && failedCount > 0 && (
+            <Button size="sm" variant="secondary" onClick={handleRetryFailed} className="text-amber-600 hover:text-amber-700">
+              <RotateCcw className="h-3.5 w-3.5" />
+              Retry Failed ({failedCount})
+            </Button>
+          )}
+
+          {campaign.status === 'draft' && (
+            <>
+              <Button size="sm" variant="secondary" onClick={() => setShowStartModal(true)}>
+                <Rocket className="h-3.5 w-3.5" />
+                Start
+              </Button>
+              <Button size="sm" variant="danger" onClick={handleCancel}>
+                <XCircle className="h-3.5 w-3.5" />
+              </Button>
+            </>
+          )}
+          {campaign.status === 'running' && (
+            <>
+              <Button size="sm" variant="secondary" onClick={handlePause} loading={pauseMutation.isPending}>
+                <Pause className="h-3.5 w-3.5" />
+                Pause
+              </Button>
+              <Button size="sm" variant="secondary" onClick={handleCancel} loading={cancelMutation.isPending}>
+                <XCircle className="h-3.5 w-3.5" />
+                Stop
+              </Button>
+            </>
+          )}
+          {campaign.status === 'paused' && (
+            <Button size="sm" variant="secondary" onClick={handleCancel} loading={cancelMutation.isPending}>
+              <XCircle className="h-3.5 w-3.5" />
+              Cancel
+            </Button>
+          )}
+        </div>
+      </div>
+
+      {/* Tabs */}
+      <div className="flex gap-0.5 border-b border-gray-200 bg-white px-4 pt-2 dark:border-gray-800 dark:bg-[#111827]">
+        {tabs.map((tab) => {
+          const TabIcon = tab.icon
+          return (
+            <button
+              key={tab.key}
+              onClick={() => setActiveTab(tab.key as typeof activeTab)}
+              className={cn(
+                'flex items-center gap-1.5 rounded-t-lg border-b-2 px-4 py-2 text-[13px] font-medium transition-colors',
+                activeTab === tab.key
+                  ? 'border-indigo-600 text-indigo-600 dark:border-indigo-400 dark:text-indigo-400'
+                  : 'border-transparent text-gray-500 hover:text-gray-700 dark:text-gray-400 dark:hover:text-gray-200',
+              )}
+            >
+              <TabIcon className="h-3.5 w-3.5" />
+              {tab.label}
+            </button>
+          )
+        })}
+      </div>
+
+      {/* Content */}
+      <div className="flex-1 overflow-hidden">
+        {activeTab === 'content' && (
+          <ContentTab
+            campaign={campaign}
+            attachment={attachment}
+            campaignId={campaignId}
+            onSave={handleSave}
+            isSaving={isSaving}
+          />
+        )}
+        {activeTab === 'recipients' && <RecipientsTab campaignId={campaignId} campaign={campaign} />}
+        {activeTab === 'sent' && <SentTab campaignId={campaignId} campaign={campaign} />}
+        {activeTab === 'inbox' && <CampaignInboxTab campaignId={campaignId} />}
+      </div>
+
+      {/* Start Modal */}
+      <Modal isOpen={showStartModal} onClose={() => setShowStartModal(false)} title="Start Campaign" size="sm">
+        <div className="space-y-4">
+          <p className="text-sm text-gray-600 dark:text-gray-300">
+            Start sending <strong>{campaign.name}</strong> to <strong>{campaign.total_recipients}</strong> recipients?
+          </p>
+          {campaign.total_recipients === 0 && (
+            <div className="flex items-start gap-2 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 dark:border-amber-900 dark:bg-amber-950">
+              <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0 text-amber-500" />
+              <p className="text-xs text-amber-700 dark:text-amber-300">Add recipients first before starting.</p>
+            </div>
+          )}
+          <div className="flex justify-end gap-2">
+            <Button variant="secondary" onClick={() => setShowStartModal(false)}>Cancel</Button>
+            <Button onClick={handleStart} loading={startMutation.isPending} disabled={campaign.total_recipients === 0}>
+              <Rocket className="h-4 w-4" />
+              Start Sending
+            </Button>
+          </div>
+        </div>
+      </Modal>
+    </div>
+  )
+}
+
+// ─── Create Campaign View ────────────────────────────────────────────────────
+
+function CreateCampaignView({ onClose }: { onClose: () => void }) {
+  const [name, setName] = useState('')
+  const createMutation = useCreateEmailCampaign()
+
+  async function handleCreate() {
+    if (!name.trim()) return
+    try {
+      await createMutation.mutateAsync({ name: name.trim(), subject: '', template_message: '' })
+      toast.success('Campaign created')
+      onClose()
+    } catch {
+      toast.error('Failed to create')
+    }
+  }
+
+  return (
+    <div className="flex h-full flex-col overflow-hidden">
+      <div className="flex items-center gap-3 border-b border-gray-200 bg-white px-4 py-3 dark:border-gray-800 dark:bg-[#111827]">
+        <button onClick={onClose} className="flex h-8 w-8 items-center justify-center rounded-lg text-gray-400 hover:bg-gray-100 dark:hover:bg-gray-800">
+          <ArrowLeft className="h-4 w-4" />
+        </button>
+        <span className="text-sm font-semibold text-gray-900 dark:text-white">New Campaign</span>
+      </div>
+
+      <div className="flex-1 overflow-y-auto p-5">
+        <div className="max-w-lg space-y-4">
+          <div>
+            <label className="mb-1.5 block text-xs font-semibold text-gray-500 uppercase tracking-wider">Campaign Name *</label>
+            <input
+              type="text"
+              value={name}
+              onChange={(e) => setName(e.target.value)}
+              placeholder="e.g., Undangan Audiensi Q2 2025"
+              autoFocus
+              onKeyDown={(e) => e.key === 'Enter' && handleCreate()}
+              className="w-full rounded-lg border border-gray-200 bg-white px-3 py-2.5 text-sm text-gray-900 placeholder-gray-400 focus:border-indigo-500 focus:outline-none focus:ring-1 focus:ring-indigo-500 dark:border-gray-700 dark:bg-gray-800 dark:text-gray-100 dark:placeholder-gray-500"
+            />
+          </div>
+        </div>
+      </div>
+
+      <div className="flex items-center justify-end gap-2 border-t border-gray-100 px-5 py-3 dark:border-gray-800">
+        <Button variant="secondary" onClick={onClose}>Cancel</Button>
+        <Button onClick={handleCreate} loading={createMutation.isPending} disabled={!name.trim()}>
+          <Rocket className="h-4 w-4" />
+          Create
+        </Button>
+      </div>
+    </div>
+  )
+}

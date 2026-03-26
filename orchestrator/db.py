@@ -384,6 +384,54 @@ CREATE TABLE IF NOT EXISTS email_blast_letter_config (
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
+
+CREATE TABLE IF NOT EXISTS email_inbox_cache (
+    uid INTEGER PRIMARY KEY,
+    message_id TEXT,
+    in_reply_to TEXT,
+    from_email TEXT,
+    from_name TEXT,
+    to_email TEXT,
+    subject TEXT,
+    body TEXT,
+    date TEXT,
+    is_read INTEGER DEFAULT 0,
+    fetched_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE INDEX IF NOT EXISTS idx_inbox_cache_fetched ON email_inbox_cache(fetched_at DESC);
+
+-- All outgoing emails (campaign + test)
+CREATE TABLE IF NOT EXISTS email_outbox (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    campaign_id INTEGER REFERENCES email_blast_campaigns(id),
+    source TEXT NOT NULL DEFAULT 'campaign',  -- 'campaign' or 'test'
+    email TEXT NOT NULL,
+    university_name TEXT,
+    rendered_subject TEXT,
+    rendered_message TEXT,
+    status TEXT NOT NULL DEFAULT 'sent',  -- 'sent', 'failed'
+    error_message TEXT,
+    sent_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE INDEX IF NOT EXISTS idx_outbox_sent_at ON email_outbox(sent_at DESC);
+CREATE INDEX IF NOT EXISTS idx_outbox_campaign ON email_outbox(campaign_id);
+
+-- Cache for IMAP Sent folder
+CREATE TABLE IF NOT EXISTS email_sent_cache (
+    uid INTEGER PRIMARY KEY,
+    message_id TEXT,
+    from_email TEXT,
+    from_name TEXT,
+    to_email TEXT,
+    subject TEXT,
+    body TEXT,
+    date TEXT,
+    fetched_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE INDEX IF NOT EXISTS idx_sent_cache_fetched ON email_sent_cache(fetched_at DESC);
 """
 
 # ---------------------------------------------------------------------------

@@ -1,4 +1,4 @@
-import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
+import { useQuery, useMutation, useQueryClient, useInfiniteQuery } from '@tanstack/react-query'
 import {
   createEmailCampaign,
   listEmailCampaigns,
@@ -19,6 +19,10 @@ import {
   getSentEmails,
   getSentEmail,
   getInboxEmails,
+  getAllInboxEmails,
+  getAllSentEmails,
+  getSentFolderEmails,
+  sendTestEmail,
   type EmailBlastCampaign,
   type EmailBlastRecipient,
   type CreateEmailCampaignRequest,
@@ -34,7 +38,7 @@ export function useEmailBlastCampaigns(status?: string) {
   return useQuery<{ success: boolean; campaigns: EmailBlastCampaign[] }>({
     queryKey: ['email-blast-campaigns', status],
     queryFn: () => listEmailCampaigns(status),
-    refetchInterval: 5_000,
+    staleTime: 30_000,
   })
 }
 
@@ -172,7 +176,7 @@ export function useSentEmails(campaignId: number, status?: string) {
     queryKey: ['email-blast-sent-emails', campaignId, status],
     queryFn: () => getSentEmails(campaignId, status),
     enabled: !!campaignId,
-    refetchInterval: 10_000, // Refresh every 10 seconds
+    staleTime: 30_000,
   })
 }
 
@@ -189,7 +193,7 @@ export function useInboxEmails(campaignId: number, limit?: number) {
     queryKey: ['email-blast-inbox', campaignId, limit],
     queryFn: () => getInboxEmails(campaignId, limit),
     enabled: !!campaignId,
-    refetchInterval: 30_000, // Refresh every 30 seconds
+    staleTime: 30_000,
   })
 }
 
@@ -197,6 +201,51 @@ export function useLetterConfig() {
   return useQuery({
     queryKey: ['email-blast-letter-config'],
     queryFn: () => getLetterConfig(),
+  })
+}
+
+export function useAllInboxEmails(limit?: number, enabled?: boolean) {
+  return useQuery<{ success: boolean; emails: any[]; total: number; offset: number; limit: number }>({
+    queryKey: ['email-blast-all-inbox', limit],
+    queryFn: () => getAllInboxEmails(limit),
+    enabled: enabled !== false,
+    staleTime: 30_000,
+  })
+}
+
+export function useAllInboxEmailsPaginated(pageSize: number = 50, enabled: boolean = true) {
+  return useInfiniteQuery({
+    queryKey: ['email-blast-all-inbox-paginated'],
+    queryFn: async ({ pageParam = 0 }: { pageParam?: number }) => {
+      return getAllInboxEmails(pageSize, pageParam ?? 0)
+    },
+    initialPageParam: 0,
+    getNextPageParam: (lastPage: { offset?: number; limit?: number; total?: number }) => {
+      const currentOffset = lastPage.offset ?? 0
+      const nextOffset = currentOffset + pageSize
+      if (nextOffset >= (lastPage.total || 0)) return undefined
+      return nextOffset
+    },
+    enabled,
+    staleTime: 30_000,
+  })
+}
+
+export function useAllSentEmailsPaginated(pageSize: number = 50, enabled: boolean = true) {
+  return useInfiniteQuery({
+    queryKey: ['email-blast-all-sent-paginated'],
+    queryFn: async ({ pageParam = 0 }: { pageParam?: number }) => {
+      return getSentFolderEmails(pageSize, pageParam ?? 0)
+    },
+    initialPageParam: 0,
+    getNextPageParam: (lastPage: { offset?: number; limit?: number; total?: number }) => {
+      const currentOffset = lastPage.offset ?? 0
+      const nextOffset = currentOffset + pageSize
+      if (nextOffset >= (lastPage.total || 0)) return undefined
+      return nextOffset
+    },
+    enabled,
+    staleTime: 30_000,
   })
 }
 
@@ -220,6 +269,26 @@ export function useDeleteEmailRecipient() {
       queryClient.invalidateQueries({ queryKey: ['email-blast-recipients'] })
       queryClient.invalidateQueries({ queryKey: ['email-blast-campaign'] })
       queryClient.invalidateQueries({ queryKey: ['email-blast-campaigns'] })
+    },
+  })
+}
+
+export function useSendTestEmail() {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: ({
+      campaignId,
+      toEmail,
+      options,
+    }: {
+      campaignId: number
+      toEmail: string
+      options?: Parameters<typeof sendTestEmail>[2]
+    }) => sendTestEmail(campaignId, toEmail, options),
+    onSuccess: () => {
+      // Invalidate sent folder cache so new sent email appears
+      queryClient.invalidateQueries({ queryKey: ['email-blast-all-sent-paginated'] })
+      queryClient.invalidateQueries({ queryKey: ['email-blast-sent-emails'] })
     },
   })
 }

@@ -158,6 +158,8 @@ export interface SentEmail {
   status: string
   sent_at: string | null
   error_message: string | null
+  campaign_name?: string | null
+  source?: string  // 'campaign' or 'test'
 }
 
 export async function getSentEmails(campaignId: number, status?: string): Promise<{ success: boolean; emails: SentEmail[]; total: number }> {
@@ -191,9 +193,52 @@ export async function getInboxEmails(campaignId: number, limit?: number): Promis
   return response.data
 }
 
-export async function getAllInboxEmails(limit?: number): Promise<{ success: boolean; emails: InboundEmail[]; total: number }> {
-  const params = limit ? `?limit=${limit}` : ''
-  const response = await apiClient.get(`/email-blast/inbox${params}`)
+export async function getAllInboxEmails(
+  limit?: number,
+  offset?: number
+): Promise<{ success: boolean; emails: InboundEmail[]; total: number; offset: number; limit: number }> {
+  const params = new URLSearchParams()
+  if (limit !== undefined) params.set('limit', String(limit))
+  if (offset !== undefined) params.set('offset', String(offset))
+  const qs = params.toString() ? `?${params.toString()}` : ''
+  const response = await apiClient.get(`/email-blast/inbox${qs}`)
+  return response.data
+}
+
+export async function getAllSentEmails(
+  limit?: number,
+  offset?: number,
+  status?: string
+): Promise<{ success: boolean; emails: SentEmail[]; total: number; offset: number; limit: number }> {
+  const params = new URLSearchParams()
+  if (limit !== undefined) params.set('limit', String(limit))
+  if (offset !== undefined) params.set('offset', String(offset))
+  if (status) params.set('status', status)
+  const qs = params.toString() ? `?${params.toString()}` : ''
+  const response = await apiClient.get(`/email-blast/sent-emails${qs}`)
+  return response.data
+}
+
+export interface SentFolderEmail {
+  id: number
+  message_id: string
+  from_email: string
+  from_name: string
+  to_email: string
+  subject: string
+  body: string
+  date: string
+}
+
+export async function getSentFolderEmails(
+  limit?: number,
+  offset?: number
+): Promise<{ success: boolean; emails: SentFolderEmail[]; total: number; offset: number; limit: number }> {
+  const params = new URLSearchParams()
+  if (limit !== undefined) params.set('limit', String(limit))
+  if (offset !== undefined) params.set('offset', String(offset))
+  const qs = params.toString() ? `?${params.toString()}` : ''
+  const response = await apiClient.get(`/email-blast/sent-folder${qs}`)
   return response.data
 }
 
@@ -204,6 +249,30 @@ export interface LetterConfig {
 
 export async function getLetterConfig(): Promise<{ success: boolean } & LetterConfig> {
   const response = await apiClient.get('/email-blast/letter-config')
+  return response.data
+}
+
+export async function sendTestEmail(
+  campaignId: number,
+  toEmail: string,
+  options?: {
+    subject?: string
+    body?: string
+    fromEmail?: string
+    fromName?: string
+    attachmentFilename?: string | null
+    customVars?: Record<string, string>
+  }
+): Promise<{ success: boolean; message: string }> {
+  const response = await apiClient.post(`/email-blast/campaigns/${campaignId}/test-email`, {
+    to_email: toEmail,
+    subject: options?.subject,
+    body: options?.body,
+    from_email: options?.fromEmail,
+    from_name: options?.fromName,
+    attachment_filename: options?.attachmentFilename,
+    custom_vars: options?.customVars,
+  })
   return response.data
 }
 

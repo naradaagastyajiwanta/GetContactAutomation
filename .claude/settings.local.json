@@ -26,7 +26,8 @@
       "Bash(npm ls:*)",
       "Bash(npm info:*)",
       "Bash(npm view:*)",
-      "Bash(ssh -o StrictHostKeyChecking=no -o ConnectTimeout=10 root@103.253.145.84 \"cd /opt/getcontact-ai-agent && docker compose -f docker-compose.yml up -d orchestrator && sleep 10 && echo ''Done''\")"
+      "Bash(ssh -o StrictHostKeyChecking=no -o ConnectTimeout=10 root@103.253.145.84 \"cd /opt/getcontact-ai-agent && docker compose -f docker-compose.yml up -d orchestrator && sleep 10 && echo ''Done''\")",
+      "Bash(IMAP_PASSWORD=\"SekertariatAInew343*\" python -c \":*)"
     ]
   }
 }

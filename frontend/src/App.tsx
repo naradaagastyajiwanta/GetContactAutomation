@@ -23,8 +23,7 @@ const ApiLogsPage = lazy(() => import('./pages/ApiLogsPage'))
 const SettingsPage = lazy(() => import('./pages/SettingsPage'))
 const BlastCampaignsPage = lazy(() => import('./pages/BlastCampaignsPage'))
 const BlastCampaignDetailPage = lazy(() => import('./pages/BlastCampaignDetailPage'))
-const EmailBlastCampaignsPage = lazy(() => import('./pages/EmailBlastCampaignsPage'))
-const EmailBlastCampaignDetailPage = lazy(() => import('./pages/EmailBlastCampaignDetailPage'))
+const EmailBlastPage = lazy(() => import('./pages/EmailBlastPage'))
 const DmsSchedulesPage = lazy(() => import('./pages/DmsSchedulesPage'))
 const DmsScheduleDetailPage = lazy(() => import('./pages/DmsScheduleDetailPage'))
 const CrmPage = lazy(() => import('./pages/CrmPage'))
@@ -64,8 +63,13 @@ export default function App() {
                   <Route path="api-logs" element={<ErrorBoundary><ApiLogsPage /></ErrorBoundary>} />
                   <Route path="blast" element={<ErrorBoundary><BlastCampaignsPage /></ErrorBoundary>} />
                   <Route path="blast/:id" element={<ErrorBoundary><BlastCampaignDetailPage /></ErrorBoundary>} />
-                  <Route path="email-blast" element={<ErrorBoundary><EmailBlastCampaignsPage /></ErrorBoundary>} />
-                  <Route path="email-blast/:id" element={<ErrorBoundary><EmailBlastCampaignDetailPage /></ErrorBoundary>} />
+                  <Route path="email-blast" element={<ErrorBoundary><EmailBlastPage /></ErrorBoundary>} />
+                  <Route path="email-blast/:id" element={<ErrorBoundary><EmailBlastPage /></ErrorBoundary>} />
+                  <Route path="email-blast/inbox" element={<ErrorBoundary><EmailBlastPage /></ErrorBoundary>} />
+                  <Route path="email-blast/sent" element={<ErrorBoundary><EmailBlastPage /></ErrorBoundary>} />
+                  <Route path="email-blast/campaigns" element={<ErrorBoundary><EmailBlastPage /></ErrorBoundary>} />
+                  <Route path="email-blast/campaigns/:id" element={<ErrorBoundary><EmailBlastPage /></ErrorBoundary>} />
+                  <Route path="email-blast/settings" element={<ErrorBoundary><EmailBlastPage /></ErrorBoundary>} />
                   <Route path="dms-schedules" element={<ErrorBoundary><DmsSchedulesPage /></ErrorBoundary>} />
                   <Route path="dms-schedules/:id" element={<ErrorBoundary><DmsScheduleDetailPage /></ErrorBoundary>} />
                   <Route path="crm" element={<ErrorBoundary><CrmPage /></ErrorBoundary>} />
