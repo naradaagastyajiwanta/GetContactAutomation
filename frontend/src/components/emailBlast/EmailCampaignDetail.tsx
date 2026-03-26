@@ -330,13 +330,16 @@ function AttachmentVarForm({
     }
   }, [attachment])
 
+  // NOTE: useUploadAttachment hook MUST be called before any early returns.
+  // React hooks require consistent order across renders.
+  const uploadMutation = useUploadAttachment()
+
+  // Early return AFTER hooks — required for hooks consistency
   if (customVars.length === 0) return null
 
   function setValue(key: string, val: string) {
     setValues((prev) => ({ ...prev, [key]: val }))
   }
-
-  const uploadMutation = useUploadAttachment()
 
   async function handleSave() {
     setIsSaving(true)

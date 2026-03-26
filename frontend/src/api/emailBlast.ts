@@ -1,4 +1,5 @@
 import { apiClient } from './client'
+import axios from 'axios'
 
 // ---------------------------------------------------------------------------
 // Types
@@ -145,9 +146,10 @@ export async function uploadAttachment(
   formData.append('file', file)
   formData.append('variables', JSON.stringify(variables))
 
-  const response = await apiClient.post(`/email-blast/campaigns/${campaignId}/attachment`, formData, {
-    headers: { 'Content-Type': 'multipart/form-data' },
-  })
+  // Use fresh axios instance without default Content-Type.
+  // apiClient defaults to Content-Type: application/json which breaks multipart parsing.
+  const uploadClient = axios.create({ baseURL: '/api' })
+  const response = await uploadClient.post(`/email-blast/campaigns/${campaignId}/attachment`, formData)
   return response.data
 }
 
