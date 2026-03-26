@@ -112,7 +112,10 @@ async def get_group_detail(group_id: int) -> UniversityGroupDetail | None:
         member_cursor = await db.execute(
             """
             SELECT u.id, u.name, u.province, u.website, u.ig_handle, u.email_kampus,
-                   u.student_count, m.added_at
+                   u.student_count, u.status, u.enabled, u.created_at, u.updated_at,
+                   m.added_at,
+                   (SELECT COUNT(*) FROM ig_contacts c WHERE c.university_id = u.id) AS total_contacts,
+                   (SELECT COUNT(*) FROM ig_contacts c WHERE c.university_id = u.id AND c.manual_contacted = 1) AS contacted_contacts
             FROM university_group_members m
             JOIN universities u ON u.id = m.university_id
             WHERE m.group_id = ?
@@ -137,7 +140,13 @@ async def get_group_detail(group_id: int) -> UniversityGroupDetail | None:
                     "ig_handle": r[4],
                     "email_kampus": r[5],
                     "student_count": r[6],
-                    "added_at": r[7],
+                    "status": r[7],
+                    "enabled": r[8],
+                    "created_at": r[9],
+                    "updated_at": r[10],
+                    "added_at": r[11],
+                    "total_contacts": r[12] or 0,
+                    "contacted_contacts": r[13] or 0,
                 }
                 for r in member_rows
             ],

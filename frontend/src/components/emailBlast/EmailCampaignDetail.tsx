@@ -3,7 +3,7 @@
  * Features: Preview, Attachment Variables, Retry Failed
  */
 
-import { useState, useEffect, useCallback } from 'react'
+import { useState, useEffect, useCallback, useRef } from 'react'
 import {
   ArrowLeft,
   Save,
@@ -18,6 +18,7 @@ import {
   Inbox,
   Search,
   CheckCircle2,
+  Check,
   Clock,
   AlertTriangle,
   Plus,
@@ -49,7 +50,6 @@ import {
 } from '../../hooks/useEmailBlast'
 import { useUniversitiesWithEmails, useProvinces } from '../../hooks/useUniversities'
 import { useUniversityGroups } from '../../hooks/useUniversityGroups'
-import { QuickSelectGroups } from '../universityGroups/QuickSelectGroups'
 import { Spinner } from '../ui/Spinner'
 import { Button } from '../ui/Button'
 import { EmptyState } from '../ui/EmptyState'
@@ -871,16 +871,28 @@ function RecipientsTab({ campaignId, campaign }: { campaignId: number; campaign:
 // ─── Add Recipients Modal ─────────────────────────────────────────────────────
 
 function AddRecipientsModal({ isOpen, onClose, campaignId }: { isOpen: boolean; onClose: () => void; campaignId: number }) {
+  const [searchInput, setSearchInput] = useState('')
   const [search, setSearch] = useState('')
   const [selectedIds, setSelectedIds] = useState<Set<number>>(new Set())
   const [province, setProvince] = useState('')
   const [selectedGroupIds, setSelectedGroupIds] = useState<Set<number>>(new Set())
   const [page, setPage] = useState(0)
   const PAGE_SIZE = 50
+  const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+
+  // Debounce search
+  useEffect(() => {
+    if (debounceRef.current) clearTimeout(debounceRef.current)
+    debounceRef.current = setTimeout(() => {
+      setSearch(searchInput)
+      setPage(0)
+    }, 300)
+    return () => { if (debounceRef.current) clearTimeout(debounceRef.current) }
+  }, [searchInput])
 
   const { data: univData, isLoading } = useUniversitiesWithEmails(province || undefined, search, PAGE_SIZE, page * PAGE_SIZE)
   const { data: provinces } = useProvinces()
-  const { data: groupsData, isLoading: loadingGroups } = useUniversityGroups()
+  const { data: groupsData } = useUniversityGroups()
   const addSelectedMutation = useAddSelectedRecipients()
   const addAllMutation = useAddAllRecipients()
 
@@ -926,128 +938,111 @@ function AddRecipientsModal({ isOpen, onClose, campaignId }: { isOpen: boolean; 
     setSelectedIds(new Set())
     setSelectedGroupIds(new Set())
     setPage(0)
+    setSearchInput('')
+    setSearch('')
     onClose()
   }
 
   return (
     <Modal isOpen={isOpen} onClose={handleClose} title="Add Recipients" size="lg">
       <div className="flex flex-col" style={{ height: '70vh' }}>
-        {/* Header: Search + Province */}
-        <div className="flex gap-2 mb-3">
+        {/* Search + Filter */}
+        <div className="flex gap-2">
           <div className="relative flex-1">
-            <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-gray-400 pointer-events-none" />
+            <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-400" />
             <input
               type="text"
-              value={search}
-              onChange={(e) => { setSearch(e.target.value); setPage(0); }}
-              placeholder="Cari universitas..."
-              className="w-full rounded-lg border border-gray-200 bg-gray-50 pl-9 pr-3 py-2.5 text-sm focus:border-indigo-500 focus:bg-white focus:outline-none focus:ring-1 focus:ring-indigo-500 dark:border-gray-700 dark:bg-gray-800 dark:text-gray-100"
+              value={searchInput}
+              onChange={(e) => setSearchInput(e.target.value)}
+              placeholder="Search..."
+              className="w-full pl-9 pr-3 py-2 text-sm border border-gray-200 dark:border-gray-700 rounded-lg bg-white dark:bg-gray-800 focus:border-indigo-500 focus:outline-none dark:text-gray-100"
             />
           </div>
           <select
             value={province}
-            onChange={(e) => { setProvince(e.target.value); setPage(0); }}
-            className="rounded-lg border border-gray-200 bg-gray-50 px-3 py-2.5 text-sm dark:border-gray-700 dark:bg-gray-800 dark:text-gray-100 min-w-[160px]"
+            onChange={(e) => { setProvince(e.target.value); setPage(0); setSearchInput(''); setSearch('') }}
+            className="text-sm border border-gray-200 dark:border-gray-700 rounded-lg px-3 py-2 bg-white dark:bg-gray-800 dark:text-gray-100"
           >
-            <option value="">Semua Provinsi</option>
+            <option value="">All</option>
             {(provinces ?? []).map((p) => <option key={p} value={p}>{p}</option>)}
           </select>
         </div>
 
-        {/* Group Quick Select */}
-        <QuickSelectGroups
-          groups={groupsData?.groups ?? []}
-          selectedGroupIds={selectedGroupIds}
-          onToggle={(id) => {
-            setSelectedGroupIds((prev) => {
-              const next = new Set(prev)
-              if (next.has(id)) next.delete(id)
-              else next.add(id)
-              return next
-            })
-          }}
-          isLoading={loadingGroups}
-        />
+        {/* Group chips */}
+        {groupsData && groupsData.groups.length > 0 && (
+          <div className="flex flex-wrap gap-1.5 mt-1">
+            {groupsData.groups.map((g) => (
+              <button
+                key={g.id}
+                onClick={() => {
+                  setSelectedGroupIds((prev) => {
+                    const next = new Set(prev)
+                    if (next.has(g.id)) next.delete(g.id)
+                    else next.add(g.id)
+                    return next
+                  })
+                }}
+                className={cn(
+                  'px-2.5 py-1 text-xs rounded-full border transition-colors',
+                  selectedGroupIds.has(g.id)
+                    ? 'bg-indigo-600 text-white border-indigo-600'
+                    : 'bg-white text-gray-600 border-gray-200 dark:bg-gray-800 dark:text-gray-400 dark:border-gray-700'
+                )}
+              >
+                {g.name}
+              </button>
+            ))}
+          </div>
+        )}
 
         {/* List */}
-        <div className="flex-1 overflow-y-auto mt-3 -mx-6 px-6">
+        <div className="flex-1 overflow-y-auto min-h-0 mt-3 -mx-6 px-6">
           {isLoading ? (
             <div className="flex items-center justify-center py-16">
               <Spinner />
             </div>
           ) : universities.length === 0 ? (
             <div className="flex flex-col items-center justify-center py-16 text-gray-400">
-              <Search className="w-10 h-10 mb-3 opacity-50" />
-              <p className="text-sm">Tidak ada universitas ditemukan</p>
+              <Search className="w-8 h-8 mb-2 opacity-50" />
+              <p className="text-sm">No results</p>
             </div>
           ) : (
-            <div className="divide-y divide-gray-100 dark:divide-gray-800/80">
-              {universities.map((uni) => (
-                <label
-                  key={uni.id}
-                  className={cn(
-                    'flex items-center gap-3 px-2 py-3 cursor-pointer transition-colors rounded-lg my-0.5',
-                    selectedIds.has(uni.id)
-                      ? 'bg-indigo-50 dark:bg-indigo-950/20'
-                      : 'hover:bg-gray-50 dark:hover:bg-gray-800/50'
-                  )}
-                >
-                  <input
-                    type="checkbox"
-                    checked={selectedIds.has(uni.id)}
-                    onChange={() => toggleSelect(uni.id)}
-                    className="h-4 w-4 shrink-0 rounded border-gray-300 text-indigo-600 focus:ring-indigo-500"
-                  />
-                  <div className="min-w-0 flex-1">
-                    <p className="text-sm font-medium text-gray-900 dark:text-gray-100 truncate">{uni.name}</p>
-                    <p className="text-xs text-gray-400 truncate">{uni.email || 'Tidak ada email'}</p>
-                  </div>
-                  {uni.province && (
-                    <span className="shrink-0 text-xs px-2 py-1 rounded-full bg-gray-100 text-gray-500 dark:bg-gray-700 dark:text-gray-400">
-                      {uni.province}
-                    </span>
-                  )}
-                </label>
-              ))}
-            </div>
-          )}
-
-          {/* Pagination */}
-          {total > PAGE_SIZE && (
-            <div className="sticky bottom-0 flex items-center justify-between px-2 py-3 bg-white/95 dark:bg-gray-900/95 backdrop-blur-sm border-t border-gray-200 dark:border-gray-700 mt-1">
-              <span className="text-xs text-gray-400">
-                {page * PAGE_SIZE + 1}–{Math.min((page + 1) * PAGE_SIZE, total)} dari {total}
-              </span>
-              <div className="flex items-center gap-1">
-                <button
-                  onClick={() => setPage((p) => Math.max(0, p - 1))}
-                  disabled={page === 0}
-                  className="w-7 h-7 flex items-center justify-center text-xs bg-white dark:bg-gray-700 border border-gray-200 dark:border-gray-600 rounded hover:bg-gray-50 dark:hover:bg-gray-600 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
-                >
-                  ←
-                </button>
-                <span className="px-2 py-0.5 text-xs font-medium text-gray-600 dark:text-gray-300 min-w-[50px] text-center">
-                  {page + 1}/{totalPages}
-                </span>
-                <button
-                  onClick={() => setPage((p) => Math.min(totalPages - 1, p + 1))}
-                  disabled={page >= totalPages - 1}
-                  className="w-7 h-7 flex items-center justify-center text-xs bg-white dark:bg-gray-700 border border-gray-200 dark:border-gray-600 rounded hover:bg-gray-50 dark:hover:bg-gray-600 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
-                >
-                  →
-                </button>
+            universities.map((uni) => (
+              <div
+                key={uni.id}
+                onClick={() => toggleSelect(uni.id)}
+                className={cn(
+                  'flex items-center gap-3 px-3 py-2.5 rounded-lg cursor-pointer transition-colors mb-0.5',
+                  selectedIds.has(uni.id)
+                    ? 'bg-indigo-50 dark:bg-indigo-950/30'
+                    : 'hover:bg-gray-50 dark:hover:bg-gray-800/60'
+                )}
+              >
+                <div className={cn(
+                  'w-4 h-4 rounded flex items-center justify-center shrink-0',
+                  selectedIds.has(uni.id)
+                    ? 'bg-indigo-600'
+                    : 'border border-gray-300 dark:border-gray-600'
+                )}>
+                  {selectedIds.has(uni.id) && <Check className="w-2.5 h-2.5 text-white" />}
+                </div>
+                <div className="min-w-0 flex-1">
+                  <p className="text-sm font-medium text-gray-900 dark:text-gray-100 truncate">{uni.name}</p>
+                  <p className="text-xs text-gray-400 truncate">{uni.email || '—'}</p>
+                </div>
+                {uni.province && (
+                  <span className="shrink-0 text-[11px] px-2 py-0.5 rounded bg-gray-100 dark:bg-gray-700 text-gray-500 dark:text-gray-400">{uni.province}</span>
+                )}
               </div>
-            </div>
+            ))
           )}
         </div>
 
-        {/* Footer Actions */}
-        <div className="flex items-center justify-between pt-3 mt-3 border-t border-gray-200 dark:border-gray-700 gap-3">
-          <div className="flex items-center gap-2 min-w-0">
-            <input
-              type="checkbox"
-              checked={universities.length > 0 && universities.every((u) => selectedIds.has(u.id))}
-              onChange={() => {
+        {/* Footer */}
+        <div className="flex items-center justify-between mt-3 pt-3 border-t border-gray-100 dark:border-gray-800">
+          <div className="flex items-center gap-4">
+            <button
+              onClick={() => {
                 if (universities.every((u) => selectedIds.has(u.id))) {
                   setSelectedIds(new Set())
                 } else {
@@ -1058,35 +1053,59 @@ function AddRecipientsModal({ isOpen, onClose, campaignId }: { isOpen: boolean; 
                   })
                 }
               }}
-              className="h-4 w-4 rounded border-gray-300 text-indigo-600 focus:ring-indigo-500"
-            />
-            <span className="text-sm text-gray-500 truncate">
-              {selectedIds.size > 0
-                ? `${selectedIds.size} dipilih`
-                : `Pilih semua`}
-            </span>
+              className="text-xs text-gray-500 hover:text-gray-900 dark:text-gray-400 dark:hover:text-gray-100"
+            >
+              {universities.every((u) => selectedIds.has(u.id)) ? 'Uncheck all' : 'Check all'}
+            </button>
+            {selectedIds.size > 0 && (
+              <span className="text-xs text-indigo-600 font-medium">{selectedIds.size} selected</span>
+            )}
           </div>
-          <div className="flex gap-2 shrink-0">
-            <Button variant="secondary" onClick={handleClose}>Batal</Button>
-            <Button
-              variant="secondary"
+          <div className="flex items-center gap-2">
+            {total > PAGE_SIZE && (
+              <div className="flex items-center gap-1 mr-2">
+                <button
+                  onClick={() => setPage((p) => Math.max(0, p - 1))}
+                  disabled={page === 0}
+                  className="w-6 h-6 flex items-center justify-center text-xs border border-gray-200 dark:border-gray-700 rounded hover:bg-gray-50 dark:hover:bg-gray-800 disabled:opacity-40"
+                >
+                  ←
+                </button>
+                <span className="text-[11px] text-gray-400 px-1">{page + 1}/{totalPages}</span>
+                <button
+                  onClick={() => setPage((p) => Math.min(totalPages - 1, p + 1))}
+                  disabled={page >= totalPages - 1}
+                  className="w-6 h-6 flex items-center justify-center text-xs border border-gray-200 dark:border-gray-700 rounded hover:bg-gray-50 dark:hover:bg-gray-800 disabled:opacity-40"
+                >
+                  →
+                </button>
+              </div>
+            )}
+            <button
+              onClick={handleClose}
+              className="px-4 py-1.5 text-sm text-gray-500 dark:text-gray-400 hover:text-gray-900 dark:hover:text-gray-100"
+            >
+              Cancel
+            </button>
+            <button
               onClick={handleAddAll}
-              loading={addAllMutation.isPending}
-              className="text-xs"
+              disabled={addAllMutation.isPending}
+              className="px-3 py-1.5 text-xs border border-gray-200 dark:border-gray-700 rounded-lg text-gray-600 dark:text-gray-400 hover:bg-gray-50 dark:hover:bg-gray-800"
             >
-              + Semua ({total})
-            </Button>
-            <Button
+              All ({total})
+            </button>
+            <button
               onClick={handleAddSelected}
-              loading={addSelectedMutation.isPending}
               disabled={selectedIds.size === 0 && selectedGroupIds.size === 0}
+              className={cn(
+                'px-4 py-1.5 text-sm rounded-lg font-medium transition-colors',
+                selectedIds.size === 0 && selectedGroupIds.size === 0
+                  ? 'bg-gray-100 text-gray-400 dark:bg-gray-700 cursor-not-allowed'
+                  : 'bg-indigo-600 text-white hover:bg-indigo-700'
+              )}
             >
-              {selectedGroupIds.size > 0
-                ? `Tambah ${selectedGroupIds.size} Group`
-                : selectedIds.size > 0
-                  ? `Tambah ${selectedIds.size}`
-                  : 'Tambah'}
-            </Button>
+              Add {selectedIds.size > 0 ? `(${selectedIds.size})` : selectedGroupIds.size > 0 ? `(${selectedGroupIds.size})` : ''}
+            </button>
           </div>
         </div>
       </div>

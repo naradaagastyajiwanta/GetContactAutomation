@@ -2,7 +2,6 @@ import { useContext } from 'react'
 import { useLocation } from 'react-router-dom'
 import { Menu, Moon, Sun } from 'lucide-react'
 import { ThemeContext } from '../../context/ThemeContext'
-import { cn } from '../../lib/utils'
 import { NotificationCenter } from '../notifications/NotificationCenter'
 
 const pageTitles: Record<string, string> = {
@@ -42,11 +41,11 @@ export function TopBar({ onMenuClick }: TopBarProps) {
         </h1>
       </div>
 
-      <div className="flex items-center gap-3">
+      <div className="flex items-center gap-2">
         <NotificationCenter />
         <button
           onClick={toggleTheme}
-          className="rounded-lg p-2 text-gray-500 hover:bg-gray-100 dark:text-gray-400 dark:hover:bg-gray-800"
+          className="flex h-9 w-9 items-center justify-center rounded-lg text-gray-500 hover:bg-gray-100 dark:text-gray-400 dark:hover:bg-gray-800"
         >
           {theme === 'dark' ? <Sun className="h-5 w-5" /> : <Moon className="h-5 w-5" />}
         </button>

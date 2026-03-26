@@ -1,6 +1,7 @@
 import { SearchInput } from '../ui/SearchInput'
 import { Select } from '../ui/Select'
 import { useProvinces } from '../../hooks/useUniversities'
+import { useUniversityGroups } from '../../hooks/useUniversityGroups'
 
 const statusOptions = [
   { value: '', label: 'All Statuses' },
@@ -49,6 +50,8 @@ interface UniversityFiltersProps {
   onEnabledChange: (value: string) => void
   sort: string
   onSortChange: (value: string) => void
+  groupId: string
+  onGroupChange: (value: string) => void
 }
 
 export function UniversityFilters({
@@ -64,12 +67,23 @@ export function UniversityFilters({
   onEnabledChange,
   sort,
   onSortChange,
+  groupId,
+  onGroupChange,
 }: UniversityFiltersProps) {
   const { data: provinces } = useProvinces()
+  const { data: groupsData } = useUniversityGroups()
 
   const provinceOptions = [
     { value: '', label: 'All Provinces' },
     ...(provinces ?? []).map((p) => ({ value: p, label: p })),
+  ]
+
+  const groupOptions = [
+    { value: '', label: 'All Groups' },
+    ...(groupsData?.groups ?? []).map((g) => ({
+      value: String(g.id),
+      label: `${g.name} (${g.university_count})`,
+    })),
   ]
 
   return (
@@ -93,7 +107,13 @@ export function UniversityFilters({
           className="w-48"
         />
       </div>
-      <div className="flex flex-col gap-3 sm:flex-row">
+      <div className="flex flex-wrap items-center gap-2">
+        <Select
+          value={groupId}
+          onChange={onGroupChange}
+          options={groupOptions}
+          className="min-w-[200px]"
+        />
         <Select
           value={province}
           onChange={onProvinceChange}

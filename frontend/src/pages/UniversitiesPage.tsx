@@ -29,6 +29,7 @@ export default function UniversitiesPage() {
   const initialHasIg = searchParams.get('has_ig') || ''
   const initialEnabled = searchParams.get('enabled') || ''
   const initialSort = searchParams.get('sort') || ''
+  const initialGroupId = searchParams.get('group_id') || ''
   const initialPage = Math.max(1, parseInt(searchParams.get('page') || '1'))
 
   const [search, setSearch] = useState(initialSearch)
@@ -37,6 +38,7 @@ export default function UniversitiesPage() {
   const [hasIg, setHasIg] = useState(initialHasIg)
   const [enabledFilter, setEnabledFilter] = useState(initialEnabled)
   const [sort, setSort] = useState(initialSort)
+  const [groupId, setGroupId] = useState(initialGroupId)
   const [page, setPage] = useState(initialPage)
   const [importOpen, setImportOpen] = useState(false)
   const [addOpen, setAddOpen] = useState(false)
@@ -66,8 +68,8 @@ export default function UniversitiesPage() {
 
   // Check if any filters are active
   const hasActiveFilters = useMemo(() => {
-    return !!(search || status || province || hasIg || enabledFilter || sort)
-  }, [search, status, province, hasIg, enabledFilter, sort])
+    return !!(search || status || province || hasIg || enabledFilter || sort || groupId)
+  }, [search, status, province, hasIg, enabledFilter, sort, groupId])
 
   // Clear all filters
   const clearFilters = () => {
@@ -77,6 +79,7 @@ export default function UniversitiesPage() {
     setHasIg('')
     setEnabledFilter('')
     setSort('')
+    setGroupId('')
     setPage(1)
     setSelected(new Set())
 
@@ -94,6 +97,7 @@ export default function UniversitiesPage() {
     offset: (page - 1) * ITEMS_PER_PAGE,
     sort_by: sort ? sort.replace(/_desc$|_asc$/, '') : undefined,
     order: sort?.endsWith('_desc') ? 'desc' : sort?.endsWith('_asc') ? 'asc' : undefined,
+    group_id: groupId ? parseInt(groupId) : undefined,
   }
 
   const { data: result, isLoading, isFetching, refetch } = useUniversities(params, isAutoRefreshing)
@@ -143,6 +147,12 @@ export default function UniversitiesPage() {
     setSort(value)
     setPage(1)
     updateUrlParams({ sort: value || null, page: 1 })
+  }
+
+  const handleGroupChange = (value: string) => {
+    setGroupId(value)
+    setPage(1)
+    updateUrlParams({ group_id: value || null, page: 1 })
   }
 
   const handlePageChange = (newPage: number) => {
@@ -216,6 +226,8 @@ export default function UniversitiesPage() {
         onEnabledChange={handleEnabledChange}
         sort={sort}
         onSortChange={handleSortChange}
+        groupId={groupId}
+        onGroupChange={handleGroupChange}
       />
 
       {/* Active filters bar */}
@@ -261,6 +273,17 @@ export default function UniversitiesPage() {
                 IG: {hasIg === 'yes' ? 'Has IG' : 'No IG'}
                 <button
                   onClick={() => handleHasIgChange('')}
+                  className="ml-1 rounded-full p-0.5 hover:bg-gray-200 dark:hover:bg-gray-600"
+                >
+                  <X className="h-3 w-3" />
+                </button>
+              </span>
+            )}
+            {groupId && (
+              <span className="flex items-center gap-1 rounded-full bg-white px-2 py-0.5 text-xs text-gray-700 dark:bg-gray-700 dark:text-gray-200">
+                Group: ID {groupId}
+                <button
+                  onClick={() => handleGroupChange('')}
                   className="ml-1 rounded-full p-0.5 hover:bg-gray-200 dark:hover:bg-gray-600"
                 >
                   <X className="h-3 w-3" />

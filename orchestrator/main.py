@@ -436,6 +436,7 @@ async def list_universities(
     offset: int = 0,
     sort_by: str | None = None,
     order: str | None = None,
+    group_id: int | None = None,
 ):
     """List universities with combined filters, sorting, and proper pagination."""
     return await list_universities_paginated(
@@ -448,6 +449,7 @@ async def list_universities(
         offset=offset,
         sort_by=sort_by,
         order=order,
+        group_id=group_id,
     )
 
 

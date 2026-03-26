@@ -1248,29 +1248,37 @@ async def list_universities_paginated(
     offset: int = 0,
     sort_by: str | None = None,
     order: str | None = None,
+    group_id: int | None = None,
 ) -> dict:
     """Return {data: [...], total: N} with combined filters and sorting."""
     conditions: list[str] = []
     params: list = []
 
     if search:
-        conditions.append("(name LIKE ? OR province LIKE ? OR ig_handle LIKE ?)")
+        conditions.append("(u.name LIKE ? OR u.province LIKE ? OR u.ig_handle LIKE ?)")
         pattern = f"%{search}%"
         params.extend([pattern, pattern, pattern])
     if status:
-        conditions.append("status = ?")
+        conditions.append("u.status = ?")
         params.append(status)
     if province:
-        conditions.append("province = ?")
+        conditions.append("u.province = ?")
         params.append(province)
     if has_ig is True:
-        conditions.append("ig_handle IS NOT NULL AND ig_handle != ''")
+        conditions.append("u.ig_handle IS NOT NULL AND u.ig_handle != ''")
     elif has_ig is False:
-        conditions.append("(ig_handle IS NULL OR ig_handle = '')")
+        conditions.append("(u.ig_handle IS NULL OR u.ig_handle = '')")
     if enabled is True:
-        conditions.append("(enabled = 1 OR enabled IS NULL)")
+        conditions.append("(u.enabled = 1 OR u.enabled IS NULL)")
     elif enabled is False:
-        conditions.append("enabled = 0")
+        conditions.append("u.enabled = 0")
+
+    # Join with university_group_members if filtering by group
+    join_clause = ""
+    if group_id is not None:
+        join_clause = "INNER JOIN university_group_members m ON m.university_id = u.id"
+        conditions.append("m.group_id = ?")
+        params.append(group_id)
 
     where = ("WHERE " + " AND ".join(conditions)) if conditions else ""
 
@@ -1291,7 +1299,7 @@ async def list_universities_paginated(
 
     async with get_db() as db:
         # Total count
-        cursor = await db.execute(f"SELECT COUNT(*) FROM universities {where}", params)
+        cursor = await db.execute(f"SELECT COUNT(*) FROM universities u {join_clause} {where}", params)
         row = await cursor.fetchone()
         total = row[0] if row else 0
 
@@ -1307,7 +1315,7 @@ async def list_universities_paginated(
                                AND cv.university_id = c.university_id
                          ))
                 ) AS contacted_contacts
-            FROM universities u {where}
+            FROM universities u {join_clause} {where}
             ORDER BY {order_by} LIMIT ? OFFSET ?""",
             params + [limit, offset],
         )

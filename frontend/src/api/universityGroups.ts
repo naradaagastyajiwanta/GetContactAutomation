@@ -21,7 +21,13 @@ export interface GroupMemberUniversity {
   ig_handle: string | null
   email_kampus: string | null
   student_count: number | null
+  status: string
+  enabled: boolean | number
+  created_at: string
+  updated_at: string
   added_at: string
+  total_contacts: number
+  contacted_contacts: number
 }
 
 export interface UniversityGroupDetail {

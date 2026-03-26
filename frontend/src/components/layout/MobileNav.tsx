@@ -39,7 +39,7 @@ export function MobileNav({ isOpen, onClose }: MobileNavProps) {
               <Bot className="h-4 w-4 text-white" />
             </div>
             <span className="text-sm font-semibold text-gray-900 dark:text-white">
-              GetContact AI
+              DMS Marketing
             </span>
           </div>
           <button
