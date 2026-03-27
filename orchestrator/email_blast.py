@@ -9,6 +9,7 @@ import smtplib
 import ssl
 import socket
 import subprocess
+import shutil
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 from email.mime.base import MIMEBase
@@ -18,7 +19,6 @@ from typing import Optional
 from pathlib import Path
 
 import socks
-from docx import Document
 
 from orchestrator.config import cfg, log
 from orchestrator.db import get_db
@@ -246,7 +246,39 @@ def convert_docx_to_pdf(docx_path: str, pdf_path: str) -> bool:
     except Exception as e:
         log.warning(f"[EmailBlast] docx2pdf failed: {e}")
 
-    # Method 3: Try pandoc (if installed)
+    # Method 3: Try LibreOffice headless (best for Linux)
+    try:
+        out_dir = os.path.dirname(docx_path_abs)
+        result = subprocess.run(
+            ['libreoffice', '--headless', '--convert-to', 'pdf',
+             '--outdir', out_dir, docx_path_abs],
+            capture_output=True,
+            text=True,
+            timeout=60
+        )
+        if os.path.exists(pdf_path_abs):
+            log.info(f"[EmailBlast] PDF created via LibreOffice: {pdf_path_abs}")
+            return True
+        # LibreOffice may strip spaces/special chars from output filename
+        base = os.path.splitext(os.path.basename(docx_path))[0]
+        alt_pdf = os.path.join(out_dir, base + '.pdf')
+        if os.path.exists(alt_pdf):
+            shutil.move(alt_pdf, pdf_path_abs)
+            log.info(f"[EmailBlast] PDF created via LibreOffice (renamed): {pdf_path_abs}")
+            return True
+        # Fallback: scan out_dir for any new PDF that might be the converted file
+        for f in os.listdir(out_dir):
+            if f.endswith('.pdf') and 'converted' not in f.lower():
+                candidate = os.path.join(out_dir, f)
+                # Only move if it's the right size (non-zero, not huge)
+                if os.path.getsize(candidate) > 1000:
+                    shutil.move(candidate, pdf_path_abs)
+                    log.info(f"[EmailBlast] PDF created via LibreOffice (scanned): {pdf_path_abs}")
+                    return True
+    except Exception as e:
+        log.warning(f"[EmailBlast] LibreOffice failed: {e}")
+
+    # Method 4: Try pandoc (if installed)
     try:
         result = subprocess.run(
             ['pandoc', docx_path_abs, '-o', pdf_path_abs],
@@ -286,71 +318,87 @@ def extract_docx_variables(doc_path: str) -> list[str]:
     return sorted(list(variables))
 
 
+def _escape_xml_attr(value: str) -> str:
+    """Escape special XML characters for text content."""
+    return (value
+        .replace('&', '&amp;')
+        .replace('<', '&lt;')
+        .replace('>', '&gt;')
+        .replace('"', '&quot;'))
+
+
+def _render_filename(filename: str, vars_dict: dict) -> str:
+    """
+    Replace {{placeholder}} patterns in a filename with actual values.
+    Also sanitizes the result to be safe for filesystem use.
+
+    Handles filenames that may have a leading `{id}_` prefix (e.g. campaign
+    uploads stored as `13_Surat Audiensi - {{university_name}}.docx`).
+    """
+    # Strip leading `{number}_` prefix if present (from stored upload filenames)
+    result = re.sub(r'^(\d+_)', '', filename, count=1)
+    for key, value in vars_dict.items():
+        placeholder = f'{{{{{key}}}}}'
+        if placeholder in result:
+            # Sanitize: remove chars invalid in filenames, truncate if too long
+            safe_value = str(value)
+            safe_value = re.sub(r'[<>:"/\\|?*\x00-\x1f]', '_', safe_value)
+            safe_value = safe_value.strip('. ')
+            if len(safe_value) > 60:
+                safe_value = safe_value[:60]
+            result = result.replace(placeholder, safe_value)
+    # Final sanitization of whole filename
+    result = re.sub(r'[<>:"/\\|?*\x00-\x1f]', '_', result)
+    result = result.strip('. ')
+    if not result:
+        result = 'attachment'
+    return result
+
+
 def generate_docx(doc_path: str, variables: dict, output_path: str) -> bool:
-    """Generate DOCX from template with replaced variables"""
+    """
+    Generate DOCX from template by replacing {{variable}} patterns directly
+    in the XML. This PRESERVES all embedded images, VML shapes, text boxes,
+    drawings, headers, and footers — unlike python-docx which strips them.
+
+    DOCX is a ZIP archive; we only modify word/document.xml strings.
+    All other parts (media files, styles, settings) are copied as-is.
+    """
+    import zipfile
     try:
-        log.info(f"[EmailBlast] generate_docx called: {doc_path} -> {output_path}")
-        log.info(f"[EmailBlast] Variables to replace: {variables}")
+        log.info(f"[EmailBlast] generate_docx: {doc_path} -> {output_path}")
+        log.info(f"[EmailBlast] Variables: {variables}")
 
-        doc = Document(doc_path)
-
-        # Debug: print all text in document
-        all_text = []
-        for para in doc.paragraphs:
-            all_text.append(f"PARA: {repr(para.text)}")
-            for run in para.runs:
-                all_text.append(f"  RUN: {repr(run.text)}")
-        for table in doc.tables:
-            for row in table.rows:
-                for cell in row.cells:
-                    for para in cell.paragraphs:
-                        all_text.append(f"TABLE PARA: {repr(para.text)}")
-                        for run in para.runs:
-                            all_text.append(f"  TABLE RUN: {repr(run.text)}")
-
-        log.info(f"[EmailBlast] Document text content:\n" + "\n".join(all_text[:50]))  # Limit to first 50 lines
-
-        # Strategy: Work on paragraph level first, then handle runs
-        # First, collect all text and replace in paragraphs
         replacement_count = 0
 
-        # Replace in paragraphs - rebuild the paragraph text completely
-        for para in doc.paragraphs:
-            full_text = para.text
-            for key, value in variables.items():
-                placeholder = f'{{{{{key}}}}}'
-                if placeholder in full_text:
-                    log.info(f"[EmailBlast] Found placeholder {placeholder} in paragraph, replacing with: {value}")
-                    replacement_count += full_text.count(placeholder)
-                    full_text = full_text.replace(placeholder, str(value))
-            para.text = full_text
+        # Read the template DOCX (zip) and build a new DOCX with replaced text
+        with zipfile.ZipFile(doc_path, 'r') as zin:
+            with zipfile.ZipFile(output_path, 'w', zipfile.ZIP_DEFLATED) as zout:
+                for item in zin.infolist():
+                    data = zin.read(item.filename)
 
-        # Replace in tables - rebuild the cell text
-        for table in doc.tables:
-            for row in table.rows:
-                for cell in row.cells:
-                    for para in cell.paragraphs:
-                        full_text = para.text
+                    # Only modify word/document.xml — all images/shapes/headers stay untouched
+                    if item.filename == 'word/document.xml':
+                        xml_content = data.decode('utf-8')
+
                         for key, value in variables.items():
                             placeholder = f'{{{{{key}}}}}'
-                            if placeholder in full_text:
-                                log.info(f"[EmailBlast] Found placeholder {placeholder} in table, replacing with: {value}")
-                                replacement_count += full_text.count(placeholder)
-                                full_text = full_text.replace(placeholder, str(value))
-                        para.text = full_text
+                            if placeholder in xml_content:
+                                count = xml_content.count(placeholder)
+                                replacement_count += count
+                                # Escape XML special chars so the value renders as text
+                                safe_value = _escape_xml_attr(str(value))
+                                xml_content = xml_content.replace(placeholder, safe_value)
+                                log.info(f"[EmailBlast] Replaced {count}x '{placeholder}' -> '{safe_value}'")
 
-        log.info(f"[EmailBlast] Total replacements made: {replacement_count}")
+                        data = xml_content.encode('utf-8')
+                        log.info(f"[EmailBlast] Total replacements in document.xml: {replacement_count}")
 
-        doc.save(output_path)
+                    zout.writestr(item, data)
 
-        # Verify output file
-        if os.path.exists(output_path):
-            doc2 = Document(output_path)
-            output_text = "\n".join([p.text for p in doc2.paragraphs])
-            log.info(f"[EmailBlast] Output docx verification (first 500 chars): {output_text[:500]}")
-
-        log.info(f"[EmailBlast] DOCX saved successfully to {output_path}")
+        log.info(f"[EmailBlast] DOCX saved to {output_path}")
         return True
+
     except Exception as e:
         log.error(f"[EmailBlast] Error generating DOCX: {e}")
         import traceback
@@ -771,7 +819,9 @@ Sekretariat Asosiasi AI
                 log.info(f"[EmailBlast] Reading from: {attachment_path}, exists: {os.path.exists(attachment_path)}")
 
                 # Generate unique output DOCX path
-                docx_filename = attachment_filename.replace('.docx', '')
+                docx_filename = _render_filename(
+                    attachment_filename.replace('.docx', ''), vars_for_recipient
+                )
                 output_docx_name = f"{campaign_id}_{recipient_id}_{docx_filename}.docx"
                 output_docx_path = TEMPLATE_DIR / output_docx_name
 
@@ -780,7 +830,7 @@ Sekretariat Asosiasi AI
                 log.info(f"[EmailBlast] generate_docx result: {docx_result}")
 
                 if docx_result and os.path.exists(str(output_docx_path)):
-                    # MUST convert to PDF
+                    # Try PDF first (preferred), fall back to DOCX
                     output_pdf_name = f"{campaign_id}_{recipient_id}_{docx_filename}.pdf"
                     output_pdf_path = TEMPLATE_DIR / output_pdf_name
 
@@ -796,12 +846,9 @@ Sekretariat Asosiasi AI
                         except:
                             pass
                     else:
-                        log.error(f"[EmailBlast] PDF conversion FAILED - no attachment will be sent!")
-                        # Remove the DOCX file
-                        try:
-                            os.remove(str(output_docx_path))
-                        except:
-                            pass
+                        # PDF failed (Linux without Word) — send DOCX instead
+                        final_attachment = str(output_docx_path)
+                        log.warning(f"[EmailBlast] PDF conversion FAILED on Linux — sending DOCX instead: {output_docx_path}")
                 else:
                     log.error(f"[EmailBlast] Failed to generate DOCX, no attachment will be sent")
             except Exception as e:
@@ -833,8 +880,8 @@ Sekretariat Asosiasi AI
             if success:
                 await db.execute(
                     """UPDATE email_blast_recipients
-                       SET status = 'sent', sent_at = ?, rendered_subject = ?, rendered_message = ? WHERE id = ?""",
-                    (datetime.now().isoformat(), rendered_subject, rendered_msg, recipient_id)
+                       SET status = 'sent', sent_at = ?, rendered_subject = ?, rendered_message = ?, letter_number = ? WHERE id = ?""",
+                    (datetime.now().isoformat(), rendered_subject, rendered_msg, letter_number, recipient_id)
                 )
                 # Log to outbox
                 await db.execute(
@@ -910,7 +957,7 @@ async def retry_failed_email_blast(campaign_id: int, max_recipients: int = None)
                 pass
 
         # Only process 'pending' recipients (which are the retried ones)
-        query = """SELECT id, email, university_name FROM email_blast_recipients
+        query = """SELECT id, email, university_name, letter_number FROM email_blast_recipients
                    WHERE campaign_id = ? AND status = 'pending'
                    ORDER BY id"""
         if max_recipients:
@@ -930,13 +977,8 @@ async def retry_failed_email_blast(campaign_id: int, max_recipients: int = None)
 
         log.info(f"[EmailBlast] Retry campaign {campaign_id} with {len(recipients)} failed (now pending) recipients")
 
-    # Letter number — generate fresh for retry
-    letter_number = None
-    try:
-        letter_number, _ = await get_next_letter_number()
-        log.info(f"[EmailBlast] Generated letter number for retry: {letter_number}")
-    except Exception as e:
-        log.error(f"[EmailBlast] Error generating letter number for retry: {e}")
+    # Letter numbers are reused from original send (stored in letter_number column).
+    # Only generate fresh for recipients that didn't have a letter number (legacy).
 
     smtp_client = get_smtp_client()
     if not smtp_client.connect():
@@ -952,7 +994,7 @@ async def retry_failed_email_blast(campaign_id: int, max_recipients: int = None)
     sent = 0
     failed = 0
 
-    for recipient_id, email, uni_name in recipients:
+    for recipient_id, email, uni_name, stored_letter_number in recipients:
         log.info(f"[EmailBlast] Retry — processing recipient: id={recipient_id}, email={email}")
 
         if not uni_name:
@@ -968,6 +1010,15 @@ async def retry_failed_email_blast(campaign_id: int, max_recipients: int = None)
             except Exception:
                 pass
 
+        # Use stored letter number from original send; generate fresh only for legacy recipients
+        letter_number = stored_letter_number
+        if not letter_number:
+            try:
+                letter_number, _ = await get_next_letter_number()
+                log.info(f"[EmailBlast] No stored letter number for recipient {recipient_id}, generated: {letter_number}")
+            except Exception as e:
+                log.error(f"[EmailBlast] Error generating letter number for recipient {recipient_id}: {e}")
+
         # Render template
         custom_vars = {}
         if letter_number:
@@ -977,28 +1028,60 @@ async def retry_failed_email_blast(campaign_id: int, max_recipients: int = None)
                 if v:
                     custom_vars[k] = v
 
-        today = datetime.now().strftime("%d %B %Y")
-        rendered_subject = template_render(subject, email=email, university_name=uni_name,
-                                          tanggal=today, nomor_surat=letter_number or '', **custom_vars)
-        rendered_msg = template_render(template, email=email, university_name=uni_name,
-                                      tanggal=today, nomor_surat=letter_number or '', **custom_vars)
+        rendered_subject, rendered_msg = await render_template(
+            template, uni_name or "Yth. Pihak Universitas",
+            email, subject, custom_vars
+        )
 
         success = False
         error = None
         attachment_to_send = None
+        generated_docx = None
+        generated_pdf = None
 
         try:
             if attachment_path:
                 has_docx_template = attachment_filename and attachment_filename.endswith('.docx')
                 if has_docx_template:
                     try:
-                        attachment_to_send = await generate_docx(
-                            str(attachment_path), uni_name or '', email, today, letter_number or '', **custom_vars
-                        )
-                    except Exception as e:
-                        log.warning(f"[EmailBlast] Failed to generate attachment: {e}")
+                        # Build vars first (needed for filename placeholder replacement)
+                        vars_for_recipient = {
+                            'university_name': uni_name or 'Pimpinan Universitas',
+                            'email': email,
+                            'tanggal': datetime.now().strftime('%d %B %Y'),
+                        }
+                        if letter_number:
+                            vars_for_recipient['nomor_surat'] = letter_number
+                        auto_vars = {'university_name', 'email', 'tanggal', 'nomor_surat'}
+                        if attachment_vars:
+                            for k, v in attachment_vars.items():
+                                if k not in auto_vars and v:
+                                    vars_for_recipient[k] = v
 
-            success = smtp_client.send_email(
+                        # Render filename with placeholders (e.g. "Surat Audiensi - {{university_name}}.docx")
+                        docx_filename = _render_filename(
+                            attachment_filename.replace('.docx', ''), vars_for_recipient
+                        )
+                        output_docx_name = f"{campaign_id}_{recipient_id}_{docx_filename}.docx"
+                        output_pdf_name = f"{campaign_id}_{recipient_id}_{docx_filename}.pdf"
+                        generated_docx = str(TEMPLATE_DIR / output_docx_name)
+                        generated_pdf = str(TEMPLATE_DIR / output_pdf_name)
+
+                        docx_result = generate_docx(str(attachment_path), vars_for_recipient, generated_docx)
+                        if docx_result and os.path.exists(generated_docx):
+                            pdf_result = convert_docx_to_pdf(generated_docx, generated_pdf)
+                            if pdf_result and os.path.exists(generated_pdf):
+                                attachment_to_send = generated_pdf
+                                log.info(f"[EmailBlast] Retry — PDF attachment ready: {generated_pdf}")
+                            else:
+                                log.error(f"[EmailBlast] Retry — PDF conversion failed, sending DOCX: {generated_docx}")
+                                attachment_to_send = generated_docx
+                        else:
+                            log.error(f"[EmailBlast] Retry — Failed to generate DOCX attachment")
+                    except Exception as e:
+                        log.warning(f"[EmailBlast] Retry — Failed to generate attachment: {e}")
+
+            ok, err = smtp_client.send_email(
                 to_email=email,
                 subject=rendered_subject,
                 body=rendered_msg,
@@ -1006,22 +1089,25 @@ async def retry_failed_email_blast(campaign_id: int, max_recipients: int = None)
                 from_name=from_name,
                 attachment_path=attachment_to_send,
             )
+            success = ok
+            error = err
         except Exception as e:
             error = str(e)
             log.error(f"[EmailBlast] Retry — send error for {email}: {e}")
 
-        if attachment_to_send and os.path.exists(attachment_to_send):
-            try:
-                os.remove(attachment_to_send)
-            except:
-                pass
+        for generated_file in (generated_pdf, generated_docx):
+            if generated_file and os.path.exists(generated_file):
+                try:
+                    os.remove(generated_file)
+                except:
+                    pass
 
         async with get_db() as db:
             if success:
                 await db.execute(
                     """UPDATE email_blast_recipients
-                       SET status = 'sent', sent_at = ?, rendered_subject = ?, rendered_message = ? WHERE id = ?""",
-                    (datetime.now().isoformat(), rendered_subject, rendered_msg, recipient_id)
+                       SET status = 'sent', sent_at = ?, rendered_subject = ?, rendered_message = ?, letter_number = ? WHERE id = ?""",
+                    (datetime.now().isoformat(), rendered_subject, rendered_msg, letter_number, recipient_id)
                 )
                 await db.execute(
                     """INSERT INTO email_outbox
@@ -1069,9 +1155,10 @@ async def get_campaign_status(campaign_id: int) -> dict:
     """Get campaign status"""
     async with get_db() as db:
         cursor = await db.execute(
-            """SELECT id, name, subject, from_email, from_name, delay_between_ms,
-                      status, total_recipients, sent_count, failed_count,
-                      created_at, started_at, completed_at
+            """SELECT id, name, subject, template_message, from_email, from_name,
+                      delay_between_ms, status, total_recipients, sent_count, failed_count,
+                      attachment_filename, attachment_variables,
+                      created_at, started_at, completed_at, paused_at
                FROM email_blast_campaigns WHERE id = ?""",
             (campaign_id,)
         )
@@ -1084,16 +1171,20 @@ async def get_campaign_status(campaign_id: int) -> dict:
             "id": campaign[0],
             "name": campaign[1],
             "subject": campaign[2],
-            "from_email": campaign[3],
-            "from_name": campaign[4],
-            "delay_between_ms": campaign[5],
-            "status": campaign[6],
-            "total_recipients": campaign[7],
-            "sent_count": campaign[8],
-            "failed_count": campaign[9],
-            "created_at": campaign[10],
-            "started_at": campaign[11],
-            "completed_at": campaign[12]
+            "template_message": campaign[3],
+            "from_email": campaign[4],
+            "from_name": campaign[5],
+            "delay_between_ms": campaign[6],
+            "status": campaign[7],
+            "total_recipients": campaign[8],
+            "sent_count": campaign[9],
+            "failed_count": campaign[10],
+            "attachment_filename": campaign[11],
+            "attachment_variables": campaign[12],
+            "created_at": campaign[13],
+            "started_at": campaign[14],
+            "completed_at": campaign[15],
+            "paused_at": campaign[16],
         }
 
 
@@ -1655,15 +1746,17 @@ def _find_sent_folder(conn) -> str | None:
 
 async def fetch_sent_emails(limit: int = 50, offset: int = 0) -> tuple[list[dict], int]:
     """
-    Fetch emails from the Sent folder via IMAP with SQLite caching.
-    Serves from cache immediately if available, refreshes in background.
+    Fetch sent emails from the IMAP Sent folder + email_outbox (for real-time).
+    Merges both sources so newly sent emails appear immediately without waiting for IMAP.
+
+    Data flow:
+    1. IMAP cache (SQLite) — historical emails fetched from IMAP Sent folder
+    2. email_outbox — emails just sent (up to 24h old, for real-time)
+    3. Merge by (to_email, subject) dedup, sort by date descending
     """
     CACHE_TTL_SECONDS = 60
 
     log.info(f"[SentFolder] Fetching sent emails (limit: {limit}, offset: {offset})")
-
-    # Try cache first
-    results, total_count = await _fetch_sent_from_cache(limit, offset)
 
     # Check cache freshness
     cache_age: float | None = None
@@ -1682,18 +1775,122 @@ async def fetch_sent_emails(limit: int = 50, offset: int = 0) -> tuple[list[dict
 
     cache_fresh = cache_age is not None and cache_age < CACHE_TTL_SECONDS
     if cache_age is not None:
-        log.info(f"[SentFolder] Cache age: {cache_age:.1f}s, fresh: {cache_fresh}, total: {total_count}")
+        log.info(f"[SentFolder] Cache age: {cache_age:.1f}s, fresh: {cache_fresh}")
 
-    # Cache empty — block on IMAP
-    if total_count == 0:
-        log.info("[SentFolder] Cache empty — blocking IMAP fetch")
-        return await _blocking_sent_fetch(limit, offset)
+    # ── Fetch from IMAP cache ──────────────────────────────
+    imap_results: list[dict] = []
+    imap_total: int = 0
+    async with get_db() as db:
+        cursor = await db.execute("SELECT COUNT(*) FROM email_sent_cache")
+        row = await cursor.fetchone()
+        imap_total = row[0] if row else 0
 
-    # Cache has data — serve immediately, background refresh if stale
-    if not cache_fresh:
+        cursor = await db.execute(
+            """SELECT uid, message_id, from_email, from_name, to_email,
+                      subject, body, date
+               FROM email_sent_cache
+               ORDER BY uid DESC"""
+        )
+        rows = await cursor.fetchall()
+        for row in rows:
+            imap_results.append({
+                'id': row[0],
+                'message_id': row[1],
+                'from_email': row[2],
+                'from_name': row[3],
+                'to_email': row[4],
+                'subject': row[5],
+                'body': row[6],
+                'date': row[7],
+            })
+
+    # ── Fetch recent outbox entries (last 24h, not yet in IMAP cache) ──
+    OUTBOX_WINDOW_HOURS = 24
+    outbox_results: list[dict] = []
+
+    async with get_db() as db:
+        cursor = await db.execute(
+            f"""SELECT id, campaign_id, email, university_name,
+                      rendered_subject, rendered_message, sent_at
+               FROM email_outbox
+               WHERE status = 'sent'
+                 AND sent_at >= datetime('now', '-{OUTBOX_WINDOW_HOURS} hours')
+               ORDER BY sent_at DESC"""
+        )
+        outbox_rows = await cursor.fetchall()
+        for row in outbox_rows:
+            outbox_results.append({
+                'id': row[0],
+                'message_id': f"outbox-{row[0]}",
+                'from_email': 'sekretariat@asosiasi.ai',
+                'from_name': 'Sekretariat Asosiasi AI',
+                'to_email': row[2],
+                'subject': row[4],
+                'body': row[5],
+                'date': row[6],
+            })
+
+    # ── Merge: dedup outbox entries that are already in IMAP ──
+    dedup_keys: set[tuple] = {
+        (r['to_email'].lower().strip(), r['subject'].lower().strip())
+        for r in imap_results if r['to_email'] and r['subject']
+    }
+
+    merged: list[dict] = []
+    for item in outbox_results:
+        key = (item['to_email'].lower().strip(), item['subject'].lower().strip())
+        if key not in dedup_keys:
+            merged.append(item)
+            dedup_keys.add(key)
+
+    merged.extend(imap_results)
+
+    # Sort by date descending (newest first)
+    def parse_date(item: dict) -> datetime:
+        d = item.get('date')
+        if not d:
+            return datetime.min
+        # Try SQLite format first (YYYY-MM-DD HH:MM:SS)
+        try:
+            return datetime.fromisoformat(d)
+        except Exception:
+            pass
+        # Try RFC2822 format (Wed, 25 Mar 2026 17:29:58 +0700)
+        try:
+            # email module is imported at module level — accessible via enclosing scope
+            parsed = email.utils.parsedate_to_datetime(d)
+            return parsed.replace(tzinfo=None)
+        except Exception:
+            pass
+        return datetime.min
+
+    merged.sort(key=parse_date, reverse=True)
+    total_count = len(merged)
+    paginated = merged[offset:offset + limit]
+
+    log.info(f"[SentFolder] Merged total: {total_count} (imap={imap_total}, outbox={len(outbox_results)})")
+
+    # ── Decide whether to fetch IMAP ──────────────────────
+    if imap_total == 0 and len(outbox_results) == 0:
+        # Both empty — block on IMAP fetch and merge the result
+        log.info("[SentFolder] Both IMAP cache and outbox empty — blocking IMAP fetch")
+        imap_fetch_result = await _blocking_sent_fetch(limit, offset)
+        if imap_fetch_result:
+            imap_fetched, _ = imap_fetch_result
+            # Merge those into the response too
+            for item in imap_fetched:
+                key = (item.get('to_email', '').lower().strip(), item.get('subject', '').lower().strip())
+                if key not in dedup_keys:
+                    merged.append(item)
+                    dedup_keys.add(key)
+            merged.sort(key=parse_date, reverse=True)
+            total_count = len(merged)
+            paginated = merged[offset:offset + limit]
+            log.info(f"[SentFolder] After blocking fetch: total={total_count}")
+    elif not cache_fresh:
         _maybe_trigger_sent_refresh()
 
-    return results, total_count
+    return paginated, total_count
 
 
 async def _fetch_sent_from_cache(limit: int, offset: int) -> tuple[list[dict], int]:
@@ -1736,33 +1933,41 @@ def _maybe_trigger_sent_refresh():
         asyncio.create_task(_refresh_sent_cache_background())
 
 
-async def _blocking_sent_fetch(limit: int, offset: int) -> tuple[list[dict], int]:
-    """Fetch sent emails from IMAP synchronously."""
+async def _blocking_sent_fetch(limit: int, offset: int) -> tuple[list[dict], int] | None:
+    """
+    Fetch sent emails from IMAP using stable UIDs (not sequence numbers).
+    Returns (results, total) on success, None on failure.
+    """
     conn = get_imap_connection()
     if not conn:
         log.error("[SentFolder] Failed to get IMAP connection")
-        return await _fetch_sent_from_cache(limit, offset)
+        return None
 
     try:
-        # Find sent folder
         sent_folder = _find_sent_folder(conn)
         if not sent_folder:
             log.error("[SentFolder] Could not find Sent folder")
-            return await _fetch_sent_from_cache(limit, offset)
+            return None
 
         log.info(f"[SentFolder] Selecting folder: {sent_folder}")
         status, _ = conn.select(f'"{sent_folder}"')
         if status != 'OK':
             log.error(f"[SentFolder] Failed to select folder: {status}")
-            return await _fetch_sent_from_cache(limit, offset)
+            return None
 
-        status, messages = conn.search(None, 'ALL')
+        # Use UID SEARCH (not sequence number search) for stable IDs
+        try:
+            status, messages = conn.uid('SEARCH', None, 'ALL')
+        except Exception as e:
+            log.warning(f"[SentFolder] UID SEARCH not supported ({e}), falling back to sequence search")
+            status, messages = conn.search(None, 'ALL')
+
         if status != 'OK':
             log.error(f"[SentFolder] IMAP search failed: {status}")
-            return await _fetch_sent_from_cache(limit, offset)
+            return None
 
-        email_ids = messages[0].split()
-        log.info(f"[SentFolder] Found {len(email_ids)} sent emails")
+        raw_uids = messages[0].decode().split() if messages[0] else []
+        log.info(f"[SentFolder] Found {len(raw_uids)} sent emails via UID search")
 
         # Get cached UIDs
         cached_uids: set[int] = set()
@@ -1773,27 +1978,32 @@ async def _blocking_sent_fetch(limit: int, offset: int) -> tuple[list[dict], int
 
         log.info(f"[SentFolder] Already cached: {len(cached_uids)} emails")
 
-        all_reversed = email_ids[::-1]
-        new_ids = [eid for eid in all_reversed if int(eid) not in cached_uids]
+        all_uids_reversed = raw_uids[::-1]
+        new_uids = [uid for uid in all_uids_reversed if int(uid) not in cached_uids]
 
-        # Fetch needed page + new emails
-        to_fetch_ids_set: set[int] = set()
-        for eid in all_reversed[offset:offset + limit]:
-            to_fetch_ids_set.add(int(eid))
-        for eid in new_ids[:500]:
-            to_fetch_ids_set.add(int(eid))
+        # Determine which UIDs to fetch (page + new)
+        to_fetch_uids = all_uids_reversed[offset:offset + limit]
+        for uid in new_uids[:500]:
+            if int(uid) not in {int(u) for u in to_fetch_uids}:
+                to_fetch_uids = list(to_fetch_uids) + [uid]
 
-        to_fetch_ids = [eid for eid in all_reversed if int(eid) in to_fetch_ids_set]
-        log.info(f"[SentFolder] Fetching {len(to_fetch_ids)} emails from IMAP")
+        log.info(f"[SentFolder] Fetching {len(to_fetch_uids)} emails via UID")
 
         results: list[dict] = []
-        for email_id in to_fetch_ids:
+        for uid_str in to_fetch_uids:
             try:
-                status, msg_data = conn.fetch(email_id, '(RFC822)')
-                if status != 'OK':
+                # Fetch by UID to get both UID and RFC822 content
+                status, msg_data = conn.uid('FETCH', uid_str, '(UID RFC822)')
+                if status != 'OK' or not msg_data or not msg_data[0]:
                     continue
 
-                msg = email.message_from_bytes(msg_data[0][1])
+                # Parse UID from response
+                uid_match = re.search(rb'UID (\d+)', msg_data[0][0] if isinstance(msg_data[0], bytes) else msg_data[0][0].encode())
+                actual_uid = int(uid_match.group(1)) if uid_match else int(uid_str)
+
+                # Parse message
+                msg_bytes = msg_data[0][1]
+                msg = email.message_from_bytes(msg_bytes)
                 parsed = parse_email_message(msg)
 
                 from_field = parsed['from']
@@ -1804,7 +2014,7 @@ async def _blocking_sent_fetch(limit: int, offset: int) -> tuple[list[dict], int
                     from_email = email_match.group(0) if email_match else from_field
 
                 entry = {
-                    'id': int(email_id),
+                    'id': actual_uid,
                     'message_id': parsed['message_id'],
                     'from_email': from_email,
                     'from_name': re.sub(r'<.+?>', '', parsed['from']).strip(),
@@ -1815,25 +2025,26 @@ async def _blocking_sent_fetch(limit: int, offset: int) -> tuple[list[dict], int
                 }
                 results.append(entry)
 
-                # Save to cache incrementally
+                # Save to cache with real UID (stable across sessions)
                 async with get_db() as db:
                     await db.execute(
                         """INSERT OR REPLACE INTO email_sent_cache
                            (uid, message_id, from_email, from_name, to_email,
                             subject, body, date, fetched_at)
                            VALUES (?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))""",
-                        (entry['id'], entry['message_id'], entry['from_email'],
+                        (actual_uid, entry['message_id'], entry['from_email'],
                          entry['from_name'], entry['to_email'], entry['subject'],
                          entry['body'], entry['date'])
                     )
                     await db.commit()
             except Exception as e:
-                log.error(f"[SentFolder] Error parsing email {email_id}: {e}")
+                log.error(f"[SentFolder] Error fetching UID {uid_str}: {e}")
                 continue
 
         conn.close()
         conn.logout()
-        return await _fetch_sent_from_cache(limit, offset)
+        log.info(f"[SentFolder] Blocking fetch complete: {len(results)} emails fetched, {len(raw_uids)} total")
+        return results, len(raw_uids)
 
     except Exception as e:
         log.error(f"[SentFolder] Error in blocking fetch: {e}")
@@ -1842,7 +2053,7 @@ async def _blocking_sent_fetch(limit: int, offset: int) -> tuple[list[dict], int
             conn.logout()
         except Exception:
             pass
-        return await _fetch_sent_from_cache(limit, offset)
+        return None
 
 
 async def _refresh_sent_cache_background():
@@ -1866,14 +2077,18 @@ async def _refresh_sent_cache_background():
             conn.logout()
             return
 
-        status, messages = conn.search(None, 'ALL')
-        if status != 'OK':
-            conn.close()
-            conn.logout()
+        # Use UID SEARCH for stable IDs (not sequence numbers)
+        try:
+            status, messages = conn.uid('SEARCH', None, 'ALL')
+        except Exception as e:
+            log.warning(f"[SentFolder] UID SEARCH not supported ({e}), skipping background refresh")
             return
 
-        email_ids = messages[0].split()
-        all_reversed = email_ids[::-1]
+        if status != 'OK':
+            return
+
+        raw_uids = messages[0].decode().split() if messages[0] else []
+        log.info(f"[SentFolder] Background refresh: {len(raw_uids)} total emails")
 
         # Get cached UIDs
         cached_uids: set[int] = set()
@@ -1882,21 +2097,22 @@ async def _refresh_sent_cache_background():
             for r in await cursor.fetchall():
                 cached_uids.add(r[0])
 
-        new_ids = [eid for eid in all_reversed if int(eid) not in cached_uids][:500]
+        new_uids = [uid for uid in raw_uids if int(uid) not in cached_uids][:500]
 
-        if not new_ids:
+        if not new_uids:
             log.info("[SentFolder] Background refresh: no new emails")
-            conn.close()
-            conn.logout()
             return
 
-        log.info(f"[SentFolder] Background refresh: fetching {len(new_ids)} new emails")
+        log.info(f"[SentFolder] Background refresh: fetching {len(new_uids)} new emails")
 
-        for email_id in new_ids:
+        for uid_str in new_uids:
             try:
-                status, msg_data = conn.fetch(email_id, '(RFC822)')
-                if status != 'OK':
+                status, msg_data = conn.uid('FETCH', uid_str, '(UID RFC822)')
+                if status != 'OK' or not msg_data or not msg_data[0]:
                     continue
+
+                uid_match = re.search(rb'UID (\d+)', msg_data[0][0] if isinstance(msg_data[0], bytes) else msg_data[0][0].encode())
+                actual_uid = int(uid_match.group(1)) if uid_match else int(uid_str)
 
                 msg = email.message_from_bytes(msg_data[0][1])
                 parsed = parse_email_message(msg)
@@ -1914,18 +2130,17 @@ async def _refresh_sent_cache_background():
                            (uid, message_id, from_email, from_name, to_email,
                             subject, body, date, fetched_at)
                            VALUES (?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))""",
-                        (int(email_id), parsed['message_id'], from_email,
+                        (actual_uid, parsed['message_id'], from_email,
                          re.sub(r'<.+?>', '', parsed['from']).strip(),
                          parsed['to'], parsed['subject'],
                          parsed['body_text'][:2000], parsed['date'])
                     )
-            except Exception:
+            except Exception as e:
+                log.warning(f"[SentFolder] Background refresh error for UID {uid_str}: {e}")
                 continue
 
         async with get_db() as db:
             await db.commit()
-        conn.close()
-        conn.logout()
         log.info("[SentFolder] Background refresh complete")
     except Exception as e:
         log.error(f"[SentFolder] Background refresh error: {e}")
@@ -2039,27 +2254,30 @@ async def send_test_email(
     if final_attachment_filename:
         attachment_path = str(TEMPLATE_DIR / final_attachment_filename)
         if os.path.exists(attachment_path):
-            docx_filename = final_attachment_filename.replace('.docx', '')
-            output_docx_name = f"test_{campaign_id}_{docx_filename}.docx"
+            docx_filename = _render_filename(final_attachment_filename.replace('.docx', ''), vars_for_recipient)
+            output_docx_name = f"{campaign_id}_{docx_filename}.docx"
             output_docx_path = TEMPLATE_DIR / output_docx_name
 
             docx_result = generate_docx(attachment_path, vars_for_recipient, str(output_docx_path))
 
             if docx_result and os.path.exists(str(output_docx_path)):
-                # Convert to PDF
-                output_pdf_name = f"test_{campaign_id}_{docx_filename}.pdf"
+                # Convert to PDF (preferred), fall back to DOCX on Linux
+                output_pdf_name = f"{campaign_id}_{docx_filename}.pdf"
                 output_pdf_path = TEMPLATE_DIR / output_pdf_name
                 pdf_result = convert_docx_to_pdf(str(output_docx_path), str(output_pdf_path))
 
                 if pdf_result and os.path.exists(str(output_pdf_path)):
                     final_attachment = str(output_pdf_path)
-                    log.info(f"[EmailBlast] Test email PDF generated: {output_pdf_path}")
-
-                # Remove intermediate DOCX
-                try:
-                    os.remove(str(output_docx_path))
-                except:
-                    pass
+                    log.info(f"[EmailBlast] PDF generated: {output_pdf_path}")
+                    # Remove intermediate DOCX only when PDF succeeded
+                    try:
+                        os.remove(str(output_docx_path))
+                    except:
+                        pass
+                else:
+                    # PDF failed (Linux without Word) — send DOCX instead
+                    final_attachment = str(output_docx_path)
+                    log.warning(f"[EmailBlast] Test email — PDF conversion FAILED on Linux, sending DOCX: {output_docx_path}")
 
     # Send email
     smtp_client = SMTPClient()
@@ -2104,6 +2322,3 @@ async def send_test_email(
             return False, f"Failed to send: {error}"
     finally:
         smtp_client.disconnect()
-
-
-    return replies

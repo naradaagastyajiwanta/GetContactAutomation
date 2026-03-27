@@ -2,7 +2,7 @@
  * EmailSettingsPanel — SMTP config, letter numbering, IMAP settings.
  */
 
-import { useState } from 'react'
+import { useState, useEffect } from 'react'
 import {
   Settings,
   Mail,
@@ -27,12 +27,12 @@ export function EmailSettingsPanel() {
   const updateLetterMutation = useUpdateLetterConfig()
   const testSmtpMutation = useTestSmtp()
 
-  useState(() => {
+  useEffect(() => {
     if (letterConfig) {
       setLetterFormat(letterConfig.format_template)
       setLetterNumber(String(letterConfig.last_number))
     }
-  })
+  }, [letterConfig])
 
   async function handleTestSmtp() {
     setSmtpStatus('testing')

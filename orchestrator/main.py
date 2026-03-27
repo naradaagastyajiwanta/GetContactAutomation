@@ -3962,6 +3962,9 @@ async def update_email_campaign(campaign_id: int, request: dict):
         updates = []
         params = []
 
+        if 'name' in request:
+            updates.append("name = ?")
+            params.append(request['name'])
         if 'subject' in request:
             updates.append("subject = ?")
             params.append(request['subject'])
@@ -4117,7 +4120,8 @@ async def send_test_email(campaign_id: int, request: EmailBlastTestEmailRequest)
 async def get_email_recipients(campaign_id: int, status: str | None = None):
     """Get recipients of an email campaign."""
     async with get_db() as db:
-        query = """SELECT id, email, university_name, status, error_message, sent_at
+        query = """SELECT id, university_id, email, university_name, status, error_message,
+                          sent_at, rendered_subject, rendered_message
                    FROM email_blast_recipients WHERE campaign_id = ?"""
         params = [campaign_id]
 
@@ -4133,11 +4137,14 @@ async def get_email_recipients(campaign_id: int, status: str | None = None):
             "recipients": [
                 {
                     "id": r[0],
-                    "email": r[1],
-                    "university_name": r[2],
-                    "status": r[3],
-                    "error_message": r[4],
-                    "sent_at": r[5]
+                    "university_id": r[1],
+                    "email": r[2],
+                    "university_name": r[3],
+                    "status": r[4],
+                    "error_message": r[5],
+                    "sent_at": r[6],
+                    "rendered_subject": r[7],
+                    "rendered_message": r[8],
                 }
                 for r in recipients
             ]
@@ -4332,10 +4339,10 @@ async def test_inbox_fetch(limit: int = 10):
     """Test fetching from INBOX - debug endpoint."""
     from orchestrator import email_blast
 
-    emails = await email_blast.fetch_inbox_emails(limit=limit)
+    emails, total = await email_blast.fetch_inbox_emails(limit=limit)
     return {
         "success": True,
-        "message": f"Found {len(emails)} emails",
+        "message": f"Found {total} emails",
         "emails": emails
     }
 
@@ -4355,7 +4362,7 @@ async def debug_campaign_replies(campaign_id: int):
         recipient_emails = [{'id': row[0], 'email': row[1], 'name': row[2]} for row in rows]
 
     # Fetch inbox
-    all_inbox = await email_blast.fetch_inbox_emails(limit=100)
+    all_inbox, _ = await email_blast.fetch_inbox_emails(limit=100)
 
     # Debug matching
     matched = []

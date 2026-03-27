@@ -13,8 +13,8 @@ FROM python:3.11-slim AS runtime
 WORKDIR /app
 
 # CA certs for PDDIKTI API etc.
-RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates && \
-    update-ca-certificates && rm -rf /var/lib/apt/lists/*
+RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates libreoffice-writer-nogui fonts-dejavu-core \
+    && update-ca-certificates && rm -rf /var/lib/apt/lists/*
 
 # Copy installed packages from deps stage
 COPY --from=deps /usr/local/lib/python3.11/site-packages /usr/local/lib/python3.11/site-packages

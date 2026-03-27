@@ -933,6 +933,15 @@ async def init_db() -> None:
         except Exception:
             pass  # Column already exists
 
+        # Migration: add letter_number to email_blast_recipients (for retry — reuse same letter number)
+        try:
+            await db.execute(
+                "ALTER TABLE email_blast_recipients ADD COLUMN letter_number TEXT"
+            )
+            await db.commit()
+        except Exception:
+            pass  # Column already exists
+
         # Cleanup: mark any orphaned 'running' pipeline_logs as failed (from previous crash/restart)
         await db.execute(
             "UPDATE pipeline_logs SET status='failed', summary='Stale: cleaned up after restart' WHERE status='running'"

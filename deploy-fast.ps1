@@ -41,6 +41,17 @@ function Write-Info($msg) {
 # ---------------------------------------------------------------
 # Upload helpers
 # ---------------------------------------------------------------
+function Bash-Tar($projectDir, $archiveName, $tarArgs) {
+    $bashScript = "$env:TEMP\$archiveName.sh"
+    # Write bash script with UNIX line endings
+    $content = "cd ""$projectDir""`n" +
+               "tar -czf ""`$TMP/$archiveName.tar.gz"" $tarArgs"
+    $content | Out-File -FilePath $bashScript -Encoding ascii -NoNewline
+    bash $bashScript
+    Remove-Item $bashScript -ErrorAction SilentlyContinue
+    return "$env:TEMP\$archiveName.tar.gz"
+}
+
 function Upload-Orchestrator {
     Write-Info "Uploading orchestrator files..."
     foreach ($f in @("requirements.txt", "Dockerfile.orchestrator", "docker-compose.yml")) {
@@ -49,14 +60,13 @@ function Upload-Orchestrator {
             scp $localPath "${VPS}:${RemoteDir}/${f}" 2>$null
         }
     }
-    $tarFile = Join-Path $env:TEMP "orchestrator_deploy.tar.gz"
-    $projectDir = $PSScriptRoot -replace '\\', '/'
-    tar.exe -czf $tarFile -C $projectDir --exclude='__pycache__' --exclude='*.pyc' orchestrator scripts
-    $tarSize = [math]::Round((Get-Item $tarFile).Length / 1KB, 1)
+    $projectDir = ($PSScriptRoot -replace '\\','/' ) -replace '([A-Za-z]):','/$1'
+    $tmpTar = Bash-Tar $projectDir "orchestrator_deploy" "--exclude='__pycache__' --exclude='*.pyc' orchestrator scripts"
+    $tarSize = [math]::Round((Get-Item $tmpTar).Length / 1KB, 1)
     Write-Info "Uploading orchestrator archive ($tarSize KB)..."
-    scp $tarFile "${VPS}:${RemoteDir}/orchestrator_deploy.tar.gz"
-    ssh $VPS "cd $RemoteDir && tar -xzf orchestrator_deploy.tar.gz && rm orchestrator_deploy.tar.gz"
-    Remove-Item $tarFile -ErrorAction SilentlyContinue
+    scp $tmpTar "${VPS}:${RemoteDir}/orchestrator_deploy.tar.gz"
+    ssh $VPS "cd $RemoteDir && tar -xzf orchestrator_deploy.tar.gz && rm -f orchestrator_deploy.tar.gz"
+    Remove-Item $tmpTar -ErrorAction SilentlyContinue
     Write-Ok "Orchestrator uploaded"
 }
 
@@ -66,14 +76,13 @@ function Upload-Frontend {
         $localPath = Join-Path $PSScriptRoot $f
         if (Test-Path $localPath) { scp $localPath "${VPS}:${RemoteDir}/${f}" 2>$null }
     }
-    $tarFile = Join-Path $env:TEMP "frontend_deploy.tar.gz"
-    $projectDir = $PSScriptRoot -replace '\\', '/'
-    tar.exe -czf $tarFile -C $projectDir --exclude='node_modules' --exclude='dist' frontend nginx
-    $tarSize = [math]::Round((Get-Item $tarFile).Length / 1KB, 1)
+    $projectDir = ($PSScriptRoot -replace '\\','/' ) -replace '([A-Za-z]):','/$1'
+    $tmpTar = Bash-Tar $projectDir "frontend_deploy" "--exclude='node_modules' --exclude='dist' frontend nginx"
+    $tarSize = [math]::Round((Get-Item $tmpTar).Length / 1KB, 1)
     Write-Info "Uploading frontend archive ($tarSize KB)..."
-    scp $tarFile "${VPS}:${RemoteDir}/frontend_deploy.tar.gz"
-    ssh $VPS "cd $RemoteDir && tar -xzf frontend_deploy.tar.gz && rm frontend_deploy.tar.gz"
-    Remove-Item $tarFile -ErrorAction SilentlyContinue
+    scp $tmpTar "${VPS}:${RemoteDir}/frontend_deploy.tar.gz"
+    ssh $VPS "cd $RemoteDir && tar -xzf frontend_deploy.tar.gz && rm -f frontend_deploy.tar.gz"
+    Remove-Item $tmpTar -ErrorAction SilentlyContinue
     Write-Ok "Frontend uploaded"
 }
 
@@ -83,14 +92,13 @@ function Upload-Whatsapp {
         $localPath = Join-Path $PSScriptRoot $f
         if (Test-Path $localPath) { scp $localPath "${VPS}:${RemoteDir}/${f}" 2>$null }
     }
-    $tarFile = Join-Path $env:TEMP "whatsapp_deploy.tar.gz"
-    $projectDir = $PSScriptRoot -replace '\\', '/'
-    tar.exe -czf $tarFile -C $projectDir --exclude='node_modules' --exclude='dist' --exclude='auth_store' whatsapp-service
-    $tarSize = [math]::Round((Get-Item $tarFile).Length / 1KB, 1)
+    $projectDir = ($PSScriptRoot -replace '\\','/' ) -replace '([A-Za-z]):','/$1'
+    $tmpTar = Bash-Tar $projectDir "whatsapp_deploy" "--exclude='node_modules' --exclude='dist' --exclude='auth_store' whatsapp-service"
+    $tarSize = [math]::Round((Get-Item $tmpTar).Length / 1KB, 1)
     Write-Info "Uploading whatsapp archive ($tarSize KB)..."
-    scp $tarFile "${VPS}:${RemoteDir}/whatsapp_deploy.tar.gz"
-    ssh $VPS "cd $RemoteDir && tar -xzf whatsapp_deploy.tar.gz && rm whatsapp_deploy.tar.gz"
-    Remove-Item $tarFile -ErrorAction SilentlyContinue
+    scp $tmpTar "${VPS}:${RemoteDir}/whatsapp_deploy.tar.gz"
+    ssh $VPS "cd $RemoteDir && tar -xzf whatsapp_deploy.tar.gz && rm -f whatsapp_deploy.tar.gz"
+    Remove-Item $tmpTar -ErrorAction SilentlyContinue
     Write-Ok "WhatsApp service uploaded"
 }
 

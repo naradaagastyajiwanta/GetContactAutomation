@@ -22,7 +22,7 @@ interface Props {
   onSave?: () => void
 }
 
-export function EmailComposeBox({ campaign, onClose }: Props) {
+export function EmailComposeBox({ campaign, onClose, onSave, onSend }: Props) {
   const [subject, setSubject] = useState(campaign?.subject ?? '')
   const [body, setBody] = useState(campaign?.template_message ?? '')
   const [showPreview, setShowPreview] = useState(false)
@@ -134,11 +134,11 @@ export function EmailComposeBox({ campaign, onClose }: Props) {
           Attach
         </button>
         <div className="flex gap-2">
-          <Button variant="secondary" size="sm">
+          <Button variant="secondary" size="sm" onClick={onSave}>
             <Save className="h-3.5 w-3.5" />
             Save
           </Button>
-          <Button size="sm">
+          <Button size="sm" onClick={onSend}>
             <Send className="h-3.5 w-3.5" />
             Send
           </Button>
