@@ -444,12 +444,14 @@ function ContentTab({
   campaignId,
   onSave,
   isSaving,
+  onPendingSavesChange,
 }: {
   campaign: EmailBlastCampaign
   attachment: AttachmentInfo | undefined
   campaignId: number
   onSave: (data: { name: string; subject: string; template_message: string; delay_between_ms: number }) => void
   isSaving: boolean
+  onPendingSavesChange?: (pending: boolean) => void
 }) {
   const [name, setName] = useState(campaign.name ?? '')
   const [subject, setSubject] = useState(campaign.subject ?? '')
@@ -458,15 +460,50 @@ function ContentTab({
   const [showPreview, setShowPreview] = useState(false)
   const [showTestEmail, setShowTestEmail] = useState(false)
   const [varValues, setVarValues] = useState<Record<string, string>>({})
+  const [autoSaveTimer, setAutoSaveTimer] = useState<ReturnType<typeof setTimeout> | null>(null)
+  // Use a boolean flag — don't track count, only whether a save is in-flight
+  const [isDirty, setIsDirty] = useState(false)
 
   const uploadMutation = useUploadAttachment()
+  const updateMutation = useUpdateEmailCampaign()
 
   useEffect(() => {
     setName(campaign.name ?? '')
     setSubject(campaign.subject ?? '')
     setBody(campaign.template_message ?? '')
     setDelayMs(campaign.delay_between_ms / 1000)
+    setIsDirty(false)
+    if (autoSaveTimer) clearTimeout(autoSaveTimer)
+    setAutoSaveTimer(null)
   }, [campaign])
+
+  // Auto-save: debounced save on any field change
+  const triggerAutoSave = () => {
+    if (autoSaveTimer) clearTimeout(autoSaveTimer)
+    setIsDirty(true)
+    onPendingSavesChange?.(true)
+    const timer = setTimeout(() => {
+      updateMutation.mutate(
+        { id: campaignId, data: { subject, template_message: body, delay_between_ms: delayMs * 1000 } },
+        {
+          onSuccess: () => {
+            setIsDirty(false)
+            onPendingSavesChange?.(false)
+          },
+          onError: () => {
+            setIsDirty(false)
+            onPendingSavesChange?.(false)
+            toast.error('Auto-save failed')
+          },
+        },
+      )
+    }, 1000)
+    setAutoSaveTimer(timer)
+  }
+
+  const handleNameChange = (val: string) => { setName(val); triggerAutoSave() }
+  const handleSubjectChange = (val: string) => { setSubject(val); triggerAutoSave() }
+  const handleBodyChange = (val: string) => { setBody(val); triggerAutoSave() }
 
   useEffect(() => {
     if (attachment?.variables) {
@@ -480,11 +517,33 @@ function ContentTab({
     : []
 
   function insertPlaceholder(p: string) {
-    setBody((prev) => prev + p)
+    const next = body + p
+    setBody(next)
+    triggerAutoSave()
   }
 
   function handleSave() {
-    onSave({ name, subject, template_message: body, delay_between_ms: delayMs * 1000 })
+    // Cancel pending auto-save and save immediately
+    if (autoSaveTimer) {
+      clearTimeout(autoSaveTimer)
+      setAutoSaveTimer(null)
+    }
+    onPendingSavesChange?.(true)
+    updateMutation.mutate(
+      { id: campaignId, data: { subject, template_message: body, delay_between_ms: delayMs * 1000 } },
+      {
+        onSuccess: () => {
+          setIsDirty(false)
+          onPendingSavesChange?.(false)
+          toast.success('Saved')
+        },
+        onError: () => {
+          setIsDirty(false)
+          onPendingSavesChange?.(false)
+          toast.error('Failed to save')
+        },
+      },
+    )
   }
 
   async function handleAttachmentUpload(file: File) {
@@ -508,7 +567,7 @@ function ContentTab({
           <input
             type="text"
             value={name}
-            onChange={(e) => setName(e.target.value)}
+            onChange={(e) => handleNameChange(e.target.value)}
             disabled={isReadOnly}
             placeholder="e.g., Undangan Audiensi Q2 2025"
             className="w-full rounded-lg border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 placeholder-gray-400 focus:border-indigo-500 focus:outline-none focus:ring-1 focus:ring-indigo-500 disabled:bg-gray-50 dark:border-gray-700 dark:bg-gray-800 dark:text-gray-100 dark:placeholder-gray-500 dark:disabled:bg-gray-900"
@@ -524,7 +583,7 @@ function ContentTab({
             <input
               type="text"
               value={subject}
-              onChange={(e) => setSubject(e.target.value)}
+              onChange={(e) => handleSubjectChange(e.target.value)}
               disabled={isReadOnly}
               placeholder="Email subject..."
               className="w-full rounded-lg border border-gray-200 bg-white px-3 py-2 pr-20 text-sm text-gray-900 placeholder-gray-400 focus:border-indigo-500 focus:outline-none focus:ring-1 focus:ring-indigo-500 disabled:bg-gray-50 dark:border-gray-700 dark:bg-gray-800 dark:text-gray-100 dark:placeholder-gray-500 dark:disabled:bg-gray-900"
@@ -579,7 +638,7 @@ function ContentTab({
           </div>
           <textarea
             value={body}
-            onChange={(e) => setBody(e.target.value)}
+            onChange={(e) => handleBodyChange(e.target.value)}
             disabled={isReadOnly}
             rows={12}
             placeholder="Email body... Gunakan {{university_name}}, {{tanggal}}, dll untuk placeholder."
@@ -674,7 +733,7 @@ function ContentTab({
           <input
             type="number"
             value={delayMs}
-            onChange={(e) => setDelayMs(parseInt(e.target.value) || 1)}
+            onChange={(e) => { setDelayMs(parseInt(e.target.value) || 1); triggerAutoSave() }}
             disabled={isReadOnly}
             min={1}
             max={300}
@@ -687,18 +746,18 @@ function ContentTab({
       {!isReadOnly && (
         <div className="flex items-center justify-between border-t border-gray-100 px-5 py-3 dark:border-gray-800">
           <div className="flex items-center gap-2">
-            <Button variant="secondary" onClick={handleSave} loading={isSaving}>
+            <Button variant="secondary" onClick={handleSave} loading={updateMutation.isPending}>
               <Save className="h-4 w-4" />
               Save Draft
             </Button>
-            <Button variant="secondary" onClick={() => setShowTestEmail(true)}>
+            <Button variant={isDirty ? 'secondary' : 'success'} disabled={isDirty} onClick={() => setShowTestEmail(true)}>
               <Mail className="h-4 w-4" />
               Send Test Email
             </Button>
           </div>
           <div className="flex items-center gap-2">
             <span className="text-xs text-gray-400">
-              {isSaving ? 'Saving...' : 'Auto-saves on blur'}
+              {updateMutation.isPending || isDirty ? 'Saving...' : 'Auto-saves'}
             </span>
           </div>
         </div>
@@ -1239,6 +1298,7 @@ export function EmailCampaignDetail({ campaignId, onClose }: Props) {
   const [activeTab, setActiveTab] = useState<'content' | 'recipients' | 'sent' | 'inbox'>('content')
   const [showStartModal, setShowStartModal] = useState(false)
   const [isSaving, setIsSaving] = useState(false)
+  const [hasPendingSaves, setHasPendingSaves] = useState(false)
 
   const { data, isLoading, refetch } = useEmailBlastCampaign(campaignId ?? 0)
   const { data: attachment, refetch: refetchAttachment } = useCampaignAttachment(campaignId ?? 0)
@@ -1382,7 +1442,7 @@ export function EmailCampaignDetail({ campaignId, onClose }: Props) {
 
           {campaign.status === 'draft' && (
             <>
-              <Button size="sm" variant="secondary" onClick={() => setShowStartModal(true)}>
+              <Button size="sm" variant={hasPendingSaves || isSaving ? 'secondary' : 'success'} disabled={hasPendingSaves || isSaving} onClick={() => setShowStartModal(true)}>
                 <Rocket className="h-3.5 w-3.5" />
                 Start
               </Button>
@@ -1443,6 +1503,7 @@ export function EmailCampaignDetail({ campaignId, onClose }: Props) {
             campaignId={campaignId}
             onSave={handleSave}
             isSaving={isSaving}
+            onPendingSavesChange={setHasPendingSaves}
           />
         )}
         {activeTab === 'recipients' && <RecipientsTab campaignId={campaignId} campaign={campaign} />}
@@ -1464,7 +1525,7 @@ export function EmailCampaignDetail({ campaignId, onClose }: Props) {
           )}
           <div className="flex justify-end gap-2">
             <Button variant="secondary" onClick={() => setShowStartModal(false)}>Cancel</Button>
-            <Button onClick={handleStart} loading={startMutation.isPending} disabled={campaign.total_recipients === 0}>
+            <Button variant={campaign.total_recipients === 0 ? 'secondary' : 'success'} onClick={handleStart} loading={startMutation.isPending} disabled={campaign.total_recipients === 0}>
               <Rocket className="h-4 w-4" />
               Start Sending
             </Button>

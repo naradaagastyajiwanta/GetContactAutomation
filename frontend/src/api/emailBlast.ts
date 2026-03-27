@@ -296,3 +296,42 @@ export async function updateLetterConfig(
   })
   return response.data
 }
+
+// Letter History
+export interface LetterHistoryItem {
+  id: number
+  campaign_id: number
+  campaign_name: string
+  letter_number: string
+  university_name: string | null
+  email: string
+  sent_at: string | null
+  is_duplicate: boolean
+}
+
+export interface LetterHistoryResponse {
+  success: boolean
+  items: LetterHistoryItem[]
+  total: number
+  duplicate_count: number
+  limit: number
+  offset: number
+}
+
+export async function getLetterHistory(params?: {
+  campaign_id?: number
+  duplicate_only?: boolean
+  search?: string
+  limit?: number
+  offset?: number
+}): Promise<LetterHistoryResponse> {
+  const searchParams = new URLSearchParams()
+  if (params?.campaign_id) searchParams.set('campaign_id', String(params.campaign_id))
+  if (params?.duplicate_only) searchParams.set('duplicate_only', 'true')
+  if (params?.search) searchParams.set('search', params.search)
+  if (params?.limit !== undefined) searchParams.set('limit', String(params.limit))
+  if (params?.offset !== undefined) searchParams.set('offset', String(params.offset))
+  const qs = searchParams.toString() ? `?${searchParams.toString()}` : ''
+  const response = await apiClient.get(`/email-blast/letter-history${qs}`)
+  return response.data
+}

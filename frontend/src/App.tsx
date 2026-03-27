@@ -71,6 +71,7 @@ export default function App() {
                   <Route path="email-blast/campaigns" element={<ErrorBoundary><EmailBlastPage /></ErrorBoundary>} />
                   <Route path="email-blast/campaigns/:id" element={<ErrorBoundary><EmailBlastPage /></ErrorBoundary>} />
                   <Route path="email-blast/settings" element={<ErrorBoundary><EmailBlastPage /></ErrorBoundary>} />
+                  <Route path="email-blast/letter-history" element={<ErrorBoundary><EmailBlastPage /></ErrorBoundary>} />
                   <Route path="dms-schedules" element={<ErrorBoundary><DmsSchedulesPage /></ErrorBoundary>} />
                   <Route path="dms-schedules/:id" element={<ErrorBoundary><DmsScheduleDetailPage /></ErrorBoundary>} />
                   <Route path="crm" element={<ErrorBoundary><CrmPage /></ErrorBoundary>} />

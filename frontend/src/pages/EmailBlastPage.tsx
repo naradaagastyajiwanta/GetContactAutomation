@@ -16,6 +16,7 @@ import {
   TrendingUp,
   Settings,
   Plus,
+  History,
 } from 'lucide-react'
 import { cn } from '../lib/utils'
 import { useEmailBlastCampaigns, useAllInboxEmails } from '../hooks/useEmailBlast'
@@ -28,11 +29,12 @@ import { EmailSentView } from '../components/emailBlast/EmailSentView'
 import { EmailCampaignList } from '../components/emailBlast/EmailCampaignList'
 import { EmailCampaignDetail } from '../components/emailBlast/EmailCampaignDetail'
 import { EmailSettingsPanel } from '../components/emailBlast/EmailSettingsPanel'
+import { EmailLetterHistory } from '../components/emailBlast/EmailLetterHistory'
 import type { EmailBlastCampaign } from '../api/emailBlast'
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 
-type View = 'inbox' | 'sent' | 'campaigns' | 'settings' | 'campaign-detail'
+type View = 'inbox' | 'sent' | 'campaigns' | 'settings' | 'letter-history' | 'campaign-detail'
 
 interface NavItem {
   id: View
@@ -76,6 +78,7 @@ function EmailLeftRail({
   const navItems: NavItem[] = [
     { id: 'inbox', label: 'Inbox', icon: Inbox, badge: inboxCount, section: 'messages' },
     { id: 'sent', label: 'Sent', icon: Send, badge: sentCount, section: 'messages' },
+    { id: 'letter-history', label: 'Riwayat Surat', icon: History, section: 'messages' },
   ]
 
   const campaignItems: NavItem[] = [
@@ -246,6 +249,7 @@ export default function EmailBlastPage() {
     if (path.includes('/email-blast/inbox')) return 'inbox'
     if (path.includes('/email-blast/sent')) return 'sent'
     if (path.includes('/email-blast/settings')) return 'settings'
+    if (path.includes('/email-blast/letter-history')) return 'letter-history'
     return 'campaigns'
   }
 
@@ -299,6 +303,7 @@ export default function EmailBlastPage() {
       else if (view === 'inbox') navigate('/email-blast/inbox')
       else if (view === 'sent') navigate('/email-blast/sent')
       else if (view === 'settings') navigate('/email-blast/settings')
+      else if (view === 'letter-history') navigate('/email-blast/letter-history')
     }
   }
 
@@ -322,6 +327,10 @@ export default function EmailBlastPage() {
   function renderContent() {
     if (activeView === 'settings') {
       return <EmailSettingsPanel />
+    }
+
+    if (activeView === 'letter-history') {
+      return <EmailLetterHistory />
     }
 
     if (activeView === 'campaign-detail' || showCompose) {

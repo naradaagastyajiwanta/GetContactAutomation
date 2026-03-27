@@ -23,6 +23,7 @@ import {
   getAllSentEmails,
   getSentFolderEmails,
   sendTestEmail,
+  getLetterHistory,
   type EmailBlastCampaign,
   type EmailBlastRecipient,
   type CreateEmailCampaignRequest,
@@ -290,5 +291,19 @@ export function useSendTestEmail() {
       queryClient.invalidateQueries({ queryKey: ['email-blast-all-sent-paginated'] })
       queryClient.invalidateQueries({ queryKey: ['email-blast-sent-emails'] })
     },
+  })
+}
+
+export function useLetterHistory(params?: {
+  campaign_id?: number
+  duplicate_only?: boolean
+  search?: string
+  limit?: number
+  offset?: number
+}) {
+  return useQuery({
+    queryKey: ['email-blast-letter-history', params],
+    queryFn: () => getLetterHistory(params),
+    staleTime: 30_000,
   })
 }

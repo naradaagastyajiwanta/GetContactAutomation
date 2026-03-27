@@ -126,7 +126,8 @@ class SMTPClient:
 
     def send_email(self, to_email: str, subject: str, body: str,
                    from_email: str = None, from_name: str = None,
-                   attachment_path: str = None) -> tuple[bool, str]:
+                   attachment_path: str = None,
+                   attachment_filename: str = None) -> tuple[bool, str]:
         """Send single email with optional attachment"""
         if not self._connection:
             success = self.connect()
@@ -163,7 +164,13 @@ class SMTPClient:
                     part = MIMEBase('application', 'octet-stream')
                     part.set_payload(f.read())
                     encoders.encode_base64(part)
-                    filename = os.path.basename(attachment_path)
+                    # Use provided clean filename, or strip the {campaign_id}_{recipient_id}_ prefix from disk basename
+                    if attachment_filename:
+                        filename = attachment_filename
+                    else:
+                        basename = os.path.basename(attachment_path)
+                        # Strip leading {campaign_id}_{recipient_id}_ prefix (e.g. "13_1_" → "")
+                        filename = re.sub(r'^\d+_\d+_', '', basename)
                     part.add_header('Content-Disposition', f'attachment; filename="{filename}"')
                     msg.attach(part)
                     log.debug(f"[EmailBlast] Attached: {filename}")
@@ -559,21 +566,22 @@ async def add_recipients_to_campaign(campaign_id: int, university_ids: list[int]
         added = 0
         for uni_id, uni_name, email in universities:
             try:
-                await db.execute(
+                cursor = await db.execute(
                     """INSERT OR IGNORE INTO email_blast_recipients
                        (campaign_id, university_id, email, university_name)
                        VALUES (?, ?, ?, ?)""",
                     (campaign_id, uni_id, email, uni_name)
                 )
-                added += 1
+                if cursor.lastrowid is not None and cursor.lastrowid > 0:
+                    added += 1
             except:
                 pass
 
         await db.commit()
 
-        # Update total count
+        # Update total count — accumulate (don't overwrite)
         await db.execute(
-            "UPDATE email_blast_campaigns SET total_recipients = ? WHERE id = ?",
+            "UPDATE email_blast_campaigns SET total_recipients = total_recipients + ? WHERE id = ?",
             (added, campaign_id)
         )
         await db.commit()
@@ -587,7 +595,7 @@ async def add_all_emails_to_campaign(campaign_id: int,
     async with get_db() as db:
         query = """SELECT id, name, email_kampus FROM universities
                    WHERE email_kampus IS NOT NULL AND email_kampus != '' AND enabled = 1"""
-        params = []
+        params: list = []
 
         if provinces:
             placeholders = ','.join('?' * len(provinces))
@@ -601,21 +609,23 @@ async def add_all_emails_to_campaign(campaign_id: int,
         added = 0
         for uni_id, uni_name, email in universities:
             try:
-                await db.execute(
+                cursor = await db.execute(
                     """INSERT OR IGNORE INTO email_blast_recipients
                        (campaign_id, university_id, email, university_name)
                        VALUES (?, ?, ?, ?)""",
                     (campaign_id, uni_id, email, uni_name)
                 )
-                added += 1
+                # Only count if actually inserted (rowcount > 0 for aiosqlite)
+                if cursor.lastrowid is not None and cursor.lastrowid > 0:
+                    added += 1
             except:
                 pass
 
         await db.commit()
 
-        # Update total count
+        # Update total count — accumulate (don't overwrite)
         await db.execute(
-            "UPDATE email_blast_campaigns SET total_recipients = ? WHERE id = ?",
+            "UPDATE email_blast_campaigns SET total_recipients = total_recipients + ? WHERE id = ?",
             (added, campaign_id)
         )
         await db.commit()
@@ -704,15 +714,6 @@ async def run_email_blast_campaign(campaign_id: int,
 
         log.info(f"[EmailBlast] Starting campaign {campaign_id} with {len(recipients)} recipients")
 
-    # Generate letter number for this campaign (once per campaign)
-    # Always generate it — needed for email body placeholders like {{nomor_surat}}
-    letter_number = None
-    try:
-        letter_number, _ = await get_next_letter_number()
-        log.info(f"[EmailBlast] Generated letter number: {letter_number}")
-    except Exception as e:
-        log.error(f"[EmailBlast] Error generating letter number: {e}")
-
     # Use provided or create SMTP client
     if smtp_client is None:
         smtp_client = get_smtp_client()
@@ -750,6 +751,14 @@ Sekretariat Asosiasi AI
     for recipient_id, email, uni_name in recipients:
         log.info(f"[EmailBlast] Processing recipient: id={recipient_id}, email={email}, uni_name={uni_name}")
 
+        # Generate unique letter number per recipient
+        letter_number = None
+        try:
+            letter_number, _ = await get_next_letter_number()
+            log.info(f"[EmailBlast] Generated letter number: {letter_number}")
+        except Exception as e:
+            log.error(f"[EmailBlast] Error generating letter number: {e}")
+
         # If uni_name is None/empty, try to get from universities table by email
         if not uni_name:
             try:
@@ -786,6 +795,7 @@ Sekretariat Asosiasi AI
 
         # Generate attachment if needed (always generate if attachment file exists)
         final_attachment = None
+        clean_attachment_filename = None
         log.info(f"[EmailBlast] Attachment check: attachment_filename={attachment_filename}, attachment_path={attachment_path}")
         if attachment_path:
             try:
@@ -839,6 +849,7 @@ Sekretariat Asosiasi AI
 
                     if pdf_result and os.path.exists(str(output_pdf_path)):
                         final_attachment = str(output_pdf_path)
+                        clean_attachment_filename = f"{docx_filename}.pdf"
                         log.info(f"[EmailBlast] PDF created successfully: {output_pdf_path}")
                         # Remove the intermediate DOCX file
                         try:
@@ -848,6 +859,7 @@ Sekretariat Asosiasi AI
                     else:
                         # PDF failed (Linux without Word) — send DOCX instead
                         final_attachment = str(output_docx_path)
+                        clean_attachment_filename = f"{docx_filename}.docx"
                         log.warning(f"[EmailBlast] PDF conversion FAILED on Linux — sending DOCX instead: {output_docx_path}")
                 else:
                     log.error(f"[EmailBlast] Failed to generate DOCX, no attachment will be sent")
@@ -861,7 +873,8 @@ Sekretariat Asosiasi AI
         try:
             success, error = smtp_client.send_email(
                 email, rendered_subject, rendered_msg, from_email, from_name,
-                attachment_path=final_attachment
+                attachment_path=final_attachment,
+                attachment_filename=clean_attachment_filename,
             )
             log.info(f"[EmailBlast] Send result: success={success}, error={error}")
         except Exception as e:
@@ -1036,6 +1049,7 @@ async def retry_failed_email_blast(campaign_id: int, max_recipients: int = None)
         success = False
         error = None
         attachment_to_send = None
+        clean_attachment_filename = None
         generated_docx = None
         generated_pdf = None
 
@@ -1072,10 +1086,12 @@ async def retry_failed_email_blast(campaign_id: int, max_recipients: int = None)
                             pdf_result = convert_docx_to_pdf(generated_docx, generated_pdf)
                             if pdf_result and os.path.exists(generated_pdf):
                                 attachment_to_send = generated_pdf
+                                clean_attachment_filename = f"{docx_filename}.pdf"
                                 log.info(f"[EmailBlast] Retry — PDF attachment ready: {generated_pdf}")
                             else:
                                 log.error(f"[EmailBlast] Retry — PDF conversion failed, sending DOCX: {generated_docx}")
                                 attachment_to_send = generated_docx
+                                clean_attachment_filename = f"{docx_filename}.docx"
                         else:
                             log.error(f"[EmailBlast] Retry — Failed to generate DOCX attachment")
                     except Exception as e:
@@ -1088,6 +1104,7 @@ async def retry_failed_email_blast(campaign_id: int, max_recipients: int = None)
                 from_email=from_email,
                 from_name=from_name,
                 attachment_path=attachment_to_send,
+                attachment_filename=clean_attachment_filename,
             )
             success = ok
             error = err
@@ -2251,6 +2268,7 @@ async def send_test_email(
 
     # Handle attachment
     final_attachment = None
+    clean_attachment_filename = None
     if final_attachment_filename:
         attachment_path = str(TEMPLATE_DIR / final_attachment_filename)
         if os.path.exists(attachment_path):
@@ -2268,6 +2286,7 @@ async def send_test_email(
 
                 if pdf_result and os.path.exists(str(output_pdf_path)):
                     final_attachment = str(output_pdf_path)
+                    clean_attachment_filename = f"{docx_filename}.pdf"
                     log.info(f"[EmailBlast] PDF generated: {output_pdf_path}")
                     # Remove intermediate DOCX only when PDF succeeded
                     try:
@@ -2277,6 +2296,7 @@ async def send_test_email(
                 else:
                     # PDF failed (Linux without Word) — send DOCX instead
                     final_attachment = str(output_docx_path)
+                    clean_attachment_filename = f"{docx_filename}.docx"
                     log.warning(f"[EmailBlast] Test email — PDF conversion FAILED on Linux, sending DOCX: {output_docx_path}")
 
     # Send email
@@ -2288,7 +2308,8 @@ async def send_test_email(
             rendered_msg,
             final_from_email or "sekretariat@asosiasi.ai",
             final_from_name or "Sekretariat Asosiasi AI",
-            attachment_path=final_attachment
+            attachment_path=final_attachment,
+            attachment_filename=clean_attachment_filename,
         )
 
         if success:

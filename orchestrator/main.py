@@ -4121,7 +4121,7 @@ async def get_email_recipients(campaign_id: int, status: str | None = None):
     """Get recipients of an email campaign."""
     async with get_db() as db:
         query = """SELECT id, university_id, email, university_name, status, error_message,
-                          sent_at, rendered_subject, rendered_message
+                          sent_at, rendered_subject, rendered_message, letter_number
                    FROM email_blast_recipients WHERE campaign_id = ?"""
         params = [campaign_id]
 
@@ -4145,6 +4145,7 @@ async def get_email_recipients(campaign_id: int, status: str | None = None):
                     "sent_at": r[6],
                     "rendered_subject": r[7],
                     "rendered_message": r[8],
+                    "letter_number": r[9],
                 }
                 for r in recipients
             ]
@@ -4494,3 +4495,106 @@ async def update_letter_config(request: Request):
         "format_template": config['format_template'],
         "last_number": config['last_number']
     }
+
+
+@app.get("/email-blast/letter-history")
+async def get_letter_history(
+    campaign_id: int | None = None,
+    duplicate_only: bool = False,
+    search: str | None = None,
+    limit: int = 100,
+    offset: int = 0,
+):
+    """
+    Get all sent letters with letter numbers.
+    Highlights duplicates for easy identification.
+    """
+    async with get_db() as db:
+        # Base query — only sent recipients with letter_number
+        base_cols = """
+            r.id, r.campaign_id, c.name as campaign_name,
+            r.letter_number, r.university_name, r.email, r.sent_at
+        """
+        query = f"""
+            SELECT {base_cols}
+            FROM email_blast_recipients r
+            JOIN email_blast_campaigns c ON c.id = r.campaign_id
+            WHERE r.status = 'sent'
+              AND r.letter_number IS NOT NULL
+              AND r.letter_number != ''
+        """
+        count_query = """
+            SELECT COUNT(*) FROM email_blast_recipients r
+            JOIN email_blast_campaigns c ON c.id = r.campaign_id
+            WHERE r.status = 'sent'
+              AND r.letter_number IS NOT NULL
+              AND r.letter_number != ''
+        """
+        params: list = []
+
+        if campaign_id is not None:
+            query += " AND r.campaign_id = ?"
+            count_query += " AND r.campaign_id = ?"
+            params.append(campaign_id)
+
+        if search:
+            query += " AND (r.letter_number LIKE ? OR r.university_name LIKE ?)"
+            count_query += " AND (r.letter_number LIKE ? OR r.university_name LIKE ?)"
+            params.extend([f"%{search}%", f"%{search}%"])
+
+        query += " ORDER BY r.sent_at DESC"
+
+        # Get all rows (needed for duplicate detection)
+        rows_query = f"SELECT {base_cols} FROM email_blast_recipients r JOIN email_blast_campaigns c ON c.id = r.campaign_id WHERE r.status = 'sent' AND r.letter_number IS NOT NULL AND r.letter_number != ''"
+        if campaign_id is not None:
+            rows_query += " AND r.campaign_id = ?"
+        rows_query += " ORDER BY r.sent_at DESC"
+
+        async with get_db() as db2:
+            all_cursor = await db2.execute(rows_query, params)
+            all_rows = await all_cursor.fetchall()
+
+        # Detect duplicates: same letter_number appearing more than once
+        letter_count: dict[str, int] = {}
+        for row in all_rows:
+            ln = row[3]  # letter_number
+            if ln:
+                letter_count[ln] = letter_count.get(ln, 0) + 1
+
+        duplicate_letters = {ln for ln, cnt in letter_count.items() if cnt > 1}
+
+        # Apply duplicate filter
+        if duplicate_only:
+            filtered_rows = [r for r in all_rows if r[3] in duplicate_letters]
+            total = len(filtered_rows)
+        else:
+            total = len(all_rows)
+            filtered_rows = all_rows
+
+        # Apply pagination
+        paginated = filtered_rows[offset:offset + limit]
+
+        items = [
+            {
+                "id": row[0],
+                "campaign_id": row[1],
+                "campaign_name": row[2],
+                "letter_number": row[3],
+                "university_name": row[4],
+                "email": row[5],
+                "sent_at": row[6],
+                "is_duplicate": row[3] in duplicate_letters,
+            }
+            for row in paginated
+        ]
+
+        duplicate_count = sum(cnt for ln, cnt in letter_count.items() if cnt > 1)
+
+        return {
+            "success": True,
+            "items": items,
+            "total": total,
+            "duplicate_count": duplicate_count,
+            "limit": limit,
+            "offset": offset,
+        }
