@@ -71,6 +71,7 @@ from orchestrator.db import (
     get_pipeline_logs,
     get_pipeline_log_by_id,
     cleanup_old_pipeline_logs,
+    get_email_blast_quota_info,
     get_db,
 )
 from orchestrator.config_registry import (
@@ -4320,6 +4321,14 @@ async def test_smtp_connection():
     success = smtp.connect()
     smtp.disconnect()
     return {"success": success, "message": "SMTP connected" if success else "SMTP failed"}
+
+
+@app.get("/email-blast/quota")
+async def get_email_blast_quota():
+    """Get today's email blast quota usage."""
+    daily_limit = cfg.get("EMAIL_BLAST_DAILY_LIMIT", 200)
+    quota = await get_email_blast_quota_info(daily_limit)
+    return quota
 
 
 @app.post("/email-blast/test-imap")

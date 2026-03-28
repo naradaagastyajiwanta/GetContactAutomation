@@ -2,6 +2,8 @@ import { useQuery, useMutation, useQueryClient, useInfiniteQuery } from '@tansta
 import {
   createEmailCampaign,
   listEmailCampaigns,
+  getEmailBlastQuota,
+  type EmailBlastQuota,
   getEmailCampaign,
   addAllRecipientsToCampaign,
   addSelectedRecipients,
@@ -81,6 +83,7 @@ export function useStartEmailCampaign() {
       queryClient.invalidateQueries({ queryKey: ['email-blast-campaigns'] })
       queryClient.invalidateQueries({ queryKey: ['email-blast-campaign'] })
       queryClient.invalidateQueries({ queryKey: ['email-blast-recipients'] })
+      queryClient.invalidateQueries({ queryKey: ['email-blast-quota'] })
     },
   })
 }
@@ -305,5 +308,14 @@ export function useLetterHistory(params?: {
     queryKey: ['email-blast-letter-history', params],
     queryFn: () => getLetterHistory(params),
     staleTime: 30_000,
+  })
+}
+
+export function useEmailBlastQuota() {
+  return useQuery<EmailBlastQuota>({
+    queryKey: ['email-blast-quota'],
+    queryFn: getEmailBlastQuota,
+    staleTime: 30_000,
+    refetchInterval: 60_000,
   })
 }

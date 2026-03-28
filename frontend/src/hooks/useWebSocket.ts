@@ -12,8 +12,10 @@ type WSEvent =
   | { type: 'university_updated'; uni_id: number; status: string }
   | { type: 'got_number'; uni_id: number; phone: string }
   | { type: 'quota_reached'; remaining: number }
-  | { type: 'blast_progress'; campaign_id: number; recipient_id: number; phone: string; status: string }
+  | { type: 'blast_progress'; campaign_id: number; sent_count: number; failed_count: number; total: number; percent: number; status: string }
   | { type: 'blast_completed'; campaign_id: number; failed: Array<{ phone: string; name: string; university: string; error: string }> }
+  | { type: 'email_quota_updated'; sent_today: number; daily_limit: number; remaining: number; is_exhausted: boolean; campaign_id: number }
+  | { type: 'quota_exhausted'; campaign_id: number; remaining: number; daily_limit: number; pending_count: number }
 
 // Singleton WebSocket across all hook instances
 let wsInstance: WebSocket | null = null
@@ -55,6 +57,15 @@ function handleEventNotifications(data: WSEvent, add: ReturnType<typeof useNotif
     }
     case 'quota_reached':
       add({ type: 'quota_reached', title: 'Daily quota reached', body: `Only ${data.remaining} conversations remaining.` })
+      break
+    case 'quota_exhausted':
+      add({
+        type: 'quota_exhausted',
+        title: '📧 Quota harian habis — Campaign di-pause',
+        body: data.pending_count > 0
+          ? `${data.pending_count} email belum terkirim. Campaign akan otomatis lanjut besok.`
+          : `Quota harian (${data.daily_limit} email) sudah tercapai.`,
+      })
       break
     case 'conversation_changed':
       add({ type: 'conversation_changed', title: 'Conversation updated', body: `#${data.conv_id} → ${data.state}` })
@@ -98,7 +109,26 @@ function handleEventQuery(data: WSEvent, qc: ReturnType<typeof useQueryClient>) 
       toast.error('Daily quota reached!', { duration: 5000, icon: '⚠️' })
       break
     case 'blast_progress':
-      qc.invalidateQueries({ queryKey: queryKeys.blast })
+      // Instantly update campaign cache — no delay, progress bar moves in real-time
+      qc.setQueryData(
+        ['email-blast-campaign', data.campaign_id],
+        (old: unknown) => {
+          if (!old) return old
+          const o = old as { campaign?: { sent_count?: number; failed_count?: number; status?: string } }
+          return {
+            ...o,
+            campaign: {
+              ...o.campaign,
+              sent_count: data.sent_count,
+              failed_count: data.failed_count,
+              status: data.status,
+            },
+          }
+        }
+      )
+      // Also refresh the campaigns list and quota
+      qc.invalidateQueries({ queryKey: ['email-blast-campaigns'] })
+      qc.invalidateQueries({ queryKey: ['email-blast-quota'] })
       break
     case 'blast_completed': {
       const failedCount = data.failed?.length || 0
@@ -111,8 +141,19 @@ function handleEventQuery(data: WSEvent, qc: ReturnType<typeof useQueryClient>) 
       }
       qc.invalidateQueries({ queryKey: queryKeys.blast })
       qc.invalidateQueries({ queryKey: queryKeys.universities.all })
+      qc.invalidateQueries({ queryKey: ['email-blast-campaigns'] })
       break
     }
+    case 'email_quota_updated':
+      // Immediately update the quota query cache with fresh data from WebSocket
+      qc.setQueryData(['email-blast-quota'], (old: unknown) => ({
+        ...(old as object || {}),
+        sent_today: data.sent_today,
+        daily_limit: data.daily_limit,
+        remaining: data.remaining,
+        is_exhausted: data.is_exhausted,
+      }))
+      break
   }
 }
 

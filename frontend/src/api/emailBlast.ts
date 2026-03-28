@@ -23,6 +23,14 @@ export interface EmailBlastCampaign {
   paused_at: string | null
 }
 
+export interface EmailBlastQuota {
+  date: string
+  sent_today: number
+  daily_limit: number
+  remaining: number
+  is_exhausted: boolean
+}
+
 export interface EmailBlastRecipient {
   id: number
   campaign_id: number
@@ -333,5 +341,10 @@ export async function getLetterHistory(params?: {
   if (params?.offset !== undefined) searchParams.set('offset', String(params.offset))
   const qs = searchParams.toString() ? `?${searchParams.toString()}` : ''
   const response = await apiClient.get(`/email-blast/letter-history${qs}`)
+  return response.data
+}
+
+export async function getEmailBlastQuota(): Promise<EmailBlastQuota> {
+  const response = await apiClient.get('/email-blast/quota')
   return response.data
 }

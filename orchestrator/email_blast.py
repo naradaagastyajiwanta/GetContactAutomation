@@ -21,12 +21,55 @@ from pathlib import Path
 import socks
 
 from orchestrator.config import cfg, log
-from orchestrator.db import get_db
+from orchestrator.db import get_db, get_email_blast_quota_info, increment_email_blast_quota
+from orchestrator.websocket import manager as ws_manager
 
 
 # ---------------------------------------------------------------------------
 # SOCKS Proxy Support
 # ---------------------------------------------------------------------------
+
+async def _increment_quota_and_broadcast(db, campaign_id: int, daily_limit: int) -> dict:
+    """Increment daily quota inside an existing DB transaction, then broadcast outside."""
+    await db.execute(
+        """INSERT INTO email_blast_daily_quota (quota_date, sent_count, updated_at)
+           VALUES (?, 1, datetime('now'))
+           ON CONFLICT(quota_date) DO UPDATE SET
+               sent_count = sent_count + 1,
+               updated_at = datetime('now')""",
+        (datetime.now().strftime("%Y-%m-%d"),)
+    )
+    cursor = await db.execute("SELECT sent_count FROM email_blast_daily_quota WHERE quota_date = ?",
+                               (datetime.now().strftime("%Y-%m-%d"),))
+    row = await cursor.fetchone()
+    sent = row["sent_count"] if row else 1
+    remaining = max(0, daily_limit - sent)
+    quota = {
+        "date": datetime.now().strftime("%Y-%m-%d"),
+        "sent_today": sent,
+        "daily_limit": daily_limit,
+        "remaining": remaining,
+        "is_exhausted": remaining <= 0,
+        "campaign_id": campaign_id,
+    }
+    # Broadcast outside DB transaction
+    await ws_manager.broadcast_type("email_quota_updated", **quota)
+    return quota
+
+
+async def _broadcast_blast_progress(campaign_id: int, sent_count: int, failed_count: int, total: int, status: str = "running") -> None:
+    """Broadcast blast progress to all WebSocket clients for real-time UI updates."""
+    pct = round((sent_count + failed_count) / total * 100, 1) if total > 0 else 0
+    await ws_manager.broadcast_type(
+        "blast_progress",
+        campaign_id=campaign_id,
+        sent_count=sent_count,
+        failed_count=failed_count,
+        total=total,
+        percent=pct,
+        status=status,
+    )
+
 
 def _get_socks_config() -> dict:
     """Get SOCKS5 proxy configuration from environment/config."""
@@ -749,6 +792,28 @@ Sekretariat Asosiasi AI
 """
 
     for recipient_id, email, uni_name in recipients:
+        # Check daily quota before processing
+        daily_limit = cfg.get("EMAIL_BLAST_DAILY_LIMIT", 200)
+        if daily_limit > 0:
+            quota = await get_email_blast_quota_info(daily_limit)
+            if quota["is_exhausted"]:
+                log.warning(f"[EmailBlast] Daily limit reached ({daily_limit}). Stopping campaign {campaign_id}.")
+                # Mark campaign as paused and broadcast notification
+                async with get_db() as db:
+                    await db.execute(
+                        "UPDATE email_blast_campaigns SET status = 'paused', paused_at = ? WHERE id = ?",
+                        (datetime.now().isoformat(), campaign_id)
+                    )
+                    await db.commit()
+                await ws_manager.broadcast_type(
+                    "quota_exhausted",
+                    campaign_id=campaign_id,
+                    remaining=0,
+                    daily_limit=daily_limit,
+                    pending_count=len(recipients) - (sent + failed),
+                )
+                break
+
         log.info(f"[EmailBlast] Processing recipient: id={recipient_id}, email={email}, uni_name={uni_name}")
 
         # Generate unique letter number per recipient
@@ -903,6 +968,13 @@ Sekretariat Asosiasi AI
                        VALUES (?, 'campaign', ?, ?, ?, ?, 'sent', NULL)""",
                     (campaign_id, email, uni_name, rendered_subject, rendered_msg)
                 )
+                # Increment quota inside same transaction (no nested connection)
+                await _increment_quota_and_broadcast(db, campaign_id, daily_limit)
+                # Update campaign sent_count in same transaction
+                await db.execute(
+                    "UPDATE email_blast_campaigns SET sent_count = sent_count + 1 WHERE id = ?",
+                    (campaign_id,)
+                )
                 sent += 1
             else:
                 await db.execute(
@@ -917,30 +989,33 @@ Sekretariat Asosiasi AI
                        VALUES (?, 'campaign', ?, ?, ?, 'failed', ?)""",
                     (campaign_id, email, uni_name, rendered_subject, error)
                 )
+                # Update campaign failed_count in same transaction
+                await db.execute(
+                    "UPDATE email_blast_campaigns SET failed_count = failed_count + 1 WHERE id = ?",
+                    (campaign_id,)
+                )
                 failed += 1
 
             await db.commit()
+
+        # Broadcast progress OUTSIDE the DB transaction (no lock contention)
+        if success or error:
+            await _broadcast_blast_progress(campaign_id, sent, failed, len(recipients))
 
         # Delay between emails
         if delay_ms > 0:
             await asyncio.sleep(delay_ms / 1000)
 
-    # Update campaign stats
+    # Update campaign status when done
     async with get_db() as db:
-        await db.execute(
-            """UPDATE email_blast_campaigns
-               SET sent_count = sent_count + ?, failed_count = failed_count + ?
-               WHERE id = ?""",
-            (sent, failed, campaign_id)
-        )
-        # Update status to completed
-        await db.execute(
-            "UPDATE email_blast_campaigns SET status = 'completed', completed_at = ? WHERE id = ?",
-            (datetime.now().isoformat(), campaign_id)
-        )
-        await db.commit()
+        if status == 'running':
+            await db.execute(
+                "UPDATE email_blast_campaigns SET status = 'completed', completed_at = ? WHERE id = ?",
+                (datetime.now().isoformat(), campaign_id)
+            )
+            await db.commit()
 
-    log.info(f"[EmailBlast] Campaign {campaign_id} completed: {sent} sent, {failed} failed")
+    log.info(f"[EmailBlast] Campaign {campaign_id} finished: {sent} sent, {failed} failed")
 
 
 async def retry_failed_email_blast(campaign_id: int, max_recipients: int = None):
@@ -1008,6 +1083,21 @@ async def retry_failed_email_blast(campaign_id: int, max_recipients: int = None)
     failed = 0
 
     for recipient_id, email, uni_name, stored_letter_number in recipients:
+        # Check daily quota before processing
+        daily_limit = cfg.get("EMAIL_BLAST_DAILY_LIMIT", 200)
+        if daily_limit > 0:
+            quota = await get_email_blast_quota_info(daily_limit)
+            if quota["is_exhausted"]:
+                log.warning(f"[EmailBlast] Retry — daily limit reached. Stopping retry for campaign {campaign_id}.")
+                await ws_manager.broadcast_type(
+                    "quota_exhausted",
+                    campaign_id=campaign_id,
+                    remaining=0,
+                    daily_limit=daily_limit,
+                    pending_count=0,
+                )
+                break
+
         log.info(f"[EmailBlast] Retry — processing recipient: id={recipient_id}, email={email}")
 
         if not uni_name:
@@ -1132,6 +1222,11 @@ async def retry_failed_email_blast(campaign_id: int, max_recipients: int = None)
                        VALUES (?, 'campaign', ?, ?, ?, ?, 'sent', NULL)""",
                     (campaign_id, email, uni_name, rendered_subject, rendered_msg)
                 )
+                await _increment_quota_and_broadcast(db, campaign_id, daily_limit)
+                await db.execute(
+                    "UPDATE email_blast_campaigns SET sent_count = sent_count + 1 WHERE id = ?",
+                    (campaign_id,)
+                )
                 sent += 1
             else:
                 await db.execute(
@@ -1145,25 +1240,19 @@ async def retry_failed_email_blast(campaign_id: int, max_recipients: int = None)
                        VALUES (?, 'campaign', ?, ?, ?, 'failed', ?)""",
                     (campaign_id, email, uni_name, rendered_subject, error or "Unknown error")
                 )
+                await db.execute(
+                    "UPDATE email_blast_campaigns SET failed_count = failed_count + 1 WHERE id = ?",
+                    (campaign_id,)
+                )
                 failed += 1
             await db.commit()
 
+        # Broadcast progress OUTSIDE the DB transaction (no lock contention)
+        if success or error:
+            await _broadcast_blast_progress(campaign_id, sent, failed, len(recipients))
+
         if delay_ms > 0:
             await asyncio.sleep(delay_ms / 1000)
-
-    # Update campaign counts
-    async with get_db() as db:
-        await db.execute(
-            """UPDATE email_blast_campaigns
-               SET sent_count = sent_count + ?, failed_count = failed_count + ?
-               WHERE id = ?""",
-            (sent, failed, campaign_id)
-        )
-        await db.execute(
-            "UPDATE email_blast_campaigns SET status = 'completed', completed_at = ? WHERE id = ?",
-            (datetime.now().isoformat(), campaign_id)
-        )
-        await db.commit()
 
     log.info(f"[EmailBlast] Retry campaign {campaign_id} done: {sent} sent, {failed} failed")
 

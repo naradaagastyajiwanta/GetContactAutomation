@@ -374,7 +374,7 @@ export default function EmailBlastCampaignsPage() {
   const handleCreate = () => {
     if (!name.trim()) return
     createMutation.mutate(
-      { name: name.trim(), subject: '', template_message: '', delay_between_ms: 8000 },
+      { name: name.trim(), subject: '', template_message: '', delay_between_ms: 20_000 },
       {
         onSuccess: (result) => {
           setName('')

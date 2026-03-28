@@ -376,6 +376,15 @@ CREATE INDEX IF NOT EXISTS idx_email_blast_campaigns_status ON email_blast_campa
 CREATE INDEX IF NOT EXISTS idx_email_blast_recipients_campaign ON email_blast_recipients(campaign_id);
 CREATE INDEX IF NOT EXISTS idx_email_blast_recipients_status ON email_blast_recipients(status);
 
+-- Email Blast Daily Quota
+CREATE TABLE IF NOT EXISTS email_blast_daily_quota (
+    quota_date TEXT NOT NULL PRIMARY KEY,
+    sent_count INTEGER NOT NULL DEFAULT 0,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE INDEX IF NOT EXISTS idx_email_quota_date ON email_blast_daily_quota(quota_date);
+
 -- Letter Number Config
 CREATE TABLE IF NOT EXISTS email_blast_letter_config (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -3822,3 +3831,53 @@ async def get_crm_stats() -> dict:
             "pending": pending,
             "avg_completion_confidence": round(avg_confidence, 2),
         }
+
+
+# ── Email Blast Daily Quota ────────────────────────────────────────────────────
+
+def _today_wib() -> str:
+    """Return today's date string in WIB (UTC+7) format YYYY-MM-DD."""
+    from datetime import datetime, timezone, timedelta
+    wib = timezone(timedelta(hours=7))
+    return datetime.now(wib).strftime("%Y-%m-%d")
+
+
+async def get_email_blast_quota_info(limit: int) -> dict:
+    """Return today's sent count and remaining quota."""
+    today = _today_wib()
+    async with get_db() as db:
+        cursor = await db.execute(
+            "SELECT sent_count FROM email_blast_daily_quota WHERE quota_date = ?",
+            (today,)
+        )
+        row = await cursor.fetchone()
+        sent = row["sent_count"] if row else 0
+        remaining = max(0, limit - sent)
+        return {
+            "date": today,
+            "sent_today": sent,
+            "daily_limit": limit,
+            "remaining": remaining,
+            "is_exhausted": remaining <= 0,
+        }
+
+
+async def increment_email_blast_quota(count: int = 1) -> int:
+    """Increment today's sent count. Returns the new count."""
+    today = _today_wib()
+    async with get_db() as db:
+        await db.execute(
+            """INSERT INTO email_blast_daily_quota (quota_date, sent_count, updated_at)
+               VALUES (?, ?, datetime('now'))
+               ON CONFLICT(quota_date) DO UPDATE SET
+                   sent_count = sent_count + excluded.sent_count,
+                   updated_at = datetime('now')""",
+            (today, count)
+        )
+        await db.commit()
+        cursor = await db.execute(
+            "SELECT sent_count FROM email_blast_daily_quota WHERE quota_date = ?",
+            (today,)
+        )
+        row = await cursor.fetchone()
+        return row["sent_count"] if row else count

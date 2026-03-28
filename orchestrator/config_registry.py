@@ -508,6 +508,13 @@ CONFIG_DEFINITIONS: list[ConfigDef] = [
         group=ConfigGroup.GENERAL, label="IMAP Use SSL",
         description="Use SSL for IMAP connection (default: true for port 993)"
     ),
+    # Email Blast
+    ConfigDef(
+        key="EMAIL_BLAST_DAILY_LIMIT", type=ConfigType.INT, default=200,
+        group=ConfigGroup.GENERAL, label="Email Blast Daily Limit",
+        description="Maximum emails to send per day (WIB). 0 = unlimited.",
+        min_value=0, max_value=10000,
+    ),
 ]
 
 CONFIG_DEFINITIONS_MAP: dict[str, ConfigDef] = {d.key: d for d in CONFIG_DEFINITIONS}

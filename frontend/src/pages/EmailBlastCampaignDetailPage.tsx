@@ -133,7 +133,7 @@ export default function EmailBlastCampaignDetailPage() {
   const [maxRecipients, setMaxRecipients] = useState(100)
   const [editSubject, setEditSubject] = useState('')
   const [editTemplate, setEditTemplate] = useState('')
-  const [editDelay, setEditDelay] = useState(8000)
+  const [editDelay, setEditDelay] = useState(20_000)
   const [showSelectUni, setShowSelectUni] = useState(false)
   const [uniSearch, setUniSearch] = useState('')
   const [uniProvince, setUniProvince] = useState('')
@@ -176,7 +176,7 @@ export default function EmailBlastCampaignDetailPage() {
     if (campaign && !isInitialized) {
       setEditSubject(campaign.subject || '')
       setEditTemplate(campaign.template_message || '')
-      setEditDelay(campaign.delay_between_ms || 8000)
+      setEditDelay(campaign.delay_between_ms || 20_000)
       setIsInitialized(true)
     }
   }, [campaign, isInitialized])

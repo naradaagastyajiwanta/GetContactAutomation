@@ -19,7 +19,7 @@ import {
   History,
 } from 'lucide-react'
 import { cn } from '../lib/utils'
-import { useEmailBlastCampaigns, useAllInboxEmails } from '../hooks/useEmailBlast'
+import { useEmailBlastCampaigns, useAllInboxEmails, useEmailBlastQuota } from '../hooks/useEmailBlast'
 import { Spinner } from '../components/ui/Spinner'
 import { Button } from '../components/ui/Button'
 import { Modal } from '../components/ui/Modal'
@@ -66,6 +66,7 @@ function EmailLeftRail({
   inboxCount,
   sentCount,
   activeStatusFilter,
+  quota,
 }: {
   activeView: View
   onViewChange: (v: View, campaignId?: number, status?: string) => void
@@ -74,6 +75,7 @@ function EmailLeftRail({
   inboxCount: number
   sentCount: number
   activeStatusFilter: string
+  quota?: { sent_today: number; daily_limit: number; remaining: number; is_exhausted: boolean }
 }) {
   const navItems: NavItem[] = [
     { id: 'inbox', label: 'Inbox', icon: Inbox, badge: inboxCount, section: 'messages' },
@@ -212,6 +214,62 @@ function EmailLeftRail({
               </span>
             </div>
           </div>
+
+          {/* Daily Quota */}
+          {quota && (
+            <>
+              <div className="mt-3 border-t border-gray-200 dark:border-gray-700/50 pt-3">
+                <div className="mb-1.5 flex items-center justify-between">
+                  <span className="text-[11px] font-semibold uppercase tracking-wider text-gray-400">
+                    Harian
+                  </span>
+                  {quota.is_exhausted && (
+                    <span className="rounded bg-red-100 px-1.5 py-0.5 text-[10px] font-semibold text-red-600 dark:bg-red-900/40 dark:text-red-400">
+                      Habis
+                    </span>
+                  )}
+                </div>
+                <div className="space-y-1">
+                  <div className="flex items-center justify-between text-[12px]">
+                    <span className="text-gray-500 dark:text-gray-400">Terpakai</span>
+                    <span className="font-semibold text-gray-700 dark:text-gray-200">
+                      {quota.sent_today.toLocaleString('id-ID')}
+                    </span>
+                  </div>
+                  <div className="flex items-center justify-between text-[12px]">
+                    <span className="text-gray-500 dark:text-gray-400">Sisa</span>
+                    <span className={cn(
+                      'font-semibold',
+                      quota.is_exhausted
+                        ? 'text-red-500'
+                        : quota.remaining < quota.daily_limit * 0.2
+                          ? 'text-orange-500'
+                          : 'text-emerald-600 dark:text-emerald-400'
+                    )}>
+                      {quota.remaining.toLocaleString('id-ID')}
+                    </span>
+                  </div>
+                  {/* Progress bar */}
+                  <div className="mt-1.5 h-1.5 w-full overflow-hidden rounded-full bg-gray-200 dark:bg-gray-700">
+                    <div
+                      className={cn(
+                        'h-full rounded-full transition-all',
+                        quota.is_exhausted
+                          ? 'bg-red-500'
+                          : quota.sent_today / quota.daily_limit > 0.8
+                            ? 'bg-orange-400'
+                            : 'bg-emerald-500'
+                      )}
+                      style={{ width: `${Math.min(100, (quota.sent_today / quota.daily_limit) * 100)}%` }}
+                    />
+                  </div>
+                  <div className="text-right text-[10px] text-gray-400">
+                    dari {quota.daily_limit.toLocaleString('id-ID')}
+                  </div>
+                </div>
+              </div>
+            </>
+          )}
         </div>
 
         {/* Settings */}
@@ -272,6 +330,7 @@ export default function EmailBlastPage() {
   const { data: allCampaigns } = useEmailBlastCampaigns()
   // Only fetch inbox when inbox view is active — avoids slow IMAP fetch on page load
   const { data: allInbox } = useAllInboxEmails(1000, activeView === 'inbox')
+  const { data: quota } = useEmailBlastQuota()
 
   const campaigns = allCampaigns?.campaigns ?? []
   const inboxCount = allInbox?.emails?.length ?? 0
@@ -380,6 +439,7 @@ export default function EmailBlastPage() {
         inboxCount={inboxCount}
         sentCount={totalSent}
         activeStatusFilter={statusFilter}
+        quota={quota}
       />
 
       {/* Content Area */}
