@@ -2,7 +2,7 @@ import { useState, useCallback } from 'react'
 
 export interface Notification {
   id: string
-  type: 'agent_completed' | 'got_number' | 'blast_completed' | 'quota_reached' | 'conversation_changed' | 'university_updated'
+  type: 'agent_completed' | 'got_number' | 'blast_completed' | 'quota_reached' | 'quota_exhausted' | 'conversation_changed' | 'university_updated'
   title: string
   body: string
   time: Date

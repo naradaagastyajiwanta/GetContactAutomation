@@ -580,7 +580,7 @@ async def get_next_letter_number() -> tuple[str, int]:
 async def create_email_campaign(name: str, subject: str, template: str,
                                 from_email: str = "sekretariat@asosiasi.ai",
                                 from_name: str = "Sekretariat Asosiasi AI",
-                                delay_ms: int = 8000) -> int:
+                                delay_ms: int = 20_000) -> int:
     """Create new email blast campaign"""
     async with get_db() as db:
         cursor = await db.execute(

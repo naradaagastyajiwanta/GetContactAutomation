@@ -1,13 +1,16 @@
-"""Temporary script to explore dev staging MySQL database."""
+"""Temporary script to explore DMS MySQL database.
+Requires env vars: DMS_MYSQL_HOST, DMS_MYSQL_USER, DMS_MYSQL_PASSWORD, DMS_MYSQL_DATABASE
+"""
+import os
 import pymysql
 import json
 
 conn = pymysql.connect(
-    host='35.219.13.27',
-    user='dev-staging',
-    password='17H1aXMqv6EavBQ0Dz',
-    database='dev_staging_dmsedu',
-    port=3306,
+    host=os.environ["DMS_MYSQL_HOST"],
+    user=os.environ["DMS_MYSQL_USER"],
+    password=os.environ["DMS_MYSQL_PASSWORD"],
+    database=os.environ["DMS_MYSQL_DATABASE"],
+    port=int(os.environ.get("DMS_MYSQL_PORT", 3306)),
     connect_timeout=10
 )
 cursor = conn.cursor(pymysql.cursors.DictCursor)

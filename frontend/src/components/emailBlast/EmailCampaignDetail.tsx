@@ -1545,7 +1545,7 @@ function CreateCampaignView({ onClose }: { onClose: () => void }) {
   async function handleCreate() {
     if (!name.trim()) return
     try {
-      await createMutation.mutateAsync({ name: name.trim(), subject: '', template_message: '' })
+      await createMutation.mutateAsync({ name: name.trim(), subject: '', template_message: '', delay_between_ms: 20_000 })
       toast.success('Campaign created')
       onClose()
     } catch {

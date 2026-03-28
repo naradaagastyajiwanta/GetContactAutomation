@@ -58,15 +58,17 @@ function handleEventNotifications(data: WSEvent, add: ReturnType<typeof useNotif
     case 'quota_reached':
       add({ type: 'quota_reached', title: 'Daily quota reached', body: `Only ${data.remaining} conversations remaining.` })
       break
-    case 'quota_exhausted':
+    case 'quota_exhausted': {
+      const d = data as Extract<WSEvent, { type: 'quota_exhausted' }>
       add({
-        type: 'quota_exhausted',
+        type: 'quota_exhausted' as const,
         title: '📧 Quota harian habis — Campaign di-pause',
-        body: data.pending_count > 0
-          ? `${data.pending_count} email belum terkirim. Campaign akan otomatis lanjut besok.`
-          : `Quota harian (${data.daily_limit} email) sudah tercapai.`,
+        body: d.pending_count > 0
+          ? `${d.pending_count} email belum terkirim. Campaign akan otomatis lanjut besok.`
+          : `Quota harian (${d.daily_limit} email) sudah tercapai.`,
       })
       break
+    }
     case 'conversation_changed':
       add({ type: 'conversation_changed', title: 'Conversation updated', body: `#${data.conv_id} → ${data.state}` })
       break

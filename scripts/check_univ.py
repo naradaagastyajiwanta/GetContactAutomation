@@ -1,11 +1,17 @@
+"""Check universities in DMS MySQL database.
+Requires env vars: DMS_MYSQL_HOST, DMS_MYSQL_USER, DMS_MYSQL_PASSWORD, DMS_MYSQL_DATABASE
+"""
 import asyncio
+import os
 import aiomysql
 
 async def main():
     conn = await aiomysql.connect(
-        host="35.219.13.27", port=3306,
-        user="dev-staging", password="17H1aXMqv6EavBQ0Dz",
-        db="dev_staging_dmsedu"
+        host=os.environ["DMS_MYSQL_HOST"],
+        port=int(os.environ.get("DMS_MYSQL_PORT", 3306)),
+        user=os.environ["DMS_MYSQL_USER"],
+        password=os.environ["DMS_MYSQL_PASSWORD"],
+        db=os.environ["DMS_MYSQL_DATABASE"],
     )
     async with conn.cursor(aiomysql.DictCursor) as cur:
         # All tables containing 'lsp' or 'universitas'

@@ -43,6 +43,7 @@ class ConfigDef:
     min_value: float | None = None
     max_value: float | None = None
     sensitive: bool = False  # if True, value is masked in GET response
+    env_only: bool = False  # if True, cannot be changed via DB or FE API — env var only
 
 
 CONFIG_DEFINITIONS: list[ConfigDef] = [
@@ -358,33 +359,42 @@ CONFIG_DEFINITIONS: list[ConfigDef] = [
         key="DMS_MYSQL_HOST",
         type=ConfigType.STRING, default="", group=ConfigGroup.DMS_INTEGRATION,
         label="DMS MySQL Host",
-        description="Hostname/IP database DMS (dev staging atau production). Kosong = disabled.",
+        description="Hostname/IP database DMS (dev staging atau production). Kosong = disabled. ENV ONLY.",
+        sensitive=True,
+        env_only=True,
     ),
     ConfigDef(
         key="DMS_MYSQL_PORT",
         type=ConfigType.INT, default=3306, group=ConfigGroup.DMS_INTEGRATION,
         label="DMS MySQL Port",
-        description="Port database DMS MySQL.",
+        description="Port database DMS MySQL. ENV ONLY.",
         min_value=1, max_value=65535,
+        sensitive=True,
+        env_only=True,
     ),
     ConfigDef(
         key="DMS_MYSQL_USER",
         type=ConfigType.STRING, default="", group=ConfigGroup.DMS_INTEGRATION,
         label="DMS MySQL User",
-        description="Username untuk koneksi database DMS.",
+        description="Username untuk koneksi database DMS. ENV ONLY.",
+        sensitive=True,
+        env_only=True,
     ),
     ConfigDef(
         key="DMS_MYSQL_PASSWORD",
         type=ConfigType.STRING, default="", group=ConfigGroup.DMS_INTEGRATION,
         label="DMS MySQL Password",
-        description="Password untuk koneksi database DMS.",
+        description="Password untuk koneksi database DMS. ENV ONLY.",
         sensitive=True,
+        env_only=True,
     ),
     ConfigDef(
         key="DMS_MYSQL_DATABASE",
         type=ConfigType.STRING, default="", group=ConfigGroup.DMS_INTEGRATION,
         label="DMS MySQL Database",
-        description="Nama database DMS (e.g. dev_staging_dmsedu).",
+        description="Nama database DMS (e.g. dev_staging_dmsedu). ENV ONLY.",
+        sensitive=True,
+        env_only=True,
     ),
     ConfigDef(
         key="DMS_SYNC_ENABLED",

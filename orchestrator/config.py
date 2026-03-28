@@ -176,7 +176,7 @@ log = setup_logger()
 # ConfigManager — dynamic, thread-safe configuration store
 # ---------------------------------------------------------------------------
 
-from orchestrator.config_registry import CONFIG_DEFINITIONS_MAP, ConfigType  # noqa: E402
+from orchestrator.config_registry import CONFIG_DEFINITIONS_MAP, ConfigType, ConfigDef  # noqa: E402
 
 
 def _parse_value(raw: str, cfg_type: ConfigType) -> Any:
@@ -238,21 +238,27 @@ class ConfigManager:
         """Override store with values persisted in the DB config table.
 
         Must be called after ``init_db()``.
+        Skips any key marked ``env_only=True`` — those are locked to env vars only.
         """
         from orchestrator.db import get_all_config
 
         rows = await get_all_config()
+        loaded = 0
         with self._lock:
             for key, raw_value in rows.items():
                 defn = CONFIG_DEFINITIONS_MAP.get(key)
                 if defn is None:
                     continue
+                if defn.env_only:
+                    log.info("ConfigManager: skipping DB override for env_only key %s (using env value)", key)
+                    continue
                 try:
                     self._store[key] = _parse_value(raw_value, defn.type)
+                    loaded += 1
                 except (ValueError, TypeError):
                     log.warning("Invalid DB config value for %s: %r", key, raw_value)
 
-        log.info("ConfigManager: loaded %d overrides from DB", len(rows))
+        log.info("ConfigManager: loaded %d overrides from DB (%d skipped env_only)", loaded, len(rows) - loaded)
 
     # -- get / set / get_all ---------------------------------------------------
 

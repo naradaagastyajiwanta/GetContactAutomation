@@ -77,6 +77,7 @@ from orchestrator.db import (
 from orchestrator.config_registry import (
     CONFIG_DEFINITIONS,
     CONFIG_DEFINITIONS_MAP,
+    ConfigDef,
     ConfigType,
 )
 from orchestrator.agent.learning import LearningSystem
@@ -1928,7 +1929,23 @@ def _validate_config_value(key: str, value: Any) -> tuple[Any, str | None]:
 
 @app.patch("/config")
 async def update_config(payload: ConfigUpdatePayload):
-    """Update one or more config settings. Validates, persists to DB, and updates in-memory."""
+    """Update one or more config settings. Validates, persists to DB, and updates in-memory.
+    Keys marked ``env_only=True`` are rejected (403) — those must be set via environment variables.
+    """
+    # Reject any env_only key upfront
+    env_only_keys = [
+        key for key in payload.settings
+        if (defn := CONFIG_DEFINITIONS_MAP.get(key)) and defn.env_only
+    ]
+    if env_only_keys:
+        return JSONResponse(
+            status_code=403,
+            content={
+                "detail": "These config keys are read-only and must be set via environment variables.",
+                "keys": env_only_keys,
+            },
+        )
+
     errors: dict[str, str] = {}
     validated: dict[str, Any] = {}
 
@@ -1970,10 +1987,17 @@ async def update_config(payload: ConfigUpdatePayload):
 
 @app.delete("/config/{key}")
 async def reset_config(key: str):
-    """Reset a config key to its default value."""
+    """Reset a config key to its default value. Env-only keys are rejected."""
     defn = CONFIG_DEFINITIONS_MAP.get(key)
     if defn is None:
         return JSONResponse(status_code=404, content={"detail": f"Unknown config key: {key}"})
+    if defn.env_only:
+        return JSONResponse(
+            status_code=403,
+            content={
+                "detail": f"Config key '{key}' is read-only and must be set via environment variables.",
+            },
+        )
 
     await db_delete_config(key)
     cfg.set(key, defn.default)
