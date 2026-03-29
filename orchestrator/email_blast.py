@@ -24,6 +24,53 @@ from orchestrator.config import cfg, log
 from orchestrator.db import get_db, get_email_blast_quota_info, increment_email_blast_quota
 from orchestrator.websocket import manager as ws_manager
 
+# ---------------------------------------------------------------------------
+# Concurrency guard — prevent multiple concurrent runs for the same campaign
+# ---------------------------------------------------------------------------
+
+_running_campaigns: set[int] = set()
+_running_lock = asyncio.Lock()
+
+
+async def _acquire_campaign_lock(campaign_id: int) -> bool:
+    """Acquire lock for a campaign. Returns True if acquired, False if already running."""
+    async with _running_lock:
+        if campaign_id in _running_campaigns:
+            return False
+        _running_campaigns.add(campaign_id)
+        return True
+
+
+def _release_campaign_lock(campaign_id: int) -> None:
+    _running_campaigns.discard(campaign_id)
+
+
+async def sync_campaign_counters(campaign_id: int) -> dict:
+    """Recalculate sent_count and failed_count from the actual recipient table.
+
+    Call this whenever counters are suspected to be out of sync with reality.
+    Returns the updated counters.
+    """
+    async with get_db() as db:
+        cursor = await db.execute(
+            "SELECT status, COUNT(*) FROM email_blast_recipients WHERE campaign_id = ? GROUP BY status",
+            (campaign_id,)
+        )
+        rows = await cursor.fetchall()
+        counts = {row[0]: row[1] for row in rows}
+        sent = counts.get("sent", 0)
+        failed = counts.get("failed", 0)
+        pending = counts.get("pending", 0)
+
+        await db.execute(
+            "UPDATE email_blast_campaigns SET sent_count = ?, failed_count = ?, total_recipients = ? WHERE id = ?",
+            (sent, failed, sent + failed + pending, campaign_id)
+        )
+        await db.commit()
+
+    log.info(f"[EmailBlast] Synced counters for campaign {campaign_id}: sent={sent}, failed={failed}, pending={pending}")
+    return {"sent_count": sent, "failed_count": failed, "pending_count": pending}
+
 
 # ---------------------------------------------------------------------------
 # SOCKS Proxy Support
@@ -708,6 +755,20 @@ async def run_email_blast_campaign(campaign_id: int,
                                    smtp_client: SMTPClient = None,
                                    max_recipients: int = None):
     """Run email blast campaign"""
+    # Guard: prevent concurrent runs for the same campaign
+    if not await _acquire_campaign_lock(campaign_id):
+        log.warning(f"[EmailBlast] Campaign {campaign_id} is already running — skipping duplicate start")
+        return
+    try:
+        await _run_email_blast_campaign_inner(campaign_id, smtp_client, max_recipients)
+    finally:
+        _release_campaign_lock(campaign_id)
+
+
+async def _run_email_blast_campaign_inner(campaign_id: int,
+                                          smtp_client: SMTPClient = None,
+                                          max_recipients: int = None):
+    """Inner implementation — always called within a campaign lock."""
     async with get_db() as db:
         # Get campaign info
         cursor = await db.execute(
@@ -1017,9 +1078,25 @@ Sekretariat Asosiasi AI
 
     log.info(f"[EmailBlast] Campaign {campaign_id} finished: {sent} sent, {failed} failed")
 
+    # Always sync counters from actual recipient state — prevents drift from concurrent increments
+    await sync_campaign_counters(campaign_id)
+
 
 async def retry_failed_email_blast(campaign_id: int, max_recipients: int = None):
     """Retry sending to failed recipients in a campaign. Reuses run_email_blast_campaign logic."""
+    if not await _acquire_campaign_lock(campaign_id):
+        log.warning(f"[EmailBlast] Campaign {campaign_id} is already running — cannot retry concurrently")
+        return
+    try:
+        await _retry_failed_email_blast_inner(campaign_id, max_recipients)
+    finally:
+        _release_campaign_lock(campaign_id)
+        # Always sync counters after retry to reflect actual state
+        await sync_campaign_counters(campaign_id)
+
+
+async def _retry_failed_email_blast_inner(campaign_id: int, max_recipients: int = None):
+    """Inner implementation — always called within a campaign lock."""
     async with get_db() as db:
         # Get campaign info
         cursor = await db.execute(

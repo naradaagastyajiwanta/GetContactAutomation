@@ -27,6 +27,7 @@ import {
   RotateCcw,
   ChevronDown,
   Mail,
+  Play,
 } from 'lucide-react'
 import { useMutation } from '@tanstack/react-query'
 import { toast } from 'react-hot-toast'
@@ -1464,10 +1465,21 @@ export function EmailCampaignDetail({ campaignId, onClose }: Props) {
             </>
           )}
           {campaign.status === 'paused' && (
-            <Button size="sm" variant="secondary" onClick={handleCancel} loading={cancelMutation.isPending}>
-              <XCircle className="h-3.5 w-3.5" />
-              Cancel
-            </Button>
+            <>
+              <Button
+                size="sm"
+                variant="primary"
+                onClick={handleStart}
+                loading={startMutation.isPending}
+              >
+                <Play className="h-3.5 w-3.5" />
+                Continue
+              </Button>
+              <Button size="sm" variant="secondary" onClick={handleCancel} loading={cancelMutation.isPending}>
+                <XCircle className="h-3.5 w-3.5" />
+                Cancel
+              </Button>
+            </>
           )}
         </div>
       </div>

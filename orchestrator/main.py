@@ -4112,6 +4112,15 @@ async def retry_failed_email_campaign(campaign_id: int, request: EmailBlastStart
     return {"success": True, "message": f"Retrying {failed_count} failed emails", "recipients_retried": failed_count}
 
 
+@app.post("/email-blast/campaigns/{campaign_id}/sync-counters")
+async def sync_email_blast_counters(campaign_id: int):
+    """Force-recalculate sent_count, failed_count, and total_recipients from the actual
+    recipient table. Use when counters have drifted from reality (e.g. after a crash or
+    concurrent run). Returns the corrected counters."""
+    result = await email_blast.sync_campaign_counters(campaign_id)
+    return {"success": True, "campaign_id": campaign_id, **result}
+
+
 class EmailBlastTestEmailRequest(BaseModel):
     to_email: str
     subject: str | None = None
