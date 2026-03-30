@@ -1985,6 +1985,15 @@ async def update_config(payload: ConfigUpdatePayload):
     return {"status": "ok", "updated": list(validated.keys())}
 
 
+@app.get("/config/{key}")
+async def get_config_key(key: str):
+    """Get a single config value by key."""
+    value = cfg.get(key)
+    if value is None:
+        return JSONResponse(status_code=404, content={"detail": f"Config key '{key}' not found"})
+    return {"key": key, "value": value}
+
+
 @app.delete("/config/{key}")
 async def reset_config(key: str):
     """Reset a config key to its default value. Env-only keys are rejected."""
@@ -3510,6 +3519,13 @@ async def health():
             "scrapingbot": scrapingbot_client.get_status(),
         },
     }
+
+
+@app.get("/instagram/session-status")
+async def get_ig_session_status_endpoint():
+    """Return current IG session pool status."""
+    from orchestrator.instagram import _ig_pool
+    return _ig_pool.get_status()
 
 
 @app.post("/instagram/reset-sessions")
