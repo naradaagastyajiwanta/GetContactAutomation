@@ -694,7 +694,7 @@ class ReactAgent:
         "lookup_university_info", "get_relevant_lessons",
         "search_similar_conversations", "check_conversation_history",
         "validate_phone_number", "generate_and_send_invitation",
-        "propose_meeting_times",
+        "propose_meeting_times", "search_web", "remember_about_contact",
     })
 
     @staticmethod
@@ -714,6 +714,10 @@ class ReactAgent:
             return AgentAction.got_number, "GOT_NUMBER"
         if "mark_conversation_refused" in tool_calls_made:
             return AgentAction.refused, "REFUSED"
+        if "escalate_to_human" in tool_calls_made:
+            # State was already set to NEEDS_REVIEW by the tool; use AgentAction.ignored
+            # so the state-update block in process_incoming_message does NOT overwrite it.
+            return AgentAction.ignored, "NEEDS_REVIEW"
 
         # Fallback: detect refusal from bot's closing phrases only.
         # Skip entirely if any terminal tool was called — the bot is just

@@ -867,6 +867,31 @@ def setup_scheduler():
             id="learning_reflection",
             replace_existing=True,
         )
+        # Build semantic embeddings every 6 hours
+        scheduler.add_job(
+            run_build_missing_embeddings,
+            "cron",
+            hour="*/6",
+            minute="55",
+            timezone=WIB,
+            id="build_embeddings",
+            replace_existing=True,
+            max_instances=1,
+            misfire_grace_time=300,
+        )
+
+    # Auto-approve queued audiensi — every 15 minutes
+    if cfg.AUDIENSI_ENABLED:
+        scheduler.add_job(
+            auto_approve_queued_audiensi,
+            "interval",
+            minutes=15,
+            timezone=WIB,
+            id="auto_approve_audiensi",
+            replace_existing=True,
+            max_instances=1,
+            misfire_grace_time=120,
+        )
 
     # Audiensi follow-ups — every hour during active hours
     if cfg.AUDIENSI_ENABLED:
