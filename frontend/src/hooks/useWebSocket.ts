@@ -12,7 +12,7 @@ type WSEvent =
   | { type: 'university_updated'; uni_id: number; status: string }
   | { type: 'got_number'; uni_id: number; phone: string }
   | { type: 'quota_reached'; remaining: number }
-  | { type: 'blast_progress'; campaign_id: number; sent_count: number; failed_count: number; total: number; percent: number; status: string }
+  | { type: 'blast_progress'; campaign_id: number; sent_count: number; failed_count: number; invalid_count: number; total: number; percent: number; status: string }
   | { type: 'blast_completed'; campaign_id: number; failed: Array<{ phone: string; name: string; university: string; error: string }> }
   | { type: 'email_quota_updated'; sent_today: number; daily_limit: number; remaining: number; is_exhausted: boolean; campaign_id: number }
   | { type: 'quota_exhausted'; campaign_id: number; remaining: number; daily_limit: number; pending_count: number }
@@ -116,13 +116,14 @@ function handleEventQuery(data: WSEvent, qc: ReturnType<typeof useQueryClient>) 
         ['email-blast-campaign', data.campaign_id],
         (old: unknown) => {
           if (!old) return old
-          const o = old as { campaign?: { sent_count?: number; failed_count?: number; status?: string } }
+          const o = old as { campaign?: { sent_count?: number; failed_count?: number; invalid_count?: number; status?: string } }
           return {
             ...o,
             campaign: {
               ...o.campaign,
               sent_count: data.sent_count,
               failed_count: data.failed_count,
+              invalid_count: data.invalid_count,
               status: data.status,
             },
           }

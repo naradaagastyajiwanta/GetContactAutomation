@@ -509,6 +509,11 @@ CONFIG_DEFINITIONS: list[ConfigDef] = [
         group=ConfigGroup.GENERAL, label="Rotate SMTP After N Emails",
         description="Switch to next SMTP account after sending N emails (per account). Prevents rate-limit bans."
     ),
+    ConfigDef(
+        key="VALIDATE_EMAIL_BEFORE_SEND", type=ConfigType.BOOL, default=True,
+        group=ConfigGroup.GENERAL, label="Validate Emails Before Sending",
+        description="Check email syntax and MX record before sending. Invalid emails are skipped (not failed). Reduces bounce rate."
+    ),
     # Email Blast IMAP Settings (for receiving replies)
     ConfigDef(
         key="IMAP_HOST", type=ConfigType.STRING, default="mail.asosiasi.ai",

@@ -17,6 +17,7 @@ export interface EmailBlastCampaign {
   total_recipients: number
   sent_count: number
   failed_count: number
+  invalid_count: number
   created_at: string
   started_at: string | null
   completed_at: string | null
@@ -39,7 +40,7 @@ export interface EmailBlastRecipient {
   university_name: string | null
   rendered_subject: string | null
   rendered_message: string | null
-  status: 'pending' | 'sent' | 'failed'
+  status: 'pending' | 'sent' | 'failed' | 'invalid'
   error_message: string | null
   sent_at: string | null
   created_at: string

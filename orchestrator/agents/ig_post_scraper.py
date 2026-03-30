@@ -151,8 +151,17 @@ async def run_post_scrape_batch(limit: int = 20) -> dict:
                     except Exception as e:
                         log.error("[Agent2] Error scraping related @%s: %s", rel_handle, e)
 
-            await update_university_status(uni_id, "ig_scraped")
-            scraped += 1
+            # Only mark ig_scraped when the university actually has posts.
+            # Keep as ig_found if zero posts found so it can be retried later
+            # (account may be private, deleted, or renamed).
+            if current_count > 0:
+                await update_university_status(uni_id, "ig_scraped")
+                scraped += 1
+            else:
+                log.info(
+                    "[Agent2] @%s: 0 posts found — keeping as ig_found (retry later)",
+                    handle,
+                )
             last_processed_id = uni_id
             await asyncio.sleep(cfg.IG_REQUEST_DELAY_SECONDS)
         except Exception as e:
@@ -246,8 +255,19 @@ async def run_post_scrape_for_universities(university_ids: list[int]) -> dict:
             posts = await loop.run_in_executor(None, scrape_fn)
             saved = await _save_posts(uni["id"], posts, source_ig_handle=handle, source_ig_type="main")
 
+            # Only mark ig_scraped when posts were actually found.
+            # If known_urls is non-empty the university already had posts
+            # from a previous scrape — that's fine to mark scraped.
+            # But if known_urls is empty AND saved == 0, keep as ig_found
+            # so a future retry has a chance.
             if uni.get("status") == "ig_found":
-                await update_university_status(uni["id"], "ig_scraped")
+                if saved > 0 or known_urls:
+                    await update_university_status(uni["id"], "ig_scraped")
+                else:
+                    log.info(
+                        "[Agent2] @%s: 0 new posts, 0 existing — keeping as ig_found (retry later)",
+                        handle,
+                    )
 
             scraped += 1
             total_posts += saved

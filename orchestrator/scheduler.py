@@ -745,11 +745,11 @@ def setup_scheduler():
         misfire_grace_time=300,  # Skip if more than 5 min late (avoids fire-on-startup)
     )
 
-    # Agent 2: Scrape posts — every 3 hours during active hours
+    # Agent 2: Scrape posts — every hour, 24 hours a day
     scheduler.add_job(
         _threaded_post_scrape,
         "cron",
-        hour="8-20/3",
+        hour="*/1",
         minute="10",
         timezone=WIB,
         id="agent_post_scraper",

@@ -63,16 +63,17 @@ function StatusBadge({ status }: { status: string }) {
   )
 }
 
-function ProgressBar({ sent, failed, total }: { sent: number; failed: number; total: number }) {
+function ProgressBar({ sent, failed, invalid = 0, total }: { sent: number; failed: number; invalid?: number; total: number }) {
   if (total === 0) return null
   const sentPct = (sent / total) * 100
   const failedPct = (failed / total) * 100
+  const invalidPct = (invalid / total) * 100
 
   return (
     <div className="w-full">
       <div className="flex items-center justify-between text-[11px] text-gray-500 dark:text-gray-400 mb-1">
-        <span>{sent + failed}/{total}</span>
-        <span>{Math.round(sentPct + failedPct)}%</span>
+        <span>{sent + failed + invalid}/{total}</span>
+        <span>{Math.round(sentPct + failedPct + invalidPct)}%</span>
       </div>
       <div className="h-2 bg-gray-100 dark:bg-gray-700 rounded-full overflow-hidden flex">
         {sentPct > 0 && (
@@ -81,7 +82,10 @@ function ProgressBar({ sent, failed, total }: { sent: number; failed: number; to
         {failedPct > 0 && (
           <div className="bg-gradient-to-r from-red-400 to-red-300 h-full transition-all duration-500" style={{ width: `${failedPct}%` }} />
         )}
-        {sentPct === 0 && failedPct === 0 && (
+        {invalidPct > 0 && (
+          <div className="bg-gradient-to-r from-yellow-400 to-yellow-300 h-full transition-all duration-500" style={{ width: `${invalidPct}%` }} />
+        )}
+        {sentPct === 0 && failedPct === 0 && invalidPct === 0 && (
           <div className="h-full bg-gray-200 dark:bg-gray-600 w-full" />
         )}
       </div>
@@ -723,6 +727,7 @@ export default function EmailBlastCampaignsPage() {
                         <ProgressBar
                           sent={campaign.sent_count}
                           failed={campaign.failed_count}
+                          invalid={campaign.invalid_count}
                           total={campaign.total_recipients}
                         />
                         <div className="flex justify-between mt-1.5 text-[11px] text-gray-400">

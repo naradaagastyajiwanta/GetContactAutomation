@@ -349,6 +349,7 @@ CREATE TABLE IF NOT EXISTS email_blast_campaigns (
     total_recipients INTEGER DEFAULT 0,
     sent_count INTEGER DEFAULT 0,
     failed_count INTEGER DEFAULT 0,
+    invalid_count INTEGER DEFAULT 0,
     attachment_filename TEXT,
     attachment_variables TEXT,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
@@ -946,6 +947,15 @@ async def init_db() -> None:
         try:
             await db.execute(
                 "ALTER TABLE email_blast_recipients ADD COLUMN letter_number TEXT"
+            )
+            await db.commit()
+        except Exception:
+            pass  # Column already exists
+
+        # Migration: add invalid_count to email_blast_campaigns (for skipped invalid emails)
+        try:
+            await db.execute(
+                "ALTER TABLE email_blast_campaigns ADD COLUMN invalid_count INTEGER DEFAULT 0"
             )
             await db.commit()
         except Exception:

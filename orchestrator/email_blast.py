@@ -62,15 +62,16 @@ async def sync_campaign_counters(campaign_id: int) -> dict:
         sent = counts.get("sent", 0)
         failed = counts.get("failed", 0)
         pending = counts.get("pending", 0)
+        invalid = counts.get("invalid", 0)
 
         await db.execute(
-            "UPDATE email_blast_campaigns SET sent_count = ?, failed_count = ?, total_recipients = ? WHERE id = ?",
-            (sent, failed, sent + failed + pending, campaign_id)
+            "UPDATE email_blast_campaigns SET sent_count = ?, failed_count = ?, invalid_count = ?, total_recipients = ? WHERE id = ?",
+            (sent, failed, invalid, sent + failed + pending + invalid, campaign_id)
         )
         await db.commit()
 
-    log.info(f"[EmailBlast] Synced counters for campaign {campaign_id}: sent={sent}, failed={failed}, pending={pending}")
-    return {"sent_count": sent, "failed_count": failed, "pending_count": pending}
+    log.info(f"[EmailBlast] Synced counters for campaign {campaign_id}: sent={sent}, failed={failed}, invalid={invalid}, pending={pending}")
+    return {"sent_count": sent, "failed_count": failed, "invalid_count": invalid, "pending_count": pending}
 
 
 # ---------------------------------------------------------------------------
@@ -105,14 +106,17 @@ async def _increment_quota_and_broadcast(db, campaign_id: int, daily_limit: int)
     return quota
 
 
-async def _broadcast_blast_progress(campaign_id: int, sent_count: int, failed_count: int, total: int, status: str = "running") -> None:
+async def _broadcast_blast_progress(campaign_id: int, sent_count: int, failed_count: int,
+                                    invalid_count: int, total: int, status: str = "running") -> None:
     """Broadcast blast progress to all WebSocket clients for real-time UI updates."""
-    pct = round((sent_count + failed_count) / total * 100, 1) if total > 0 else 0
+    processed = sent_count + failed_count + invalid_count
+    pct = round(processed / total * 100, 1) if total > 0 else 0
     await ws_manager.broadcast_type(
         "blast_progress",
         campaign_id=campaign_id,
         sent_count=sent_count,
         failed_count=failed_count,
+        invalid_count=invalid_count,
         total=total,
         percent=pct,
         status=status,
@@ -154,6 +158,63 @@ def _socks_create_connection(address, timeout=None, source_address=None, socket_
             sock.settimeout(30.0)
     sock.connect(address)
     return sock
+
+
+# ---------------------------------------------------------------------------
+# Email Validation
+# ---------------------------------------------------------------------------
+
+# Known disposable / throwaway email domains — skip without MX lookup
+_DISPOSABLE_DOMAINS: frozenset[str] = frozenset({
+    "mailinator.com", "guerrillamail.com", "temp-mail.org", "throwaway.email",
+    "10minutemail.com", "tempmail.com", "fakeinbox.com", "trashmail.com",
+    "maildrop.cc", "getairmail.com", "yopmail.com", "sharklasers.com",
+    "tempail.com", "mohmal.com", "tempinbox.com", "dispostable.com",
+})
+
+
+def validate_email(email: str) -> tuple[bool, str]:
+    """Validate an email address: syntax check + MX record check.
+
+    Returns:
+      (True, "")                     -> valid, proceed to send
+      (False, "invalid_format")    -> syntax error
+      (False, "disposable_domain")  -> throwaway domain
+      (False, "no_mx_record")       -> domain has no MX record
+
+    Be lenient on DNS/network errors — allow through rather than block.
+    """
+    if not isinstance(email, str) or not email or "@" not in email:
+        return False, "invalid_format"
+
+    local, _, domain = email.rpartition("@")
+    if not local or not domain:
+        return False, "invalid_format"
+
+    domain_lower = domain.lower()
+
+    # Fast path: disposable domain (no DNS needed)
+    if domain_lower in _DISPOSABLE_DOMAINS:
+        return False, "disposable_domain"
+
+    # Use email_validator for full validation (syntax + MX)
+    try:
+        from email_validator import validate_email as _ev_validate, EmailNotValidError
+        _ev_validate(email, check_deliverability=True)
+        return True, ""
+    except EmailNotValidError as e:
+        err = str(e).lower()
+        if "mx" in err or "mx record" in err or "no mx" in err:
+            return False, "no_mx_record"
+        # Syntax or other validation error
+        return False, "invalid_format"
+    except ImportError:
+        log.warning("[EmailValidation] email-validator not installed, skipping MX check")
+        return True, ""
+    except Exception as e:
+        # Network/DNS error — be lenient, don't block due to transient failures
+        log.warning(f"[EmailValidation] MX check error for {domain_lower}: {e}")
+        return True, ""
 
 
 # ---------------------------------------------------------------------------
@@ -978,6 +1039,7 @@ async def _run_email_blast_campaign_inner(campaign_id: int,
 
     sent = 0
     failed = 0
+    invalid = 0
 
     # Default subject and message if not set
     if not subject:
@@ -1017,6 +1079,26 @@ Sekretariat Asosiasi AI
                 break
 
         log.info(f"[EmailBlast] Processing recipient: id={recipient_id}, email={email}, uni_name={uni_name}")
+
+        # Email validation — skip if invalid (not counted as failed, not counted as sent)
+        if cfg.get("VALIDATE_EMAIL_BEFORE_SEND", True):
+            valid, reason = validate_email(email)
+            if not valid:
+                log.warning(f"[EmailBlast] Skipping invalid email {email} (reason={reason})")
+                async with get_db() as db:
+                    await db.execute(
+                        """UPDATE email_blast_recipients
+                           SET status = 'invalid', error_message = ? WHERE id = ?""",
+                        (f"invalid: {reason}", recipient_id)
+                    )
+                    await db.execute(
+                        "UPDATE email_blast_campaigns SET invalid_count = invalid_count + 1 WHERE id = ?",
+                        (campaign_id,)
+                    )
+                    await db.commit()
+                invalid += 1
+                await _broadcast_blast_progress(campaign_id, sent, failed, invalid, len(recipients))
+                continue  # Skip SMTP send for this recipient
 
         # Generate unique letter number per recipient
         letter_number = None
@@ -1202,7 +1284,7 @@ Sekretariat Asosiasi AI
 
         # Broadcast progress OUTSIDE the DB transaction (no lock contention)
         if success or error:
-            await _broadcast_blast_progress(campaign_id, sent, failed, len(recipients))
+            await _broadcast_blast_progress(campaign_id, sent, failed, invalid, len(recipients))
 
         # Delay between emails
         if delay_ms > 0:
@@ -1299,6 +1381,7 @@ async def _retry_failed_email_blast_inner(campaign_id: int, max_recipients: int 
 
     sent = 0
     failed = 0
+    invalid = 0
 
     for recipient_id, email, uni_name, stored_letter_number in recipients:
         # Check daily quota before processing
@@ -1317,6 +1400,26 @@ async def _retry_failed_email_blast_inner(campaign_id: int, max_recipients: int 
                 break
 
         log.info(f"[EmailBlast] Retry — processing recipient: id={recipient_id}, email={email}")
+
+        # Email validation — skip if invalid
+        if cfg.get("VALIDATE_EMAIL_BEFORE_SEND", True):
+            valid, reason = validate_email(email)
+            if not valid:
+                log.warning(f"[EmailBlast] Retry — skipping invalid email {email} (reason={reason})")
+                async with get_db() as db:
+                    await db.execute(
+                        """UPDATE email_blast_recipients
+                           SET status = 'invalid', error_message = ? WHERE id = ?""",
+                        (f"invalid: {reason}", recipient_id)
+                    )
+                    await db.execute(
+                        "UPDATE email_blast_campaigns SET invalid_count = invalid_count + 1 WHERE id = ?",
+                        (campaign_id,)
+                    )
+                    await db.commit()
+                invalid += 1
+                await _broadcast_blast_progress(campaign_id, sent, failed, invalid, len(recipients))
+                continue
 
         if not uni_name:
             try:
@@ -1467,7 +1570,7 @@ async def _retry_failed_email_blast_inner(campaign_id: int, max_recipients: int 
 
         # Broadcast progress OUTSIDE the DB transaction (no lock contention)
         if success or error:
-            await _broadcast_blast_progress(campaign_id, sent, failed, len(recipients))
+            await _broadcast_blast_progress(campaign_id, sent, failed, invalid, len(recipients))
 
         if delay_ms > 0:
             await asyncio.sleep(delay_ms / 1000)
@@ -1481,6 +1584,7 @@ async def get_campaign_status(campaign_id: int) -> dict:
         cursor = await db.execute(
             """SELECT id, name, subject, template_message, from_email, from_name,
                       delay_between_ms, status, total_recipients, sent_count, failed_count,
+                      invalid_count,
                       attachment_filename, attachment_variables,
                       created_at, started_at, completed_at, paused_at
                FROM email_blast_campaigns WHERE id = ?""",
@@ -1503,12 +1607,13 @@ async def get_campaign_status(campaign_id: int) -> dict:
             "total_recipients": campaign[8],
             "sent_count": campaign[9],
             "failed_count": campaign[10],
-            "attachment_filename": campaign[11],
-            "attachment_variables": campaign[12],
-            "created_at": campaign[13],
-            "started_at": campaign[14],
-            "completed_at": campaign[15],
-            "paused_at": campaign[16],
+            "invalid_count": campaign[11],
+            "attachment_filename": campaign[12],
+            "attachment_variables": campaign[13],
+            "created_at": campaign[14],
+            "started_at": campaign[15],
+            "completed_at": campaign[16],
+            "paused_at": campaign[17],
         }
 
 
@@ -1516,7 +1621,7 @@ async def list_campaigns(status: str = None) -> list[dict]:
     """List all campaigns"""
     async with get_db() as db:
         query = """SELECT id, name, subject, status, total_recipients,
-                          sent_count, failed_count, created_at
+                          sent_count, failed_count, invalid_count, created_at
                    FROM email_blast_campaigns"""
 
         if status:
@@ -1536,7 +1641,8 @@ async def list_campaigns(status: str = None) -> list[dict]:
                 "total_recipients": c[4],
                 "sent_count": c[5],
                 "failed_count": c[6],
-                "created_at": c[7]
+                "invalid_count": c[7],
+                "created_at": c[8]
             }
             for c in campaigns
         ]

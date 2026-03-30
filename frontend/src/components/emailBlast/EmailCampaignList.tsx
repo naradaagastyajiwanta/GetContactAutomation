@@ -78,15 +78,18 @@ const statusConfig: Record<
 function ProgressBar({
   sent,
   failed,
+  invalid = 0,
   total,
 }: {
   sent: number
   failed: number
+  invalid?: number
   total: number
 }) {
   if (total === 0) return null
   const sentPct = (sent / total) * 100
   const failedPct = (failed / total) * 100
+  const invalidPct = (invalid / total) * 100
 
   return (
     <div className="w-32">
@@ -104,13 +107,19 @@ function ProgressBar({
               style={{ width: `${failedPct}%` }}
             />
           )}
-          {sentPct === 0 && failedPct === 0 && (
+          {invalidPct > 0 && (
+            <div
+              className="bg-yellow-400 transition-all duration-500"
+              style={{ width: `${invalidPct}%` }}
+            />
+          )}
+          {sentPct === 0 && failedPct === 0 && invalidPct === 0 && (
             <div className="h-full w-full bg-gray-200 dark:bg-gray-600" />
           )}
         </div>
       </div>
       <div className="mt-1 text-[10px] text-gray-400">
-        {sent + failed}/{total}
+        {sent + failed + invalid}/{total}
       </div>
     </div>
   )
@@ -191,6 +200,7 @@ function CampaignRow({
         <ProgressBar
           sent={campaign.sent_count}
           failed={campaign.failed_count}
+          invalid={campaign.invalid_count}
           total={campaign.total_recipients}
         />
       </div>

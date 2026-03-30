@@ -21,6 +21,7 @@ import {
   Check,
   Clock,
   AlertTriangle,
+  AlertCircle,
   Plus,
   FileText,
   Eye,
@@ -821,6 +822,7 @@ function RecipientsTab({ campaignId, campaign }: { campaignId: number; campaign:
   const pendingCount = recipients.filter((r) => r.status === 'pending').length
   const sentCount = recipients.filter((r) => r.status === 'sent').length
   const failedCount = recipients.filter((r) => r.status === 'failed').length
+  const invalidCount = recipients.filter((r) => r.status === 'invalid').length
 
   return (
     <div className="flex h-full flex-col overflow-hidden">
@@ -844,6 +846,11 @@ function RecipientsTab({ campaignId, campaign }: { campaignId: number; campaign:
             <XCircle className="h-3 w-3" /> {failedCount} failed
           </span>
         )}
+        {invalidCount > 0 && (
+          <span className="flex items-center gap-1 text-xs text-yellow-600">
+            <AlertCircle className="h-3 w-3" /> {invalidCount} invalid
+          </span>
+        )}
       </div>
 
       {/* Header */}
@@ -860,7 +867,7 @@ function RecipientsTab({ campaignId, campaign }: { campaignId: number; campaign:
         </div>
 
         <div className="flex rounded-lg border border-gray-200 dark:border-gray-700">
-          {['', 'pending', 'sent', 'failed'].map((s) => (
+          {['', 'pending', 'sent', 'failed', 'invalid'].map((s) => (
             <button
               key={s}
               onClick={() => setStatusFilter(s)}
@@ -1424,7 +1431,7 @@ export function EmailCampaignDetail({ campaignId, onClose }: Props) {
           {campaign.status === 'running' && (
             <div className="mt-1 flex items-center gap-2">
               <div className="h-1.5 w-48 overflow-hidden rounded-full bg-gray-100 dark:bg-gray-700">
-                <div className="h-full bg-green-400 transition-all duration-500" style={{ width: `${campaign.total_recipients > 0 ? ((campaign.sent_count + campaign.failed_count) / campaign.total_recipients) * 100 : 0}%` }} />
+                <div className="h-full bg-green-400 transition-all duration-500" style={{ width: `${campaign.total_recipients > 0 ? ((campaign.sent_count + campaign.failed_count + (campaign.invalid_count ?? 0)) / campaign.total_recipients) * 100 : 0}%` }} />
               </div>
               <span className="text-[10px] text-gray-400">{campaign.sent_count}/{campaign.total_recipients}</span>
             </div>
