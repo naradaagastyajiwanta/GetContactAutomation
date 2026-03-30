@@ -138,6 +138,7 @@ export interface RunningAgent {
 export interface PipelineStatus {
   pending: number
   ig_found: number
+  bem_discovered: number
   ig_scraped: number
   contacted: number
   got_number: number

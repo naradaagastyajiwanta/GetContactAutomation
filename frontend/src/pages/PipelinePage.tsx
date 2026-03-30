@@ -1,10 +1,11 @@
 import { useState } from 'react'
-import { Download, Phone, Users, User, Search, GraduationCap, Loader2, CheckCircle, XCircle, ChevronDown, ChevronUp, Clock, Timer, Play, Zap } from 'lucide-react'
+import { Download, Phone, Users, User, Search, GraduationCap, Loader2, CheckCircle, XCircle, ChevronDown, ChevronUp, Clock, Timer, Play, Zap, Square, RotateCcw } from 'lucide-react'
 import {
   usePipelineStatus, usePipelineLogs,
   useTriggerFindHandles, useTriggerDiscoverBem,
   useTriggerScrapePosts, useTriggerExtractPhones,
   useTriggerFindRectors, useTriggerCollectUniversities,
+  usePauseBot, useResumeBot,
   useProvinces,
 } from '../hooks/usePipeline'
 import { Spinner } from '../components/ui/Spinner'
@@ -15,10 +16,11 @@ import type { PipelineStatus, PipelineLog, PipelineAgentType, PipelineLogStatus 
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 
-const STAGE_KEYS = ['pending', 'ig_found', 'ig_scraped', 'contacted', 'got_number'] as const
+const STAGE_KEYS = ['pending', 'ig_found', 'bem_discovered', 'ig_scraped', 'contacted', 'got_number'] as const
 const STAGE_LABELS: Record<string, string> = {
   pending: 'Pending',
   ig_found: 'IG Found',
+  bem_discovered: 'BEM Found',
   ig_scraped: 'IG Scraped',
   contacted: 'Contacted',
   got_number: 'Got Number',
@@ -27,6 +29,7 @@ const STAGE_LABELS: Record<string, string> = {
 const STAGE_ACCENT: Record<string, boolean> = {
   pending: false,
   ig_found: false,
+  bem_discovered: false,
   ig_scraped: false,
   contacted: false,
   got_number: true,
@@ -265,6 +268,10 @@ export default function PipelinePage() {
   const extractPhones = useTriggerExtractPhones()
   const findRectors = useTriggerFindRectors()
   const collectUniv = useTriggerCollectUniversities()
+  const pauseBot = usePauseBot()
+  const resumeBot = useResumeBot()
+
+  const isAnyAgentRunning = findHandles.isPending || discoverBem.isPending || scrapePosts.isPending || extractPhones.isPending || findRectors.isPending || collectUniv.isPending
 
   if (statusLoading) return <div className="flex h-64 items-center justify-center"><Spinner size="lg" /></div>
   if (!status) return null
@@ -285,9 +292,34 @@ export default function PipelinePage() {
             {formatNumber(total)} universities &middot; <span className="text-indigo-600 dark:text-indigo-400">{formatNumber(status.got_number || 0)} converted</span>
           </p>
         </div>
-        <div className="flex h-8 items-center gap-1.5 rounded-full bg-emerald-50 px-3 dark:bg-emerald-950/30">
-          <div className="h-2 w-2 rounded-full bg-emerald-400 animate-pulse" />
-          <span className="text-xs font-medium text-emerald-600 dark:text-emerald-400">Live</span>
+        <div className="flex items-center gap-2">
+          {isAnyAgentRunning ? (
+            <button
+              onClick={() => pauseBot.mutate()}
+              disabled={pauseBot.isPending}
+              className="flex h-8 items-center gap-1.5 rounded-full bg-red-50 px-3 text-xs font-medium text-red-600 transition-colors hover:bg-red-100 disabled:opacity-50 dark:bg-red-950/30 dark:text-red-400 dark:hover:bg-red-900/30"
+            >
+              {pauseBot.isPending ? (
+                <Loader2 className="h-3 w-3 animate-spin" />
+              ) : (
+                <Square className="h-3 w-3 fill-current" />
+              )}
+              Stop Pipeline
+            </button>
+          ) : (
+            <button
+              onClick={() => resumeBot.mutate()}
+              disabled={resumeBot.isPending}
+              className="flex h-8 items-center gap-1.5 rounded-full bg-emerald-50 px-3 text-xs font-medium text-emerald-600 transition-colors hover:bg-emerald-100 disabled:opacity-50 dark:bg-emerald-950/30 dark:text-emerald-400 dark:hover:bg-emerald-900/30"
+            >
+              <RotateCcw className="h-3 w-3" />
+              Resume
+            </button>
+          )}
+          <div className="flex h-8 items-center gap-1.5 rounded-full bg-emerald-50 px-3 dark:bg-emerald-950/30">
+            <div className="h-2 w-2 rounded-full bg-emerald-400 animate-pulse" />
+            <span className="text-xs font-medium text-emerald-600 dark:text-emerald-400">Live</span>
+          </div>
         </div>
       </div>
 

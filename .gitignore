@@ -66,6 +66,33 @@ data/export_*/
 # Scraps / experimental files
 scraps/
 data/test_out.txt
+_playwright_test/
+
+# Ad-hoc scripts and local text outputs
+/check_*.py
+/patch_*.py
+/parse_*.py
+/test_scrape.py
+/cl.py
+/fix*.py
+/out_*.txt
+/*log*.txt
+/*_logs.txt
+/*.html
+
+# Local Test & Remote DB dumps
+/*.db
+
+# Deployment and Docker overrides
+docker-compose.override.yml
+docker-compose_backup.yml
+*backup*
+/deploy*.sh
+/deploy*.ps1
+/sync-*.ps1
+/sync-*.sh
+/start-all.bat
+/stop-all.bat
 
 # Test artifacts
 test-results/

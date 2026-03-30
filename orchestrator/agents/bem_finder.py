@@ -48,11 +48,18 @@ async def _discover_bem_for_uni(uni: dict, loop) -> dict:
         "related_accounts": [],
     }
 
+    async def _update_status_and_return(result_dict: dict, status_str: str) -> dict:
+        await update_bem_discovery_status(uni["id"], status_str)
+        # Advance funnel state if it was waiting at ig_found
+        if uni.get("status") == "ig_found":
+            from orchestrator.db import update_university_status
+            await update_university_status(uni["id"], "bem_discovered")
+        return result_dict
+
     ig_handle = uni.get("ig_handle", "")
     if not ig_handle:
         log.info("[Agent4-BEM] No IG handle for %s, skipping", uni["name"])
-        await update_bem_discovery_status(uni["id"], "no_ig_handle")
-        return result
+        return await _update_status_and_return(result, "no_ig_handle")
 
     # Step 1: Fetch official IG's following list
     log.info("[Agent4-BEM] Fetching following list of @%s (%s)", ig_handle, uni["name"])
@@ -92,8 +99,7 @@ async def _discover_bem_for_uni(uni: dict, loop) -> dict:
                 )
 
         status = "discovered" if result["related_igs_added"] > 0 else "no_following"
-        await update_bem_discovery_status(uni["id"], status)
-        return result
+        return await _update_status_and_return(result, status)
 
     log.info("[Agent4-BEM] @%s follows %d accounts", ig_handle, len(following))
 
@@ -103,8 +109,7 @@ async def _discover_bem_for_uni(uni: dict, loop) -> dict:
     if not related:
         log.info("[Agent4-BEM] No related accounts found in @%s following for %s",
                  ig_handle, uni["name"])
-        await update_bem_discovery_status(uni["id"], "not_found")
-        return result
+        return await _update_status_and_return(result, "not_found")
 
     # Step 3: Save discovered accounts
     bem_found = False
@@ -136,7 +141,7 @@ async def _discover_bem_for_uni(uni: dict, loop) -> dict:
             )
 
     status = "discovered" if result["related_igs_added"] > 0 else "not_found"
-    await update_bem_discovery_status(uni["id"], status)
+    await _update_status_and_return(result, status)
 
     log.info(
         "[Agent4-BEM] %s: %d related IGs saved (BEM: %s)",
@@ -176,6 +181,9 @@ async def run_bem_discovery_batch(limit: int = 30) -> dict:
     last_processed_id = last_id
 
     for uni in universities:
+        if is_paused():
+            log.info("[Agent4-BEM] Bot paused during batch, stopping early")
+            break
         try:
             detail = await _discover_bem_for_uni(uni, loop)
             details.append(detail)

@@ -1,6 +1,6 @@
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import toast from 'react-hot-toast'
-import { getPipelineStatus, triggerFindHandles, triggerScrapePosts, triggerExtractPhones, triggerDiscoverBem, triggerFindRectors, getProvinces, triggerCollectUniversities, getPipelineLogs, triggerAgentTargeted, type PipelineLogsParams, type TargetedAgentType } from '../api/pipeline'
+import { getPipelineStatus, triggerFindHandles, triggerScrapePosts, triggerExtractPhones, triggerDiscoverBem, triggerFindRectors, getProvinces, triggerCollectUniversities, getPipelineLogs, triggerAgentTargeted, pauseBot, resumeBot, type PipelineLogsParams, type TargetedAgentType } from '../api/pipeline'
 import { queryKeys } from '../lib/queryKeys'
 import { useWebSocketContext } from '../context/WebSocketContext'
 
@@ -140,6 +140,34 @@ export function useRunAgentTargeted() {
     },
     onError: (_err, variables) => {
       toast.error(`Failed to start ${AGENT_LABELS[variables.agentType]}`)
+    },
+  })
+}
+
+export function usePauseBot() {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: () => pauseBot(),
+    onSuccess: () => {
+      toast.success('Pipeline stopped — agents will finish current item and stop')
+      queryClient.invalidateQueries({ queryKey: queryKeys.pipeline.status })
+    },
+    onError: () => {
+      toast.error('Failed to pause pipeline')
+    },
+  })
+}
+
+export function useResumeBot() {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: () => resumeBot(),
+    onSuccess: () => {
+      toast.success('Pipeline resumed')
+      queryClient.invalidateQueries({ queryKey: queryKeys.pipeline.status })
+    },
+    onError: () => {
+      toast.error('Failed to resume pipeline')
     },
   })
 }

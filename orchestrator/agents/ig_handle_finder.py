@@ -107,6 +107,9 @@ async def run_handle_search_batch(limit: int = 50) -> dict:
     last_processed_id = last_id  # Track the last ID we processed
 
     for uni in universities:
+        if is_paused():
+            log.info("[Agent1] Bot paused during batch, stopping early")
+            break
         try:
             detail = await _search_handle_for_uni(uni, loop)
             if detail:

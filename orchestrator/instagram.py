@@ -339,7 +339,7 @@ def _get_openai() -> AsyncOpenAI:
 _IG_LINK_RE = re.compile(
     r'(?:https?://)?(?:www\.)?instagram\.com/([a-zA-Z0-9_.]{2,30})',
 )
-_IG_SKIP_PATHS = {"p", "reel", "reels", "stories", "explore", "accounts", "tv", "about", "developer"}
+_IG_SKIP_PATHS = {"p", "reel", "reels", "stories", "explore", "accounts", "tv", "about", "developer", "embed.js"}
 
 
 _PDDIKTI_BASE = "https://api-pddikti.kemdiktisaintek.go.id"
@@ -1555,30 +1555,9 @@ def scrape_ig_posts_with_fallback(
     else:
         log.info("[Tier1-Direct] Skipping â€” no healthy IG sessions")
 
-    # Tier 2: Apify
-    if apify_client.is_configured():
-        try:
-            posts = apify_client.apify_get_posts(handle, fetch_count)
-            if posts:
-                for p in posts:
-                    p.setdefault("source", "apify")
-                # Filter out known posts on re-scrape
-                if known:
-                    before = len(posts)
-                    posts = [p for p in posts if p.get("post_url") not in known]
-                    log.info(
-                        "[Tier2-Apify] @%s: %d fetched, %d new (filtered %d known)",
-                        handle, before, len(posts), before - len(posts),
-                    )
-                else:
-                    log.info("[Tier2-Apify] @%s: got %d posts", handle, len(posts))
-                if posts:
-                    return posts
-        except Exception as e:
-            log.warning("[Tier2-Apify] @%s failed: %s", handle, e)
-    else:
-        log.debug("[Tier2-Apify] Skipping â€” not configured")
-
+        # Tier 2: Apify — DISABLED (no longer in use)
+    # if apify_client.is_configured():
+    #     posts = apify_client.apify_get_posts(handle, fetch_count)
     # Tier 3: Scraping-Bot
     if scrapingbot_client.is_configured():
         try:

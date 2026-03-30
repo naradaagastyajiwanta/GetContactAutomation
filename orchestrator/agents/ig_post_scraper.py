@@ -20,8 +20,8 @@ from orchestrator.db import (
     get_contacts_for_university,
     get_post_count_for_university,
     get_post_urls_for_university,
-    get_universities_by_status,
     get_universities_by_ids,
+    get_universities_for_ig_scraping,
     get_unscraped_related_igs,
     get_related_igs_for_university,
     mark_related_ig_scraped,
@@ -51,10 +51,10 @@ async def run_post_scrape_batch(limit: int = 20) -> dict:
 
     # Get last processed position for rolling
     last_id = int(cfg.AGENT_LAST_PROCESSED_UNIV_ID or 0)
-    universities = await get_universities_by_status("ig_found", limit=limit, last_id=last_id)
+    universities = await get_universities_for_ig_scraping(limit=limit, last_id=last_id)
 
     if not universities:
-        log.info("[Agent2] No universities to scrape")
+        log.info("[Agent2] No universities ready for scraping (waiting for ig_found + bem_discovery)")
         # Reset rolling if completed
         if last_id > 0:
             from orchestrator.db import upsert_config
@@ -69,6 +69,9 @@ async def run_post_scrape_batch(limit: int = 20) -> dict:
     last_processed_id = last_id
 
     for uni in universities:
+        if is_paused():
+            log.info("[Agent2] Bot paused during batch, stopping early")
+            break
         uni_id = uni["id"]
         handle = uni.get("ig_handle")
 

@@ -1101,6 +1101,33 @@ async def get_universities_by_status(
             return _rows_to_dicts(rows)
 
 
+async def get_universities_for_ig_scraping(
+    limit: int = 100, last_id: int = 0, *, enabled_only: bool = True
+) -> list[dict]:
+    """Return universities ready for IG post scraping.
+    
+    Requires:
+    - status = 'ig_found'
+    - bem_discovery_status IS NOT NULL AND != 'pending'
+      (meaning Agent 4 has finished processing it).
+    
+    If last_id > 0, uses rolling mechanism (WHERE id > last_id).
+    """
+    enabled_clause = " AND (enabled = 1 OR enabled IS NULL)" if enabled_only else ""
+
+    if last_id > 0:
+        query = f"SELECT * FROM universities WHERE status = 'ig_found' AND bem_discovery_status IS NOT NULL AND bem_discovery_status != 'pending' AND id > ?{enabled_clause} ORDER BY id LIMIT ?"
+        params = (last_id, limit)
+    else:
+        query = f"SELECT * FROM universities WHERE status = 'ig_found' AND bem_discovery_status IS NOT NULL AND bem_discovery_status != 'pending'{enabled_clause} ORDER BY id LIMIT ?"
+        params = (limit,)
+
+    async with get_db() as db:
+        cursor = await db.execute(query, params)
+        rows = await cursor.fetchall()
+        return _rows_to_dicts(rows)
+
+
 async def get_universities_by_ids(uni_ids: list[int]) -> list[dict]:
     """Return universities matching the given IDs (regardless of status/enabled)."""
     if not uni_ids:

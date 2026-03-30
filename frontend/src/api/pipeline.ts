@@ -78,6 +78,16 @@ export async function triggerFindRectors(limit?: number): Promise<{ status: stri
   return data
 }
 
+export async function pauseBot(): Promise<{ paused: boolean }> {
+  const { data } = await apiClient.post<{ paused: boolean }>('/control/pause')
+  return data
+}
+
+export async function resumeBot(): Promise<{ paused: boolean }> {
+  const { data } = await apiClient.post<{ paused: boolean }>('/control/resume')
+  return data
+}
+
 export type TargetedAgentType = 'find_handles' | 'scrape_posts' | 'extract_phones' | 'discover_bem' | 'find_rectors'
 
 export async function triggerAgentTargeted(

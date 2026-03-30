@@ -771,11 +771,11 @@ def setup_scheduler():
         misfire_grace_time=300,
     )
 
-    # Agent 4: BEM discovery — every 4 hours during active hours
+    # Agent 4: BEM discovery — every hour, 24 hours a day
     scheduler.add_job(
         _threaded_bem_discovery,
         "cron",
-        hour="9-19/4",
+        hour="*/1",
         minute="40",
         timezone=WIB,
         id="agent_bem_discovery",
