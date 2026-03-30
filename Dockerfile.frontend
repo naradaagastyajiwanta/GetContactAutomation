@@ -27,4 +27,4 @@ COPY --from=build /app/dist ./dist
 
 # Standard port for the serve command in this project
 EXPOSE 3010
-CMD ["serve", "-s", "dist", "-l", "3010"]
+CMD ["serve", "-s", "dist", "-l", "tcp://0.0.0.0:3010"]
