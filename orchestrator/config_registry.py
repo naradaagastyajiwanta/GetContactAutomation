@@ -492,6 +492,23 @@ CONFIG_DEFINITIONS: list[ConfigDef] = [
         group=ConfigGroup.GENERAL, label="SMTP Use SSL",
         description="Use SSL for SMTP connection (default: true for port 465)"
     ),
+    ConfigDef(
+        key="SMTP_ACCOUNTS", type=ConfigType.STRING, default="",
+        group=ConfigGroup.GENERAL, label="SMTP Accounts (JSON array)",
+        description=(
+            "JSON array of SMTP accounts for rotation. Format: "
+            "[{\"host\":\"mail.asosiasi.ai\",\"port\":465,\"user\":\"acc1@asosiasi.ai\","
+            "\"password\":\"xxx\",\"use_ssl\":true}, ...]. "
+            "Leave empty to use single account (SMTP_HOST/USERNAME/etc)."
+        ),
+        sensitive=True,
+        env_only=True,
+    ),
+    ConfigDef(
+        key="ROTATE_AFTER_N_EMAILS", type=ConfigType.INT, default=50,
+        group=ConfigGroup.GENERAL, label="Rotate SMTP After N Emails",
+        description="Switch to next SMTP account after sending N emails (per account). Prevents rate-limit bans."
+    ),
     # Email Blast IMAP Settings (for receiving replies)
     ConfigDef(
         key="IMAP_HOST", type=ConfigType.STRING, default="mail.asosiasi.ai",

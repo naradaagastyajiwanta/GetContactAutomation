@@ -10,6 +10,7 @@ import ssl
 import socket
 import subprocess
 import shutil
+import threading
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 from email.mime.base import MIMEBase
@@ -159,21 +160,122 @@ def _socks_create_connection(address, timeout=None, source_address=None, socket_
 # SMTP Client
 # ---------------------------------------------------------------------------
 
+class SMTPAccount:
+    """Single SMTP account configuration."""
+    def __init__(self, host: str, port: int, user: str, password: str,
+                 use_ssl: bool = True, from_name: str = "Sekretariat Asosiasi AI"):
+        self.host = host
+        self.port = port
+        self.user = user
+        self.password = password
+        self.use_ssl = use_ssl
+        self.from_name = from_name
+        self._connection: Optional[smtplib.SMTP_SSL] = None
+        self.email_count = 0  # emails sent with this account this session
+        self.degraded = False  # True if recent auth error
+
+
 class SMTPClient:
-    """SMTP client for sending emails via SOCKS5 proxy (WARP) when needed."""
+    """SMTP client with multi-account rotation to prevent bans.
+
+    Supports two modes:
+    1. Multi-account (SMTP_ACCOUNTS JSON config): rotates through multiple
+       SMTP accounts, switching after ROTATE_AFTER_N_EMAILS or on auth error.
+    2. Legacy single-account (SMTP_HOST/USERNAME): uses one account only.
+
+    Thread-safe via a lock for rotation decisions.
+    """
 
     def __init__(self):
-        self.host = cfg.get("SMTP_HOST", "mail.asosiasi.ai")
-        self.port = cfg.get("SMTP_PORT", 465)
-        self.username = cfg.get("SMTP_USERNAME", "sekretariat@asosiasi.ai")
-        self.password = cfg.get("SMTP_PASSWORD", "")
-        self.use_ssl = cfg.get("SMTP_USE_SSL", True)
-        self._connection: Optional[smtplib.SMTP_SSL] = None
+        self._rotate_after = cfg.get("ROTATE_AFTER_N_EMAILS", 50)
+        self._rotation_lock = threading.Lock()
 
-    def connect(self) -> bool:
-        """Establish SMTP connection (optionally via SOCKS5 proxy)."""
+        # Load accounts
+        self._accounts: list[SMTPAccount] = []
+        self._current_index = 0
+
+        raw_accounts = cfg.get("SMTP_ACCOUNTS", "")
+        if raw_accounts:
+            try:
+                accounts_data = json.loads(raw_accounts)
+                for acc in accounts_data:
+                    self._accounts.append(SMTPAccount(
+                        host=acc.get("host", "mail.asosiasi.ai"),
+                        port=int(acc.get("port", 465)),
+                        user=acc.get("user", ""),
+                        password=acc.get("password", ""),
+                        use_ssl=acc.get("use_ssl", True),
+                        from_name=acc.get("from_name", "Sekretariat Asosiasi AI"),
+                    ))
+                log.info(f"[EmailBlast] SMTP: loaded {len(self._accounts)} accounts for rotation")
+            except Exception as e:
+                log.error(f"[EmailBlast] SMTP_ACCOUNTS JSON parse error: {e}. Falling back to single account.")
+                self._accounts = []
+
+        # Fallback: single legacy account
+        if not self._accounts:
+            self._accounts.append(SMTPAccount(
+                host=cfg.get("SMTP_HOST", "mail.asosiasi.ai"),
+                port=cfg.get("SMTP_PORT", 465),
+                user=cfg.get("SMTP_USERNAME", "sekretariat@asosiasi.ai"),
+                password=cfg.get("SMTP_PASSWORD", ""),
+                use_ssl=cfg.get("SMTP_USE_SSL", True),
+                from_name=cfg.get("SMTP_FROM_NAME", "Sekretariat Asosiasi AI"),
+            ))
+            log.info("[EmailBlast] SMTP: using single legacy account (no rotation)")
+
+    @property
+    def _current_account(self) -> SMTPAccount:
+        return self._accounts[self._current_index]
+
+    def _maybe_rotate(self) -> None:
+        """Rotate to next account if limit reached or current is degraded."""
+        acc = self._current_account
+        if (acc.email_count >= self._rotate_after and len(self._accounts) > 1) or acc.degraded:
+            self._rotate_next()
+
+    def _rotate_next(self) -> None:
+        """Switch to next account, disconnecting the current one."""
+        old = self._current_account
+        self._disconnect_account(old)
+        old.email_count = 0  # reset counter for next round
+        old.degraded = False
+
+        # Pick next non-degraded account
+        start = self._current_index
+        attempts = 0
+        while attempts < len(self._accounts):
+            self._current_index = (self._current_index + 1) % len(self._accounts)
+            attempts += 1
+            if not self._accounts[self._current_index].degraded:
+                break
+
+        new_acc = self._current_account
+        log.info(
+            f"[EmailBlast] SMTP rotated: {old.user} (sent={old.email_count}) → {new_acc.user} "
+            f"(degraded={new_acc.degraded}, total_accounts={len(self._accounts)})"
+        )
+
+    def _disconnect_account(self, acc: SMTPAccount) -> None:
+        """Disconnect a specific account's connection."""
+        if acc._connection:
+            try:
+                acc._connection.quit()
+            except Exception:
+                pass
+            acc._connection = None
+
+    def _ensure_connected(self) -> bool:
+        """Ensure current account is connected. Rotates if needed."""
+        acc = self._current_account
+        if acc._connection is not None:
+            return True
+
+        # Rotate if needed before connecting
+        self._maybe_rotate()
+        acc = self._current_account  # may have changed
+
         global _original_create_connection
-
         socks_config = _get_socks_config()
         should_patch = socks_config["enabled"]
 
@@ -184,95 +286,126 @@ class SMTPClient:
                     socket.create_connection = _socks_create_connection
                 log.info(f"[EmailBlast] SOCKS5 proxy active: {socks_config['host']}:{socks_config['port']}")
 
-            log.info(f"[EmailBlast] Connecting to SMTP {self.host}:{self.port} (SOCKS5={socks_config['enabled']})")
+            log.info(f"[EmailBlast] SMTP connecting: {acc.host}:{acc.port} as {acc.user} (SOCKS5={socks_config['enabled']})")
 
-            if self.use_ssl:
+            if acc.use_ssl:
                 context = ssl.create_default_context()
-                self._connection = smtplib.SMTP_SSL(self.host, self.port, context=context)
+                conn = smtplib.SMTP_SSL(acc.host, acc.port, context=context)
             else:
-                self._connection = smtplib.SMTP(self.host, self.port)
-                self._connection.ehlo()
-                self._connection.starttls(context=ssl.create_default_context())
+                conn = smtplib.SMTP(acc.host, acc.port)
+                conn.ehlo()
+                conn.starttls(context=ssl.create_default_context())
 
-            self._connection.login(self.username, self.password)
-            log.info("[EmailBlast] SMTP connected successfully")
+            conn.login(acc.user, acc.password)
+            acc._connection = conn
+            acc.degraded = False
+            log.info(f"[EmailBlast] SMTP connected: {acc.user}")
             return True
+
         except Exception as e:
-            log.error(f"[EmailBlast] SMTP connection failed: {e}")
+            err_str = str(e).lower()
+            log.error(f"[EmailBlast] SMTP connect failed for {acc.user}: {e}")
+            # Mark as degraded so we rotate away
+            acc.degraded = True
+            acc._connection = None
+
+            # If this is an auth error, rotate immediately
+            if any(kw in err_str for kw in ("auth", "535", "501", "534", "user", "password", "authentication")):
+                with self._rotation_lock:
+                    self._rotate_next()
             return False
         finally:
             if should_patch and _original_create_connection is not None:
                 socket.create_connection = _original_create_connection
                 _original_create_connection = None
 
-    def disconnect(self):
-        """Close SMTP connection"""
-        if self._connection:
-            try:
-                self._connection.quit()
-            except:
-                pass
-            self._connection = None
+    def disconnect(self) -> None:
+        """Disconnect all account connections."""
+        for acc in self._accounts:
+            self._disconnect_account(acc)
 
     def send_email(self, to_email: str, subject: str, body: str,
                    from_email: str = None, from_name: str = None,
                    attachment_path: str = None,
                    attachment_filename: str = None) -> tuple[bool, str]:
-        """Send single email with optional attachment"""
-        if not self._connection:
-            success = self.connect()
-            if not success:
-                return False, "SMTP not connected"
+        """Send single email with optional attachment. Thread-safe rotation."""
+        with self._rotation_lock:
+            connected = self._ensure_connected()
+            if not connected:
+                return False, "SMTP: no account available (all degraded or rotated)"
 
+        # Build message (no lock held)
+        acc = self._current_account
         try:
             msg = MIMEMultipart('mixed')
-            if from_email:
-                msg['From'] = f"{from_name or 'Sekretariat Asosiasi AI'} <{from_email}>"
-            else:
-                msg['From'] = from_name or 'Sekretariat Asosiasi AI'
+            from_addr = from_email or acc.user
+            from_display = from_name or acc.from_name
+            msg['From'] = f"{from_display} <{from_addr}>"
             msg['To'] = to_email
             msg['Subject'] = subject
-            msg['Reply-To'] = from_email or 'sekretariat@asosiasi.ai'
+            msg['Reply-To'] = from_addr
 
-            # Create multipart/alternative for body
+            # Multipart alternative
             msg_alt = MIMEMultipart('alternative')
-
-            # Plain text part
-            text_part = MIMEText(body, 'plain', 'utf-8')
-            msg_alt.attach(text_part)
-
-            # HTML part (simple conversion)
-            html_body = body.replace('\n', '<br>\n')
-            html_part = MIMEText(html_body, 'html', 'utf-8')
-            msg_alt.attach(html_part)
-
+            msg_alt.attach(MIMEText(body, 'plain', 'utf-8'))
+            msg_alt.attach(MIMEText(body.replace('\n', '<br>\n'), 'html', 'utf-8'))
             msg.attach(msg_alt)
 
-            # Add attachment if provided
+            # Attachment
             if attachment_path and os.path.exists(attachment_path):
                 with open(attachment_path, 'rb') as f:
                     part = MIMEBase('application', 'octet-stream')
                     part.set_payload(f.read())
                     encoders.encode_base64(part)
-                    # Use provided clean filename, or strip the {campaign_id}_{recipient_id}_ prefix from disk basename
-                    if attachment_filename:
-                        filename = attachment_filename
-                    else:
-                        basename = os.path.basename(attachment_path)
-                        # Strip leading {campaign_id}_{recipient_id}_ prefix (e.g. "13_1_" → "")
-                        filename = re.sub(r'^\d+_\d+_', '', basename)
+                    filename = attachment_filename or re.sub(r'^\d+_\d+_', '', os.path.basename(attachment_path))
                     part.add_header('Content-Disposition', f'attachment; filename="{filename}"')
                     msg.attach(part)
                     log.debug(f"[EmailBlast] Attached: {filename}")
 
-            # Use sendmail with proper envelope from
-            from_addr = from_email if from_email else self.username
-            self._connection.sendmail(from_addr, [to_email], msg.as_string())
-            log.debug(f"[EmailBlast] Sent to {to_email}")
+            # Send
+            acc._connection.sendmail(from_addr, [to_email], msg.as_string())
+            acc.email_count += 1
+
+            log.info(
+                f"[EmailBlast] Sent to {to_email} via {acc.user} "
+                f"(account_count={acc.email_count}/{self._rotate_after})"
+            )
+
+            # Check if we should rotate after this send
+            with self._rotation_lock:
+                self._maybe_rotate()
+
             return True, ""
+
         except Exception as e:
-            log.error(f"[EmailBlast] Failed to send to {to_email}: {e}")
+            err_str = str(e).lower()
+            log.error(f"[EmailBlast] Send failed to {to_email} via {acc.user}: {e}")
+
+            # Auth error → degrade and rotate
+            if any(kw in err_str for kw in ("auth", "535", "501", "534", "user", "password", "authentication")):
+                with self._rotation_lock:
+                    acc.degraded = True
+                    self._disconnect_account(acc)
+                    self._rotate_next()
+                return False, f"SMTP auth error ({acc.user}), rotated: {str(e)}"
+
             return False, str(e)
+
+    def get_status(self) -> dict:
+        """Return per-account status for monitoring."""
+        return {
+            "total_accounts": len(self._accounts),
+            "rotate_after": self._rotate_after,
+            "accounts": [
+                {
+                    "user": acc.user,
+                    "email_count": acc.email_count,
+                    "degraded": acc.degraded,
+                    "connected": acc._connection is not None,
+                }
+                for acc in self._accounts
+            ]
+        }
 
 
 # Global SMTP client
