@@ -324,6 +324,14 @@ class SMTPClient:
         for acc in self._accounts:
             self._disconnect_account(acc)
 
+    def connect(self) -> bool:
+        """Pre-connect the current account. Returns True if connected.
+
+        Backward-compatible with old single-account .connect() usage.
+        Prefer letting send_email() handle connection lazily.
+        """
+        return self._ensure_connected()
+
     def send_email(self, to_email: str, subject: str, body: str,
                    from_email: str = None, from_name: str = None,
                    attachment_path: str = None,
