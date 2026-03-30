@@ -22,19 +22,22 @@ Find the official Instagram handle (`@univname`) for each university that doesn'
 
 ```
 ┌─────────────────────────────────────────────────────────────┐
-│  TIER 1: Website University (MOST ACCURATE — no verify needed)
+│  TIER 1: Google / DuckDuckGo Search (FAST — broad coverage)
 │  ─────────────────────────────────────────────────────────
-│  1. Get website URL from PDDIKTI data
-│  2. If no PDDIKTI website → DuckDuckGo: "nama university website"
-│  3. Scrape website → find links to instagram.com/*
-│  4. If found:
-│     → confidence = 0.9 (very high — from official website)
-│     → NO bio verification needed (already verified by website)
-│     → SAVE ig_handle, status = "ig_found"
-│     → DONE (skip Tier 2 & Tier 3)
-│  5. If not found → proceed to Tier 2
+│  Search queries (tried in order):
+│    site:instagram.com "Nama University"
+│    site:instagram.com Nama University instagram
+│
+│  Primary: DuckDuckGo (free, no API key needed)
+│  Fallback: Serper.dev (if SERPER_API_KEY is set)
+│
+│  If found: initial confidence = 0.40–0.65
+│  → WAJIB bio verification (threshold ketat: ≥ 0.65)
+│  → If confidence < 0.65 after bio → REJECT, try Tier 2
+│  → If confidence ≥ 0.65 → ACCEPT, DONE
 └─────────────────────────────────────────────────────────────┘
                               │
+                  confidence < 0.65 or not found
                               ▼
 ┌─────────────────────────────────────────────────────────────┐
 │  TIER 2: IG Web Search (Playwright / IG Session)
@@ -53,44 +56,53 @@ Find the official Instagram handle (`@univname`) for each university that doesn'
 │  │
 │  └─ Tier 3: ScrapingBot (DISABLED — no search API)
 │
-│  If found: confidence = 0.60-0.70
-│  → MUST do bio verification (Tier 3 below)
-│  → If fail verification (confidence < 0.55) → REJECT
+│  If found: initial confidence = 0.60–0.70
+│  → WAJIB bio verification (threshold standard: ≥ 0.55)
+│  → If confidence < 0.55 after bio → REJECT, try Tier 3
+│  → If confidence ≥ 0.55 → ACCEPT, DONE
 └─────────────────────────────────────────────────────────────┘
                               │
+                  confidence < 0.55 or not found
                               ▼
 ┌─────────────────────────────────────────────────────────────┐
-│  TIER 3: Google / DuckDuckGo Search (LAST RESORT)
+│  TIER 3: Website Scraping (MOST ACCURATE — safety net)
 │  ─────────────────────────────────────────────────────────
-│  Search queries:
-│    site:instagram.com "Nama University"
-│    site:instagram.com Nama University instagram
+│  1. Get website URL from DB (if already saved)
+│  2. If not → DuckDuckGo: '"{name}" site:ac.id OR site:sch.id'
+│  3. If not → Serper.dev legacy fallback (if SERPER_API_KEY set)
+│  4. Scrape website HTML → regex untuk instagram.com/* links
+│  5. Filter sub-entity handles (bem_, humas_, klinik_, dll)
 │
-│  Primary: DuckDuckGo (free, no API key needed)
-│  Fallback: Serper.dev (if SERPER_API_KEY is set)
+│  If found:
+│     → confidence = 0.90 (very high — dari website resmi sendiri)
+│     → NO bio verification needed
+│     → ACCEPT, DONE
+│  If not found → university SKIPPED (no IG handle)
 │
-│  If found: confidence = 0.40-0.60
-│  → MUST do bio verification
-│  → If fail verification (confidence < 0.55) → REJECT
-│  → If not found → university is SKIPPED (no IG handle)
+│  Note: website_url selalu disimpan ke DB meski handle tidak ada
 └─────────────────────────────────────────────────────────────┘
                               │
                               ▼
 ┌─────────────────────────────────────────────────────────────┐
-│  BIO VERIFICATION (required for Tier 2 & Tier 3 results)
+│  BIO VERIFICATION (untuk Tier 1 & Tier 2, bukan Tier 3)
 │  ─────────────────────────────────────────────────────────
 │  Uses verify_ig_handle_with_fallback():
-│  1. Fetch IG profile page for the handle
-│  2. Read the profile BIO
-│  3. Check if bio contains university name or related keywords
-│  4. confidence_boost = +0.30 if match
+│  1. Fetch IG profile → baca bio, full_name, external_url
+│  2. Hitung confidence_boost berdasarkan:
+│     +0.15  unique words universitas ada di bio
+│     +0.10  location word (kota) ada di bio
+│     +0.10  bio keywords: resmi, official, kampus, dll
+│     +0.10  domain .ac.id di external_url atau bio
+│     −0.15  bio kosong
+│     −0.25  sub-department handle (bem_, kemahasiswaan_, dll)
+│     −0.30  bio = olshop / personal / fan page
+│     −0.35  bio = klinik / rumah sakit / apotek (subsidiary)
 │
-│  Acceptance threshold:
-│    initial_confidence + confidence_boost >= 0.55
+│  final_confidence = initial_confidence + boost
 │
-│  Examples:
-│    Handle @bem_univx_official → bio: "BEM FIKOM Universitas X" → MATCH
-│    Handle @fashion_store_jakarta → bio: "Jual baju murah" → NO MATCH → REJECT
+│  Threshold per tier:
+│    Tier 1 (Google): final_confidence ≥ 0.65
+│    Tier 2 (IG Web): final_confidence ≥ 0.55
 └─────────────────────────────────────────────────────────────┘
                               │
                               ▼
@@ -99,11 +111,8 @@ Find the official Instagram handle (`@univname`) for each university that doesn'
 │  ─────────────────────────────────────────────────────────
 │  UPDATE universities
 │    SET ig_handle = "@handle",
-│        ig_handle_verified = (confidence >= 0.6)
-│  WHERE id = X
-│
-│  UPDATE universities
-│    SET status = "ig_found"
+│        ig_handle_verified = (confidence >= 0.6),
+│        status = "ig_found"
 │  WHERE id = X
 └─────────────────────────────────────────────────────────────┘
 ```
@@ -112,13 +121,15 @@ Find the official Instagram handle (`@univname`) for each university that doesn'
 
 ## Confidence Score System
 
-| Source | Initial Confidence | After Bio Check |
-|--------|-------------------|-----------------|
-| Tier 1: Website | 0.90 | Not needed |
-| Tier 2: IG Web API | 0.60–0.70 | +0.30 = **0.90** |
-| Tier 3: Google | 0.40–0.60 | +0.30 = **0.70–0.90** |
+| Tier | Source | Initial | Threshold Accept | Bio Verify |
+|------|--------|---------|-----------------|-----------|
+| **1** | Google / DuckDuckGo | 0.40–0.65 | **≥ 0.65** (strict) | ✅ Wajib |
+| **2** | IG Web API (Playwright → Session) | 0.60–0.70 | **≥ 0.55** (standard) | ✅ Wajib |
+| **3** | Website Scraping | 0.90 | — (langsung accept) | ❌ Tidak perlu |
 
-**Minimum to accept: 0.55**
+`ig_verified = 1` jika final_confidence ≥ **0.60**
+
+**Tier 1 threshold lebih ketat (0.65)** karena Google Search hasilnya lebih broad — bio confirmation wajib kuat sebelum diterima. Tier 2 & 3 lebih selektif secara hasil, threshold standar 0.55 cukup.
 
 ---
 
@@ -143,7 +154,9 @@ Agent finishes the current university, saves `last_processed_id`, then exits the
 ```python
 await asyncio.sleep(cfg.IG_REQUEST_DELAY_SECONDS)  # default: 5 seconds
 ```
-Between each university. No delay between Tier 1→2→3 (they cascade synchronously).
+Antara setiap universitas. Dalam satu universitas, ada delay tambahan sebelum bio verify:
+- Tier 1 (Google → bio verify): `await asyncio.sleep(2)`
+- Tier 2 (IG Web → bio verify): `await asyncio.sleep(3)`
 
 ---
 
@@ -154,10 +167,10 @@ Between each university. No delay between Tier 1→2→3 (they cascade synchrono
 | `run_handle_search_batch(limit)` | Batch run for scheduler/manual trigger |
 | `run_handle_search_for_universities(ids)` | Targeted run for specific universities |
 | `_search_handle_for_uni(uni, loop)` | Core logic for one university |
-| `search_ig_from_website()` | Tier 1: website scraping |
-| `search_ig_handle_with_fallback()` | Tier 2: IG web search (4-tier internal) |
-| `search_ig_handle()` | Tier 3: DuckDuckGo + Serper |
-| `verify_ig_handle_with_fallback()` | Bio verification |
+| `search_ig_handle()` | **Tier 1**: DuckDuckGo + Serper fallback |
+| `search_ig_handle_with_fallback()` | **Tier 2**: IG web search (Playwright → Session) |
+| `search_ig_from_website()` | **Tier 3**: Website scraping |
+| `verify_ig_handle_with_fallback()` | Bio verification (Tier 1 & 2 only) |
 
 ---
 
@@ -166,15 +179,17 @@ Between each university. No delay between Tier 1→2→3 (they cascade synchrono
 ```sql
 UPDATE universities
   SET ig_handle = '@univofficial',
-      ig_handle_verified = 1,
-      status = 'ig_found'
-  WHERE id = 123;
+      ig_verified   = 1,  -- jika confidence >= 0.6
+      website       = 'https://...',  -- jika ditemukan di Tier 3
+      status        = 'ig_found'
+WHERE id = 123;
 ```
 
 ---
 
 ## Known Issues
 
-- **Playwright IG sessions expired**: Accounts `hasetar955` and `kefey90592` — last login 13+ days ago. Session cookies invalid → Tier 0 (Playwright) fails with CAPTCHA/Timeout.
-- **IG_SESSION_ID not set**: Tier 1 fails because `IG_SESSION_ID` is not configured in `.env`.
-- **Tier 2 & 3 disabled**: Apify and ScrapingBot are intentionally not activated per operator request.
+- **Playwright sessions expired**: Accounts `hasetar955` and `kefey90592` — last login 13+ days ago. Session cookies invalid → Tier 2 (Playwright sub-tier) fails with CAPTCHA/Timeout.
+- **IG_SESSION_ID not set**: IG direct session (Tier 2 sub-tier 1) tidak aktif karena tidak dikonfigurasi di `.env`.
+- **Apify disabled**: Tidak ada API key → dikomentari dalam kode.
+- **Efektif sekarang**: Tier 1 (Google/DDG) + Tier 3 (Website Scraping) yang paling sering aktif.
