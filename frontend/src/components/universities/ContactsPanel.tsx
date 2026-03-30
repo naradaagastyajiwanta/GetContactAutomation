@@ -93,7 +93,13 @@ export function ContactsPanel({ contacts, universityId }: ContactsPanelProps) {
   const queryClient = useQueryClient()
   const toggleMutation = useToggleContactContacted(universityId)
 
+  const [showAllContacts, setShowAllContacts] = useState(false)
+
   const contactIds = contacts.map((c) => c.id)
+
+  const filteredContacts = showAllContacts
+    ? contacts
+    : contacts.filter((c) => c.has_person_name || (c.contact_name && c.contact_name.trim() !== ''))
 
   const handleBulkUpdated = () => {
     queryClient.invalidateQueries({ queryKey: queryKeys.universities.contacts(universityId) })
@@ -134,16 +140,36 @@ export function ContactsPanel({ contacts, universityId }: ContactsPanelProps) {
 
   return (
     <>
-      <div className="mb-3 flex justify-end gap-2">
-        <Button variant="secondary" size="sm" onClick={() => setBlastOpen(true)} disabled={contacts.length === 0}>
-          <Megaphone className="h-4 w-4" />
-          Add to Blast
+      <div className="mb-3 flex flex-col sm:flex-row justify-between gap-2">
+        <Button
+          variant="outline"
+          size="sm"
+          onClick={() => setShowAllContacts(!showAllContacts)}
+        >
+          {showAllContacts
+            ? 'Hide Contacts Without Name'
+            : `Show All Contacts (${contacts.length - filteredContacts.length} hidden)`}
         </Button>
-        <Button variant="secondary" size="sm" onClick={() => setBulkOpen(true)}>
-          <ListChecks className="h-4 w-4" />
-          Bulk Update Status
-        </Button>
+        
+        <div className="flex gap-2">
+          <Button variant="secondary" size="sm" onClick={() => setBlastOpen(true)} disabled={contacts.length === 0}>
+            <Megaphone className="h-4 w-4" />
+            Add to Blast
+          </Button>
+          <Button variant="secondary" size="sm" onClick={() => setBulkOpen(true)}>
+            <ListChecks className="h-4 w-4" />
+            Bulk Update Status
+          </Button>
+        </div>
       </div>
+      
+      {filteredContacts.length === 0 ? (
+        <EmptyState
+          icon={Phone}
+          title="No named contacts found"
+          description="Click 'Show All Contacts' to view contacts without names."
+        />
+      ) : (
       <Table>
         <TableHeader>
           <TableRow>
@@ -156,7 +182,7 @@ export function ContactsPanel({ contacts, universityId }: ContactsPanelProps) {
           </TableRow>
         </TableHeader>
         <TableBody>
-          {contacts.map((contact) => (
+          {filteredContacts.map((contact) => (
             <TableRow key={contact.id}>
               <TableCell>
                 {contact.source_image_url ? (
@@ -215,6 +241,7 @@ export function ContactsPanel({ contacts, universityId }: ContactsPanelProps) {
           ))}
         </TableBody>
       </Table>
+      )}
 
       {/* Image preview modal */}
       {previewUrl && (
