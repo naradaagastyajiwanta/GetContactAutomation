@@ -59,7 +59,7 @@ services:
     container_name: gc-frontend
     restart: unless-stopped
     ports:
-      - "3200:80"
+      - "3080:3080"
     depends_on:
       - orchestrator
     networks:
