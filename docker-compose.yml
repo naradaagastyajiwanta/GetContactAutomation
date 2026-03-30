@@ -10,7 +10,7 @@ services:
     container_name: gc-whatsapp
     restart: unless-stopped
     ports:
-      - "3100:3100"
+      - "3110:3110"
     volumes:
       - ./whatsapp-service/auth_store:/app/auth_store
       - ./whatsapp-service/auth_store_backup:/app/auth_store_backup
@@ -86,14 +86,14 @@ services:
       - 1.1.1.1
       - 8.8.8.8
     ports:
-      - "8000:8000"
+      - "8010:8010"
     volumes:
       - ./data:/app/data
     env_file:
       - .env.production
     environment:
-      - WA_SERVICE_URL=http://whatsapp:3100
-      - WEBHOOK_URL=http://orchestrator:8000/webhook/incoming
+      - WA_SERVICE_URL=http://whatsapp:3110
+      - WEBHOOK_URL=http://orchestrator:8010/webhook/incoming
       - DATABASE_PATH=data/getcontact.db
       - DDG_PROXY=socks5h://warp:1080
       - DDGS_PROXY=socks5h://warp:1080
@@ -120,7 +120,7 @@ services:
     container_name: gc-frontend
     restart: unless-stopped
     ports:
-      - "3080:3080"
+      - "3010:3010"
     depends_on:
       - orchestrator
     networks:

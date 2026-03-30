@@ -6,34 +6,25 @@ WORKDIR /app
 
 # Copy package files (assuming context is project root)
 COPY frontend/package*.json ./
-
-# Use npm ci for deterministic installs; cache npm dir between builds
+# Use cache mount for faster builds
 RUN --mount=type=cache,target=/root/.npm \
     npm ci --no-audit --progress=false --legacy-peer-deps
 
-# Stage 2: Build static assets
+# ── Stage 2: Build static assets ─────────────────────────────
 FROM node:20-alpine AS build
 WORKDIR /app
-
-# Copy deps from Stage 1
 COPY --from=deps /app/node_modules ./node_modules
 COPY frontend/ .
 
 # Build the project (Vite produces 'dist' folder)
 RUN npm run build
 
-# Stage 3: Runtime image (small) serving static build
+# ── Stage 3: Runtime image (small) ───────────────────────────
 FROM node:20-alpine AS runtime
 WORKDIR /app
-
-# Install simple static server
 RUN npm install -g serve
-
-# Copy built assets from build stage
 COPY --from=build /app/dist ./dist
 
 # Standard port for the serve command in this project
-EXPOSE 3080
-
-# Command to serve the static files
-CMD ["serve", "-s", "dist", "-l", "3080"]
+EXPOSE 3010
+CMD ["serve", "-s", "dist", "-l", "3010"]
