@@ -1,6 +1,18 @@
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import toast from 'react-hot-toast'
-import { getWaQr, getWaStatus, sendTestMessage, waLogout, waRestart } from '../api/whatsapp'
+import {
+  getWaQr,
+  getWaStatus,
+  sendTestMessage,
+  waLogout,
+  waRestart,
+  getWhatsAppDevices,
+  getDeviceQR,
+  connectDevice,
+  disconnectDevice,
+  bulkSendWhatsApp,
+  bulkSendDocumentWhatsApp,
+} from '../api/whatsapp'
 import { queryKeys } from '../lib/queryKeys'
 
 export function useWaQr() {
@@ -62,6 +74,97 @@ export function useWaRestart() {
     },
     onError: () => {
       toast.error('Failed to restart connection')
+    },
+  })
+}
+
+// ---------------------------------------------------------------------------
+// Multi-Device Support Hooks
+// ---------------------------------------------------------------------------
+
+export function useWhatsAppDevices() {
+  return useQuery({
+    queryKey: queryKeys.whatsapp.devices,
+    queryFn: getWhatsAppDevices,
+    refetchInterval: 5_000,
+  })
+}
+
+export function useDeviceQR(deviceId: string) {
+  return useQuery({
+    queryKey: queryKeys.whatsapp.deviceQr(deviceId),
+    queryFn: () => getDeviceQR(deviceId),
+    refetchInterval: 3_000,
+    enabled: !!deviceId,
+  })
+}
+
+export function useConnectDevice() {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: (deviceId: string) => connectDevice(deviceId),
+    onSuccess: (_, deviceId) => {
+      toast.success(`Connecting device ${deviceId}...`)
+      queryClient.invalidateQueries({ queryKey: queryKeys.whatsapp.devices })
+      queryClient.invalidateQueries({ queryKey: queryKeys.whatsapp.device(deviceId) })
+    },
+    onError: (error, deviceId) => {
+      toast.error(`Failed to connect device ${deviceId}`)
+      console.error(error)
+    },
+  })
+}
+
+export function useDisconnectDevice() {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: (deviceId: string) => disconnectDevice(deviceId),
+    onSuccess: (_, deviceId) => {
+      toast.success(`Device ${deviceId} disconnected`)
+      queryClient.invalidateQueries({ queryKey: queryKeys.whatsapp.devices })
+      queryClient.invalidateQueries({ queryKey: queryKeys.whatsapp.device(deviceId) })
+    },
+    onError: (error, deviceId) => {
+      toast.error(`Failed to disconnect device ${deviceId}`)
+      console.error(error)
+    },
+  })
+}
+
+export function useBulkSendWhatsApp() {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: bulkSendWhatsApp,
+    onSuccess: (data) => {
+      if (data.success) {
+        toast.success(`${data.queued} messages queued via ${data.device_id}`)
+        queryClient.invalidateQueries({ queryKey: queryKeys.whatsapp.devices })
+      } else {
+        toast.error(data.error || 'Failed to bulk send')
+      }
+    },
+    onError: (error) => {
+      toast.error('Failed to bulk send messages')
+      console.error(error)
+    },
+  })
+}
+
+export function useBulkSendDocumentWhatsApp() {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: bulkSendDocumentWhatsApp,
+    onSuccess: (data) => {
+      if (data.success) {
+        toast.success(`${data.queued} documents queued via ${data.device_id}`)
+        queryClient.invalidateQueries({ queryKey: queryKeys.whatsapp.devices })
+      } else {
+        toast.error(data.error || 'Failed to bulk send documents')
+      }
+    },
+    onError: (error) => {
+      toast.error('Failed to bulk send documents')
+      console.error(error)
     },
   })
 }

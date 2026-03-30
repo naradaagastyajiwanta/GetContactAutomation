@@ -2,6 +2,8 @@ import { useEffect, useRef, useCallback, useState } from 'react'
 import { useQueryClient } from '@tanstack/react-query'
 import { queryKeys } from '../lib/queryKeys'
 import toast from 'react-hot-toast'
+import { useNotifications } from './useNotifications'
+export type { Notification } from './useNotifications'
 
 type WSEvent =
   | { type: 'agent_completed'; agent: string; stats: Record<string, unknown> }
@@ -10,122 +12,202 @@ type WSEvent =
   | { type: 'university_updated'; uni_id: number; status: string }
   | { type: 'got_number'; uni_id: number; phone: string }
   | { type: 'quota_reached'; remaining: number }
+  | { type: 'blast_progress'; campaign_id: number; sent_count: number; failed_count: number; invalid_count: number; total: number; percent: number; status: string }
+  | { type: 'blast_completed'; campaign_id: number; failed: Array<{ phone: string; name: string; university: string; error: string }> }
+  | { type: 'email_quota_updated'; sent_today: number; daily_limit: number; remaining: number; is_exhausted: boolean; campaign_id: number }
+  | { type: 'quota_exhausted'; campaign_id: number; remaining: number; daily_limit: number; pending_count: number }
 
-const WS_URL = `${import.meta.env.VITE_API_URL || 'http://localhost:8000'}/ws`
+// Singleton WebSocket across all hook instances
+let wsInstance: WebSocket | null = null
+let reconnectTimer: ReturnType<typeof setTimeout> | null = null
+let queryClientInstance: ReturnType<typeof useQueryClient> | null = null
+let notificationsInstance: ReturnType<typeof useNotifications> | null = null
 
-let wsConnectionCount = 0
+function getWsUrl() {
+  const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:'
+  return `${protocol}//${window.location.host}/ws`
+}
+
+function handleEventNotifications(data: WSEvent, add: ReturnType<typeof useNotifications>['add']) {
+  switch (data.type) {
+    case 'agent_completed': {
+      const agentName = data.agent.replace(/_/g, ' ').replace(/\b\w/g, (c) => c.toUpperCase())
+      const isError = 'error' in data.stats
+      add({
+        type: 'agent_completed',
+        title: isError ? `${agentName} failed` : `${agentName} completed`,
+        body: isError
+          ? `Error: ${data.stats.error}`
+          : `Processed ${data.stats.processed || 0} items — ${data.stats.success || 0} success, ${data.stats.failed || 0} failed`,
+      })
+      break
+    }
+    case 'got_number':
+      add({ type: 'got_number', title: 'Secretariat number found!', body: `Got contact for university #${data.uni_id}` })
+      break
+    case 'blast_completed': {
+      const failed = data.failed || []
+      const failedCount = failed.length
+      add({
+        type: 'blast_completed',
+        title: failedCount === 0 ? 'Blast campaign done!' : `Blast done — ${failedCount} failures`,
+        body: failedCount === 0 ? 'All messages sent successfully.' : `${failedCount} recipients failed.`,
+      })
+      break
+    }
+    case 'quota_reached':
+      add({ type: 'quota_reached', title: 'Daily quota reached', body: `Only ${data.remaining} conversations remaining.` })
+      break
+    case 'quota_exhausted': {
+      const d = data as Extract<WSEvent, { type: 'quota_exhausted' }>
+      add({
+        type: 'quota_exhausted' as const,
+        title: '📧 Quota harian habis — Campaign di-pause',
+        body: d.pending_count > 0
+          ? `${d.pending_count} email belum terkirim. Campaign akan otomatis lanjut besok.`
+          : `Quota harian (${d.daily_limit} email) sudah tercapai.`,
+      })
+      break
+    }
+    case 'conversation_changed':
+      add({ type: 'conversation_changed', title: 'Conversation updated', body: `#${data.conv_id} → ${data.state}` })
+      break
+    case 'university_updated':
+      add({ type: 'university_updated', title: 'University updated', body: `University #${data.uni_id} → ${data.status}` })
+      break
+  }
+}
+
+function handleEventQuery(data: WSEvent, qc: ReturnType<typeof useQueryClient>) {
+  switch (data.type) {
+    case 'agent_completed': {
+      const agentName = data.agent.replace(/_/g, ' ').replace(/\b\w/g, (c) => c.toUpperCase())
+      toast.success(`${agentName} completed`, { duration: 3000, icon: '✅' })
+      setTimeout(() => {
+        qc.refetchQueries({ queryKey: queryKeys.pipeline.status })
+        qc.refetchQueries({ queryKey: queryKeys.pipeline.logs({}) })
+        qc.refetchQueries({ queryKey: queryKeys.dashboard })
+        qc.refetchQueries({ queryKey: queryKeys.universities.all })
+      }, 500)
+      break
+    }
+    case 'conversation_changed':
+      qc.invalidateQueries({ queryKey: queryKeys.conversations.detail(data.conv_id) })
+      qc.invalidateQueries({ queryKey: queryKeys.conversations.list({}) })
+      break
+    case 'got_number':
+      toast.success('Got secretariat number!', { duration: 5000 })
+      qc.invalidateQueries({ queryKey: queryKeys.universities.detail(data.uni_id) })
+      qc.invalidateQueries({ queryKey: queryKeys.dashboard })
+      break
+    case 'message_sent':
+      qc.invalidateQueries({ queryKey: queryKeys.conversations.list({}) })
+      break
+    case 'university_updated':
+      qc.invalidateQueries({ queryKey: queryKeys.universities.all })
+      qc.invalidateQueries({ queryKey: queryKeys.universities.detail(data.uni_id) })
+      break
+    case 'quota_reached':
+      toast.error('Daily quota reached!', { duration: 5000, icon: '⚠️' })
+      break
+    case 'blast_progress':
+      // Instantly update campaign cache — no delay, progress bar moves in real-time
+      qc.setQueryData(
+        ['email-blast-campaign', data.campaign_id],
+        (old: unknown) => {
+          if (!old) return old
+          const o = old as { campaign?: { sent_count?: number; failed_count?: number; invalid_count?: number; status?: string } }
+          return {
+            ...o,
+            campaign: {
+              ...o.campaign,
+              sent_count: data.sent_count,
+              failed_count: data.failed_count,
+              invalid_count: data.invalid_count,
+              status: data.status,
+            },
+          }
+        }
+      )
+      // Also refresh the campaigns list and quota
+      qc.invalidateQueries({ queryKey: ['email-blast-campaigns'] })
+      qc.invalidateQueries({ queryKey: ['email-blast-quota'] })
+      break
+    case 'blast_completed': {
+      const failedCount = data.failed?.length || 0
+      if (failedCount === 0) {
+        toast.success('Blast campaign completed! All messages sent.', { duration: 5000, icon: '🎉' })
+      } else {
+        const failedNames = data.failed.slice(0, 5).map((f) => f.name || f.phone).join(', ')
+        const extra = failedCount > 5 ? ` +${failedCount - 5} more` : ''
+        toast.error(`Blast completed with ${failedCount} failures: ${failedNames}${extra}`, { duration: 8000 })
+      }
+      qc.invalidateQueries({ queryKey: queryKeys.blast })
+      qc.invalidateQueries({ queryKey: queryKeys.universities.all })
+      qc.invalidateQueries({ queryKey: ['email-blast-campaigns'] })
+      break
+    }
+    case 'email_quota_updated':
+      // Immediately update the quota query cache with fresh data from WebSocket
+      qc.setQueryData(['email-blast-quota'], (old: unknown) => ({
+        ...(old as object || {}),
+        sent_today: data.sent_today,
+        daily_limit: data.daily_limit,
+        remaining: data.remaining,
+        is_exhausted: data.is_exhausted,
+      }))
+      break
+  }
+}
+
+function onMessage(event: MessageEvent) {
+  try {
+    const data: WSEvent = JSON.parse(event.data)
+    if (queryClientInstance) handleEventQuery(data, queryClientInstance)
+    if (notificationsInstance) handleEventNotifications(data, notificationsInstance.add)
+  } catch {
+    // ignore parse errors
+  }
+}
+
+function connectWs() {
+  if (wsInstance && wsInstance.readyState !== WebSocket.CLOSED) return
+  wsInstance = new WebSocket(getWsUrl())
+  wsInstance.onopen = () => {
+    if (queryClientInstance) queryClientInstance.invalidateQueries({ queryKey: queryKeys.pipeline.status })
+  }
+  wsInstance.onmessage = onMessage
+  wsInstance.onclose = (e) => {
+    if (e.code !== 1000) reconnectTimer = setTimeout(connectWs, 3000)
+  }
+  wsInstance.onerror = () => wsInstance?.close()
+}
 
 export function useWebSocket() {
-  const wsRef = useRef<WebSocket | null>(null)
-  const queryClient = useQueryClient()
-  const reconnectTimeoutRef = useRef<ReturnType<typeof setTimeout>>()
-  const connectionIdRef = useRef<number>(++wsConnectionCount)
   const [connected, setConnected] = useState(false)
+  const queryClient = useQueryClient()
+  const notifications = useNotifications()
 
-  const connect = useCallback(() => {
-    if (wsRef.current?.readyState === WebSocket.OPEN) {
-      return
-    }
-
-    const url = WS_URL.replace(/^http/, 'ws')
-    console.log(`[WS ${connectionIdRef.current}] Connecting to ${url}`)
-    console.log(`[WS ${connectionIdRef.current}] API URL from env:`, import.meta.env.VITE_API_URL)
-
-    wsRef.current = new WebSocket(url)
-
-    wsRef.current.onopen = () => {
-      console.log(`[WS ${connectionIdRef.current}] Connected`)
-      setConnected(true)
-      // Invalidate queries on connection to refresh data
-      queryClient.invalidateQueries({ queryKey: queryKeys.pipeline.status })
-    }
-
-    wsRef.current.onmessage = (event) => {
-      try {
-        const data: WSEvent = JSON.parse(event.data)
-        console.log(`[WS ${connectionIdRef.current}] Received:`, data.type, data)
-        handleEvent(data)
-      } catch (e) {
-        console.error(`[WS ${connectionIdRef.current}] Failed to parse message:`, e)
-      }
-    }
-
-    wsRef.current.onclose = (event) => {
-      console.log(`[WS ${connectionIdRef.current}] Disconnected (code: ${event.code})`)
-      setConnected(false)
-      // Reconnect after 5s
-      reconnectTimeoutRef.current = setTimeout(() => {
-        connect()
-      }, 5000)
-    }
-
-    wsRef.current.onerror = (error) => {
-      console.error(`[WS ${connectionIdRef.current}] Error:`, error)
-      console.error(`[WS ${connectionIdRef.current}] ReadyState:`, wsRef.current?.readyState)
-    }
-  }, [queryClient])
-
-  const handleEvent = useCallback((event: WSEvent) => {
-    console.log(`[WS ${connectionIdRef.current}] Handling event:`, event.type)
-    switch (event.type) {
-      case 'agent_completed':
-        const agentName = event.agent.replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase())
-        toast.success(`${agentName} completed`, {
-          duration: 3000,
-          icon: '✅',
-        })
-        console.log(`[WS ${connectionIdRef.current}] Agent completed, refetching in 500ms`)
-        // Small delay to ensure DB transaction is committed
-        setTimeout(() => {
-          queryClient.refetchQueries({ queryKey: queryKeys.pipeline.status })
-          queryClient.refetchQueries({ queryKey: queryKeys.pipeline.logs({}) })
-          queryClient.refetchQueries({ queryKey: queryKeys.dashboard })
-          queryClient.refetchQueries({ queryKey: queryKeys.universities.all })
-          console.log(`[WS ${connectionIdRef.current}] Refetch triggered`)
-        }, 500)
-        break
-
-      case 'conversation_changed':
-        queryClient.invalidateQueries({ queryKey: queryKeys.conversations.detail(event.conv_id) })
-        queryClient.invalidateQueries({ queryKey: queryKeys.conversations.list({}) })
-        break
-
-      case 'got_number':
-        toast.success('🎉 Got secretariat number!', { duration: 5000 })
-        queryClient.invalidateQueries({ queryKey: queryKeys.universities.detail(event.uni_id) })
-        queryClient.invalidateQueries({ queryKey: queryKeys.dashboard })
-        break
-
-      case 'message_sent':
-        // Silent update, no toast
-        queryClient.invalidateQueries({ queryKey: queryKeys.conversations.list({}) })
-        break
-
-      case 'university_updated':
-        queryClient.invalidateQueries({ queryKey: queryKeys.universities.all })
-        queryClient.invalidateQueries({ queryKey: queryKeys.universities.detail(event.uni_id) })
-        break
-
-      case 'quota_reached':
-        toast.error('Daily quota reached!', { duration: 5000, icon: '⚠️' })
-        break
-
-      default:
-        console.log('[WS] Unknown event type:', event)
-    }
-  }, [queryClient])
+  // Register singleton refs once
+  if (!queryClientInstance) queryClientInstance = queryClient
+  if (!notificationsInstance) notificationsInstance = notifications
 
   useEffect(() => {
-    connect()
-    return () => {
-      if (wsRef.current) {
-        wsRef.current.close()
-      }
-      if (reconnectTimeoutRef.current) {
-        clearTimeout(reconnectTimeoutRef.current)
-      }
-    }
-  }, [connect])
+    queryClientInstance = queryClient
+    notificationsInstance = notifications
+  }, [queryClient, notifications])
 
-  return { connected }
+  useEffect(() => {
+    connectWs()
+    const timer = setTimeout(() => setConnected(true), 500)
+    return () => {
+      clearTimeout(timer)
+      if (reconnectTimer) clearTimeout(reconnectTimer)
+      if (wsInstance) wsInstance.close(1000)
+      wsInstance = null
+      setConnected(false)
+    }
+  }, [])
+
+  return { connected, ...notifications }
 }

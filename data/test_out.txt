@@ -1,0 +1,2 @@
+OK - social_profiler imports fine
+OK - graph builds fine, nodes: ['load_existing', 'identity_resolver', 'parallel_phase_1', 'parallel_phase_2', 'profile_compiler', 'gap_filler', 'persist_results']

@@ -27,6 +27,9 @@ class ConfigGroup(str, Enum):
     CREDENTIALS = "Credentials"
     AUDIENSI = "Audiensi"
     KNOWLEDGE_BASE = "Knowledge Base"
+    PLAYWRIGHT = "Playwright Browser"
+    DMS_INTEGRATION = "DMS Integration"
+    GENERAL = "General"
 
 
 @dataclass(frozen=True)
@@ -40,6 +43,7 @@ class ConfigDef:
     min_value: float | None = None
     max_value: float | None = None
     sensitive: bool = False  # if True, value is masked in GET response
+    env_only: bool = False  # if True, cannot be changed via DB or FE API — env var only
 
 
 CONFIG_DEFINITIONS: list[ConfigDef] = [
@@ -54,8 +58,12 @@ CONFIG_DEFINITIONS: list[ConfigDef] = [
     ConfigDef(
         key="SERPER_API_KEY",
         type=ConfigType.STRING, default="", group=ConfigGroup.CREDENTIALS,
-        label="Serper API Key",
-        description="API key for Serper.dev Google Search.",
+        label="Serper API Key (Legacy)",
+        description=(
+            "Legacy: API key for Serper.dev Google Search. "
+            "DuckDuckGo is now used as the primary search engine (free, no key needed). "
+            "Leave empty unless you want to use Serper as an additional fallback."
+        ),
         sensitive=True,
     ),
     ConfigDef(
@@ -102,10 +110,52 @@ CONFIG_DEFINITIONS: list[ConfigDef] = [
     ),
     ConfigDef(
         key="IG_REQUEST_DELAY_SECONDS",
-        type=ConfigType.INT, default=7, group=ConfigGroup.INSTAGRAM,
-        label="IG Request Delay (s)",
-        description="Seconds between Instagram API requests.",
-        min_value=1, max_value=60,
+        type=ConfigType.INT, default=30, group=ConfigGroup.INSTAGRAM,
+        label="IG API Request Delay (s)",
+        description="Seconds between direct IG API requests (Tier 1). Increased to reduce ban risk.",
+        min_value=10, max_value=120,
+    ),
+    # --- Playwright Browser (Tier 0 — primary IG scraper) ---
+    ConfigDef(
+        key="PW_HEADLESS",
+        type=ConfigType.BOOL, default=True, group=ConfigGroup.PLAYWRIGHT,
+        label="Headless Mode",
+        description="Run Playwright browser without visible window (recommended for production).",
+    ),
+    ConfigDef(
+        key="PW_MIN_DELAY_SECONDS",
+        type=ConfigType.INT, default=8, group=ConfigGroup.PLAYWRIGHT,
+        label="Min Delay (s)",
+        description="Minimum delay between Playwright actions (human-like behavior).",
+        min_value=3, max_value=60,
+    ),
+    ConfigDef(
+        key="PW_MAX_DELAY_SECONDS",
+        type=ConfigType.INT, default=20, group=ConfigGroup.PLAYWRIGHT,
+        label="Max Delay (s)",
+        description="Maximum delay between Playwright actions.",
+        min_value=5, max_value=120,
+    ),
+    ConfigDef(
+        key="PW_PROFILES_PER_SESSION",
+        type=ConfigType.INT, default=15, group=ConfigGroup.PLAYWRIGHT,
+        label="Profiles per Session",
+        description="Max profiles to scrape before restarting browser (prevents detection).",
+        min_value=3, max_value=50,
+    ),
+    ConfigDef(
+        key="PW_DAILY_LIMIT",
+        type=ConfigType.INT, default=100, group=ConfigGroup.PLAYWRIGHT,
+        label="Daily Limit",
+        description="Max profiles scraped per day via Playwright.",
+        min_value=10, max_value=500,
+    ),
+    ConfigDef(
+        key="PW_ACCOUNT_COOLDOWN_MINUTES",
+        type=ConfigType.INT, default=30, group=ConfigGroup.PLAYWRIGHT,
+        label="Account Cooldown (min)",
+        description="Minutes to cool down a rate-limited account before retrying.",
+        min_value=5, max_value=240,
     ),
     # --- Outreach ---
     ConfigDef(
@@ -250,6 +300,16 @@ CONFIG_DEFINITIONS: list[ConfigDef] = [
     ),
     # --- Scraping Fallback APIs ---
     ConfigDef(
+        key="BRAVE_API_KEY",
+        type=ConfigType.STRING, default="", group=ConfigGroup.CREDENTIALS,
+        label="Brave Search API Key",
+        description=(
+            "API key for Brave Web Search. Better quality than DDG for Indonesian content. "
+            "Get from: https://brave.com/search/api/"
+        ),
+        sensitive=True,
+    ),
+    ConfigDef(
         key="APIFY_API_KEY",
         type=ConfigType.STRING, default="", group=ConfigGroup.CREDENTIALS,
         label="Apify API Key",
@@ -293,6 +353,199 @@ CONFIG_DEFINITIONS: list[ConfigDef] = [
         label="Target Posts per University",
         description="Target jumlah posts per universitas (dari gabungan IG utama + related IGs).",
         min_value=10, max_value=500,
+    ),
+    # --- DMS Integration (MySQL) ---
+    ConfigDef(
+        key="DMS_MYSQL_HOST",
+        type=ConfigType.STRING, default="", group=ConfigGroup.DMS_INTEGRATION,
+        label="DMS MySQL Host",
+        description="Hostname/IP database DMS (dev staging atau production). Kosong = disabled. ENV ONLY.",
+        sensitive=True,
+        env_only=True,
+    ),
+    ConfigDef(
+        key="DMS_MYSQL_PORT",
+        type=ConfigType.INT, default=3306, group=ConfigGroup.DMS_INTEGRATION,
+        label="DMS MySQL Port",
+        description="Port database DMS MySQL. ENV ONLY.",
+        min_value=1, max_value=65535,
+        sensitive=True,
+        env_only=True,
+    ),
+    ConfigDef(
+        key="DMS_MYSQL_USER",
+        type=ConfigType.STRING, default="", group=ConfigGroup.DMS_INTEGRATION,
+        label="DMS MySQL User",
+        description="Username untuk koneksi database DMS. ENV ONLY.",
+        sensitive=True,
+        env_only=True,
+    ),
+    ConfigDef(
+        key="DMS_MYSQL_PASSWORD",
+        type=ConfigType.STRING, default="", group=ConfigGroup.DMS_INTEGRATION,
+        label="DMS MySQL Password",
+        description="Password untuk koneksi database DMS. ENV ONLY.",
+        sensitive=True,
+        env_only=True,
+    ),
+    ConfigDef(
+        key="DMS_MYSQL_DATABASE",
+        type=ConfigType.STRING, default="", group=ConfigGroup.DMS_INTEGRATION,
+        label="DMS MySQL Database",
+        description="Nama database DMS (e.g. dev_staging_dmsedu). ENV ONLY.",
+        sensitive=True,
+        env_only=True,
+    ),
+    ConfigDef(
+        key="DMS_SYNC_ENABLED",
+        type=ConfigType.BOOL, default=False, group=ConfigGroup.DMS_INTEGRATION,
+        label="Aktifkan DMS Sync",
+        description="Aktifkan sinkronisasi otomatis dengan database DMS (read jadwal audiensi, sync kontak).",
+    ),
+    ConfigDef(
+        key="DMS_SYNC_INTERVAL_MINUTES",
+        type=ConfigType.INT, default=30, group=ConfigGroup.DMS_INTEGRATION,
+        label="DMS Sync Interval (menit)",
+        description="Interval sinkronisasi data dari DMS MySQL ke sistem GetContact.",
+        min_value=5, max_value=1440,
+    ),
+    ConfigDef(
+        key="DMS_CONTACT_SYNC_ENABLED",
+        type=ConfigType.BOOL, default=False, group=ConfigGroup.DMS_INTEGRATION,
+        label="Sync Kontak ke DMS",
+        description="Otomatis sinkronkan kontak yang ditemukan oleh GetContact ke tabel kontak_auto di DMS.",
+    ),
+    ConfigDef(
+        key="DMS_REMINDER_ENABLED",
+        type=ConfigType.BOOL, default=False, group=ConfigGroup.DMS_INTEGRATION,
+        label="WhatsApp Reminder Audiensi",
+        description="Kirim reminder WhatsApp otomatis untuk jadwal audiensi dari DMS.",
+    ),
+    ConfigDef(
+        key="DMS_REMINDER_HOURS_BEFORE",
+        type=ConfigType.INT, default=24, group=ConfigGroup.DMS_INTEGRATION,
+        label="Reminder Hours Before",
+        description="Kirim reminder H-berapa jam sebelum jadwal audiensi.",
+        min_value=1, max_value=72,
+    ),
+
+    # --- Audiensi Research (Gemini AI) ---
+    ConfigDef(
+        key="GEMINI_API_KEY",
+        type=ConfigType.STRING, default="", group=ConfigGroup.DMS_INTEGRATION,
+        label="Gemini API Key",
+        description="API key untuk Google Gemini AI (digunakan untuk riset latar belakang audiensi).",
+        sensitive=True,
+    ),
+    ConfigDef(
+        key="DMS_RESEARCH_ENABLED",
+        type=ConfigType.BOOL, default=False, group=ConfigGroup.DMS_INTEGRATION,
+        label="Riset Audiensi Otomatis",
+        description="Aktifkan riset otomatis H-1 audiensi menggunakan Gemini AI dengan Google Search.",
+    ),
+    ConfigDef(
+        key="DMS_RESEARCH_NOTIFY_PHONES",
+        type=ConfigType.STRING, default="", group=ConfigGroup.DMS_INTEGRATION,
+        label="Nomor WA Notifikasi Riset",
+        description="Nomor WhatsApp tujuan notifikasi hasil riset (pisahkan dengan koma). Contoh: 6281234567890,6289876543210",
+    ),
+    ConfigDef(
+        key="DMS_RESEARCH_HOUR",
+        type=ConfigType.INT, default=18, group=ConfigGroup.DMS_INTEGRATION,
+        label="Jam Riset Audiensi (WIB)",
+        description="Jam berapa (WIB) riset H-1 audiensi dijalankan setiap hari.",
+        min_value=0, max_value=23,
+    ),
+    ConfigDef(
+        key="RESEARCH_USE_MULTI_AGENT",
+        type=ConfigType.BOOL, default=False, group=ConfigGroup.DMS_INTEGRATION,
+        label="Multi-Agent Research",
+        description=(
+            "Gunakan pipeline multi-agent (LangGraph) untuk riset audiensi. "
+            "Setiap pertanyaan didedikasikan ke 1 agent + reviewer. "
+            "Jika false, gunakan single-prompt legacy."
+        ),
+    ),
+    # Email Blast SMTP Settings
+    ConfigDef(
+        key="SMTP_HOST", type=ConfigType.STRING, default="mail.asosiasi.ai",
+        group=ConfigGroup.GENERAL, label="SMTP Host",
+        description="SMTP server hostname for email blast"
+    ),
+    ConfigDef(
+        key="SMTP_PORT", type=ConfigType.INT, default=465,
+        group=ConfigGroup.GENERAL, label="SMTP Port",
+        description="SMTP server port (465 for SSL, 587 for TLS)"
+    ),
+    ConfigDef(
+        key="SMTP_USERNAME", type=ConfigType.STRING, default="sekretariat@asosiasi.ai",
+        group=ConfigGroup.GENERAL, label="SMTP Username",
+        description="SMTP authentication username"
+    ),
+    ConfigDef(
+        key="SMTP_PASSWORD", type=ConfigType.STRING, default="SekertariatAInew343*",
+        group=ConfigGroup.GENERAL, label="SMTP Password",
+        description="SMTP authentication password"
+    ),
+    ConfigDef(
+        key="SMTP_USE_SSL", type=ConfigType.BOOL, default=True,
+        group=ConfigGroup.GENERAL, label="SMTP Use SSL",
+        description="Use SSL for SMTP connection (default: true for port 465)"
+    ),
+    ConfigDef(
+        key="SMTP_ACCOUNTS", type=ConfigType.STRING, default="",
+        group=ConfigGroup.GENERAL, label="SMTP Accounts (JSON array)",
+        description=(
+            "JSON array of SMTP accounts for rotation. Format: "
+            "[{\"host\":\"mail.asosiasi.ai\",\"port\":465,\"user\":\"acc1@asosiasi.ai\","
+            "\"password\":\"xxx\",\"use_ssl\":true}, ...]. "
+            "Leave empty to use single account (SMTP_HOST/USERNAME/etc)."
+        ),
+        sensitive=True,
+        env_only=True,
+    ),
+    ConfigDef(
+        key="ROTATE_AFTER_N_EMAILS", type=ConfigType.INT, default=50,
+        group=ConfigGroup.GENERAL, label="Rotate SMTP After N Emails",
+        description="Switch to next SMTP account after sending N emails (per account). Prevents rate-limit bans."
+    ),
+    ConfigDef(
+        key="VALIDATE_EMAIL_BEFORE_SEND", type=ConfigType.BOOL, default=True,
+        group=ConfigGroup.GENERAL, label="Validate Emails Before Sending",
+        description="Check email syntax and MX record before sending. Invalid emails are skipped (not failed). Reduces bounce rate."
+    ),
+    # Email Blast IMAP Settings (for receiving replies)
+    ConfigDef(
+        key="IMAP_HOST", type=ConfigType.STRING, default="mail.asosiasi.ai",
+        group=ConfigGroup.GENERAL, label="IMAP Host",
+        description="IMAP server hostname for receiving email replies"
+    ),
+    ConfigDef(
+        key="IMAP_PORT", type=ConfigType.INT, default=993,
+        group=ConfigGroup.GENERAL, label="IMAP Port",
+        description="IMAP server port (993 for SSL, 143 for TLS)"
+    ),
+    ConfigDef(
+        key="IMAP_USERNAME", type=ConfigType.STRING, default="sekretariat@asosiasi.ai",
+        group=ConfigGroup.GENERAL, label="IMAP Username",
+        description="IMAP authentication username"
+    ),
+    ConfigDef(
+        key="IMAP_PASSWORD", type=ConfigType.STRING, default="SekertariatAInew343*",
+        group=ConfigGroup.GENERAL, label="IMAP Password",
+        description="IMAP authentication password"
+    ),
+    ConfigDef(
+        key="IMAP_USE_SSL", type=ConfigType.BOOL, default=True,
+        group=ConfigGroup.GENERAL, label="IMAP Use SSL",
+        description="Use SSL for IMAP connection (default: true for port 993)"
+    ),
+    # Email Blast
+    ConfigDef(
+        key="EMAIL_BLAST_DAILY_LIMIT", type=ConfigType.INT, default=200,
+        group=ConfigGroup.GENERAL, label="Email Blast Daily Limit",
+        description="Maximum emails to send per day (WIB). 0 = unlimited.",
+        min_value=0, max_value=10000,
     ),
 ]
 

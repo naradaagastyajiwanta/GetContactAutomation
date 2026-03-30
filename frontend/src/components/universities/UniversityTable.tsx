@@ -105,9 +105,18 @@ export function UniversityTable({ universities, selected, onSelectedChange }: Un
   const igSessionOk = health?.instagram?.ok ?? true
   const [bulkAgentOpen, setBulkAgentOpen] = useState(false)
   const bulkAgentRef = useRef<HTMLDivElement>(null)
+  const selectAllRef = useRef<HTMLInputElement>(null)
 
   const allIds = universities.map((u) => u.id)
-  const allSelected = universities.length > 0 && selected.size === universities.length
+  const allSelected = universities.length > 0 && allIds.every((id) => selected.has(id))
+  const someSelected = universities.length > 0 && !allSelected && allIds.some((id) => selected.has(id))
+
+  // Set indeterminate state on "select all" checkbox
+  useEffect(() => {
+    if (selectAllRef.current) {
+      selectAllRef.current.indeterminate = someSelected
+    }
+  }, [someSelected])
 
   const toggleSelect = (id: number) => {
     const next = new Set(selected)
@@ -117,11 +126,15 @@ export function UniversityTable({ universities, selected, onSelectedChange }: Un
   }
 
   const toggleAll = () => {
+    const next = new Set(selected)
     if (allSelected) {
-      onSelectedChange(new Set())
+      // Remove only current page items
+      allIds.forEach((id) => next.delete(id))
     } else {
-      onSelectedChange(new Set(allIds))
+      // Add current page items (preserving other pages)
+      allIds.forEach((id) => next.add(id))
     }
+    onSelectedChange(next)
   }
 
   const handleBulk = (enabled: boolean) => {
@@ -231,6 +244,7 @@ export function UniversityTable({ universities, selected, onSelectedChange }: Un
           <TableRow>
             <TableHead className="w-10">
               <input
+                ref={selectAllRef}
                 type="checkbox"
                 checked={allSelected}
                 onChange={toggleAll}
@@ -239,8 +253,10 @@ export function UniversityTable({ universities, selected, onSelectedChange }: Un
             </TableHead>
             <TableHead>Name</TableHead>
             <TableHead>Province</TableHead>
+            <TableHead className="text-right">Mahasiswa</TableHead>
             <TableHead>IG Handle</TableHead>
             <TableHead>Status</TableHead>
+            <TableHead className="w-28 text-center">Contacts</TableHead>
             <TableHead className="w-24 text-center">Enabled</TableHead>
             <TableHead>Updated</TableHead>
             <TableHead className="w-20 text-center">Actions</TableHead>
@@ -272,6 +288,15 @@ export function UniversityTable({ universities, selected, onSelectedChange }: Un
                   </button>
                 </TableCell>
                 <TableCell>{uni.province || '-'}</TableCell>
+                <TableCell className="text-right">
+                  {uni.student_count ? (
+                    <span className="font-mono text-sm text-gray-600 dark:text-gray-400">
+                      {uni.student_count.toLocaleString('id-ID')}
+                    </span>
+                  ) : (
+                    <span className="text-xs text-gray-400">—</span>
+                  )}
+                </TableCell>
                 <TableCell>
                   {uni.ig_handle ? (
                     <span className="text-gray-700 dark:text-gray-300">@{uni.ig_handle}</span>
@@ -283,6 +308,22 @@ export function UniversityTable({ universities, selected, onSelectedChange }: Un
                   <Badge className={`${colors.bg} ${colors.text}`}>
                     {uni.status}
                   </Badge>
+                </TableCell>
+                <TableCell className="text-center">
+                  {(uni.total_contacts ?? 0) === 0 ? (
+                    <span className="text-xs text-gray-400">—</span>
+                  ) : (
+                    <span className="inline-flex items-center gap-1">
+                      <span className={`text-sm font-semibold ${
+                        (uni.contacted_contacts ?? 0) > 0
+                          ? 'text-emerald-600 dark:text-emerald-400'
+                          : 'text-gray-400'
+                      }`}>
+                        {uni.contacted_contacts ?? 0}
+                      </span>
+                      <span className="text-xs text-gray-400">/ {uni.total_contacts}</span>
+                    </span>
+                  )}
                 </TableCell>
                 <TableCell className="text-center" onClick={(e) => e.stopPropagation()}>
                   <button

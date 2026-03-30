@@ -17,7 +17,7 @@ export async function resumeBot(): Promise<{ paused: boolean }> {
 }
 
 export async function toggleChatbot(
-  type: 'agent' | 'audiensi',
+  type: 'agent' | 'audiensi' | 'research_multi_agent',
   enabled: boolean,
 ): Promise<Record<string, boolean>> {
   const { data } = await apiClient.post<Record<string, boolean>>(

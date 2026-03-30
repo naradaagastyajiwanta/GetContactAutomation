@@ -1,10 +1,10 @@
 import type { HTMLAttributes, ReactNode, TdHTMLAttributes, ThHTMLAttributes } from 'react'
 import { cn } from '../../lib/utils'
 
-export function Table({ children, className }: { children: ReactNode; className?: string }) {
+export function Table({ children, className, fixed = false }: { children: ReactNode; className?: string; fixed?: boolean }) {
   return (
-    <div className="overflow-x-auto">
-      <table className={cn('min-w-full divide-y divide-gray-200 dark:divide-gray-700', className)}>
+    <div className={fixed ? 'overflow-hidden' : 'overflow-x-auto'}>
+      <table className={cn('min-w-full divide-y divide-gray-200 dark:divide-gray-700', fixed && 'table-fixed', className)}>
         {children}
       </table>
     </div>
@@ -45,7 +45,7 @@ export function TableHead({
   return (
     <th
       className={cn(
-        'px-4 py-3 text-left text-xs font-medium uppercase tracking-wider text-gray-500 dark:text-gray-400',
+        'px-2 py-2.5 text-left text-xs font-medium uppercase tracking-wider text-gray-500 dark:text-gray-400',
         className,
       )}
       {...rest}
@@ -62,7 +62,7 @@ export function TableCell({
 }: TdHTMLAttributes<HTMLTableCellElement> & { children?: ReactNode }) {
   return (
     <td
-      className={cn('px-4 py-3 text-sm text-gray-700 dark:text-gray-300', className)}
+      className={cn('px-2 py-2.5 text-sm text-gray-700 dark:text-gray-300', className)}
       {...rest}
     >
       {children}

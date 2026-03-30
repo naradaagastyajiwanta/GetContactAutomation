@@ -82,7 +82,7 @@ export default function UniversityDetailPage() {
 
         <Card className="mt-4" padding={false}>
           {activeTab === 'contacts' && (
-            <ContactsPanel contacts={contacts || []} />
+            <ContactsPanel contacts={contacts || []} universityId={universityId} />
           )}
           {activeTab === 'posts' && (
             <PostsPanel posts={posts || []} />

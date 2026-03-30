@@ -12,6 +12,9 @@ import {
   createUniversities,
   toggleUniversityEnabled,
   bulkToggleUniversities,
+  toggleContactContacted,
+  getUniversitiesWithEmails,
+  type PaginatedUniversitiesWithEmail,
 } from '../api/universities'
 import type { PaginatedUniversities } from '../api/universities'
 import { queryKeys } from '../lib/queryKeys'
@@ -56,6 +59,13 @@ export function useProvinces() {
   })
 }
 
+export function useUniversitiesWithEmails(province?: string, search?: string, limit = 100, offset = 0) {
+  return useQuery<PaginatedUniversitiesWithEmail>({
+    queryKey: ['universities', 'with-emails', province, search, limit, offset],
+    queryFn: () => getUniversitiesWithEmails(province, search, limit, offset),
+  })
+}
+
 export function useUniversity(id: number) {
   return useQuery({
     queryKey: queryKeys.universities.detail(id),
@@ -85,6 +95,21 @@ export function useUniversityRelatedIgs(id: number) {
     queryKey: queryKeys.universities.relatedIgs(id),
     queryFn: () => getUniversityRelatedIgs(id),
     enabled: id > 0,
+  })
+}
+
+export function useToggleContactContacted(universityId: number) {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: ({ contactId, contacted }: { contactId: number; contacted: boolean }) =>
+      toggleContactContacted(contactId, contacted),
+    onSuccess: (_data, variables) => {
+      queryClient.invalidateQueries({ queryKey: queryKeys.universities.contacts(universityId) })
+      toast.success(variables.contacted ? 'Ditandai sudah dihubungi' : 'Ditandai belum dihubungi')
+    },
+    onError: () => {
+      toast.error('Gagal mengubah status kontak')
+    },
   })
 }
 

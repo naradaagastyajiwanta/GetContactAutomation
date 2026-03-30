@@ -1,14 +1,19 @@
-﻿"""
+"""
 Instagram utilities: search handles, scrape posts, extract phone numbers via Vision API.
 
 This module provides shared utility functions used by the pipeline agents in
 orchestrator/agents/. It does not contain orchestration logic.
 
-Scraping uses a **3-tier fallback** strategy:
+Scraping uses a **4-tier fallback** strategy:
+  0. Playwright Stealth Browser (free, primary — most ban-resistant)
   1. Direct IG Web API (free, browser session cookies, multi-session rotation)
   2. Apify Instagram Scraper (paid API, robust)
   3. Scraping-Bot.io Social Media API (paid, last resort)
 
+Search uses **DuckDuckGo** (free, no API key) instead of Serper (paid).
+Serper is kept as optional legacy fallback if configured.
+
+When Playwright is unavailable, direct sessions are tried.
 When direct sessions fail/expire, Apify is tried automatically.
 If Apify also fails, Scraping-Bot is used as the final fallback.
 """
@@ -38,6 +43,10 @@ from orchestrator.db import validate_phone
 # Fallback provider clients
 from orchestrator import apify_client
 from orchestrator import scrapingbot_client
+
+# Free replacements
+from orchestrator import duckduckgo_client
+from orchestrator import playwright_ig
 
 # ---------------------------------------------------------------------------
 # Serper API health tracking (updated at runtime when quota/errors occur)
@@ -376,16 +385,37 @@ async def _get_website_from_pddikti(university_name: str) -> str | None:
 async def search_ig_from_website(university_name: str, website_url: str | None = None, skip_pddikti: bool = False) -> dict | None:
     """
     Scrape a university website for instagram.com links.
-    Gets the website URL from PDDIKTI first, then falls back to Google.
+    Gets the website URL from PDDIKTI first, then DuckDuckGo (free).
+    Serper is kept as optional legacy fallback if configured.
     Returns: {"handle": str, "url": str, "confidence": float} or None.
     """
-    # Step 1: Get website URL (PDDIKTI â†’ Google fallback)
+    # Step 1: Get website URL (PDDIKTI -> DuckDuckGo -> Serper legacy)
     if not website_url and not skip_pddikti:
         website_url = await _get_website_from_pddikti(university_name)
 
+    # Primary search: DuckDuckGo (free, no API key needed)
+    if not website_url:
+        name = university_name.strip().title()
+        try:
+            ddg_results = await duckduckgo_client.async_search_text(
+                f'"{name}" site:ac.id OR site:sch.id', max_results=5,
+            )
+            for r in ddg_results:
+                url = r.get("link", "")
+                if not (".ac.id" in url or ".edu" in url or ".sch.id" in url):
+                    continue
+                path = urlparse(url).path.rstrip("/")
+                if path == "" or path == "/":
+                    website_url = url
+                    break
+                else:
+                    log.debug("DDG result '%s' rejected - not a homepage (path='%s')", url, path)
+        except Exception as e:
+            log.warning("DuckDuckGo website search failed for '%s': %s", name, e)
+
+    # Legacy fallback: Serper (if DDG didn't find anything and key is configured)
     if not website_url and cfg.SERPER_API_KEY:
         name = university_name.strip().title()
-
         async with httpx.AsyncClient(timeout=15) as client:
             try:
                 resp = await client.post(
@@ -395,29 +425,18 @@ async def search_ig_from_website(university_name: str, website_url: str | None =
                 )
                 if resp.status_code != 200:
                     _update_serper_status(False, "quota_exceeded")
-                    log.error("Serper quota/key error HTTP %d: %s", resp.status_code, resp.text[:200])
                 else:
                     _update_serper_status(True)
                 for r in resp.json().get("organic", []):
                     url = r.get("link", "")
                     if not (".ac.id" in url or ".edu" in url or ".sch.id" in url):
                         continue
-                    # Only accept if the URL is the homepage of an .ac.id domain.
-                    # Deep pages on other university domains (articles, news) that
-                    # just *mention* this university must be rejected.
                     path = urlparse(url).path.rstrip("/")
-                    is_homepage = path == "" or path == "/"
-                    if is_homepage:
+                    if path == "" or path == "/":
                         website_url = url
                         break
-                    else:
-                        log.debug(
-                            "Serper result '%s' rejected â€” not a homepage (path='%s')",
-                            url, path,
-                        )
             except Exception:
                 pass
-
     if not website_url:
         return None
 
@@ -458,9 +477,24 @@ async def search_ig_from_website(university_name: str, website_url: str | None =
         # Website found but no IG handle on it
         return {"handle": None, "website_url": website_url}
 
-    # The first IG handle on a university website is almost always the official one
+    # When multiple IG handles found on the website, filter out sub-entity handles
+    # (clinics, hospitals, student orgs, etc.) to pick the main institutional account.
+    if len(unique) > 1:
+        main_handles = [
+            h for h in unique
+            if not any(kw in h.lower() for kw in _DEPT_HANDLE_KEYWORDS)
+        ]
+        if main_handles:
+            log.info(
+                "Website %s has %d IG links, filtered %d sub-entity handles: kept %s, removed %s",
+                website_url, len(unique), len(unique) - len(main_handles),
+                [f"@{h}" for h in main_handles],
+                [f"@{h}" for h in unique if h not in main_handles],
+            )
+            unique = main_handles
+
     handle = unique[0]
-    log.info("Website %s has IG link: @%s", website_url, handle)
+    log.info("Website %s -> selected IG: @%s (out of %d found)", website_url, handle, len(unique))
     return {
         "handle": handle,
         "url": f"https://www.instagram.com/{handle}/",
@@ -470,17 +504,15 @@ async def search_ig_from_website(university_name: str, website_url: str | None =
 
 
 # ---------------------------------------------------------------------------
-# Phase 2b: Search Instagram Handle via Google (Serper.dev)
+# Phase 2b: Search Instagram Handle via DuckDuckGo (free) + Serper fallback
 # ---------------------------------------------------------------------------
 
 async def search_ig_handle(university_name: str) -> dict | None:
     """
-    Search for university's Instagram handle via Serper.dev Google search.
+    Search for university's Instagram handle via DuckDuckGo (free, primary)
+    with Serper as legacy fallback if configured.
     Returns: {"handle": "@univ_name", "url": "...", "confidence": 0.0-1.0} or None
     """
-    if not cfg.SERPER_API_KEY:
-        log.warning("cfg.SERPER_API_KEY not set, skipping IG search")
-        return None
 
     # Normalize: PDDIKTI names are ALL CAPS â†’ title case for better Google results
     name = university_name.strip().title()
@@ -491,10 +523,55 @@ async def search_ig_handle(university_name: str) -> dict | None:
         f'site:instagram.com {name} instagram',
     ]
 
+    # Primary: DuckDuckGo (free)
     for query in queries:
-        result = await _serper_search_ig(query, university_name)
+        result = await _ddg_search_ig(query, university_name)
         if result:
             return result
+
+    # Legacy fallback: Serper (if configured)
+    if cfg.SERPER_API_KEY:
+        for query in queries:
+            result = await _serper_search_ig(query, university_name)
+            if result:
+                return result
+
+    return None
+
+
+
+async def _ddg_search_ig(query: str, university_name: str) -> dict | None:
+    """Run a single DuckDuckGo search and return first matching IG handle."""
+    try:
+        results = await duckduckgo_client.async_search_text(query, max_results=5)
+    except Exception as e:
+        log.error("DuckDuckGo search failed for '%s': %s", university_name, e)
+        return None
+
+    if not results:
+        return None
+
+    for result in results:
+        url = result.get("link", "")
+        title = result.get("title", "").lower()
+        snippet = result.get("snippet", "").lower()
+
+        # Extract handle from Instagram URL
+        handle = _extract_ig_handle(url)
+        if not handle:
+            continue
+
+        # Calculate confidence based on name match and keywords
+        confidence = _calculate_confidence(
+            university_name, handle, title, snippet
+        )
+
+        if confidence >= 0.65:
+            return {
+                "handle": handle,
+                "url": url,
+                "confidence": confidence,
+            }
 
     return None
 
@@ -636,9 +713,19 @@ def _calculate_confidence(
         score += 0.15
 
     # Handle doesn't look like a personal/org account
-    _NON_INSTITUTION = ["personal", "fan", "meme", "info_", "pers", "himpunan", "bem_", "himapsi"]
+    _NON_INSTITUTION = [
+        "personal", "fan", "meme", "info_", "pers", "himpunan", "bem_", "himapsi",
+        # University sub-unit facilities
+        "klinik", "rumahsakit", "apotek", "rsgm",
+        # Student organisations
+        "hima_", "dema_", "senat_", "ukm_", "ormawa",
+    ]
     if any(x in handle_lower for x in _NON_INSTITUTION):
         score -= 0.15
+
+    # Penalty: title/snippet indicates a subsidiary entity (clinic, hospital, etc.)
+    if any(kw in title_lower or kw in snippet_lower for kw in _SUBSIDIARY_ENTITY_KEYWORDS):
+        score -= 0.25
 
     # Not a personal account (basic check)
     if not any(x in handle_lower for x in ["personal", "fan", "meme"]):
@@ -709,9 +796,23 @@ _ENOUGH_PHONE_RESULTS = 10
 
 # Sub-department handle prefixes â€” these are NOT the main university account
 _DEPT_HANDLE_KEYWORDS = [
+    # Administrative / departmental sub-units
     "kemahasiswaan", "humas", "pmb", "biro", "upt", "lppm",
-    "perpustakaan", "lpm", "bak", "baak", "alumni", "bem",
-    "hmj", "ormawa", "ukm",
+    "perpustakaan", "lpm", "bak", "baak", "alumni",
+    # Student organisations
+    "bem", "hmj", "ormawa", "ukm", "hima", "dema", "senat",
+    # University-affiliated facilities (NOT the main institution)
+    "klinik", "rumahsakit", "apotek", "laboratorium",
+    "asrama", "kantin", "kopma", "koperasi", "masjid",
+    "rsgm",  # Rumah Sakit Gigi & Mulut
+]
+
+# Words in an IG full_name / bio that indicate a sub-entity (not the main university)
+_SUBSIDIARY_ENTITY_KEYWORDS = [
+    "klinik", "rumah sakit", "rs ", "rsgm", "apotek", "farmasi",
+    "laboratorium", "lab ", "perpustakaan", "asrama", "kantin",
+    "koperasi", "kopma", "masjid", "mushola", "poliklinik",
+    "rawat inap", "rawat jalan", "24 jam",
 ]
 
 
@@ -1176,6 +1277,15 @@ def _score_ig_user(user_data: dict, university_name: str) -> float:
     if any(d in handle_lower for d in _DEPT_HANDLE_KEYWORDS):
         score -= 0.2
 
+    # Heavy penalty: full_name indicates a subsidiary entity (clinic, hospital, etc.)
+    # e.g. "Klinik Pratama UNIMUS" is NOT the university's main account
+    if any(kw in full_name for kw in _SUBSIDIARY_ENTITY_KEYWORDS):
+        score -= 0.35
+        log.debug(
+            "Subsidiary penalty for @%s: full_name='%s' matched subsidiary keywords",
+            username, full_name[:60],
+        )
+
     return max(min(score, 1.0), 0.0)
 
 
@@ -1345,6 +1455,12 @@ def verify_ig_handle(handle: str, university_name: str) -> dict:
             boost = -0.3
             reasons = ["bio indicates non-university account"]
 
+        # Negative: bio indicates a subsidiary entity (clinic, hospital, etc.)
+        subsidiary_matches = [kw for kw in _SUBSIDIARY_ENTITY_KEYWORDS if kw in bio]
+        if subsidiary_matches:
+            boost -= 0.35
+            reasons.append(f"bio indicates subsidiary entity ({', '.join(subsidiary_matches[:3])})")
+
     verified = boost > 0
     reason_str = "; ".join(reasons) if reasons else "no university signals in bio"
 
@@ -1361,7 +1477,7 @@ def verify_ig_handle(handle: str, university_name: str) -> dict:
 
 
 # ---------------------------------------------------------------------------
-# Fallback wrappers: 3-tier IG Session â†’ Apify â†’ ScrapingBot
+# Fallback wrappers: 4-tier Playwright -> IG Session -> Apify -> ScrapingBot â†’ Apify â†’ ScrapingBot
 # ---------------------------------------------------------------------------
 
 def scrape_ig_posts_with_fallback(
@@ -1371,13 +1487,14 @@ def scrape_ig_posts_with_fallback(
     known_post_urls: set[str] | None = None,
 ) -> list[dict]:
     """
-    Smart scrape with 3-tier fallback.
+    Smart scrape with 4-tier fallback.
 
+    Tier 0: Playwright Stealth Browser (free, most ban-resistant)
     Tier 1: Direct IG Web API (session cookies)
-    Tier 2: Apify Instagram Scraper
-    Tier 3: Scraping-Bot.io
+    Tier 2: Apify Instagram Scraper (paid)
+    Tier 3: Scraping-Bot.io (paid, last resort)
 
-    When *deeper* is True (re-scrape), Apify/ScrapingBot request more posts
+    When *deeper* is True (re-scrape), paid tiers request more posts
     (known count + max_posts) so they can reach beyond already-saved content.
     Known post URLs are filtered out before returning.
 
@@ -1398,6 +1515,36 @@ def scrape_ig_posts_with_fallback(
             "[Fallback] @%s: re-scrape mode â€” %d posts already in DB, fetching latest %d",
             handle, len(known), fetch_count,
         )
+
+    # Tier 0: Playwright Stealth Browser (free, ban-resistant)
+    if playwright_ig.is_available():
+        log.info("[Tier0-Playwright] @%s: attempting scrape (max %d posts)", handle, effective_max)
+        try:
+            posts = playwright_ig.pw_get_posts(handle, max_posts=effective_max)
+            if posts:
+                for p in posts:
+                    p.setdefault("source", "playwright")
+                if known:
+                    before = len(posts)
+                    posts = [p for p in posts if p.get("post_url") not in known]
+                    log.info(
+                        "[Tier0-Playwright] @%s: %d fetched, %d new (filtered %d known)",
+                        handle, before, len(posts), before - len(posts),
+                    )
+                else:
+                    log.info("[Tier0-Playwright] @%s: got %d posts", handle, len(posts))
+                # Tier 0 succeeded (fetched posts from IG).  Return whatever
+                # we have -- even an empty list means "scrape worked, nothing
+                # new".  Do NOT cascade to paid tiers just because all posts
+                # are already in the DB; that wastes credits.
+                return posts
+            else:
+                log.info("[Tier0-Playwright] @%s: returned 0 posts, falling through to next tier", handle)
+        except Exception as e:
+            log.warning("[Tier0-Playwright] @%s failed: %s", handle, e)
+    else:
+        log.info("[Tier0-Playwright] Skipping -- not available (daily_used=%d)",
+                 playwright_ig._pw_status.get("profiles_today", 0))
 
     # Tier 1: Direct IG session
     if _ig_pool.get_current_session_id():
@@ -1469,10 +1616,45 @@ def scrape_ig_posts_with_fallback(
 
 def search_ig_handle_with_fallback(university_name: str) -> dict | None:
     """
-    Search for university IG handle with 3-tier fallback.
+    Search for university IG handle with 4-tier fallback.
+
+    Tier 0: Playwright Stealth Browser (free)
+    Tier 1: Direct IG Web API (session cookies)
+    Tier 2: Apify search (paid)
+    Tier 3: ScrapingBot (no search API, skipped)
 
     Returns: {"handle": str, "url": str, "confidence": float} or None.
     """
+    # Tier 0: Playwright Stealth Browser (free, ban-resistant)
+    if playwright_ig.is_available():
+        try:
+            profiles = playwright_ig.pw_search_profiles(university_name)
+            if profiles:
+                best = None
+                best_score = 0.0
+                for p in profiles:
+                    uu = {
+                        "username": p.get("username", ""),
+                        "full_name": p.get("full_name", ""),
+                        "is_verified": p.get("is_verified", False),
+                    }
+                    score = _score_ig_user(uu, university_name)
+                    if score > best_score:
+                        best_score = score
+                        best = {
+                            "handle": p["username"],
+                            "url": f"https://www.instagram.com/{p['username']}/",
+                            "confidence": score,
+                        }
+                if best and best["confidence"] >= 0.65:
+                    log.info("[Tier0-Playwright] Found @%s (score=%.2f) for '%s'",
+                             best["handle"], best["confidence"], university_name[:40])
+                    return best
+        except Exception as e:
+            log.warning("[Tier0-Playwright] Search failed for '%s': %s", university_name[:40], e)
+    else:
+        log.debug("[Tier0-Playwright] Skipping search - not available")
+
     # Tier 1: Direct IG session
     if _ig_pool.get_current_session_id():
         try:
@@ -1524,10 +1706,26 @@ def search_ig_handle_with_fallback(university_name: str) -> dict | None:
 
 def verify_ig_handle_with_fallback(handle: str, university_name: str) -> dict:
     """
-    Verify an IG handle with 3-tier fallback for profile fetching.
+    Verify an IG handle with 4-tier fallback for profile fetching.
+
+    Tier 0: Playwright Stealth Browser (free)
+    Tier 1: Direct IG Web API (session cookies)
+    Tier 2: Apify profile fetch (paid)
+    Tier 3: ScrapingBot profile fetch (paid, last resort)
 
     Returns: {"verified": bool, "confidence_boost": float, "bio": str, "reason": str}
     """
+    # Tier 0: Playwright Stealth Browser (free, ban-resistant)
+    if playwright_ig.is_available():
+        try:
+            profile = playwright_ig.pw_get_profile(handle)
+            if profile:
+                return _verify_from_profile_data(handle, university_name, profile)
+        except Exception as e:
+            log.warning("[Tier0-Playwright] Verify failed for @%s: %s", handle, e)
+    else:
+        log.debug("[Tier0-Playwright] Skipping verify - not available")
+
     # Tier 1: Direct IG session
     if _ig_pool.get_current_session_id():
         try:
@@ -1612,6 +1810,12 @@ def _verify_from_profile_data(handle: str, university_name: str, profile: dict) 
         if any(nk in bio for nk in negative_keywords):
             boost = -0.3
             reasons = ["bio indicates non-university account"]
+
+        # Negative: bio indicates a subsidiary entity (clinic, hospital, etc.)
+        subsidiary_matches = [kw for kw in _SUBSIDIARY_ENTITY_KEYWORDS if kw in bio]
+        if subsidiary_matches:
+            boost -= 0.35
+            reasons.append(f"bio indicates subsidiary entity ({', '.join(subsidiary_matches[:3])})")
 
     verified = boost > 0
     reason_str = "; ".join(reasons) if reasons else "no university signals in bio"
@@ -2015,22 +2219,19 @@ def search_bem_handle_via_ig(university_name: str) -> dict | None:
     return None
 
 
-async def search_related_accounts_via_serper(university_name: str) -> list[dict]:
+async def search_related_accounts_via_search(university_name: str) -> list[dict]:
     """Search for BEM, humas, pmb, kemahasiswaan, alumni, and lppm IG accounts
-    via Serper (Google Search). Does NOT require an IG session.
+    via DuckDuckGo (free, primary) with Serper as optional fallback.
+    Does NOT require an IG session.
 
     Strategy: build keyword-prefixed queries per relation type, collect all
-    handles from Serper results, then pipe them through the existing
-    find_related_accounts_from_following() classifier — same scoring logic
+    handles from search results, then pipe them through the existing
+    find_related_accounts_from_following() classifier - same scoring logic
     as the IG-following approach.
 
     Returns list of {"handle": str, "relation_type": str, "confidence": float}
     sorted by confidence descending.
     """
-    if not cfg.SERPER_API_KEY:
-        log.warning("[BEM-Serper] No SERPER_API_KEY configured")
-        return []
-
     # Query prefixes per relation type (Indonesian + English)
     _TYPE_QUERIES: dict[str, list[str]] = {
         "bem":            ["BEM", "Badan Eksekutif Mahasiswa"],
@@ -2041,54 +2242,20 @@ async def search_related_accounts_via_serper(university_name: str) -> list[dict]
         "lppm":           ["LPPM", "LP2M"],
     }
 
-    # Build university acronym for queries (e.g. "Universitas Ahmad Dahlan" → "UAD")
+    # Build university acronym for queries (e.g. "Universitas Ahmad Dahlan" -> "UAD")
     uni_words = university_name.strip().split()
     acronym = "".join(w[0] for w in uni_words).upper()
 
     candidate_users: list[dict] = []
     seen_handles: set[str] = set()
-    consecutive_errors = 0
 
-    async with httpx.AsyncClient(timeout=15) as client:
-        for rel_type, prefixes in _TYPE_QUERIES.items():
-            if consecutive_errors >= 2:
-                log.warning(
-                    "[BEM-Serper] Aborting early — %d consecutive failures "
-                    "(likely quota exhausted or invalid API key)",
-                    consecutive_errors,
-                )
-                break
-
-            for prefix in prefixes[:1]:  # 1 prefix per type
-                # Only try acronym suffix — reduces calls from 12 → 6
-                serper_query = f'site:instagram.com "{prefix} {acronym}"'
-                try:
-                    resp = await client.post(
-                        "https://google.serper.dev/search",
-                        headers={
-                            "X-API-KEY": cfg.SERPER_API_KEY,
-                            "Content-Type": "application/json",
-                        },
-                        json={"q": serper_query, "num": 5},
-                    )
-                    if resp.status_code != 200:
-                        body = resp.text[:200]
-                        _update_serper_status(False, "quota_exceeded")
-                        log.warning(
-                            "[BEM-Serper] Query '%s' → HTTP %d: %s",
-                            serper_query, resp.status_code, body,
-                        )
-                        consecutive_errors += 1
-                        continue
-                    _update_serper_status(True)
-                    consecutive_errors = 0
-                    data = resp.json()
-                except Exception as e:
-                    log.warning("[BEM-Serper] Query '%s' failed: %s", serper_query, e)
-                    consecutive_errors += 1
-                    continue
-
-                for result in data.get("organic", []):
+    # ------------- Primary: DuckDuckGo (free) -------------
+    for rel_type, prefixes in _TYPE_QUERIES.items():
+        for prefix in prefixes[:1]:  # 1 prefix per type to limit queries
+            ddg_query = f'site:instagram.com "{prefix} {acronym}"'
+            try:
+                results = await duckduckgo_client.async_search_text(ddg_query, max_results=5)
+                for result in results:
                     handle = _extract_ig_handle(result.get("link", ""))
                     if not handle or handle in seen_handles:
                         continue
@@ -2098,27 +2265,74 @@ async def search_related_accounts_via_serper(university_name: str) -> list[dict]
                         "full_name": result.get("title", ""),
                         "is_verified": False,
                     })
+            except Exception as e:
+                log.warning("[BEM-DDG] Query '%s' failed: %s", ddg_query, e)
+
+    # ------------- Fallback: Serper (if configured and DDG found nothing) -------------
+    if not candidate_users and cfg.SERPER_API_KEY:
+        consecutive_errors = 0
+        async with httpx.AsyncClient(timeout=15) as client:
+            for rel_type, prefixes in _TYPE_QUERIES.items():
+                if consecutive_errors >= 2:
+                    log.warning(
+                        "[BEM-Serper] Aborting early - %d consecutive failures",
+                        consecutive_errors,
+                    )
+                    break
+                for prefix in prefixes[:1]:
+                    serper_query = f'site:instagram.com "{prefix} {acronym}"'
+                    try:
+                        resp = await client.post(
+                            "https://google.serper.dev/search",
+                            headers={
+                                "X-API-KEY": cfg.SERPER_API_KEY,
+                                "Content-Type": "application/json",
+                            },
+                            json={"q": serper_query, "num": 5},
+                        )
+                        if resp.status_code != 200:
+                            _update_serper_status(False, "quota_exceeded")
+                            consecutive_errors += 1
+                            continue
+                        _update_serper_status(True)
+                        consecutive_errors = 0
+                        data = resp.json()
+                    except Exception as e:
+                        log.warning("[BEM-Serper] Query '%s' failed: %s", serper_query, e)
+                        consecutive_errors += 1
+                        continue
+
+                    for result in data.get("organic", []):
+                        handle = _extract_ig_handle(result.get("link", ""))
+                        if not handle or handle in seen_handles:
+                            continue
+                        seen_handles.add(handle)
+                        candidate_users.append({
+                            "username": handle,
+                            "full_name": result.get("title", ""),
+                            "is_verified": False,
+                        })
 
     if not candidate_users:
-        log.info("[BEM-Serper] No candidates found for %s", university_name)
+        log.info("[BEM-Search] No candidates found for %s", university_name)
         return []
 
-    log.info("[BEM-Serper] %s → %d candidates, classifying...", university_name, len(candidate_users))
+    log.info("[BEM-Search] %s -> %d candidates, classifying...", university_name, len(candidate_users))
 
-    # Reuse existing classifier — handles BEM + humas + pmb + kemahasiswaan + alumni + lppm
+    # Reuse existing classifier
     results = find_related_accounts_from_following(candidate_users, university_name)
 
     log.info(
-        "[BEM-Serper] %s → %d classified: %s",
+        "[BEM-Search] %s -> %d classified: %s",
         university_name, len(results),
         [(r["handle"], r["relation_type"], r["confidence"]) for r in results[:5]],
     )
     return results
 
 
-async def search_bem_handle_via_serper(university_name: str) -> dict | None:
-    """Thin wrapper returning only the top BEM result from search_related_accounts_via_serper()."""
-    results = await search_related_accounts_via_serper(university_name)
+async def search_bem_handle_via_search(university_name: str) -> dict | None:
+    """Thin wrapper returning only the top BEM result from search_related_accounts_via_search()."""
+    results = await search_related_accounts_via_search(university_name)
     bem_results = [r for r in results if r["relation_type"] == "bem"]
     if bem_results:
         return {"handle": bem_results[0]["handle"], "confidence": bem_results[0]["confidence"]}
@@ -2380,3 +2594,7 @@ def find_related_accounts_from_following(
         [(r["handle"], r["relation_type"], r["confidence"]) for r in results[:10]],
     )
     return results
+
+# Backward-compatible aliases
+search_related_accounts_via_serper = search_related_accounts_via_search
+search_bem_handle_via_serper = search_bem_handle_via_search

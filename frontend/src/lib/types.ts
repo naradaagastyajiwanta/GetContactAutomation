@@ -7,10 +7,16 @@ export interface University {
   ig_handle: string | null
   ig_verified: boolean
   secretariat_phone: string | null
+  email_kampus: string | null
+  email_source: string | null
+  rector_name: string | null
+  student_count: number | null
   status: UniversityStatus
   enabled: boolean | number
   created_at: string
   updated_at?: string | null
+  total_contacts?: number
+  contacted_contacts?: number
 }
 
 export type UniversityStatus =
@@ -43,6 +49,9 @@ export interface IgContact {
   has_person_name: boolean
   source_post_url: string | null
   source_image_url: string | null
+  manual_contacted: boolean
+  conversation_state: string | null
+  conversation_id: number | null
   created_at: string
 }
 
@@ -140,6 +149,7 @@ export interface ControlStatus {
   paused: boolean
   chatbot_enabled: boolean
   audiensi_enabled: boolean
+  research_multi_agent: boolean
   reason?: string
 }
 
@@ -296,7 +306,7 @@ export interface AudiensiStats {
   state_counts: Record<string, number>
 }
 
-export type PipelineAgentType = 'find_handles' | 'scrape_posts' | 'extract_phones' | 'collect_universities' | 'discover_bem'
+export type PipelineAgentType = 'find_handles' | 'scrape_posts' | 'extract_phones' | 'collect_universities' | 'discover_bem' | 'dms_research'
 export type PipelineTriggerType = 'manual' | 'scheduler'
 export type PipelineLogStatus = 'running' | 'completed' | 'failed'
 

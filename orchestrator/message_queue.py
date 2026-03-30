@@ -35,15 +35,21 @@ class MessageQueue:
         message: str,
         reply_to_msg_key: Optional[Any] = None,
         all_msg_keys: Optional[list] = None,
+        device_id: str = "device_1",
     ) -> None:
         """Put an outbound WA message onto the serial send queue."""
-        payload: dict = {"to": phone, "message": message, "_type": "text"}
+        payload: dict = {
+            "to": phone,
+            "message": message,
+            "_type": "text",
+            "device_id": device_id,
+        }
         if reply_to_msg_key is not None:
             payload["replyToMsgKey"] = reply_to_msg_key
         if all_msg_keys is not None:
             payload["allMsgKeys"] = all_msg_keys
         await self._send_queue.put(payload)
-        log.info("Enqueued WA send to %s (queue size: %d)", phone, self._send_queue.qsize())
+        log.info("Enqueued WA send to %s via %s (queue size: %d)", phone, device_id, self._send_queue.qsize())
 
     async def enqueue_send_document(
         self,
@@ -51,6 +57,7 @@ class MessageQueue:
         file_path: str,
         file_name: str,
         caption: str | None = None,
+        device_id: str = "device_1",
     ) -> None:
         """Put an outbound WA document message onto the serial send queue."""
         path = Path(file_path)
@@ -79,11 +86,12 @@ class MessageQueue:
             "fileBase64": file_b64,
             "fileName": file_name,
             "mimetype": mimetype,
+            "device_id": device_id,
         }
         if caption:
             payload["caption"] = caption
         await self._send_queue.put(payload)
-        log.info("Enqueued WA document to %s (%s, queue size: %d)", phone, file_name, self._send_queue.qsize())
+        log.info("Enqueued WA document to %s via %s (%s, queue size: %d)", phone, device_id, file_name, self._send_queue.qsize())
 
     async def _send_single(self, client: httpx.AsyncClient, payload: dict) -> bool:
         """Try to send a single message with retry. Returns True on success."""
@@ -155,6 +163,26 @@ class MessageQueue:
                 finally:
                     self._send_queue.task_done()
                 await asyncio.sleep(cfg.SEND_INTERVAL_MS / 1000.0)
+
+    async def send_now(
+        self,
+        phone: str,
+        message: str,
+        device_id: str = "device_1",
+    ) -> bool:
+        """Send a WA message immediately (bypasses queue) and return True on success.
+
+        Use this when the caller needs to know whether the send succeeded
+        (e.g. blast worker) rather than fire-and-forget via enqueue_send.
+        """
+        payload = {
+            "to": phone,
+            "message": message,
+            "device_id": device_id,
+            "_type": "text",
+        }
+        async with httpx.AsyncClient(timeout=30) as client:
+            return await self._send_single(client, payload)
 
     def start_worker(self) -> None:
         """Spawn the send-worker as a background task on the running loop."""

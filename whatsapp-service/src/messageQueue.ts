@@ -51,6 +51,7 @@ export interface QueuedMessage {
   updated_at: string;
   sent_at?: string;
   wa_message_id?: string;
+  device_id: string; // NEW: Device ID for multi-device support
 }
 
 // Interface for webhook event
@@ -73,6 +74,7 @@ export interface AddMessageOptions {
   message?: string;
   replyToMsgKey?: { remoteJid: string; id: string; fromMe: boolean };
   allMsgKeys?: { remoteJid: string; id: string; fromMe: boolean }[];
+  deviceId?: string; // NEW: Device ID (defaults to 'device_1')
 }
 
 export interface AddDocumentOptions {
@@ -82,6 +84,7 @@ export interface AddDocumentOptions {
   fileName: string;
   mimetype: string;
   caption?: string;
+  deviceId?: string; // NEW: Device ID (defaults to 'device_1')
 }
 
 /**
@@ -125,7 +128,8 @@ export class MessageQueue {
         created_at TEXT DEFAULT (datetime('now')),
         updated_at TEXT DEFAULT (datetime('now')),
         sent_at TEXT,
-        wa_message_id TEXT
+        wa_message_id TEXT,
+        device_id TEXT DEFAULT 'device_1'
       );
 
       CREATE TABLE IF NOT EXISTS webhook_queue (
@@ -140,8 +144,17 @@ export class MessageQueue {
         delivered_at TEXT
       );
 
+      CREATE TABLE IF NOT EXISTS devices (
+        id TEXT PRIMARY KEY,
+        name TEXT NOT NULL,
+        phone_number TEXT,
+        auth_store_path TEXT NOT NULL,
+        enabled INTEGER DEFAULT 1
+      );
+
       CREATE INDEX IF NOT EXISTS idx_message_queue_status ON message_queue(status);
       CREATE INDEX IF NOT EXISTS idx_message_queue_created_at ON message_queue(created_at);
+      CREATE INDEX IF NOT EXISTS idx_message_queue_device ON message_queue(device_id);
       CREATE INDEX IF NOT EXISTS idx_webhook_queue_status ON webhook_queue(status);
     `);
   }
@@ -152,8 +165,8 @@ export class MessageQueue {
   addTextMessage(options: AddMessageOptions): boolean {
     const stmt = this.db.prepare(`
       INSERT OR IGNORE INTO message_queue (
-        message_id, type, "to", message, reply_to_msg_key, all_msg_keys
-      ) VALUES (?, ?, ?, ?, ?, ?)
+        message_id, type, "to", message, reply_to_msg_key, all_msg_keys, device_id
+      ) VALUES (?, ?, ?, ?, ?, ?, ?)
     `);
 
     try {
@@ -163,6 +176,7 @@ export class MessageQueue {
       const allMsgKeysStr = options.allMsgKeys
         ? JSON.stringify(options.allMsgKeys)
         : null;
+      const deviceId = options.deviceId ?? 'device_1';
 
       const result = stmt.run(
         options.messageId,
@@ -170,11 +184,12 @@ export class MessageQueue {
         options.to,
         options.message ?? null,
         replyToMsgKeyStr,
-        allMsgKeysStr
+        allMsgKeysStr,
+        deviceId
       );
 
       if (result.changes > 0) {
-        logger.info({ messageId: options.messageId }, 'Message added to queue');
+        logger.info({ messageId: options.messageId, deviceId }, 'Message added to queue');
         return true;
       } else {
         logger.warn({ messageId: options.messageId }, 'Message already exists (duplicate)');
@@ -192,11 +207,13 @@ export class MessageQueue {
   addDocumentMessage(options: AddDocumentOptions): boolean {
     const stmt = this.db.prepare(`
       INSERT OR IGNORE INTO message_queue (
-        message_id, type, "to", file_base64, file_name, mimetype, caption
-      ) VALUES (?, ?, ?, ?, ?, ?, ?)
+        message_id, type, "to", file_base64, file_name, mimetype, caption, device_id
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
     `);
 
     try {
+      const deviceId = options.deviceId ?? 'device_1';
+
       const result = stmt.run(
         options.messageId,
         MessageType.DOCUMENT,
@@ -204,11 +221,12 @@ export class MessageQueue {
         options.fileBase64,
         options.fileName,
         options.mimetype,
-        options.caption ?? null
+        options.caption ?? null,
+        deviceId
       );
 
       if (result.changes > 0) {
-        logger.info({ messageId: options.messageId }, 'Document message added to queue');
+        logger.info({ messageId: options.messageId, deviceId }, 'Document message added to queue');
         return true;
       } else {
         logger.warn({ messageId: options.messageId }, 'Document message already exists (duplicate)');
@@ -222,32 +240,57 @@ export class MessageQueue {
 
   /**
    * Get next pending message
+   * @param deviceId Optional device ID to filter messages
    */
-  getNextPending(): QueuedMessage | null {
-    const stmt = this.db.prepare(`
-      SELECT * FROM message_queue
-      WHERE status = ?
-      ORDER BY created_at ASC
-      LIMIT 1
-    `);
-
-    const row = stmt.get(MessageStatus.PENDING) as any;
-    return row ? this.mapRowToQueuedMessage(row) : null;
+  getNextPending(deviceId?: string): QueuedMessage | null {
+    let stmt: Database.Statement;
+    if (deviceId) {
+      stmt = this.db.prepare(`
+        SELECT * FROM message_queue
+        WHERE status = ? AND device_id = ?
+        ORDER BY created_at ASC
+        LIMIT 1
+      `);
+      const row = stmt.get(MessageStatus.PENDING, deviceId) as any;
+      return row ? this.mapRowToQueuedMessage(row) : null;
+    } else {
+      stmt = this.db.prepare(`
+        SELECT * FROM message_queue
+        WHERE status = ?
+        ORDER BY created_at ASC
+        LIMIT 1
+      `);
+      const row = stmt.get(MessageStatus.PENDING) as any;
+      return row ? this.mapRowToQueuedMessage(row) : null;
+    }
   }
 
   /**
    * Get pending messages with a limit
+   * @param limit Maximum number of messages to return
+   * @param deviceId Optional device ID to filter messages
    */
-  getPendingMessages(limit: number = 10): QueuedMessage[] {
-    const stmt = this.db.prepare(`
-      SELECT * FROM message_queue
-      WHERE status = ?
-      ORDER BY created_at ASC
-      LIMIT ?
-    `);
-
-    const rows = stmt.all(MessageStatus.PENDING, limit) as any[];
-    return rows.map(row => this.mapRowToQueuedMessage(row));
+  getPendingMessages(limit: number = 10, deviceId?: string): QueuedMessage[] {
+    let stmt: Database.Statement;
+    if (deviceId) {
+      stmt = this.db.prepare(`
+        SELECT * FROM message_queue
+        WHERE status = ? AND device_id = ?
+        ORDER BY created_at ASC
+        LIMIT ?
+      `);
+      const rows = stmt.all(MessageStatus.PENDING, deviceId, limit) as any[];
+      return rows.map(row => this.mapRowToQueuedMessage(row));
+    } else {
+      stmt = this.db.prepare(`
+        SELECT * FROM message_queue
+        WHERE status = ?
+        ORDER BY created_at ASC
+        LIMIT ?
+      `);
+      const rows = stmt.all(MessageStatus.PENDING, limit) as any[];
+      return rows.map(row => this.mapRowToQueuedMessage(row));
+    }
   }
 
   /**
@@ -476,6 +519,7 @@ export class MessageQueue {
       updated_at: row.updated_at,
       sent_at: row.sent_at,
       wa_message_id: row.wa_message_id,
+      device_id: row.device_id || 'device_1',
     };
   }
 
@@ -484,6 +528,164 @@ export class MessageQueue {
    */
   close(): void {
     this.db.close();
+  }
+
+  // -----------------------------------------------------------------------
+  // Device management methods
+  // -----------------------------------------------------------------------
+
+  /**
+   * Register a device in the database
+   */
+  registerDevice(id: string, name: string, authStorePath: string): boolean {
+    const stmt = this.db.prepare(`
+      INSERT OR REPLACE INTO devices (id, name, auth_store_path, enabled)
+      VALUES (?, ?, ?, 1)
+    `);
+
+    try {
+      stmt.run(id, name, authStorePath);
+      logger.info({ deviceId: id, name }, 'Device registered in database');
+      return true;
+    } catch (err) {
+      logger.error({ err, deviceId: id }, 'Failed to register device in database');
+      return false;
+    }
+  }
+
+  /**
+   * Get all registered devices
+   */
+  getAllDevices(): Array<{
+    id: string;
+    name: string;
+    phone_number: string | null;
+    auth_store_path: string;
+    enabled: number;
+  }> {
+    const stmt = this.db.prepare('SELECT * FROM devices');
+    const rows = stmt.all() as any[];
+    return rows.map(row => ({
+      id: row.id,
+      name: row.name,
+      phone_number: row.phone_number,
+      auth_store_path: row.auth_store_path,
+      enabled: row.enabled,
+    }));
+  }
+
+  /**
+   * Update device phone number
+   */
+  updateDevicePhoneNumber(id: string, phoneNumber: string): boolean {
+    const stmt = this.db.prepare('UPDATE devices SET phone_number = ? WHERE id = ?');
+
+    try {
+      stmt.run(phoneNumber, id);
+      logger.info({ deviceId: id, phoneNumber }, 'Device phone number updated');
+      return true;
+    } catch (err) {
+      logger.error({ err, deviceId: id }, 'Failed to update device phone number');
+      return false;
+    }
+  }
+
+  /**
+   * Get messages for a specific device
+   */
+  getMessagesByDevice(deviceId: string, status?: MessageStatus): QueuedMessage[] {
+    let stmt: Database.Statement;
+    if (status) {
+      stmt = this.db.prepare(`
+        SELECT * FROM message_queue
+        WHERE device_id = ? AND status = ?
+        ORDER BY created_at DESC
+      `);
+      const rows = stmt.all(deviceId, status) as any[];
+      return rows.map(row => this.mapRowToQueuedMessage(row));
+    } else {
+      stmt = this.db.prepare(`
+        SELECT * FROM message_queue
+        WHERE device_id = ?
+        ORDER BY created_at DESC
+      `);
+      const rows = stmt.all(deviceId) as any[];
+      return rows.map(row => this.mapRowToQueuedMessage(row));
+    }
+  }
+
+  /**
+   * Get queue statistics for a specific device
+   */
+  getDeviceStats(deviceId: string): {
+    pending: number;
+    sending: number;
+    sent: number;
+    failed: number;
+  } {
+    const stmt = this.db.prepare(`
+      SELECT status, COUNT(*) as count
+      FROM message_queue
+      WHERE device_id = ?
+      GROUP BY status
+    `);
+
+    const rows = stmt.all(deviceId) as { status: string; count: number }[];
+    const stats = {
+      pending: 0,
+      sending: 0,
+      sent: 0,
+      failed: 0,
+    };
+
+    for (const row of rows) {
+      if (row.status in stats) {
+        stats[row.status as keyof typeof stats] = row.count;
+      }
+    }
+
+    return stats;
+  }
+
+  /**
+   * Get all device statistics
+   */
+  getAllDeviceStats(): Map<string, {
+    pending: number;
+    sending: number;
+    sent: number;
+    failed: number;
+  }> {
+    const stmt = this.db.prepare(`
+      SELECT device_id, status, COUNT(*) as count
+      FROM message_queue
+      GROUP BY device_id, status
+    `);
+
+    const rows = stmt.all() as { device_id: string; status: string; count: number }[];
+    const statsMap = new Map<string, {
+      pending: number;
+      sending: number;
+      sent: number;
+      failed: number;
+    }>();
+
+    for (const row of rows) {
+      if (!statsMap.has(row.device_id)) {
+        statsMap.set(row.device_id, {
+          pending: 0,
+          sending: 0,
+          sent: 0,
+          failed: 0,
+        });
+      }
+      const stats = statsMap.get(row.device_id)!;
+      if (row.status in stats) {
+        stats[row.status as keyof typeof stats] = row.count;
+      }
+    }
+
+    return statsMap;
   }
 }
 

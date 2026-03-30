@@ -30,6 +30,10 @@ export const queryKeys = {
     all: ['whatsapp'] as const,
     qr: ['whatsapp', 'qr'] as const,
     status: ['whatsapp', 'status'] as const,
+    devices: ['whatsapp', 'devices'] as const,
+    device: (id: string) => ['whatsapp', 'devices', id] as const,
+    deviceQr: (id: string) => ['whatsapp', 'devices', id, 'qr'] as const,
+    deviceStatus: (id: string) => ['whatsapp', 'devices', id, 'status'] as const,
   },
   audiensi: {
     all: ['audiensi'] as const,
@@ -49,4 +53,9 @@ export const queryKeys = {
   },
   config: ['config'] as const,
   models: ['config', 'models'] as const,
+  igAccounts: ['ig-accounts'] as const,
+  igAccountsHealth: ['ig-accounts', 'health'] as const,
+  blast: ['blast'] as const,
+  universityGroups: ['university-groups'] as const,
+  universityGroup: (id: number) => ['university-groups', id] as const,
 }

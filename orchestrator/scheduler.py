@@ -425,6 +425,259 @@ async def _threaded_audiensi_rector_finder():
     return await run_agent_in_thread(run_rector_finder_batch)
 
 
+# ---------------------------------------------------------------------------
+# DMS MySQL Sync Jobs
+# ---------------------------------------------------------------------------
+
+
+async def dms_sync_audiensi_schedules():
+    """
+    Sync audiensi schedules from DMS MySQL.
+    Logs upcoming schedules and sends WhatsApp reminders if configured.
+    """
+    if is_paused():
+        return
+    if not cfg.get("DMS_SYNC_ENABLED", False):
+        return
+
+    try:
+        from orchestrator.dms_mysql import (
+            get_schedules_needing_reminder,
+            get_today_audiensi_schedules,
+            create_follow_up_record,
+            check_dms_connection,
+        )
+
+        # Health check
+        health = await check_dms_connection()
+        if health["status"] != "connected":
+            log.error("DMS sync: MySQL not connected: %s", health.get("error"))
+            return
+
+        # 1. Log today's schedules
+        today_schedules = await get_today_audiensi_schedules()
+        if today_schedules:
+            log.info("DMS sync: %d audiensi scheduled for today", len(today_schedules))
+            for s in today_schedules:
+                log.info(
+                    "  → %s at %s — %s (zoom: %s)",
+                    s.get("nama_universitas", "?"),
+                    s.get("jam_audensi", "?"),
+                    s.get("type_meeting", "?"),
+                    "yes" if s.get("link_zoom") else "no",
+                )
+
+        # 2. Send WhatsApp reminders if enabled
+        if cfg.get("DMS_REMINDER_ENABLED", False):
+            await _send_audiensi_reminders()
+
+    except Exception as e:
+        log.error("DMS sync failed: %s", e, exc_info=True)
+
+
+async def _send_audiensi_reminders():
+    """Send WhatsApp reminders for upcoming audiensi meetings."""
+    from orchestrator.dms_mysql import get_schedules_needing_reminder, create_follow_up_record
+
+    hours_before = cfg.get("DMS_REMINDER_HOURS_BEFORE", 24)
+    schedules = await get_schedules_needing_reminder(hours_before)
+
+    if not schedules:
+        return
+
+    log.info("DMS reminder: %d schedules need reminders", len(schedules))
+
+    for schedule in schedules:
+        try:
+            uni_name = schedule.get("nama_universitas", "Universitas")
+            jadwal = schedule.get("jadwal_audiensi", "")
+            jam = schedule.get("jam_audensi", "")
+            link_zoom = schedule.get("link_zoom", "")
+
+            # Build reminder message
+            msg_lines = [
+                f"📋 *Reminder Audiensi*",
+                f"",
+                f"Universitas: *{uni_name}*",
+                f"Tanggal: {jadwal}",
+                f"Jam: {jam} WIB",
+            ]
+            if link_zoom:
+                msg_lines.append(f"Zoom: {link_zoom}")
+            msg_lines.append(f"\nMohon konfirmasi kehadiran. Terima kasih 🙏🏻")
+            message = "\n".join(msg_lines)
+
+            # Send to all PICs with phone numbers
+            phones_sent = []
+            for pic_field, phone_field in [
+                ("pic", "no_hppickampus"),
+                ("pic2", "no_hppickampus2"),
+                ("pic3", "no_hppickampus3"),
+            ]:
+                phone = schedule.get(phone_field, "")
+                pic_name = schedule.get(pic_field, "")
+                if phone and phone.strip() and len(phone.strip()) >= 8:
+                    await message_queue.enqueue_send(phone.strip(), message)
+                    phones_sent.append(phone.strip())
+                    log.info(
+                        "DMS reminder sent to %s (%s) for %s on %s",
+                        pic_name, phone.strip(), uni_name, jadwal,
+                    )
+
+            # Log the reminder as a follow-up in DMS
+            if phones_sent:
+                id_univ = schedule.get("id_univ")
+                if id_univ:
+                    await create_follow_up_record(
+                        id_univ=id_univ,
+                        metode_followup="6",  # WhatsApp
+                        hasil_followup="1",   # Sedang Difollow-up
+                        catatan=f"[Auto Reminder] Reminder audiensi {jadwal} {jam} via GetContact AI Agent. Sent to: {', '.join(phones_sent)}",
+                    )
+
+            await asyncio.sleep(cfg.MIN_MESSAGE_GAP_SECONDS)
+
+        except Exception as e:
+            log.error("DMS reminder failed for schedule %s: %s", schedule.get("id"), e)
+
+
+async def dms_sync_contacts():
+    """
+    Sync contacts discovered by GetContact AI to DMS kontak_auto table.
+    Matches local universities with DMS universities by name and syncs extracted numbers.
+    """
+    if is_paused():
+        return
+    if not cfg.get("DMS_CONTACT_SYNC_ENABLED", False):
+        return
+
+    try:
+        from orchestrator.dms_mysql import (
+            find_dms_university_by_name,
+            sync_contact_to_dms,
+            check_dms_connection,
+        )
+        from orchestrator.db import get_db
+
+        health = await check_dms_connection()
+        if health["status"] != "connected":
+            return
+
+        # Get conversations with extracted numbers that haven't been synced to DMS
+        async with get_db() as db:
+            cursor = await db.execute("""
+                SELECT c.id, c.extracted_number, c.extracted_contact_role,
+                       u.name AS university_name, u.province
+                FROM conversations c
+                JOIN universities u ON u.id = c.university_id
+                WHERE c.state = 'GOT_NUMBER'
+                  AND c.extracted_number IS NOT NULL
+                  AND c.id NOT IN (
+                      SELECT CAST(json_extract(value, '$.conv_id') AS INTEGER)
+                      FROM config WHERE key = 'dms_synced_conversations'
+                  )
+                ORDER BY c.id
+                LIMIT 20
+            """)
+            rows = await cursor.fetchall()
+
+        if not rows:
+            return
+
+        synced_ids = []
+        for row in rows:
+            try:
+                uni_name = row[3]  # university_name
+                phone = row[1]     # extracted_number
+                role = row[2]      # extracted_contact_role
+
+                # Find matching DMS university
+                dms_uni = await find_dms_university_by_name(uni_name)
+                if not dms_uni:
+                    log.debug("DMS contact sync: no DMS match for '%s'", uni_name)
+                    continue
+
+                result = await sync_contact_to_dms(
+                    id_univ=dms_uni["id_univ"],
+                    universitas=dms_uni["universitas"],
+                    pic=role or "Staff",
+                    jabatan=role or "Staff Kampus",
+                    no_hp=phone,
+                    source_type="getcontact_ai",
+                    source_origin="GetContact AI Agent - Auto Discovery",
+                    context_snippet=f"Extracted from WhatsApp conversation by AI",
+                )
+
+                if result:
+                    synced_ids.append(row[0])
+                    log.info(
+                        "DMS contact sync: phone %s → %s (DMS ID %s)",
+                        phone, dms_uni["universitas"], dms_uni["id_univ"],
+                    )
+            except Exception as e:
+                log.error("DMS contact sync failed for conv %s: %s", row[0], e)
+
+        if synced_ids:
+            log.info("DMS contact sync: synced %d new contacts", len(synced_ids))
+
+    except Exception as e:
+        log.error("DMS contact sync failed: %s", e, exc_info=True)
+
+
+async def _run_audiensi_research():
+    """
+    Scheduled job: Run H-1 audiensi research via Gemini AI.
+    Finds tomorrow's unresearched schedules, researches background info, and sends WA notifications.
+    """
+    if is_paused():
+        return
+    if not cfg.get("DMS_RESEARCH_ENABLED", False):
+        return
+
+    try:
+        from orchestrator.audiensi_research import research_tomorrow_schedules
+
+        log.info("Starting scheduled H-1 audiensi research...")
+        results = await research_tomorrow_schedules()
+        successful = len([r for r in results if "error" not in r])
+        log.info(
+            "H-1 audiensi research completed: %d/%d successful",
+            successful, len(results),
+        )
+    except Exception as e:
+        log.error("Scheduled audiensi research failed: %s", e, exc_info=True)
+
+
+async def _run_audiensi_research_check():
+    """
+    Periodic safety check: research any upcoming schedules (H-1 to H-3)
+    that haven't been researched yet.
+
+    Catches:
+    - Newly added schedules that missed the main H-1 job
+    - Failed researches that need a retry
+    Runs every few hours so every audiensi is covered before its day arrives.
+    """
+    if is_paused():
+        return
+    if not cfg.get("DMS_RESEARCH_ENABLED", False):
+        return
+    if not cfg.get("DMS_SYNC_ENABLED", False):
+        return
+
+    try:
+        from orchestrator.audiensi_research import research_unresearched_upcoming
+        results = await research_unresearched_upcoming(days_ahead=3)
+        if results:
+            successful = len([r for r in results if "error" not in r])
+            log.info(
+                "Research safety check: caught and researched %d/%d new schedules",
+                successful, len(results),
+            )
+    except Exception as e:
+        log.error("Research safety check failed: %s", e, exc_info=True)
+
+
 async def run_learning_reflection():
     """Run periodic learning reflection."""
     if not cfg.LEARNING_ENABLED:
@@ -492,11 +745,11 @@ def setup_scheduler():
         misfire_grace_time=300,  # Skip if more than 5 min late (avoids fire-on-startup)
     )
 
-    # Agent 2: Scrape posts — every 3 hours during active hours
+    # Agent 2: Scrape posts — every hour, 24 hours a day
     scheduler.add_job(
         _threaded_post_scrape,
         "cron",
-        hour="8-20/3",
+        hour="*/1",
         minute="10",
         timezone=WIB,
         id="agent_post_scraper",
@@ -568,6 +821,62 @@ def setup_scheduler():
             misfire_grace_time=300,
         )
 
+    # DMS MySQL sync — scheduled at configured interval
+    if cfg.get("DMS_SYNC_ENABLED", False):
+        dms_interval = cfg.get("DMS_SYNC_INTERVAL_MINUTES", 30)
+        scheduler.add_job(
+            dms_sync_audiensi_schedules,
+            "interval",
+            minutes=dms_interval,
+            timezone=WIB,
+            id="dms_sync_schedules",
+            replace_existing=True,
+            max_instances=1,
+            misfire_grace_time=300,
+        )
+
+        # DMS contact sync — every 2 hours
+        if cfg.get("DMS_CONTACT_SYNC_ENABLED", False):
+            scheduler.add_job(
+                dms_sync_contacts,
+                "cron",
+                hour="8-20/2",
+                minute="50",
+                timezone=WIB,
+                id="dms_contact_sync",
+                replace_existing=True,
+                max_instances=1,
+                misfire_grace_time=300,
+            )
+
+    # DMS Audiensi Research — daily H-1 research via Gemini AI
+    if cfg.get("DMS_RESEARCH_ENABLED", False):
+        research_hour = cfg.get("DMS_RESEARCH_HOUR", 18)
+        scheduler.add_job(
+            _run_audiensi_research,
+            "cron",
+            hour=research_hour,
+            minute=0,
+            timezone=WIB,
+            id="dms_audiensi_research",
+            replace_existing=True,
+            max_instances=1,
+            misfire_grace_time=600,
+        )
+
+        # Safety check every 4 hours — catch unresearched upcoming schedules
+        scheduler.add_job(
+            _run_audiensi_research_check,
+            "cron",
+            hour="8-22/4",
+            minute=30,
+            timezone=WIB,
+            id="dms_research_safety_check",
+            replace_existing=True,
+            max_instances=1,
+            misfire_grace_time=600,
+        )
+
     scheduler.start()
     log.info(
         "Scheduler started: outreach every 30min, followups every hour, "
@@ -575,4 +884,6 @@ def setup_scheduler():
         "BEM discovery every 4h"
         + (", learning reflection 3x daily" if cfg.LEARNING_ENABLED else "")
         + (", audiensi followups + rector finder" if cfg.AUDIENSI_ENABLED else "")
+        + (", DMS sync" if cfg.get("DMS_SYNC_ENABLED", False) else "")
+        + (f", audiensi research @{research_hour}:00 WIB + safety check every 4h" if cfg.get("DMS_RESEARCH_ENABLED", False) else "")
     )

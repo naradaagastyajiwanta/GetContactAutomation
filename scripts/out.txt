@@ -1,0 +1,30 @@
+Query: site:linkedin.com/in "Dwi Perwitasari" "Universitas Jember"
+Hits: 3
+ - https://id.linkedin.com/in/fajar-pratama-putra-1b80007b (Fajar Pratama Putra - Program ...)
+ - https://id.linkedin.com/in/yuli-dewi-puji-astutik-a6b79515b (yuli dewi puji astutik - Mojok...)
+ - https://id.linkedin.com/in/farra-aprilia-5b39171a4 (Farra Aprilia - work hard and ...)
+
+Query: site:linkedin.com/in "Dwi Perwitasari"
+Hits: 3
+ - https://id.linkedin.com/in/dwi-perwitasari-a03081247 (dwi perwitasari - auditor - Li...)
+ - https://id.linkedin.com/in/dwi-perwitasari-0701aaaa (Dwi Perwitasari - auditor at T...)
+ - https://id.linkedin.com/in/stefanidwiperwitasari/in (Stefani Dwi Perwitasari - Digi...)
+
+Query: site:linkedin.com/in "Abdi Dharma"
+Hits: 3
+ - https://www.linkedin.com/in/abdi-dharma-37832711 (abdi dharma - Whole Foods Mark...)
+ - https://id.linkedin.com/in/abdi-dharma (Abdi Dharma - Vice-Rector of A...)
+ - https://id.linkedin.com/in/abdidharmaginting (Abdi Dharma Ginting Suka - CEO...)
+
+Query: site:facebook.com "Dwi Perwitasari"
+Hits: 3
+ - https://www.facebook.com/dwIprwtsr2/?locale=id_ID (Dwi Perwitasari (@dwIprwtsr2) ...)
+ - https://www.facebook.com/anisa.d.perwitasari/ (Anisa Dwi Perwitasari - Facebo...)
+ - https://id-id.facebook.com/public/Rizky-Dwi-Perwitasari (Rizky Dwi Perwitasari di orang...)
+
+Query: site:instagram.com "Dwi Perwitasari"
+Hits: 0
+
+Query: site:instagram.com "Abdi Dharma"
+Hits: 0
+

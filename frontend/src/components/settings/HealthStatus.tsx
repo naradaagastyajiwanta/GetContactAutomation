@@ -1,7 +1,7 @@
 import { useState } from 'react'
-import { Activity, ChevronDown, ChevronUp, ExternalLink } from 'lucide-react'
+import { Activity, ChevronDown, ChevronUp, ExternalLink, Wifi, WifiOff, Instagram, Server, Key } from 'lucide-react'
 import { useHealth } from '../../hooks/useHealth'
-import { Card, CardHeader, CardTitle, CardContent } from '../ui/Card'
+import { Card, CardContent } from '../ui/Card'
 import { Spinner } from '../ui/Spinner'
 import { cn } from '../../lib/utils'
 import type { ApiKeyInfo } from '../../lib/types'
@@ -154,40 +154,36 @@ function ApiKeyRow({
 
   let dotColor = 'bg-gray-300 dark:bg-gray-600'
   let statusText = 'Not Set'
+  let badgeClass = 'bg-gray-100 text-gray-500 dark:bg-gray-700 dark:text-gray-400'
 
   if (configured && ok) {
     dotColor = 'bg-green-400 dark:bg-green-500'
     statusText = 'OK'
+    badgeClass = 'bg-green-100 text-green-700 dark:bg-green-900/40 dark:text-green-400'
   } else if (hasError) {
     dotColor = 'bg-red-400 dark:bg-red-500'
     statusText = 'Quota Habis'
+    badgeClass = 'bg-red-100 text-red-700 dark:bg-red-900/40 dark:text-red-400'
   }
 
   return (
-    <div>
+    <div className="rounded-lg border border-gray-100 bg-gray-50/50 px-3 py-2.5 dark:border-gray-700 dark:bg-gray-800/30">
       <div className="flex items-center justify-between">
-        <span className="text-sm text-gray-500 dark:text-gray-400">{label}</span>
-        <div className="flex items-center gap-2">
-          <span className={cn('h-2.5 w-2.5 rounded-full', dotColor)} />
-          <span className={cn(
-            'text-sm font-medium',
-            hasError ? 'text-red-600 dark:text-red-400' : 'text-gray-900 dark:text-gray-100',
-          )}>
-            {statusText}
-          </span>
-        </div>
+        <span className="text-sm font-medium text-gray-700 dark:text-gray-300">{label}</span>
+        <span className={cn('inline-flex items-center gap-1.5 rounded-full px-2 py-0.5 text-xs font-medium', badgeClass)}>
+          <span className={cn('h-1.5 w-1.5 rounded-full', dotColor)} />
+          {statusText}
+        </span>
       </div>
 
-      {/* Not configured hint */}
       {!configured && (
-        <p className="mt-1 ml-0.5 text-xs text-gray-400 dark:text-gray-500">
+        <p className="mt-1 text-xs text-gray-400 dark:text-gray-500">
           Opsional — tambahkan di Config untuk scraping tanpa IG session.
         </p>
       )}
 
-      {/* Quota exhausted alert + guide */}
       {hasError && (
-        <div className="mt-1">
+        <div className="mt-1.5">
           <p className="text-xs text-red-600 dark:text-red-400">
             API key tidak valid atau kuota free tier habis. Buat akun baru dengan email baru.
           </p>
@@ -199,9 +195,51 @@ function ApiKeyRow({
 }
 
 // ---------------------------------------------------------------------------
+// Status pill for the top bar
+// ---------------------------------------------------------------------------
+
+function StatusPill({
+  icon,
+  label,
+  ok,
+  detail,
+}: {
+  icon: React.ReactNode
+  label: string
+  ok: boolean
+  detail?: string
+}) {
+  return (
+    <div
+      className={cn(
+        'flex items-center gap-2 rounded-lg border px-3 py-2 text-sm',
+        ok
+          ? 'border-green-200 bg-green-50 dark:border-green-800 dark:bg-green-900/20'
+          : 'border-red-200 bg-red-50 dark:border-red-800 dark:bg-red-900/20',
+      )}
+    >
+      <div className={cn('flex-shrink-0', ok ? 'text-green-500' : 'text-red-500')}>
+        {icon}
+      </div>
+      <div className="min-w-0">
+        <span className={cn('font-medium', ok ? 'text-green-700 dark:text-green-400' : 'text-red-700 dark:text-red-400')}>
+          {label}
+        </span>
+        {detail && (
+          <span className={cn('ml-1.5 text-xs', ok ? 'text-green-600/70 dark:text-green-500/70' : 'text-red-600/70 dark:text-red-500/70')}>
+            {detail}
+          </span>
+        )}
+      </div>
+    </div>
+  )
+}
+
+// ---------------------------------------------------------------------------
 
 export function HealthStatus() {
   const { data: health, isLoading } = useHealth()
+  const [showDetails, setShowDetails] = useState(false)
 
   const waConnected = health?.whatsapp?.connected ?? false
   const ig = health?.instagram
@@ -219,149 +257,140 @@ export function HealthStatus() {
     no_sessions: 'Not Configured',
   }
 
+  const apiOk = health?.status === 'ok'
+
+  // Count how many API keys have issues
+  const apiKeyIssues = [apiKeys?.serper, apiKeys?.apify, apiKeys?.scrapingbot].filter(
+    (k) => k && k.configured && !k.ok,
+  ).length
+
   return (
-    <Card>
-      <CardHeader>
+    <Card padding={false} className="overflow-hidden">
+      {/* Header bar */}
+      <div className="flex items-center justify-between border-b border-gray-200 px-5 py-3 dark:border-gray-700">
         <div className="flex items-center gap-2">
           <Activity className="h-5 w-5 text-gray-500 dark:text-gray-400" />
-          <CardTitle>System Health</CardTitle>
+          <h3 className="text-lg font-semibold text-gray-900 dark:text-gray-100">System Health</h3>
         </div>
-      </CardHeader>
-      <CardContent>
+        <button
+          onClick={() => setShowDetails(!showDetails)}
+          className="flex items-center gap-1 rounded-md px-2 py-1 text-xs font-medium text-gray-500 hover:bg-gray-100 dark:text-gray-400 dark:hover:bg-gray-700"
+        >
+          {showDetails ? 'Less' : 'Details'}
+          {showDetails ? <ChevronUp className="h-3.5 w-3.5" /> : <ChevronDown className="h-3.5 w-3.5" />}
+        </button>
+      </div>
+
+      <CardContent className="p-5">
         {isLoading ? (
           <div className="flex justify-center py-4">
             <Spinner size="md" />
           </div>
         ) : (
-          <div className="space-y-3">
-            <div className="flex items-center justify-between">
-              <span className="text-sm text-gray-500 dark:text-gray-400">API Status</span>
-              <div className="flex items-center gap-2">
-                <span
-                  className={cn(
-                    'h-2.5 w-2.5 rounded-full',
-                    health?.status === 'ok'
-                      ? 'bg-green-400 dark:bg-green-500'
-                      : 'bg-red-400 dark:bg-red-500',
-                  )}
-                />
-                <span className="text-sm font-medium text-gray-900 dark:text-gray-100">
-                  {health?.status === 'ok' ? 'Healthy' : 'Error'}
-                </span>
-              </div>
-            </div>
-
-            <div className="flex items-center justify-between">
-              <span className="text-sm text-gray-500 dark:text-gray-400">WhatsApp</span>
-              <div className="flex items-center gap-2">
-                <span
-                  className={cn(
-                    'h-2.5 w-2.5 rounded-full',
-                    waConnected
-                      ? 'bg-green-400 dark:bg-green-500'
-                      : 'bg-red-400 dark:bg-red-500',
-                  )}
-                />
-                <span className="text-sm font-medium text-gray-900 dark:text-gray-100">
-                  {waConnected ? 'Connected' : 'Disconnected'}
-                </span>
-              </div>
-            </div>
-
-            <div className="flex items-center justify-between">
-              <span className="text-sm text-gray-500 dark:text-gray-400">Instagram Sessions</span>
-              <div className="flex items-center gap-2">
-                <span
-                  className={cn(
-                    'h-2.5 w-2.5 rounded-full',
-                    igOk
-                      ? 'bg-green-400 dark:bg-green-500'
-                      : 'bg-red-400 dark:bg-red-500',
-                  )}
-                />
-                <span className="text-sm font-medium text-gray-900 dark:text-gray-100">
-                  {igTotal === 0
-                    ? 'Not Configured'
+          <div className="space-y-4">
+            {/* Compact status pills */}
+            <div className="grid grid-cols-3 gap-2">
+              <StatusPill
+                icon={<Server className="h-4 w-4" />}
+                label="API"
+                ok={apiOk}
+                detail={apiOk ? 'OK' : 'Error'}
+              />
+              <StatusPill
+                icon={waConnected ? <Wifi className="h-4 w-4" /> : <WifiOff className="h-4 w-4" />}
+                label="WA"
+                ok={waConnected}
+              />
+              <StatusPill
+                icon={<Instagram className="h-4 w-4" />}
+                label="IG"
+                ok={igOk}
+                detail={
+                  igTotal === 0
+                    ? 'N/A'
                     : igOk
-                      ? `${igHealthy}/${igTotal} Active`
-                      : (igError ? igLabel[igError] || igError : 'Error')}
-                </span>
-              </div>
+                      ? `${igHealthy}/${igTotal}`
+                      : (igError ? igLabel[igError] || igError : 'Error')
+                }
+              />
             </div>
 
-            {/* Per-session breakdown */}
-            {igSessions.length > 1 && (
-              <div className="ml-4 space-y-1">
-                {igSessions.map((s, i) => (
-                  <div key={i} className="flex items-center justify-between text-xs">
-                    <span className="font-mono text-gray-500 dark:text-gray-400">{s.label}</span>
-                    <span className={cn(
-                      'font-medium',
-                      s.ok
-                        ? 'text-green-600 dark:text-green-400'
-                        : 'text-red-600 dark:text-red-400',
-                    )}>
-                      {s.ok ? 'Active' : (s.error === 'login_required' ? 'Expired' : s.error || 'Error')}
-                    </span>
+            {/* Expandable details */}
+            {showDetails && (
+              <div className="space-y-3 pt-1">
+                {/* IG session breakdown */}
+                {igSessions.length > 0 && (
+                  <div className="space-y-1.5">
+                    <p className="text-xs font-semibold uppercase tracking-wider text-gray-400 dark:text-gray-500">
+                      Instagram Sessions
+                    </p>
+                    {igSessions.map((s, i) => (
+                      <div key={i} className="flex items-center justify-between rounded-md bg-gray-50 px-3 py-1.5 text-xs dark:bg-gray-800/50">
+                        <span className="font-mono text-gray-600 dark:text-gray-400">{s.label}</span>
+                        <span className={cn(
+                          'font-medium',
+                          s.ok
+                            ? 'text-green-600 dark:text-green-400'
+                            : 'text-red-600 dark:text-red-400',
+                        )}>
+                          {s.ok ? 'Active' : (s.error === 'login_required' ? 'Expired' : s.error || 'Error')}
+                        </span>
+                      </div>
+                    ))}
                   </div>
-                ))}
-              </div>
-            )}
+                )}
 
-            {!igOk && (
-              <div className="rounded-md bg-red-50 dark:bg-red-900/20 p-3 mt-1">
-                <p className="text-xs text-red-700 dark:text-red-400">
-                  {igTotal === 0
-                    ? <>No IG sessions configured. Add <span className="font-mono font-semibold">IG_SESSION_ID</span> in Config below.</>
-                    : <>
-                        {igHealthy === 0 ? 'All' : 'Some'} IG sessions are down.
-                        Update <span className="font-mono font-semibold">IG_SESSION_ID</span> in
-                        Config below. Use commas to add multiple sessions for automatic rotation.
-                      </>
-                  }
-                </p>
-              </div>
-            )}
+                {!igOk && (
+                  <div className="rounded-lg bg-red-50 dark:bg-red-900/20 p-3">
+                    <p className="text-xs text-red-700 dark:text-red-400">
+                      {igTotal === 0
+                        ? <>No IG sessions configured. Add <span className="font-mono font-semibold">IG_SESSION_ID</span> in Config below.</>
+                        : <>
+                            {igHealthy === 0 ? 'All' : 'Some'} IG sessions are down.
+                            Update <span className="font-mono font-semibold">IG_SESSION_ID</span> in
+                            Config below. Use commas to add multiple sessions for automatic rotation.
+                          </>
+                      }
+                    </p>
+                  </div>
+                )}
 
-            {/* ----------------------------------------------------------------
-                Search & Scraping API Keys
-            ---------------------------------------------------------------- */}
-            <div className="pt-2 border-t border-gray-200 dark:border-gray-700">
-              <span className="text-xs font-medium text-gray-400 dark:text-gray-500 uppercase tracking-wider">
-                Search & Scraping API Keys
-              </span>
-            </div>
+                {/* API Keys */}
+                <div className="space-y-2">
+                  <div className="flex items-center gap-2">
+                    <Key className="h-3.5 w-3.5 text-gray-400 dark:text-gray-500" />
+                    <p className="text-xs font-semibold uppercase tracking-wider text-gray-400 dark:text-gray-500">
+                      API Keys
+                      {apiKeyIssues > 0 && (
+                        <span className="ml-1.5 rounded-full bg-red-100 px-1.5 py-0.5 text-[10px] font-bold text-red-700 dark:bg-red-900/40 dark:text-red-400">
+                          {apiKeyIssues} issue{apiKeyIssues > 1 ? 's' : ''}
+                        </span>
+                      )}
+                    </p>
+                  </div>
 
-            {/* Serper */}
-            <ApiKeyRow
-              label="Serper (Google Search)"
-              info={apiKeys?.serper}
-              serviceKey="serper"
-            />
+                  <ApiKeyRow
+                    label="Serper (Google Search)"
+                    info={apiKeys?.serper}
+                    serviceKey="serper"
+                  />
 
-            {/* Fallback Providers */}
-            {fallbacks && (
-              <>
-                <div className="pt-2 border-t border-gray-200 dark:border-gray-700">
-                  <span className="text-xs font-medium text-gray-400 dark:text-gray-500 uppercase tracking-wider">
-                    Fallback Scraping Providers
-                  </span>
+                  {fallbacks && (
+                    <>
+                      <ApiKeyRow
+                        label="Apify (IG Scraper Tier 2)"
+                        info={apiKeys?.apify ?? (fallbacks.apify ? { configured: fallbacks.apify.configured, ok: true, error: null } : undefined)}
+                        serviceKey="apify"
+                      />
+                      <ApiKeyRow
+                        label="ScrapingBot (IG Scraper Tier 3)"
+                        info={apiKeys?.scrapingbot ?? (fallbacks.scrapingbot ? { configured: fallbacks.scrapingbot.configured, ok: true, error: null } : undefined)}
+                        serviceKey="scrapingbot"
+                      />
+                    </>
+                  )}
                 </div>
-
-                {/* Apify */}
-                <ApiKeyRow
-                  label="Apify (IG Scraper Tier 2)"
-                  info={apiKeys?.apify ?? (fallbacks.apify ? { configured: fallbacks.apify.configured, ok: true, error: null } : undefined)}
-                  serviceKey="apify"
-                />
-
-                {/* ScrapingBot */}
-                <ApiKeyRow
-                  label="ScrapingBot (IG Scraper Tier 3)"
-                  info={apiKeys?.scrapingbot ?? (fallbacks.scrapingbot ? { configured: fallbacks.scrapingbot.configured, ok: true, error: null } : undefined)}
-                  serviceKey="scrapingbot"
-                />
-              </>
+              </div>
             )}
           </div>
         )}

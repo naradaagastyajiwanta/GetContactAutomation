@@ -71,7 +71,14 @@ export async function triggerDiscoverBem(limit?: number): Promise<{ status: stri
   return data
 }
 
-export type TargetedAgentType = 'find_handles' | 'scrape_posts' | 'extract_phones' | 'discover_bem'
+export async function triggerFindRectors(limit?: number): Promise<{ status: string; message: string }> {
+  const { data } = await apiClient.post<{ status: string; message: string }>('/pipeline/find-rectors', null, {
+    params: limit != null ? { limit } : undefined,
+  })
+  return data
+}
+
+export type TargetedAgentType = 'find_handles' | 'scrape_posts' | 'extract_phones' | 'discover_bem' | 'find_rectors'
 
 export async function triggerAgentTargeted(
   agentType: TargetedAgentType,

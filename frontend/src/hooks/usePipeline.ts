@@ -1,6 +1,6 @@
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import toast from 'react-hot-toast'
-import { getPipelineStatus, triggerFindHandles, triggerScrapePosts, triggerExtractPhones, triggerDiscoverBem, getProvinces, triggerCollectUniversities, getPipelineLogs, triggerAgentTargeted, type PipelineLogsParams, type TargetedAgentType } from '../api/pipeline'
+import { getPipelineStatus, triggerFindHandles, triggerScrapePosts, triggerExtractPhones, triggerDiscoverBem, triggerFindRectors, getProvinces, triggerCollectUniversities, getPipelineLogs, triggerAgentTargeted, type PipelineLogsParams, type TargetedAgentType } from '../api/pipeline'
 import { queryKeys } from '../lib/queryKeys'
 import { useWebSocketContext } from '../context/WebSocketContext'
 
@@ -82,6 +82,21 @@ export function useTriggerDiscoverBem() {
   })
 }
 
+export function useTriggerFindRectors() {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: (limit?: number) => triggerFindRectors(limit),
+    onSuccess: (data) => {
+      toast.success(data.message || 'Rector name search started')
+      queryClient.invalidateQueries({ queryKey: queryKeys.pipeline.status })
+      queryClient.invalidateQueries({ queryKey: queryKeys.universities.all })
+    },
+    onError: () => {
+      toast.error('Failed to start rector name search')
+    },
+  })
+}
+
 export function useProvinces() {
   return useQuery({
     queryKey: ['provinces'],
@@ -110,6 +125,7 @@ const AGENT_LABELS: Record<TargetedAgentType, string> = {
   scrape_posts: 'Scrape IG Posts',
   extract_phones: 'Extract Phones',
   discover_bem: 'Discover BEM',
+  find_rectors: 'Find Rectors',
 }
 
 export function useRunAgentTargeted() {

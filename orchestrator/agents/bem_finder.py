@@ -27,7 +27,7 @@ from orchestrator.db import (
 from orchestrator.instagram import (
     get_ig_following,
     find_related_accounts_from_following,
-    search_related_accounts_via_serper,
+    search_related_accounts_via_search,
 )
 
 # Minimum confidence to save a related IG account
@@ -61,8 +61,8 @@ async def _discover_bem_for_uni(uni: dict, loop) -> dict:
     )
 
     if not following:
-        log.info("[Agent4-BEM] Empty following for @%s (%s), trying Serper fallback", ig_handle, uni["name"])
-        related = await search_related_accounts_via_serper(uni["name"])
+        log.info("[Agent4-BEM] Empty following for @%s (%s), trying web search fallback", ig_handle, uni["name"])
+        related = await search_related_accounts_via_search(uni["name"])
 
         bem_found = False
         for acct in related:
@@ -73,7 +73,7 @@ async def _discover_bem_for_uni(uni: dict, loop) -> dict:
                 university_id=uni["id"],
                 ig_handle=acct["handle"],
                 relation_type=acct["relation_type"],
-                source="serper_search",
+                source="web_search",
                 confidence=acct["confidence"],
             )
             if added:
@@ -87,7 +87,7 @@ async def _discover_bem_for_uni(uni: dict, loop) -> dict:
                 result["bem_handle"] = acct["handle"]
                 await update_bem_handle(uni["id"], acct["handle"])
                 log.info(
-                    "[Agent4-BEM] Serper fallback found BEM @%s for %s (confidence: %.2f)",
+                    "[Agent4-BEM] Web search fallback found BEM @%s for %s (confidence: %.2f)",
                     acct["handle"], uni["name"], acct["confidence"],
                 )
 

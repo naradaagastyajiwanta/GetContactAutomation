@@ -6,6 +6,8 @@ import makeWASocket, {
   WASocket,
   Browsers,
   proto,
+  WAMessage,
+  ConnectionState,
 } from '@whiskeysockets/baileys';
 import { Boom } from '@hapi/boom';
 import express, { Request, Response } from 'express';
@@ -24,6 +26,13 @@ import {
   MessageType,
   type QueuedMessage,
 } from './messageQueue';
+import {
+  DeviceManager,
+  DeviceConnectionState,
+  type MessagePayload,
+  type DocumentPayload,
+  type SendMessageResult,
+} from './deviceManager';
 
 // Extended Express interfaces for our custom properties
 interface SendMessageBody {
@@ -67,15 +76,16 @@ const logger: Logger = pino({ level: 'info' });
 // Properly typed logger for Baileys - it accepts a Logger interface
 const baileysLogger: Logger = pino({ level: 'silent' });
 
-let sock: WASocket | null = null;
-let isConnected = false;
-let connectedPhone: string | null = null;
+// Device Manager for multi-device support
+const deviceManager = new DeviceManager(logger, {
+  onConnectionUpdate: handleDeviceConnectionUpdate,
+  onMessage: handleDeviceMessage,
+  onQR: handleDeviceQR,
+  onError: handleDeviceError,
+  onCredentialsUpdated: handleDeviceCredentialsUpdated,
+});
+
 let webhookUrl: string | null = null;
-let reconnectAttempt = 0;
-let latestQr: string | null = null;
-let isConnecting = false; // Guard against concurrent connectToWhatsApp calls
-let hasEverConnected = false; // Track if connection was ever successfully opened
-let authResetCount = 0; // Track consecutive auth resets to prevent infinite loop
 
 // ---------------------------------------------------------------------------
 // Type definitions and type guards
@@ -135,6 +145,196 @@ async function resolveLidToPhone(
     logger.error({ err, lid }, 'Failed to resolve LID');
     return null;
   }
+}
+
+// ---------------------------------------------------------------------------
+// Device Manager Event Handlers
+// ---------------------------------------------------------------------------
+
+/**
+ * Handle device connection updates from DeviceManager
+ */
+function handleDeviceConnectionUpdate(deviceId: string, state: Partial<ConnectionState>): void {
+  const { connection, lastDisconnect } = state;
+
+  if (connection === 'open') {
+    const device = deviceManager.getDevice(deviceId);
+    if (device) {
+      logger.info({ deviceId, phoneNumber: device.phoneNumber }, 'Device connected');
+      // Update device in database
+      const messageQueue = getMessageQueue();
+      if (device.phoneNumber) {
+        messageQueue.updateDevicePhoneNumber(deviceId, device.phoneNumber);
+      }
+    }
+  } else if (connection === 'close') {
+    logger.info({ deviceId }, 'Device disconnected');
+  }
+}
+
+/**
+ * Handle incoming messages from any device
+ */
+async function handleDeviceMessage(deviceId: string, msg: WAMessage): Promise<void> {
+  if (!msg.key) return;
+
+  const device = deviceManager.getDevice(deviceId);
+  const remoteJid = msg.key.remoteJid;
+  if (!remoteJid) return;
+
+  // Only process messages from others (not from me)
+  if (msg.key.fromMe) return;
+
+  // Get message content
+  const messageContent = msg.message;
+  if (!messageContent) return;
+
+  // Log message types for debugging
+  const msgTypes = Object.keys(messageContent).filter((k) => k !== 'messageContextInfo');
+  logger.info({ deviceId, remoteJid, msgTypes }, 'Incoming message types');
+
+  // Extract text content OR vCard contact(s)
+  let text: string | null =
+    messageContent.conversation ??
+    messageContent.extendedTextMessage?.text ??
+    null;
+
+  // Handle shared contact (vCard) messages
+  if (!text) {
+    const vcards: string[] = [];
+
+    if (messageContent.contactMessage?.vcard) {
+      vcards.push(messageContent.contactMessage.vcard);
+    }
+
+    if (messageContent.contactsArrayMessage?.contacts) {
+      for (const c of messageContent.contactsArrayMessage.contacts) {
+        if (c.vcard) vcards.push(c.vcard);
+      }
+    }
+
+    if (vcards.length > 0) {
+      const parts: string[] = [];
+      for (const vcard of vcards) {
+        const fnMatch = vcard.match(/FN:(.+)/);
+        const telMatches = [...vcard.matchAll(/TEL[^:]*:([+\d\s\-()]+)/g)];
+        const name = fnMatch?.[1]?.trim() ?? 'Unknown';
+        const phones = telMatches.map((m) => m[1].replace(/[\s\-()]/g, ''));
+        if (phones.length > 0) {
+          parts.push(`[Shared Contact] ${name}: ${phones.join(', ')}`);
+        } else {
+          parts.push(`[Shared Contact] ${name}`);
+        }
+      }
+      text = parts.join('\n');
+      logger.info({ vcardCount: vcards.length, parsed: text }, 'Parsed vCard contact message');
+    }
+  }
+
+  if (!text) return;
+
+  // Resolve JID to pure phone number digits with proper fallback for LID
+  let from: string;
+  if (remoteJid.endsWith('@lid')) {
+    const deviceState = deviceManager.getDevice(deviceId);
+    if (deviceState?.sock) {
+      const resolvedPhone = await resolveLidToPhone(deviceState.sock, remoteJid);
+      if (resolvedPhone) {
+        from = resolvedPhone;
+      } else {
+        from = remoteJid.replace('@lid', '');
+        logger.warn({ lid: remoteJid, fallback: from }, 'Using LID fallback for message processing');
+      }
+    } else {
+      from = remoteJid.replace('@lid', '');
+    }
+  } else {
+    from = remoteJid.split('@')[0].split(':')[0];
+  }
+
+  const timestamp = convertTimestampToNumber(msg.messageTimestamp);
+
+  // Use the global pendingMessages map (shared across all devices)
+  const existing = pendingMessages.get(from);
+
+  if (existing) {
+    existing.messages.push(text);
+    existing.allMsgKeys.push(msg.key);
+    clearTimeout(existing.timer);
+    existing.timer = setTimeout(() => flushToWebhook(from), DEBOUNCE_MS);
+  } else {
+    const timer = setTimeout(() => flushToWebhook(from), DEBOUNCE_MS);
+    pendingMessages.set(from, {
+      messages: [text],
+      timer,
+      firstMsgKey: msg.key,
+      allMsgKeys: [msg.key],
+      pushName: msg.pushName ?? '',
+      firstTimestamp: timestamp,
+      createdAt: Date.now(),
+    });
+  }
+}
+
+/**
+ * Handle QR code generation for a device
+ */
+function handleDeviceQR(deviceId: string, qr: string): void {
+  logger.info({ deviceId }, 'QR code generated');
+  // QR is already stored in device state, accessible via /devices/:id/qr endpoint
+}
+
+/**
+ * Handle device errors
+ */
+function handleDeviceError(deviceId: string, error: Error): void {
+  logger.error({ deviceId, error: error.message }, 'Device error');
+  metrics.recordError('connection');
+}
+
+/**
+ * Handle device credentials update
+ */
+function handleDeviceCredentialsUpdated(deviceId: string): void {
+  logger.info({ deviceId }, 'Device credentials updated');
+}
+
+// ---------------------------------------------------------------------------
+// Device Initialization
+// ---------------------------------------------------------------------------
+
+/**
+ * Initialize all devices and register them in the database
+ */
+async function initializeDevices(): Promise<void> {
+  const messageQueue = getMessageQueue();
+
+  const devices = [
+    { id: 'device_1', name: 'WhatsApp Device 1' },
+    { id: 'device_2', name: 'WhatsApp Device 2' },
+    { id: 'device_3', name: 'WhatsApp Device 3' },
+    { id: 'device_4', name: 'WhatsApp Device 4' },
+    { id: 'device_5', name: 'WhatsApp Device 5' },
+  ];
+
+  for (const device of devices) {
+    const authPath = path.join(__dirname, '..', `auth_store_${device.id}`);
+    deviceManager.registerDevice(device.id, device.name, authPath);
+    messageQueue.registerDevice(device.id, device.name, authPath);
+  }
+
+  logger.info({ count: devices.length }, 'Devices registered');
+
+  // Start cleanup interval if not already running
+  if (!cleanupInterval) {
+    cleanupInterval = setInterval(() => {
+      cleanupPendingMessages();
+    }, CLEANUP_INTERVAL_MS);
+    logger.info({ intervalMs: CLEANUP_INTERVAL_MS }, 'Started pending messages cleanup interval');
+  }
+
+  logger.info('Device initialization complete');
+  logger.info('Devices are ready. Connect them via the frontend when needed.');
 }
 
 // ---------------------------------------------------------------------------
@@ -636,78 +836,53 @@ let queueProcessorTimer: ReturnType<typeof setInterval> | null = null;
 
 /**
  * Process a single queued message by sending it via WhatsApp
+ * Now uses DeviceManager for multi-device support
  */
 async function processQueuedMessage(msg: QueuedMessage): Promise<boolean> {
-  if (!sock || !isConnected) {
+  const deviceId = msg.device_id || 'device_1';
+  const device = deviceManager.getDevice(deviceId);
+
+  if (!device || device.connectionState !== DeviceConnectionState.CONNECTED) {
+    logger.debug({ messageId: msg.message_id, deviceId }, 'Device not connected, skipping message');
     return false;
   }
 
   try {
-    const jid = normalizePhone(msg.to);
-
     if (msg.type === MessageType.TEXT) {
-      // Read receipts if applicable
-      const keysToRead = msg.allMsgKeys && msg.allMsgKeys.length > 0
-        ? msg.allMsgKeys
-        : msg.replyToMsgKey
-          ? [msg.replyToMsgKey]
-          : [];
+      const payload: MessagePayload = {
+        to: msg.to,
+        message: msg.message || '',
+        replyToMsgKey: msg.replyToMsgKey ? JSON.parse(msg.replyToMsgKey as string) : undefined,
+        allMsgKeys: msg.allMsgKeys ? JSON.parse(msg.allMsgKeys as string) : undefined,
+      };
 
-      if (keysToRead.length > 0) {
-        try {
-          await sock.readMessages(
-            (keysToRead as any).map((k: any) => ({
-              remoteJid: k.remoteJid,
-              id: k.id,
-              fromMe: k.fromMe,
-            })),
-          );
-        } catch (err) {
-          logger.warn({ err }, 'Failed to send read receipt');
-        }
+      const result = await deviceManager.sendMessage(deviceId, payload);
+
+      if (result.success) {
+        messageQueue.markSent(msg.id, result.messageId);
+        logger.info({ messageId: msg.message_id, waMessageId: result.messageId, deviceId }, 'Queued message sent successfully');
+        return true;
+      } else {
+        throw new Error(result.error || 'Failed to send message');
       }
-
-      // Human-like delay
-      await humanDelay(HUMAN_DELAY_MIN_MS, HUMAN_DELAY_MAX_MS);
-
-      // Show typing indicator
-      try {
-        await sock.sendPresenceUpdate('composing', jid);
-      } catch (err) {
-        logger.warn({ err, jid }, 'Failed to set presence to composing (non-fatal)');
-      }
-
-      // Typing delay
-      await typingDelay(msg.message?.length || 0);
-
-      // Send message
-      const result = await sock.sendMessage(jid, { text: msg.message ?? '' });
-
-      // Stop typing indicator
-      try {
-        await sock.sendPresenceUpdate('paused', jid);
-      } catch (err) {
-        logger.warn({ err, jid }, 'Failed to set presence to paused (non-fatal)');
-      }
-
-      const waMessageId = result?.key?.id ?? '';
-      messageQueue.markSent(msg.id, waMessageId);
-      logger.info({ messageId: msg.message_id, waMessageId }, 'Queued message sent successfully');
-      return true;
     } else if (msg.type === MessageType.DOCUMENT) {
-      await humanDelay(1000, 2000);
+      const payload: DocumentPayload = {
+        to: msg.to,
+        fileBase64: msg.fileBase64 || '',
+        fileName: msg.fileName || '',
+        mimetype: msg.mimetype || 'application/octet-stream',
+        caption: msg.caption,
+      };
 
-      const result = await sock.sendMessage(jid, {
-        document: Buffer.from(msg.fileBase64 ?? '', 'base64'),
-        fileName: msg.fileName ?? '',
-        mimetype: msg.mimetype ?? 'application/octet-stream',
-        ...(msg.caption ? { caption: msg.caption } : {}),
-      });
+      const result = await deviceManager.sendDocument(deviceId, payload);
 
-      const waMessageId = result?.key?.id ?? '';
-      messageQueue.markSent(msg.id, waMessageId);
-      logger.info({ messageId: msg.message_id, waMessageId }, 'Queued document sent successfully');
-      return true;
+      if (result.success) {
+        messageQueue.markSent(msg.id, result.messageId);
+        logger.info({ messageId: msg.message_id, waMessageId: result.messageId, deviceId }, 'Queued document sent successfully');
+        return true;
+      } else {
+        throw new Error(result.error || 'Failed to send document');
+      }
     }
 
     return false;
@@ -729,27 +904,40 @@ async function processQueuedMessage(msg: QueuedMessage): Promise<boolean> {
 
 /**
  * Process all pending messages in the queue
+ * Now processes messages for all connected devices
  */
 async function processMessageQueue(): Promise<void> {
   if (queueProcessorActive) return;
-  if (!sock || !isConnected) return;
 
   queueProcessorActive = true;
 
   try {
-    // Get batch of pending messages
-    const pendingMessages = messageQueue.getPendingMessages(10);
+    const connectedDeviceIds = deviceManager.getConnectedDeviceIds();
 
-    if (pendingMessages.length === 0) {
+    if (connectedDeviceIds.length === 0) {
       return;
     }
 
-    logger.info({ count: pendingMessages.length }, 'Processing queued messages');
+    let totalProcessed = 0;
 
-    for (const msg of pendingMessages) {
-      await processQueuedMessage(msg);
-      // Small delay between messages to avoid rate limiting
-      await humanDelay(500, 1500);
+    // Process pending messages for each connected device
+    for (const deviceId of connectedDeviceIds) {
+      const pendingMessages = messageQueue.getPendingMessages(5, deviceId);
+
+      if (pendingMessages.length > 0) {
+        logger.info({ deviceId, count: pendingMessages.length }, 'Processing queued messages for device');
+
+        for (const msg of pendingMessages) {
+          await processQueuedMessage(msg);
+          // Small delay between messages to avoid rate limiting
+          await humanDelay(500, 1500);
+          totalProcessed++;
+        }
+      }
+    }
+
+    if (totalProcessed > 0) {
+      logger.info({ totalProcessed }, 'Total queued messages processed');
     }
   } catch (err) {
     logger.error({ err }, 'Error processing message queue');
@@ -787,310 +975,6 @@ function stopQueueProcessor(): void {
 }
 
 // ---------------------------------------------------------------------------
-// WhatsApp connection
-// ---------------------------------------------------------------------------
-
-/**
- * Cleanup socket resources and event listeners.
- * Ensures no event listener leaks when reconnecting.
- */
-async function cleanupSocket(): Promise<void> {
-  if (sock) {
-    try {
-      // Remove all event listeners to prevent memory leaks
-      sock.ev.removeAllListeners('creds.update');
-      sock.ev.removeAllListeners('connection.update');
-      sock.ev.removeAllListeners('messages.upsert');
-      sock.ev.removeAllListeners('messaging-history.set');
-      sock.ev.removeAllListeners('chats.upsert');
-      sock.ev.removeAllListeners('chats.delete');
-      sock.ev.removeAllListeners('contacts.upsert');
-      sock.ev.removeAllListeners('groups.update');
-    } catch (err) {
-      logger.warn({ err }, 'Error removing socket event listeners');
-    }
-    try {
-      sock.end(undefined);
-    } catch (err) {
-      logger.warn({ err }, 'Error ending socket');
-    }
-    sock = null;
-  }
-
-  // Clear pending messages when disconnecting
-  clearAllPendingMessages();
-}
-
-async function connectToWhatsApp(): Promise<void> {
-  // Guard: prevent concurrent connection attempts
-  if (isConnecting) {
-    logger.warn('connectToWhatsApp already in progress, skipping');
-    return;
-  }
-  isConnecting = true;
-
-  try {
-    // Clean up any existing socket first
-    await cleanupSocket();
-
-    // Start cleanup interval if not already running
-    if (!cleanupInterval) {
-      cleanupInterval = setInterval(() => {
-        cleanupPendingMessages();
-      }, CLEANUP_INTERVAL_MS);
-      logger.info({ intervalMs: CLEANUP_INTERVAL_MS }, 'Started pending messages cleanup interval');
-    }
-
-    // Restore auth from backup if primary is missing (Item 3)
-    restoreAuthIfNeeded();
-
-    if (!fs.existsSync(AUTH_STORE_DIR)) {
-      fs.mkdirSync(AUTH_STORE_DIR, { recursive: true });
-    }
-
-    const { state, saveCreds } = await useMultiFileAuthState(AUTH_STORE_DIR);
-
-    // Fetch latest WhatsApp web version to prevent 405 rejection
-    let version: [number, number, number] | undefined;
-    try {
-      const fetched = await fetchLatestBaileysVersion();
-      version = fetched.version;
-      logger.info({ version: version.join('.'), isLatest: fetched.isLatest }, 'Fetched latest WA web version');
-    } catch (err) {
-      logger.warn({ err }, 'Failed to fetch latest WA version, using Baileys default');
-    }
-
-    // Use a safe browser preset; macOS/Desktop can cause 405 in some regions
-    const safeVersion: [number, number, number] = version ?? [2, 3000, 1015901307];
-
-    const newSock = makeWASocket({
-      auth: {
-        creds: state.creds,
-        keys: makeCacheableSignalKeyStore(state.keys, baileysLogger),
-      },
-      version: safeVersion,
-      logger: baileysLogger,
-      printQRInTerminal: false,
-      browser: Browsers.ubuntu('Chrome'),
-      syncFullHistory: false,
-      markOnlineOnConnect: false,
-    });
-
-    sock = newSock;
-
-    // Save creds on update; only backup when connection is open
-    newSock.ev.on('creds.update', saveCreds);
-
-    newSock.ev.on('connection.update', async (update) => {
-      const { connection, lastDisconnect, qr } = update;
-
-      if (qr) {
-        latestQr = qr;
-        logger.info('Scan this QR code to connect WhatsApp:');
-        QRCode.toString(qr, { type: 'terminal', small: true }).then(
-          (str) => console.log(str),
-          () => {},
-        );
-      }
-
-      if (connection === 'open') {
-        reconnectAttempt = 0;
-        authResetCount = 0; // Reset auth reset counter on successful connection
-        isConnected = true;
-        hasEverConnected = true;
-        latestQr = null;
-        const phoneJid = newSock.user?.id ?? null;
-        connectedPhone = phoneJid ? phoneJid.split(':')[0] : null;
-        logger.info({ phone: connectedPhone }, `Connected as ${connectedPhone}`);
-
-        // Track connection metrics
-        metrics.recordConnectionEstablished(connectedPhone ?? undefined);
-
-        // Backup credentials now that we have a valid connection
-        backupAuthStore();
-
-        // Set presence to available
-        try {
-          await newSock.sendPresenceUpdate('available');
-        } catch (err) {
-          logger.warn({ err }, 'Failed to set presence to available after connection (non-fatal)');
-        }
-
-        // Start the message queue processor
-        startQueueProcessor();
-      }
-
-      if (connection === 'close') {
-        isConnected = false;
-        connectedPhone = null;
-
-        // Stop the queue processor on disconnect
-        stopQueueProcessor();
-
-        // Track connection loss
-        metrics.recordConnectionLost();
-
-        const statusCode = (lastDisconnect?.error as Boom)?.output?.statusCode;
-        const shouldReconnect = statusCode !== DisconnectReason.loggedOut;
-
-        logger.warn({ statusCode, shouldReconnect, hasEverConnected, attempt: reconnectAttempt }, 'Connection closed');
-
-        if (!shouldReconnect || statusCode === 401 || statusCode === 405) {
-          // Logged out or auth invalid — clear everything and start fresh
-          logger.warn('Logged out. Clearing auth store + backup...');
-          clearDir(AUTH_STORE_DIR);
-          clearDir(AUTH_BACKUP_DIR);
-          hasEverConnected = false;
-          reconnectAttempt = 0;
-          authResetCount++;
-
-          if (authResetCount >= MAX_AUTH_RESETS) {
-            logger.error(
-              { authResetCount },
-              'Max auth resets reached (%d). Giving up to avoid infinite loop. ' +
-              'Wait a few minutes, then restart the service manually. ' +
-              'WhatsApp may be rate-limiting connections.',
-              authResetCount,
-            );
-            return;
-          }
-
-          const authDelay = Math.min(10000 * authResetCount, 60000); // 10s, 20s, 30s...
-          logger.warn({ delayMs: authDelay, authResetCount }, 'Will retry fresh connection after delay...');
-          setTimeout(connectToWhatsApp, authDelay);
-        } else if (!hasEverConnected) {
-          // Never successfully connected — don't reconnect during initial auth
-          // This prevents premature reconnection during QR scanning phase
-          logger.warn('Connection closed before ever connecting. Waiting for fresh start...');
-          hasEverConnected = false;
-          reconnectAttempt = 0;
-          setTimeout(connectToWhatsApp, 5000);
-        } else if (reconnectAttempt >= MAX_RECONNECT_ATTEMPTS) {
-          logger.error(
-            { attempt: reconnectAttempt },
-            'Max reconnect attempts reached. Giving up. Restart manually.'
-          );
-        } else {
-          // Was previously connected, non-auth error — reconnect with backoff
-          const delay = calculateBackoff(reconnectAttempt);
-          reconnectAttempt++;
-          logger.warn({ delayMs: delay, attempt: reconnectAttempt }, 'Reconnecting with backoff...');
-          setTimeout(connectToWhatsApp, delay);
-        }
-      }
-    });
-
-    // ---------------------------------------------------------------------------
-    // Incoming messages with debouncing (Item 2)
-    // ---------------------------------------------------------------------------
-    newSock.ev.on('messages.upsert', async ({ messages, type }) => {
-      if (type !== 'notify') return;
-
-      for (const msg of messages) {
-        if (!msg.message) continue;
-        if (msg.key.fromMe) continue;
-
-        const remoteJid = msg.key.remoteJid ?? '';
-
-        // Skip groups
-        if (remoteJid.endsWith('@g.us')) continue;
-
-        // Skip status broadcast
-        if (remoteJid === 'status@broadcast') continue;
-
-        // Log message types for debugging
-        const msgTypes = Object.keys(msg.message).filter((k) => k !== 'messageContextInfo');
-        logger.info({ remoteJid, msgTypes }, 'Incoming message types');
-
-        // Extract text content OR vCard contact(s)
-        let text: string | null =
-          msg.message.conversation ??
-          msg.message.extendedTextMessage?.text ??
-          null;
-
-        // Handle shared contact (vCard) messages
-        if (!text) {
-          const vcards: string[] = [];
-
-          if (msg.message.contactMessage?.vcard) {
-            vcards.push(msg.message.contactMessage.vcard);
-          }
-
-          if (msg.message.contactsArrayMessage?.contacts) {
-            for (const c of msg.message.contactsArrayMessage.contacts) {
-              if (c.vcard) vcards.push(c.vcard);
-            }
-          }
-
-          if (vcards.length > 0) {
-            // Extract phone numbers and display names from vCards
-            const parts: string[] = [];
-            for (const vcard of vcards) {
-              const fnMatch = vcard.match(/FN:(.+)/);
-              const telMatches = [...vcard.matchAll(/TEL[^:]*:([+\d\s\-()]+)/g)];
-              const name = fnMatch?.[1]?.trim() ?? 'Unknown';
-              const phones = telMatches.map((m) => m[1].replace(/[\s\-()]/g, ''));
-              if (phones.length > 0) {
-                parts.push(`[Shared Contact] ${name}: ${phones.join(', ')}`);
-              } else {
-                parts.push(`[Shared Contact] ${name}`);
-              }
-            }
-            text = parts.join('\n');
-            logger.info({ vcardCount: vcards.length, parsed: text }, 'Parsed vCard contact message');
-          }
-        }
-
-        if (!text) continue;
-
-        // Resolve JID to pure phone number digits with proper fallback for LID
-        let from: string;
-        if (remoteJid.endsWith('@lid')) {
-          // LID (Linked Identity) — resolve to phone number via Baileys mapping
-          // Fallback: use the LID itself if resolution fails (stripped of @lid suffix)
-          const resolvedPhone = await resolveLidToPhone(newSock, remoteJid);
-          if (resolvedPhone) {
-            from = resolvedPhone;
-          } else {
-            // Fallback: strip @lid and use the remaining ID as a last resort
-            from = remoteJid.replace('@lid', '');
-            logger.warn({ lid: remoteJid, fallback: from }, 'Using LID fallback for message processing');
-          }
-        } else {
-          // Strip @s.whatsapp.net and any :device suffix (e.g. 628xxx:0)
-          from = remoteJid.split('@')[0].split(':')[0];
-        }
-
-        // Use type-safe timestamp conversion without 'as any'
-        const timestamp = convertTimestampToNumber(msg.messageTimestamp);
-
-        // --- Debouncing logic (Item 2) ---
-        const existing = pendingMessages.get(from);
-
-        if (existing) {
-          existing.messages.push(text);
-          existing.allMsgKeys.push(msg.key);
-          clearTimeout(existing.timer);
-          existing.timer = setTimeout(() => flushToWebhook(from), DEBOUNCE_MS);
-        } else {
-          const timer = setTimeout(() => flushToWebhook(from), DEBOUNCE_MS);
-          pendingMessages.set(from, {
-            messages: [text],
-            timer,
-            firstMsgKey: msg.key,
-            allMsgKeys: [msg.key],
-            pushName: msg.pushName ?? '',
-            firstTimestamp: timestamp,
-            createdAt: Date.now(),
-          });
-        }
-      }
-    });
-  } finally {
-    isConnecting = false;
-  }
-}
-
 // ---------------------------------------------------------------------------
 // Express server setup
 // ---------------------------------------------------------------------------
@@ -1103,13 +987,14 @@ app.use(metricsMiddleware);
 
 // POST /send — with human-like behavior (Item 1)
 app.post('/send', async (req: Request, res: Response) => {
-  const { to, message, replyToMsgKey, allMsgKeys, queue = false, messageId } = req.body as {
+  const { to, message, replyToMsgKey, allMsgKeys, queue = false, messageId, device_id = 'device_1' } = req.body as {
     to?: string;
     message?: string;
     replyToMsgKey?: { remoteJid: string; id: string; fromMe: boolean };
     allMsgKeys?: { remoteJid: string; id: string; fromMe: boolean }[];
     queue?: boolean;
     messageId?: string;
+    device_id?: string;
   };
 
   if (!to || !message) {
@@ -1126,79 +1011,37 @@ app.post('/send', async (req: Request, res: Response) => {
       message,
       replyToMsgKey,
       allMsgKeys,
+      deviceId: device_id,
     });
 
     if (added) {
-      res.json({ success: true, queued: true, messageId: msgId });
+      res.json({ success: true, queued: true, messageId: msgId, device_id });
     } else {
       res.status(409).json({ success: false, error: 'Message already queued (duplicate)' });
     }
     return;
   }
 
-  if (!sock || !isConnected) {
-    res.status(503).json({ success: false, error: 'WhatsApp not connected' });
-    return;
-  }
+  // Send directly via device manager
+  const payload: MessagePayload = {
+    to,
+    message,
+    replyToMsgKey,
+    allMsgKeys,
+  };
 
-  try {
-    const jid = normalizePhone(to);
+  const result = await deviceManager.sendMessage(device_id, payload);
 
-    // 1. Read receipt for ALL debounced messages (not just the first)
-    const keysToRead = allMsgKeys && allMsgKeys.length > 0
-      ? allMsgKeys
-      : replyToMsgKey
-        ? [replyToMsgKey]
-        : [];
-
-    if (keysToRead.length > 0) {
-      try {
-        await sock.readMessages(
-          (keysToRead as any).map((k: any) => ({
-            remoteJid: k.remoteJid,
-            id: k.id,
-            fromMe: k.fromMe,
-          })),
-        );
-      } catch (err) {
-        logger.warn({ err }, 'Failed to send read receipt');
-      }
-    }
-
-    // 2. Human delay before "typing" (Item 1)
-    await humanDelay(HUMAN_DELAY_MIN_MS, HUMAN_DELAY_MAX_MS);
-
-    // 3. Show typing indicator (Item 1)
-    try {
-      await sock.sendPresenceUpdate('composing', jid);
-    } catch (err) {
-      logger.warn({ err, jid }, 'Failed to set presence to composing (non-fatal)');
-    }
-
-    // 4. Typing duration proportional to message length (Item 1)
-    await typingDelay(message.length);
-
-    // 5. Send the actual message
-    const result = await sock.sendMessage(jid, { text: message });
-
-    // 6. Stop typing indicator (Item 1)
-    try {
-      await sock.sendPresenceUpdate('paused', jid);
-    } catch (err) {
-      logger.warn({ err, jid }, 'Failed to set presence to paused (non-fatal)');
-    }
-
-    res.json({ success: true, messageId: result?.key?.id ?? null });
-  } catch (err) {
-    const error = err instanceof Error ? err.message : String(err);
-    logger.error({ err }, 'Failed to send message');
-    res.status(500).json({ success: false, error });
+  if (result.success) {
+    res.json({ success: true, messageId: result.messageId, deviceId: result.deviceId });
+  } else {
+    res.status(500).json({ success: false, error: result.error || 'Failed to send message' });
   }
 });
 
 // POST /send-document — send a file (PDF, etc.) as a document message
 app.post('/send-document', async (req: Request, res: Response) => {
-  const { to, fileBase64, fileName, mimetype, caption, queue = false, messageId } = req.body as {
+  const { to, fileBase64, fileName, mimetype, caption, queue = false, messageId, device_id = 'device_1' } = req.body as {
     to?: string;
     fileBase64?: string;
     fileName?: string;
@@ -1206,6 +1049,7 @@ app.post('/send-document', async (req: Request, res: Response) => {
     caption?: string;
     queue?: boolean;
     messageId?: string;
+    device_id?: string;
   };
 
   if (!to || !fileBase64 || !fileName || !mimetype) {
@@ -1226,74 +1070,74 @@ app.post('/send-document', async (req: Request, res: Response) => {
       fileName,
       mimetype,
       caption,
+      deviceId: device_id,
     });
 
     if (added) {
-      res.json({ success: true, queued: true, messageId: msgId });
+      res.json({ success: true, queued: true, messageId: msgId, device_id });
     } else {
       res.status(409).json({ success: false, error: 'Document already queued (duplicate)' });
     }
     return;
   }
 
-  if (!sock || !isConnected) {
-    res.status(503).json({ success: false, error: 'WhatsApp not connected' });
-    return;
-  }
+  // Send directly via device manager
+  const payload: DocumentPayload = {
+    to,
+    fileBase64,
+    fileName,
+    mimetype,
+    caption,
+  };
 
-  try {
-    const jid = normalizePhone(to);
+  const result = await deviceManager.sendDocument(device_id, payload);
 
-    // Short delay before sending document
-    await humanDelay(1000, 2000);
-
-    const result = await sock.sendMessage(jid, {
-      document: Buffer.from(fileBase64, 'base64'),
-      fileName: fileName,
-      mimetype: mimetype,
-      ...(caption ? { caption } : {}),
-    });
-
-    logger.info({ to, fileName }, 'Document sent successfully');
-    res.json({ success: true, messageId: result?.key?.id ?? null });
-  } catch (err) {
-    const error = err instanceof Error ? err.message : String(err);
-    logger.error({ err, to, fileName }, 'Failed to send document');
+  if (result.success) {
+    logger.info({ to, fileName, deviceId: device_id }, 'Document sent successfully');
+    res.json({ success: true, messageId: result.messageId, deviceId: result.deviceId });
+  } else {
+    const error = result.error || 'Failed to send document';
+    logger.error({ to, fileName, deviceId: device_id, error }, 'Failed to send document');
     res.status(500).json({ success: false, error });
   }
 });
 
-app.get('/qr', async (_req: Request, res: Response) => {
-  let dataUrl: string | null = null;
-  if (latestQr) {
-    try {
-      dataUrl = await QRCode.toDataURL(latestQr, { width: 300, margin: 2 });
-    } catch (err) {
-      logger.error({ err }, 'Failed to generate QR data URL');
-    }
+app.get('/qr', async (req: Request, res: Response) => {
+  const { device_id = 'device_1' } = req.query as { device_id?: string };
+
+  const device = deviceManager.getDevice(device_id);
+  if (!device) {
+    res.status(404).json({ success: false, error: `Device ${device_id} not found` });
+    return;
   }
+
   res.json({
-    qr: latestQr,
-    dataUrl,
-    connected: isConnected,
-    phoneNumber: connectedPhone,
+    deviceId: device.id,
+    qr: device.latestQr,
+    connected: device.connectionState === DeviceConnectionState.CONNECTED,
+    phoneNumber: device.phoneNumber,
+    isConnecting: device.isConnecting,
   });
 });
 
 app.get('/status', (_req: Request, res: Response) => {
+  const allDevices = deviceManager.getAllDevicesStatus();
+  const queueStats = messageQueue.getStats();
+
   res.json({
-    connected: isConnected,
-    phoneNumber: connectedPhone,
-    reconnectAttempt,
-    maxReconnectAttempts: MAX_RECONNECT_ATTEMPTS,
+    devices: allDevices,
+    queue: queueStats,
+    processorActive: queueProcessorActive,
   });
 });
 
 // GET /queue/status — get message queue statistics
 app.get('/queue/status', (_req: Request, res: Response) => {
   const stats = messageQueue.getStats();
+  const deviceStats = messageQueue.getAllDeviceStats();
   res.json({
     stats,
+    deviceStats: Object.fromEntries(deviceStats),
     processorActive: queueProcessorActive,
   });
 });
@@ -1319,38 +1163,26 @@ app.post('/webhook/register', (req: Request, res: Response) => {
   res.json({ success: true });
 });
 
-app.post('/logout', async (_req: Request, res: Response) => {
+app.post('/logout', async (req: Request, res: Response) => {
+  const { device_id } = req.body as { device_id?: string };
+
   try {
-    if (sock) {
-      try {
-        await sock.logout();
-      } catch (err) {
-        logger.warn({ err }, 'Logout via sock.logout() failed, attempting socket.end (non-fatal)');
-        try {
-          sock.end(undefined);
-        } catch (endErr) {
-          logger.warn({ err: endErr }, 'Socket.end() also failed during logout (non-fatal)');
-        }
-      }
-    }
-
-    isConnected = false;
-    connectedPhone = null;
-    latestQr = null;
-
-    clearDir(AUTH_STORE_DIR);
-
-    // Reset counters so the fresh connection attempt works
-    reconnectAttempt = 0;
-    authResetCount = 0;
-
-    setTimeout(() => {
-      connectToWhatsApp().catch((err) => {
-        logger.error({ err }, 'Failed to reconnect after logout');
+    if (device_id) {
+      // Logout specific device
+      await deviceManager.resetDeviceAuth(device_id);
+      await deviceManager.connectDevice(device_id).catch((err) => {
+        logger.error({ err, deviceId: device_id }, 'Failed to reconnect device after logout');
       });
-    }, 2000);
-
-    res.json({ success: true, message: 'Logged out. Scan new QR code to reconnect.' });
+      res.json({ success: true, message: `Device ${device_id} logged out. Scan new QR code to reconnect.` });
+    } else {
+      // Logout all devices
+      for (const device of deviceManager.getAllDevices()) {
+        await deviceManager.resetDeviceAuth(device.id);
+      }
+      // Reconnect all devices
+      await initializeDevices();
+      res.json({ success: true, message: 'All devices logged out. Scan new QR codes to reconnect.' });
+    }
   } catch (err) {
     const error = err instanceof Error ? err.message : String(err);
     logger.error({ err }, 'Logout failed');
@@ -1358,31 +1190,126 @@ app.post('/logout', async (_req: Request, res: Response) => {
   }
 });
 
-app.post('/restart', async (_req: Request, res: Response) => {
+app.post('/restart', async (req: Request, res: Response) => {
+  const { device_id } = req.body as { device_id?: string };
+
   try {
-    if (sock) {
-      try {
-        sock.end(undefined);
-      } catch (err) {
-        logger.warn({ err }, 'Socket.end() failed during restart (non-fatal)');
-      }
+    if (device_id) {
+      // Restart specific device
+      await deviceManager.disconnectDevice(device_id);
+      await deviceManager.connectDevice(device_id);
+      res.json({ success: true, message: `Restarting device ${device_id}...` });
+    } else {
+      // Restart all devices
+      await deviceManager.disconnectAll();
+      await initializeDevices();
+      res.json({ success: true, message: 'Restarting all devices...' });
     }
-    isConnected = false;
-    connectedPhone = null;
-    latestQr = null;
-    reconnectAttempt = 0;
-    authResetCount = 0;
-
-    setTimeout(() => {
-      connectToWhatsApp().catch((err) => {
-        logger.error({ err }, 'Failed to restart connection');
-      });
-    }, 1000);
-
-    res.json({ success: true, message: 'Restarting WhatsApp connection...' });
   } catch (err) {
     const error = err instanceof Error ? err.message : String(err);
     logger.error({ err }, 'Restart failed');
+    res.status(500).json({ success: false, error });
+  }
+});
+
+// ---------------------------------------------------------------------------
+// Device Management Endpoints
+// ---------------------------------------------------------------------------
+
+// GET /devices — list all devices with status
+app.get('/devices', (_req: Request, res: Response) => {
+  const devices = deviceManager.getAllDevicesStatus();
+  res.json({ devices });
+});
+
+// POST /devices/:id/connect — connect a specific device
+app.post('/devices/:id/connect', async (req: Request, res: Response) => {
+  const { id } = req.params;
+  const deviceId = Array.isArray(id) ? id[0] : id;
+
+  try {
+    await deviceManager.connectDevice(deviceId, true);
+    res.json({ success: true, message: `Connecting device ${deviceId}...` });
+  } catch (err) {
+    const error = err instanceof Error ? err.message : String(err);
+    logger.error({ err, deviceId }, 'Failed to connect device');
+    res.status(500).json({ success: false, error });
+  }
+});
+
+// POST /devices/:id/disconnect — disconnect a specific device
+app.post('/devices/:id/disconnect', async (req: Request, res: Response) => {
+  const { id } = req.params;
+  const deviceId = Array.isArray(id) ? id[0] : id;
+
+  try {
+    await deviceManager.disconnectDevice(deviceId);
+    res.json({ success: true, message: `Device ${deviceId} disconnected` });
+  } catch (err) {
+    const error = err instanceof Error ? err.message : String(err);
+    logger.error({ err, deviceId }, 'Failed to disconnect device');
+    res.status(500).json({ success: false, error });
+  }
+});
+
+// GET /devices/:id/qr — get QR code for a specific device
+app.get('/devices/:id/qr', async (req: Request, res: Response) => {
+  const { id } = req.params;
+  const deviceId = Array.isArray(id) ? id[0] : id;
+  const device = deviceManager.getDevice(deviceId);
+
+  if (!device) {
+    res.status(404).json({ success: false, error: `Device ${deviceId} not found` });
+    return;
+  }
+
+  res.json({
+    deviceId: device.id,
+    name: device.name,
+    qr: device.latestQr,
+    connected: device.connectionState === DeviceConnectionState.CONNECTED,
+    phoneNumber: device.phoneNumber,
+    isConnecting: device.isConnecting,
+  });
+});
+
+// GET /devices/:id/status — get status of a specific device
+app.get('/devices/:id/status', async (req: Request, res: Response) => {
+  const { id } = req.params;
+  const deviceId = Array.isArray(id) ? id[0] : id;
+  const device = deviceManager.getDevice(deviceId);
+
+  if (!device) {
+    res.status(404).json({ success: false, error: `Device ${deviceId} not found` });
+    return;
+  }
+
+  const queueStats = messageQueue.getDeviceStats(deviceId);
+
+  res.json({
+    id: device.id,
+    name: device.name,
+    phoneNumber: device.phoneNumber,
+    connectionState: device.connectionState,
+    isConnecting: device.isConnecting,
+    metrics: device.metrics,
+    lastError: device.lastError,
+    queueStats,
+  });
+});
+
+// GET /devices/:id/messages — get messages for a specific device
+app.get('/devices/:id/messages', async (req: Request, res: Response) => {
+  const { id } = req.params;
+  const deviceId = Array.isArray(id) ? id[0] : id;
+  const { status } = req.query as { status?: MessageStatus };
+
+  try {
+    const messages = messageQueue.getMessagesByDevice(deviceId, status);
+    res.json({ deviceId, messages, count: messages.length });
+  } catch (err) {
+    const error = err instanceof Error ? err.message : String(err);
+    logger.error({ err, deviceId }, 'Failed to get device messages');
     res.status(500).json({ success: false, error });
   }
 });
@@ -1412,32 +1339,8 @@ async function gracefulShutdown(signal: string): Promise<void> {
     // Clear all pending messages and their timers
     clearAllPendingMessages();
 
-    // Close WhatsApp socket
-    if (sock) {
-      try {
-        await sock.logout();
-      } catch (err) {
-        logger.warn({ err }, 'Error during logout');
-      }
-      try {
-        sock.ev.removeAllListeners('creds.update');
-        sock.ev.removeAllListeners('connection.update');
-        sock.ev.removeAllListeners('messages.upsert');
-        sock.ev.removeAllListeners('messaging-history.set');
-        sock.ev.removeAllListeners('chats.upsert');
-        sock.ev.removeAllListeners('chats.delete');
-        sock.ev.removeAllListeners('contacts.upsert');
-        sock.ev.removeAllListeners('groups.update');
-      } catch (err) {
-        logger.warn({ err }, 'Error removing socket event listeners during graceful shutdown (non-fatal)');
-      }
-      try {
-        sock.end(undefined);
-      } catch (err) {
-        logger.warn({ err }, 'Error ending socket during graceful shutdown (non-fatal)');
-      }
-      sock = null;
-    }
+    // Disconnect all devices
+    await deviceManager.disconnectAll();
 
     logger.info('Graceful shutdown completed');
   } catch (err) {
@@ -1467,11 +1370,16 @@ process.on('unhandledRejection', (reason) => {
   // Don't exit immediately, log and continue
 });
 
-// Start server and WhatsApp connection
-app.listen(PORT, () => {
+// Start server and initialize devices
+app.listen(PORT, async () => {
   logger.info(`WhatsApp service listening on port ${PORT}`);
   loadWebhookUrl();
-  connectToWhatsApp().catch((err) => {
-    logger.error({ err }, 'Failed to start WhatsApp connection');
+
+  // Initialize all devices (register only, no auto-connect)
+  await initializeDevices().catch((err) => {
+    logger.error({ err }, 'Failed to initialize devices');
   });
+
+  // Start queue processor
+  startQueueProcessor();
 });
