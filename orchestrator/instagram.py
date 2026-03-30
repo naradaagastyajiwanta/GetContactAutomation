@@ -1067,11 +1067,8 @@ def scrape_ig_posts_sync(
     handle = ig_handle.lstrip("@")
     results: list[dict] = []
     total_scanned = 0
-    phone_count = 0
-    flyer_count = 0
-
     # How many extra pages to fetch when going deeper
-    MAX_DEEPER_PAGES = 3
+    MAX_DEEPER_PAGES = 10
 
     client = _get_ig_web_client()
     try:
@@ -1135,19 +1132,22 @@ def scrape_ig_posts_sync(
                 # on images, so phone numbers can appear regardless of caption text.
                 results.append(post)
 
-            # In deeper mode: if the first page was all known posts, continue
-            # to the next page to find older unseen content.
-            # If not in deeper mode or no more pages, stop.
-            if not deeper or not next_max_id:
-                break
+            # Continue to next page as long as there is a pagination cursor.
+            # In deeper mode we stop early when all posts are already known.
+            # In initial mode we keep going until max_pages is reached.
+            if deeper and new_posts_on_page == 0:
+                break  # all posts already in DB, nothing new to add
+            if not next_max_id:
+                break  # no more pages on IG
 
-            # All posts on this page were new â€” no need to go deeper, first
-            # scrape already covers this range.
-            if new_posts_on_page == len(posts):
-                break
-
-            log.info("@%s: deeper scrape â€” fetching page %d", handle, pages_fetched + 1)
-            _time.sleep(2)  # Rate limit between pages
+            log.info("@%s: deeper scrape -- fetching page %d", handle, pages_fetched + 1)
+            # Rotate session every 3 pages to avoid rate limiting
+            if pages_fetched > 0 and pages_fetched % 3 == 0:
+                _ig_pool.rotate()
+                client.close()
+                client = _get_ig_web_client()
+                log.info("@%s: rotated to fresh IG session for page %d", handle, pages_fetched + 1)
+            _time.sleep(3)  # Longer rate limit between pages
 
     finally:
         client.close()

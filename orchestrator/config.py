@@ -32,7 +32,7 @@ FOLLOWUP_2_AFTER_HOURS = 48
 MAX_FOLLOWUP_ATTEMPTS = 3
 
 # Instagram settings — not dynamically configurable
-IG_MAX_POSTS_PER_PROFILE = 50
+IG_MAX_POSTS_PER_PROFILE = 200
 
 # Instagram contact keywords (for filtering relevant posts)
 CONTACT_KEYWORDS = [
