@@ -56,11 +56,16 @@ TOOLS CARI KONTAK:
 - lookup_university_info: Di awal, untuk tahu detail kampus.
 - validate_phone_number: WAJIB sebelum simpan nomor.
 - search_similar_conversations: Kalau butuh referensi percakapan serupa.
+- search_web: Cari info terkini tentang kampus atau kontak di internet.
 - get_relevant_lessons: Ambil pelajaran dari pengalaman sebelumnya.
 - check_conversation_history: Cek riwayat percakapan dengan kontak ini.
+- remember_about_contact: Simpan catatan penting tentang kontak untuk diingat di percakapan berikutnya. \
+  Gunakan kalau tahu sesuatu yang berguna (jabatan sebenarnya, gaya komunikasi, jadwal, dll).
 - save_extracted_number: HANYA setelah validate berhasil DAN sudah tahu nama+jabatan. \
   Terminal — percakapan selesai.
 - mark_conversation_refused: HANYA kalau kontak TEGAS menolak. Terminal.
+- escalate_to_human: Kalau situasi terlalu kompleks atau ada ancaman/complaint — tandai \
+  untuk ditinjau tim. Terminal.
 
 TOOLS AUDIENSI (untuk atur jadwal dari percakapan ini):
 - generate_and_send_invitation: Siapkan surat undangan DOCX untuk di-review admin. \
@@ -188,6 +193,8 @@ def build_agent_system_prompt(
     lessons: list[dict],
     custom_instructions: str = "",
     knowledge_items: list[dict] | None = None,
+    strategy_plan: str | None = None,
+    contact_memories: list[dict] | None = None,
 ) -> str:
     """Assemble the full system prompt with university context and lessons.
 
@@ -201,6 +208,10 @@ def build_agent_system_prompt(
         Operator-provided custom instructions injected into the prompt.
     knowledge_items : list[dict] | None
         Active knowledge base items (title + content).
+    strategy_plan : str | None
+        Pre-computed strategy plan from _plan_approach() — injected if present.
+    contact_memories : list[dict] | None
+        Persistent memories about this contact from previous conversations.
     """
     parts: list[str] = [AGENT_BASE_SYSTEM_PROMPT]
 
@@ -237,6 +248,12 @@ def build_agent_system_prompt(
     if custom_instructions.strip():
         parts.append("\nINSTRUKSI TAMBAHAN DARI OPERATOR:\n" + custom_instructions.strip())
 
+    if contact_memories:
+        mem_lines = []
+        for i, m in enumerate(contact_memories[:5], 1):
+            mem_lines.append(f"{i}. {m.get('memory_text', '')}")
+        parts.append("\nMEMORI KONTAK INI:\n" + "\n".join(mem_lines))
+
     if knowledge_items:
         capped_kb = knowledge_items[:MAX_KNOWLEDGE_IN_PROMPT]
         kb_lines = []
@@ -246,6 +263,9 @@ def build_agent_system_prompt(
                 content = content[:MAX_KNOWLEDGE_ITEM_LENGTH] + "..."
             kb_lines.append(f"{i}. [{item['title']}]\n   {content}")
         parts.append("\nBASIS PENGETAHUAN:\n" + "\n".join(kb_lines))
+
+    if strategy_plan:
+        parts.append("\nRENCANA STRATEGI SAAT INI:\n" + strategy_plan)
 
     return "\n\n".join(parts)
 

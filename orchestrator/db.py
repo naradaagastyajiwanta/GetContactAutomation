@@ -961,6 +961,34 @@ async def init_db() -> None:
         except Exception:
             pass  # Column already exists
 
+        # Migration: add embedding column to knowledge_items for semantic search
+        try:
+            await db.execute("ALTER TABLE knowledge_items ADD COLUMN embedding BLOB")
+            await db.commit()
+        except Exception:
+            pass  # Column already exists
+
+        # Migration: add embedding column to lessons for semantic search
+        try:
+            await db.execute("ALTER TABLE lessons ADD COLUMN embedding BLOB")
+            await db.commit()
+        except Exception:
+            pass  # Column already exists
+
+        # Migration: create contact_memory table for persistent per-contact notes
+        await db.executescript("""
+            CREATE TABLE IF NOT EXISTS contact_memory (
+                id              INTEGER PRIMARY KEY AUTOINCREMENT,
+                phone           TEXT NOT NULL,
+                memory_text     TEXT NOT NULL,
+                memory_type     TEXT DEFAULT 'general',
+                created_at      TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                updated_at      TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            );
+            CREATE INDEX IF NOT EXISTS idx_contact_memory_phone ON contact_memory(phone);
+        """)
+        await db.commit()
+
         # Cleanup: mark any orphaned 'running' pipeline_logs as failed (from previous crash/restart)
         await db.execute(
             "UPDATE pipeline_logs SET status='failed', summary='Stale: cleaned up after restart' WHERE status='running'"
@@ -2421,14 +2449,60 @@ async def search_conversations_for_learning(
     async with get_db() as db:
         cursor = await db.execute(
             f"""
-            SELECT c.*, u.name AS university_name, u.province
+            SELECT c.*, u.name AS university_name, u.province,
+                   ca.summary, ca.effective_strategies, ca.failure_factors,
+                   ca.contact_personality, ca.recommended_improvements
             FROM conversations c
             LEFT JOIN universities u ON u.id = c.university_id
+            LEFT JOIN conversation_analyses ca ON ca.conversation_id = c.id
             WHERE {where}
             ORDER BY c.last_message_at DESC
             LIMIT ?
             """,
             params,
+        )
+        rows = await cursor.fetchall()
+        return _rows_to_dicts(rows)
+
+
+# ---------------------------------------------------------------------------
+# Contact memory (persistent per-contact notes)
+# ---------------------------------------------------------------------------
+
+
+async def add_contact_memory(
+    phone: str,
+    memory_text: str,
+    memory_type: str = "general",
+) -> int:
+    """Store a new persistent memory note about a contact."""
+    async with get_db() as db:
+        cursor = await db.execute(
+            """
+            INSERT INTO contact_memory (phone, memory_text, memory_type, created_at, updated_at)
+            VALUES (?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+            """,
+            (phone, memory_text, memory_type),
+        )
+        await db.commit()
+        return cursor.lastrowid
+
+
+async def get_contact_memories(
+    phone: str,
+    limit: int = 10,
+) -> list[dict]:
+    """Return stored memory notes for a contact, newest first."""
+    async with get_db() as db:
+        cursor = await db.execute(
+            """
+            SELECT id, phone, memory_text, memory_type, created_at
+            FROM contact_memory
+            WHERE phone = ?
+            ORDER BY created_at DESC
+            LIMIT ?
+            """,
+            (phone, limit),
         )
         rows = await cursor.fetchall()
         return _rows_to_dicts(rows)

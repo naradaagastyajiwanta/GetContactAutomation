@@ -133,11 +133,19 @@ class ReactAgent:
             sit_tags = detect_situation_tags(message, conv["state"], conv.get("attempt_count", 0))
             knowledge_items = await db.match_knowledge_items_by_message("agent", message)
 
+            # 6c. Fetch contact memories (persistent notes about this contact)
+            contact_memories = await db.get_contact_memories(phone)
+
+            # 7a. Pre-compute strategy plan
+            strategy_plan = await self._plan_approach(message, context, history)
+
             # 7. Build system prompt (instructions)
             system_prompt = build_agent_system_prompt(
                 context, lessons,
                 custom_instructions=cfg.AGENT_CUSTOM_INSTRUCTIONS or "",
                 knowledge_items=knowledge_items,
+                strategy_plan=strategy_plan,
+                contact_memories=contact_memories,
             )
 
             # Load previous_response_id for session chaining
@@ -440,6 +448,56 @@ class ReactAgent:
             log.warning("Failed to save API call log (followup): %s", e)
 
         return response_text
+
+    async def _plan_approach(
+        self,
+        latest_message: str,
+        context,
+        history: list[dict],
+    ) -> str | None:
+        """Use a cheap GPT call to pre-compute a one-paragraph strategy plan.
+
+        This plan is injected into the system prompt so the main ReAct loop
+        starts with a clear intention rather than figuring out strategy on-the-fly.
+        Returns None on failure (non-blocking — the loop proceeds without a plan).
+        """
+        if not cfg.AGENT_PLANNING_ENABLED:
+            return None
+        try:
+            client = _get_openai()
+            # Build a compact conversation summary (last 4 messages)
+            recent = history[-4:]
+            hist_text = "\n".join(
+                f"{'Ali' if m.get('role')=='bot' else 'Kontak'}: {m.get('content','')}"
+                for m in recent
+            )
+            planning_prompt = (
+                "Kamu adalah perencana strategi percakapan WhatsApp outreach kampus.\n"
+                "Berikan 1-2 kalimat RENCANA AKSI SPESIFIK untuk pesan berikutnya berdasarkan situasi:\n\n"
+                f"Universitas: {context.university_name or 'Tidak diketahui'}\n"
+                f"Provinsi: {context.province or '-'}\n"
+                f"Percobaan ke: {context.attempt_count + 1}\n"
+                f"State: {context.current_state}\n\n"
+                f"Riwayat terakhir:\n{hist_text}\n\n"
+                f"Pesan terbaru kontak: {latest_message}\n\n"
+                "Contoh output: 'Kontak bertanya tujuan. Jawab singkat soal audiensi, "
+                "lalu minta nomor sekretariat sebagai alternatif rektor.'\n"
+                "HANYA output rencana aksinya, tanpa label atau penjelasan."
+            )
+            resp = await _api_call_with_retry(
+                lambda: client.chat.completions.create(
+                    model="gpt-4o-mini",
+                    messages=[{"role": "user", "content": planning_prompt}],
+                    max_tokens=120,
+                    temperature=0.3,
+                ),
+                label="planning",
+            )
+            plan = resp.choices[0].message.content or ""
+            return plan.strip() or None
+        except Exception as e:
+            log.debug("_plan_approach failed (non-blocking): %s", e)
+            return None
 
     async def _run_react_loop(
         self,

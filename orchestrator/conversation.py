@@ -61,6 +61,7 @@ class ConvState(str, Enum):
     NO_REPLY = "NO_REPLY"
     ABANDONED = "ABANDONED"
     UNDELIVERED = "UNDELIVERED"
+    NEEDS_REVIEW = "NEEDS_REVIEW"
 
     @classmethod
     def terminal_states(cls) -> set[str]:

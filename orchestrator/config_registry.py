@@ -219,10 +219,16 @@ CONFIG_DEFINITIONS: list[ConfigDef] = [
     ),
     ConfigDef(
         key="AGENT_MAX_TOOL_ITERATIONS",
-        type=ConfigType.INT, default=5, group=ConfigGroup.AI_AGENT,
+        type=ConfigType.INT, default=10, group=ConfigGroup.AI_AGENT,
         label="Agent Max Tool Iterations",
         description="Max ReAct loop iterations before forcing a response.",
         min_value=1, max_value=20,
+    ),
+    ConfigDef(
+        key="AGENT_PLANNING_ENABLED",
+        type=ConfigType.BOOL, default=True, group=ConfigGroup.AI_AGENT,
+        label="Agent Planning Enabled",
+        description="Pre-compute a strategy plan before the ReAct loop (uses gpt-4o-mini).",
     ),
     # --- Message Queue ---
     ConfigDef(
@@ -251,6 +257,23 @@ CONFIG_DEFINITIONS: list[ConfigDef] = [
         type=ConfigType.BOOL, default=False, group=ConfigGroup.AUDIENSI,
         label="Auto-Approve Audiensi",
         description="Automatically approve and send audiensi messages when a number is obtained (skip manual review).",
+    ),
+    ConfigDef(
+        key="AUTO_APPROVE_AUDIENSI",
+        type=ConfigType.BOOL, default=False, group=ConfigGroup.AUDIENSI,
+        label="Auto-Approve Queued Audiensi",
+        description=(
+            "Automatically approve QUEUED audiensi records after a delay. "
+            "Requires AUTO_APPROVE_DELAY_MINUTES to be set. "
+            "Disabled by default — requires explicit operator opt-in."
+        ),
+    ),
+    ConfigDef(
+        key="AUTO_APPROVE_DELAY_MINUTES",
+        type=ConfigType.INT, default=60, group=ConfigGroup.AUDIENSI,
+        label="Auto-Approve Delay (minutes)",
+        description="Minutes to wait before auto-approving a QUEUED audiensi record.",
+        min_value=5, max_value=1440,
     ),
     ConfigDef(
         key="AUDIENSI_FOLLOWUP_AFTER_HOURS",

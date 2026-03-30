@@ -107,14 +107,56 @@ async def _search_similar_conversations(arguments: dict, context: AgentContext) 
     )
     summaries = []
     for r in rows:
-        summaries.append({
+        entry: dict = {
             "university_name": r.get("university_name"),
             "province": r.get("province"),
             "state": r.get("state"),
             "attempt_count": r.get("attempt_count"),
             "messages": len(json.loads(r.get("message_history") or "[]")),
-        })
+        }
+        if r.get("summary"):
+            entry["summary"] = r["summary"]
+        if r.get("effective_strategies"):
+            try:
+                entry["effective_strategies"] = json.loads(r["effective_strategies"])
+            except (json.JSONDecodeError, TypeError):
+                entry["effective_strategies"] = r["effective_strategies"]
+        if r.get("failure_factors"):
+            try:
+                entry["failure_factors"] = json.loads(r["failure_factors"])
+            except (json.JSONDecodeError, TypeError):
+                entry["failure_factors"] = r["failure_factors"]
+        summaries.append(entry)
     return json.dumps(summaries)
+
+
+async def _search_web(arguments: dict, context: AgentContext) -> str:
+    """Search the web via DuckDuckGo for up-to-date info about a university or topic."""
+    import asyncio
+    import functools
+    from orchestrator.duckduckgo_client import search_text
+
+    query = arguments.get("query", "")
+    if not query:
+        return json.dumps({"error": "query is required"})
+
+    try:
+        loop = asyncio.get_event_loop()
+        results = await loop.run_in_executor(
+            None,
+            functools.partial(search_text, query, 4, "id-id"),
+        )
+        if not results:
+            return json.dumps({"results": [], "note": "Tidak ada hasil ditemukan."})
+        return json.dumps({
+            "results": [
+                {"title": r.get("title"), "link": r.get("link"), "snippet": r.get("snippet")}
+                for r in results
+            ]
+        })
+    except Exception as e:
+        log.warning("search_web failed: %s", e)
+        return json.dumps({"error": f"Web search failed: {e}", "results": []})
 
 
 async def _get_relevant_lessons(arguments: dict, context: AgentContext) -> str:
@@ -174,6 +216,14 @@ async def _save_extracted_number(arguments: dict, context: AgentContext) -> str:
         await db.update_secretariat_phone(context.university_id, validated)
         await db.update_university_status(context.university_id, "got_number")
 
+    # Fire-and-forget: analyse this conversation for learning
+    try:
+        import asyncio
+        from orchestrator.agent.learning import LearningSystem
+        asyncio.create_task(LearningSystem().analyze_completed_conversation(context.conversation_id))
+    except Exception as e:
+        log.debug("save_extracted_number: learning task failed to create: %s", e)
+
     # Auto-queue audiensi conversation
     try:
         from orchestrator.audiensi.auto_queue import create_audiensi_from_success
@@ -199,7 +249,67 @@ async def _mark_conversation_refused(arguments: dict, context: AgentContext) -> 
 
     await db.update_conversation_state(context.conversation_id, "REFUSED")
 
+    # Fire-and-forget: analyse this conversation for learning
+    try:
+        import asyncio
+        from orchestrator.agent.learning import LearningSystem
+        asyncio.create_task(LearningSystem().analyze_completed_conversation(context.conversation_id))
+    except Exception as e:
+        log.debug("mark_conversation_refused: learning task failed to create: %s", e)
+
     return json.dumps({"success": True, "reason": reason})
+
+
+async def _escalate_to_human(arguments: dict, context: AgentContext) -> str:
+    """TERMINAL: Flag conversation for human review when agent cannot proceed."""
+    reason = arguments.get("reason", "")
+    notes = arguments.get("notes", "")
+
+    if context.conversation_id is None:
+        return json.dumps({"success": False, "error": "No conversation_id in context"})
+
+    await db.update_conversation_state(context.conversation_id, "NEEDS_REVIEW")
+
+    # Broadcast to frontend dashboard so operators see it immediately
+    try:
+        from orchestrator.websocket import manager as ws_manager
+        await ws_manager.broadcast_type(
+            "needs_review",
+            conversation_id=context.conversation_id,
+            phone=context.contact_phone,
+            university=context.university_name,
+            reason=reason,
+            notes=notes,
+        )
+    except Exception as e:
+        log.warning("escalate_to_human: failed to broadcast: %s", e)
+
+    return json.dumps({
+        "success": True,
+        "note": (
+            "Percakapan sudah ditandai untuk ditinjau oleh tim kami. "
+            "Sampaikan ke kontak bahwa kamu akan melaporkan ke tim dan akan ada yang follow-up segera."
+        ),
+    })
+
+
+async def _remember_about_contact(arguments: dict, context: AgentContext) -> str:
+    """Store a persistent memory note about this contact for future conversations."""
+    memory_text = arguments.get("memory_text", "").strip()
+    memory_type = arguments.get("memory_type", "general")
+
+    if not memory_text:
+        return json.dumps({"success": False, "error": "memory_text is required"})
+
+    if not context.contact_phone:
+        return json.dumps({"success": False, "error": "No contact_phone in context"})
+
+    await db.add_contact_memory(context.contact_phone, memory_text, memory_type)
+
+    return json.dumps({
+        "success": True,
+        "note": "Catatan tersimpan dan akan diingat di percakapan berikutnya.",
+    })
 
 
 # ---------------------------------------------------------------------------
@@ -255,6 +365,25 @@ _SCHEMA_SEARCH_SIMILAR_CONVERSATIONS = {
             },
         },
         "required": [],
+    },
+}
+
+_SCHEMA_SEARCH_WEB = {
+    "type": "function",
+    "name": "search_web",
+    "description": (
+        "Search the internet (DuckDuckGo) for up-to-date info about a university, "
+        "contact, or any topic. Useful when local DB has no info about a campus."
+    ),
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "query": {
+                "type": "string",
+                "description": "Search query, e.g. 'Universitas Brawijaya sekretariat rektor kontak'.",
+            },
+        },
+        "required": ["query"],
     },
 }
 
@@ -326,6 +455,59 @@ _SCHEMA_MARK_CONVERSATION_REFUSED = {
             },
         },
         "required": [],
+    },
+}
+
+_SCHEMA_ESCALATE_TO_HUMAN = {
+    "type": "function",
+    "name": "escalate_to_human",
+    "description": (
+        "TERMINAL: Flag conversation for human operator review. "
+        "Use this when the situation is too complex (e.g. complaint, legal threat, unusual request) "
+        "or you cannot determine the right next action. Sets state to NEEDS_REVIEW."
+    ),
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "reason": {
+                "type": "string",
+                "description": "Short reason why this needs human review.",
+            },
+            "notes": {
+                "type": "string",
+                "description": "Any additional context or suggested next steps for the operator.",
+            },
+        },
+        "required": ["reason"],
+    },
+}
+
+_SCHEMA_REMEMBER_ABOUT_CONTACT = {
+    "type": "function",
+    "name": "remember_about_contact",
+    "description": (
+        "Store a persistent note about this contact that will be remembered in future conversations. "
+        "Use this when learning something important: the contact's role, communication style, "
+        "schedule preferences, or any relevant detail."
+    ),
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "memory_text": {
+                "type": "string",
+                "description": (
+                    "What to remember about this contact. Be specific. "
+                    "Example: 'Kontak ini adalah asisten rektor, lebih responsif di pagi hari, "
+                    "dan prefer dihubungi lewat sekretariat terlebih dahulu.'"
+                ),
+            },
+            "memory_type": {
+                "type": "string",
+                "description": "Category of memory: 'general', 'preference', 'role', 'schedule'.",
+                "default": "general",
+            },
+        },
+        "required": ["memory_text"],
     },
 }
 
@@ -514,6 +696,15 @@ async def _confirm_and_send_zoom(arguments: dict, context: AgentContext) -> str:
     if context.conversation_id:
         await db.update_conversation_state(context.conversation_id, "GOT_NUMBER")
 
+    # Fire-and-forget: analyse this conversation for learning
+    try:
+        import asyncio
+        from orchestrator.agent.learning import LearningSystem
+        if context.conversation_id:
+            asyncio.create_task(LearningSystem().analyze_completed_conversation(context.conversation_id))
+    except Exception as e:
+        log.debug("confirm_and_send_zoom: learning task failed to create: %s", e)
+
     return json.dumps({
         "success": True,
         "zoom_link": zoom_link,
@@ -598,10 +789,13 @@ TOOL_SCHEMAS: list[dict] = [
     _SCHEMA_LOOKUP_UNIVERSITY_INFO,
     _SCHEMA_VALIDATE_PHONE_NUMBER,
     _SCHEMA_SEARCH_SIMILAR_CONVERSATIONS,
+    _SCHEMA_SEARCH_WEB,
     _SCHEMA_GET_RELEVANT_LESSONS,
     _SCHEMA_CHECK_CONVERSATION_HISTORY,
+    _SCHEMA_REMEMBER_ABOUT_CONTACT,
     _SCHEMA_SAVE_EXTRACTED_NUMBER,
     _SCHEMA_MARK_CONVERSATION_REFUSED,
+    _SCHEMA_ESCALATE_TO_HUMAN,
     # Audiensi tools
     _SCHEMA_GENERATE_AND_SEND_INVITATION,
     _SCHEMA_PROPOSE_MEETING_TIMES,
@@ -612,14 +806,22 @@ TOOL_IMPLEMENTATIONS: dict[str, Callable[..., Awaitable[str]]] = {
     "lookup_university_info": _lookup_university_info,
     "validate_phone_number": _validate_phone_number,
     "search_similar_conversations": _search_similar_conversations,
+    "search_web": _search_web,
     "get_relevant_lessons": _get_relevant_lessons,
     "check_conversation_history": _check_conversation_history,
+    "remember_about_contact": _remember_about_contact,
     "save_extracted_number": _save_extracted_number,
     "mark_conversation_refused": _mark_conversation_refused,
+    "escalate_to_human": _escalate_to_human,
     # Audiensi tools
     "generate_and_send_invitation": _generate_and_send_invitation,
     "propose_meeting_times": _propose_meeting_times,
     "confirm_and_send_zoom": _confirm_and_send_zoom,
 }
 
-TERMINAL_TOOLS: set[str] = {"save_extracted_number", "mark_conversation_refused", "confirm_and_send_zoom"}
+TERMINAL_TOOLS: set[str] = {
+    "save_extracted_number",
+    "mark_conversation_refused",
+    "confirm_and_send_zoom",
+    "escalate_to_human",
+}

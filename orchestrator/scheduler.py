@@ -692,6 +692,78 @@ async def run_learning_reflection():
         log.error("Learning reflection failed: %s", e)
 
 
+async def run_build_missing_embeddings():
+    """Build semantic embeddings for un-embedded knowledge_items and lessons."""
+    if not cfg.LEARNING_ENABLED:
+        return
+    try:
+        from orchestrator.agent.embeddings import build_missing_embeddings
+        result = await build_missing_embeddings()
+        if result["knowledge_items"] or result["lessons"]:
+            log.info("Embeddings built: %s", result)
+    except Exception as e:
+        log.error("build_missing_embeddings job failed: %s", e)
+
+
+async def auto_approve_queued_audiensi():
+    """Auto-approve QUEUED audiensi records that have been waiting long enough."""
+    if not cfg.get("AUTO_APPROVE_AUDIENSI", False):
+        return
+    if not cfg.AUDIENSI_ENABLED:
+        return
+
+    delay_minutes = cfg.get("AUTO_APPROVE_DELAY_MINUTES", 60)
+    cutoff = datetime.now(timezone.utc) - timedelta(minutes=delay_minutes)
+
+    try:
+        from orchestrator.db import get_db
+        from orchestrator.audiensi.react_agent import AudiensiReactAgent
+
+        async with get_db() as db:
+            cursor = await db.execute(
+                """
+                SELECT id, contact_phone, university_id, initial_message_draft
+                FROM audiensi_conversations
+                WHERE state = 'QUEUED'
+                  AND created_at <= ?
+                LIMIT 10
+                """,
+                (cutoff.isoformat(),),
+            )
+            rows = await cursor.fetchall()
+
+        if not rows:
+            return
+
+        log.info("Auto-approve: %d queued audiensi ready for approval", len(rows))
+        for row in rows:
+            aud_id = row[0]
+            phone = row[1]
+            draft = row[3]
+            try:
+                from orchestrator.db import update_audiensi_state
+                await update_audiensi_state(aud_id, "APPROVED")
+
+                # Send initial message if a draft exists
+                if draft:
+                    await message_queue.enqueue_send(phone, draft)
+                    await update_audiensi_state(aud_id, "INITIAL_SENT")
+                    log.info("Auto-approved audiensi %d → INITIAL_SENT", aud_id)
+                else:
+                    log.info("Auto-approved audiensi %d → APPROVED (no draft)", aud_id)
+
+                await ws_manager.broadcast_type(
+                    "audiensi_auto_approved",
+                    audiensi_id=aud_id,
+                    phone=phone,
+                )
+            except Exception as e:
+                log.error("Auto-approve failed for audiensi %d: %s", aud_id, e)
+
+    except Exception as e:
+        log.error("auto_approve_queued_audiensi failed: %s", e)
+
+
 def _outreach_hour_range() -> str:
     """Build the cron hour range string from current cfg values."""
     return f"{cfg.OUTREACH_START_HOUR}-{cfg.OUTREACH_END_HOUR - 1}"
