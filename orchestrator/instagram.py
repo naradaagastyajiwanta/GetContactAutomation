@@ -1131,21 +1131,9 @@ def scrape_ig_posts_sync(
                     continue
                 new_posts_on_page += 1
 
-                cls = _classify_post(post)
-                if cls == "has_phone":
-                    post["source"] = "caption_phone"
-                    results.append(post)
-                    phone_count += 1
-                    if phone_count >= _ENOUGH_PHONE_RESULTS:
-                        log.info("@%s: early stop â€” %d phone posts found", handle, phone_count)
-                        break
-                elif cls == "likely_flyer":
-                    post["source"] = "flyer"
-                    results.append(post)
-                    flyer_count += 1
-
-            if phone_count >= _ENOUGH_PHONE_RESULTS:
-                break
+                # Save ALL posts -- Agent 3 (phone extraction) uses GPT-4o vision OCR
+                # on images, so phone numbers can appear regardless of caption text.
+                results.append(post)
 
             # In deeper mode: if the first page was all known posts, continue
             # to the next page to find older unseen content.
@@ -1166,10 +1154,8 @@ def scrape_ig_posts_sync(
 
     bio_found = any(r.get("source") in ("bio", "bio_link") for r in results)
     log.info(
-        "@%s: %d posts scanned (%d pages) â†’ %s in bio, %d with phone in caption, %d likely flyers",
-        handle, total_scanned, pages_fetched,
-        "YES" if bio_found else "no",
-        phone_count, flyer_count,
+        "@%s: %d posts scanned (%d pages) → %d saved",
+        handle, total_scanned, pages_fetched, len(results),
     )
     return results
 
