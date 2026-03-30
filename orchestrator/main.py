@@ -3959,7 +3959,7 @@ async def create_email_campaign(request: EmailBlastCampaignCreate):
         template=request.template_message,
         from_email=request.from_email or "sekretariat@asosiasi.ai",
         from_name=request.from_name or "Sekretariat Asosiasi AI",
-        delay_ms=request.delay_between_ms or 8000
+        delay_ms=request.delay_between_ms or 20_000
     )
     return {"success": True, "campaign_id": campaign_id}
 
