@@ -2227,11 +2227,25 @@ async def search_related_accounts_via_search(university_name: str) -> list[dict]
     seen_handles: set[str] = set()
 
     # ------------- Primary: DuckDuckGo (free) -------------
+    # Circuit breaker: if DDG fails 3 consecutive queries, bail to Serper early.
+    _ddg_consecutive_failures = 0
+    _DDG_CIRCUIT_BREAK = 3
+
     for rel_type, prefixes in _TYPE_QUERIES.items():
+        if _ddg_consecutive_failures >= _DDG_CIRCUIT_BREAK:
+            log.warning(
+                "[BEM-DDG] Circuit breaker triggered (%d consecutive failures) — bailing to Serper",
+                _ddg_consecutive_failures,
+            )
+            break
         for prefix in prefixes[:1]:  # 1 prefix per type to limit queries
             ddg_query = f'site:instagram.com "{prefix} {acronym}"'
             try:
                 results = await duckduckgo_client.async_search_text(ddg_query, max_results=5)
+                if results:
+                    _ddg_consecutive_failures = 0  # reset on success
+                else:
+                    _ddg_consecutive_failures += 1
                 for result in results:
                     handle = _extract_ig_handle(result.get("link", ""))
                     if not handle or handle in seen_handles:
@@ -2243,10 +2257,12 @@ async def search_related_accounts_via_search(university_name: str) -> list[dict]
                         "is_verified": False,
                     })
             except Exception as e:
+                _ddg_consecutive_failures += 1
                 log.warning("[BEM-DDG] Query '%s' failed: %s", ddg_query, e)
 
-    # ------------- Fallback: Serper (if configured and DDG found nothing) -------------
-    if not candidate_users and cfg.SERPER_API_KEY:
+    # ------------- Fallback: Serper (if configured and DDG found nothing or circuit broke) -------------
+    ddg_incomplete = _ddg_consecutive_failures >= _DDG_CIRCUIT_BREAK
+    if (not candidate_users or ddg_incomplete) and cfg.SERPER_API_KEY:
         consecutive_errors = 0
         async with httpx.AsyncClient(timeout=15) as client:
             for rel_type, prefixes in _TYPE_QUERIES.items():
@@ -2379,76 +2395,97 @@ def get_ig_following(handle: str, max_results: int = 200) -> list[dict]:
     """Fetch the following list of an IG account via Web API.
 
     Returns list of: {"username": str, "full_name": str, "is_verified": bool}
-    Sync function â€” call from executor in async context.
+    Sync function -- call from executor in async context.
+
+    Retries across all available sessions: when a session returns 401 the
+    pool auto-rotates to the next one; we then create a fresh client with
+    the new session and try again.
     """
     if not _ig_pool.get_current_session_id():
         return []
 
-    client = _get_ig_web_client()
-    try:
-        # Step 1: Get user_id
-        info = _ig_web_get_user_info(client, handle)
-        if not info:
-            log.warning("[BEM] Could not get user_id for @%s", handle)
-            return []
+    # Try every available session before giving up.
+    total_sessions = max(_ig_pool.get_status().get("total", 1), 1)
 
-        user_id = info["user_id"]
+    for attempt in range(total_sessions):
+        client = _get_ig_web_client()  # picks current (possibly rotated) session
+        try:
+            # Step 1: Get user_id -- if 401, _check_ig_response rotates pool
+            info = _ig_web_get_user_info(client, handle)
+            if not info:
+                log.warning(
+                    "[BEM] Could not get user_id for @%s (attempt %d/%d), trying next session",
+                    handle, attempt + 1, total_sessions,
+                )
+                client.close()
+                continue  # pool already rotated; loop creates fresh client
 
-        # Step 2: Paginate through following list
-        following: list[dict] = []
-        max_id = ""
-        page = 0
-        max_pages = max_results // 50 + 1  # ~50 per page
+            user_id = info["user_id"]
 
-        while page < max_pages and len(following) < max_results:
-            _time.sleep(2)  # Rate limit
-            params = {"count": 50}
-            if max_id:
-                params["max_id"] = max_id
+            # Step 2: Paginate through following list
+            following: list[dict] = []
+            max_id = ""
+            page = 0
+            max_pages = max_results // 50 + 1  # ~50 per page
+            session_failed = False
 
-            resp = client.get(
-                f"https://www.instagram.com/api/v1/friendships/{user_id}/following/",
-                params=params,
-            )
-            if not _check_ig_response(resp):
-                break
-            if resp.status_code != 200:
-                log.warning("[BEM] Following API returned %d for @%s", resp.status_code, handle)
-                break
+            while page < max_pages and len(following) < max_results:
+                _time.sleep(2)  # Rate limit
+                params = {"count": 50}
+                if max_id:
+                    params["max_id"] = max_id
 
-            try:
-                data = resp.json()
-            except (ValueError, KeyError):
-                break
+                resp = client.get(
+                    f"https://www.instagram.com/api/v1/friendships/{user_id}/following/",
+                    params=params,
+                )
+                if not _check_ig_response(resp):
+                    # Session went bad mid-pagination; retry with next session.
+                    session_failed = True
+                    break
+                if resp.status_code != 200:
+                    log.warning("[BEM] Following API returned %d for @%s", resp.status_code, handle)
+                    break
 
-            users = data.get("users", [])
-            if not users:
-                break
+                try:
+                    data = resp.json()
+                except (ValueError, KeyError):
+                    break
 
-            for u in users:
-                uname = u.get("username", "").lower()
-                if uname in _NON_INSTITUTION_HANDLES:
-                    continue
-                following.append({
-                    "username": u.get("username", ""),
-                    "full_name": u.get("full_name", ""),
-                    "is_verified": u.get("is_verified", False),
-                })
+                users = data.get("users", [])
+                if not users:
+                    break
 
-            # Check for next page
-            if not data.get("next_max_id"):
-                break
-            max_id = data["next_max_id"]
-            page += 1
+                for u in users:
+                    uname = u.get("username", "").lower()
+                    if uname in _NON_INSTITUTION_HANDLES:
+                        continue
+                    following.append({
+                        "username": u.get("username", ""),
+                        "full_name": u.get("full_name", ""),
+                        "is_verified": u.get("is_verified", False),
+                    })
 
-        log.info("[BEM] Fetched %d following for @%s", len(following), handle)
-        return following
+                # Check for next page
+                if not data.get("next_max_id"):
+                    break
+                max_id = data["next_max_id"]
+                page += 1
 
-    except Exception as e:
-        log.error("[BEM] Error fetching following for @%s: %s", handle, e)
-        return []
-    finally:
-        client.close()
+            if session_failed:
+                client.close()
+                continue  # try next session
+
+            log.info("[BEM] Fetched %d following for @%s", len(following), handle)
+            return following
+
+        except Exception as e:
+            log.error("[BEM] Error fetching following for @%s (attempt %d/%d): %s", handle, attempt + 1, total_sessions, e)
+        finally:
+            client.close()
+
+    log.warning("[BEM] All %d session(s) exhausted for @%s -- returning empty following", total_sessions, handle)
+    return []
 
 
 def find_related_accounts_from_following(
@@ -2519,17 +2556,6 @@ def find_related_accounts_from_following(
         if username in _NON_INSTITUTION_HANDLES:
             continue
 
-        # Hard filter: account must contain at least one university identifier
-        # (acronym, location word, or unique name word) to be considered related.
-        # This prevents generic national accounts (e.g. @bem_indonesia) from matching.
-        has_uni_marker = (
-            (len(uni_initials) >= 3 and uni_initials in combined)
-            or (location_word and len(location_word) > 2 and location_word in combined)
-            or any(w in combined for w in unique_words)
-        )
-        if not has_uni_marker:
-            continue
-
         # â”€â”€ Try to classify by handle keywords â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
         matched_type = None
         for keywords, rel_type in _RELATION_KEYWORDS:
@@ -2595,6 +2621,174 @@ def find_related_accounts_from_following(
         [(r["handle"], r["relation_type"], r["confidence"]) for r in results[:10]],
     )
     return results
+
+
+def fetch_bios_for_candidates(candidates: list[dict]) -> list[dict]:
+    """Enrich each candidate dict with a ``bio`` field fetched from IG.
+
+    Makes one profile request per candidate (with a short delay between
+    requests to avoid rate-limiting).  If a profile fetch fails for any
+    reason the candidate is kept with ``bio=""`` so the LLM step can still
+    run without the information.
+
+    Returns a new list with the same candidates augmented by ``bio``.
+    Sync function — call from executor in async context.
+    """
+    if not candidates:
+        return candidates
+
+    if not _ig_pool.get_current_session_id():
+        log.debug("[BEM-Bio] No IG session available, skipping bio fetch")
+        return [{**c, "bio": ""} for c in candidates]
+
+    client = _get_ig_web_client()
+    enriched: list[dict] = []
+    try:
+        for c in candidates:
+            handle = c.get("handle", "")
+            bio = ""
+            if handle:
+                try:
+                    profile = _ig_web_fetch_profile(client, handle)
+                    if profile:
+                        bio = profile.get("bio", "") or ""
+                        # Also update full_name if it was empty
+                        if not c.get("full_name") and profile.get("full_name"):
+                            c = {**c, "full_name": profile["full_name"]}
+                except Exception as e:
+                    log.debug("[BEM-Bio] Failed to fetch bio for @%s: %s", handle, e)
+                _time.sleep(1)  # polite delay between profile fetches
+
+            enriched.append({**c, "bio": bio})
+    finally:
+        client.close()
+
+    fetched = sum(1 for c in enriched if c.get("bio"))
+    log.info("[BEM-Bio] Fetched bio for %d/%d candidates", fetched, len(enriched))
+    return enriched
+
+
+async def verify_related_accounts_with_llm(
+    candidates: list[dict],
+    university_name: str,
+    ig_handle: str = "",
+) -> list[dict]:
+    """Use GPT-4o-mini to verify whether each candidate IG account is truly
+    related to the given university.
+
+    Accepts the output of find_related_accounts_from_following() and returns
+    the same format but with LLM-verified entries only (is_related=True) and
+    confidence scores updated from the LLM response.
+
+    Single batch API call per university to minimise latency and cost.
+
+    Args:
+        ig_handle: The official IG handle of the university (e.g. "unmeka_jogja").
+            Providing this greatly helps the LLM recognise abbreviation-based
+            handles (e.g. "bem.unmeka" obviously shares the stem "unmeka").
+    """
+    if not candidates:
+        return []
+
+    client = _get_openai()
+
+    # Build university acronym for the prompt
+    uni_words = university_name.strip().split()
+    acronym = "".join(w[0] for w in uni_words).upper()
+
+    # Prepare candidate list for the prompt — include bio when available
+    def _fmt_candidate(i: int, c: dict) -> str:
+        bio = (c.get("bio") or "").strip()
+        bio_part = f' | bio: "{bio[:120]}"' if bio else ""
+        return (
+            f'{i+1}. @{c["handle"]}'
+            f' | full_name: "{c["full_name"]}"'
+            f'{bio_part}'
+            f' | keyword_type: {c["relation_type"]}'
+        )
+
+    candidate_lines = "\n".join(_fmt_candidate(i, c) for i, c in enumerate(candidates))
+
+    # Add official handle hint when available — critical for abbreviation matching
+    official_handle_line = (
+        f"Official university IG handle: @{ig_handle}\n"
+        if ig_handle else ""
+    )
+
+    system_prompt = (
+        "You are an expert at identifying Indonesian university Instagram accounts. "
+        "Given a university name and a list of candidate Instagram accounts, "
+        "determine whether each account truly belongs to that university. "
+        "Pay close attention to shared abbreviations/stems between the official handle and candidates. "
+        "Respond ONLY with valid JSON — no markdown, no explanation."
+    )
+
+    user_prompt = f"""University: {university_name} (acronym: {acronym})
+{official_handle_line}
+Candidate accounts:
+{candidate_lines}
+
+For each candidate, return:
+- is_related: true/false — is this account genuinely affiliated with {university_name}?
+- relation_type: one of "fakultas", "bem", "senat", "humas", "pmb", "kemahasiswaan", "alumni", "lppm"
+- confidence: 0.0–1.0 — how confident are you?
+
+Return a JSON array (same order as input):
+[
+  {{"index": 1, "is_related": true, "relation_type": "bem", "confidence": 0.95}},
+  ...
+]"""
+
+    try:
+        response = await client.chat.completions.create(
+            model="gpt-4o-mini",
+            messages=[
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_prompt},
+            ],
+            temperature=0,
+            max_tokens=800,
+            response_format={"type": "json_object"},
+        )
+        raw = response.choices[0].message.content or ""
+        data = json.loads(raw)
+
+        # GPT may return {"results": [...]} or just [...]
+        if isinstance(data, dict):
+            items = data.get("results") or data.get("candidates") or list(data.values())[0]
+        else:
+            items = data
+
+        verified: list[dict] = []
+        for item in items:
+            idx = item.get("index", 0) - 1
+            if not (0 <= idx < len(candidates)):
+                continue
+            if not item.get("is_related", False):
+                continue
+            original = candidates[idx]
+            llm_confidence = float(item.get("confidence", original["confidence"]))
+            verified.append({
+                "handle": original["handle"],
+                "relation_type": item.get("relation_type", original["relation_type"]),
+                "confidence": round(min(llm_confidence, 1.0), 3),
+                "full_name": original["full_name"],
+            })
+
+        log.info(
+            "[BEM-LLM] %s: %d/%d candidates verified by LLM",
+            university_name, len(verified), len(candidates),
+        )
+        return verified
+
+    except Exception as e:
+        log.warning(
+            "[BEM-LLM] LLM verification failed for %s (%s), falling back to keyword results",
+            university_name, e,
+        )
+        # Graceful fallback: return original candidates if LLM fails
+        return candidates
+
 
 # Backward-compatible aliases
 search_related_accounts_via_serper = search_related_accounts_via_search

@@ -27,7 +27,9 @@ from orchestrator.db import (
 from orchestrator.instagram import (
     get_ig_following,
     find_related_accounts_from_following,
+    fetch_bios_for_candidates,
     search_related_accounts_via_search,
+    verify_related_accounts_with_llm,
 )
 
 # Minimum confidence to save a related IG account.
@@ -71,7 +73,10 @@ async def _discover_bem_for_uni(uni: dict, loop) -> dict:
 
     if not following:
         log.info("[Agent4-BEM] Empty following for @%s (%s), trying web search fallback", ig_handle, uni["name"])
-        related = await search_related_accounts_via_search(uni["name"])
+        keyword_matches = await search_related_accounts_via_search(uni["name"])
+        # Enrich candidates with bio before LLM
+        keyword_matches = await loop.run_in_executor(None, fetch_bios_for_candidates, keyword_matches)
+        related = await verify_related_accounts_with_llm(keyword_matches, uni["name"], ig_handle)
 
         bem_found = False
         for acct in related:
@@ -105,15 +110,24 @@ async def _discover_bem_for_uni(uni: dict, loop) -> dict:
 
     log.info("[Agent4-BEM] @%s follows %d accounts", ig_handle, len(following))
 
-    # Step 2: Classify followed accounts
-    related = find_related_accounts_from_following(following, uni["name"])
+    # Step 2: Classify followed accounts via keyword matching
+    keyword_matches = find_related_accounts_from_following(following, uni["name"])
 
-    if not related:
+    if not keyword_matches:
         log.info("[Agent4-BEM] No related accounts found in @%s following for %s",
                  ig_handle, uni["name"])
         return await _update_status_and_return(result, "not_found")
 
-    # Step 3: Save discovered accounts
+    # Step 3: LLM verification — filter to only truly related accounts
+    # Enrich candidates with bio before sending to LLM
+    keyword_matches = await loop.run_in_executor(None, fetch_bios_for_candidates, keyword_matches)
+    related = await verify_related_accounts_with_llm(keyword_matches, uni["name"], ig_handle)
+
+    if not related:
+        log.info("[Agent4-BEM] LLM filtered out all candidates for %s", uni["name"])
+        return await _update_status_and_return(result, "not_found")
+
+    # Step 4: Save verified accounts
     bem_found = False
     for acct in related:
         if acct["confidence"] < _MIN_CONFIDENCE:
@@ -142,12 +156,16 @@ async def _discover_bem_for_uni(uni: dict, loop) -> dict:
                 acct["handle"], uni["name"], acct["confidence"],
             )
 
-    status = "discovered" if result["related_igs_added"] > 0 else "not_found"
+    # Status = discovered if we found a BEM handle OR any related accounts
+    # (even if add_related_ig returned False due to duplicate records)
+    is_discovered = bool(result["bem_handle"] or result["related_accounts"] or result["related_igs_added"] > 0)
+    status = "discovered" if is_discovered else "not_found"
     await _update_status_and_return(result, status)
 
     log.info(
-        "[Agent4-BEM] %s: %d related IGs saved (BEM: %s)",
+        "[Agent4-BEM] %s: %d new related IGs saved, %d total found (BEM: %s)",
         uni["name"], result["related_igs_added"],
+        len(result["related_accounts"]) + (1 if result["bem_handle"] and result["related_igs_added"] == 0 else 0),
         result["bem_handle"] or "none",
     )
     return result
@@ -189,7 +207,7 @@ async def run_bem_discovery_batch(limit: int = 30) -> dict:
         try:
             detail = await _discover_bem_for_uni(uni, loop)
             details.append(detail)
-            if detail["related_igs_added"] > 0:
+            if detail["related_igs_added"] > 0 or detail["bem_handle"]:
                 found += 1
             last_processed_id = uni["id"]
             await asyncio.sleep(cfg.IG_REQUEST_DELAY_SECONDS)
@@ -228,7 +246,7 @@ async def run_bem_discovery_for_universities(university_ids: list[int]) -> dict:
         try:
             detail = await _discover_bem_for_uni(uni, loop)
             details.append(detail)
-            if detail["related_igs_added"] > 0:
+            if detail["related_igs_added"] > 0 or detail["bem_handle"]:
                 found += 1
             await asyncio.sleep(cfg.IG_REQUEST_DELAY_SECONDS)
         except Exception as e:

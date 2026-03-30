@@ -32,6 +32,11 @@ for _noisy in ("primp", "httpx", "httpcore", "ddgs", "ddgs.ddgs"):
 # SOCKS5 proxy to bypass ISP DPI blocking (e.g. Cloudflare WARP)
 _DDG_PROXY: str | None = os.environ.get("DDG_PROXY")
 
+# Backends tried in order on ConnectError — each uses a different DDG endpoint.
+# html → html.duckduckgo.com, lite → lite.duckduckgo.com, api → duckduckgo.com/d.js
+# Any one may fail intermittently; rotating avoids the block without waiting.
+_DDG_BACKEND_ROTATION = ["html", "lite", "api"]
+
 # Backends for the ddgs metasearch library
 # Include 'duckduckgo' because site: queries work better there,
 # even though the engine fails sometimes through the proxy.
@@ -92,41 +97,60 @@ def search_text(
 
     _rate_limit_wait()
 
-    try:
-        with DDGS(proxy=_DDG_PROXY, timeout=10) as ddgs:
-            raw = list(ddgs.text(query, region=region, max_results=max_results, backend=_DDG_BACKENDS))
-        if not raw:
-            raise Exception("No results found.")
+    last_exc: Exception | None = None
 
-        _ddg_status["ok"] = True
-        _ddg_status["error"] = None
+    for backend in _DDG_BACKEND_ROTATION:
+        try:
+            with DDGS(proxy=_DDG_PROXY, timeout=10) as ddgs:
+                raw = list(ddgs.text(query, region=region, max_results=max_results, backend=backend))
 
-        results = []
-        for item in raw:
-            results.append({
-                "title": item.get("title", ""),
-                "link": item.get("href", ""),
-                "snippet": item.get("body", ""),
-            })
+            if not raw:
+                raise Exception("No results found.")
 
-        log.debug("[DDG] '%s' → %d results", query[:80], len(results))
-        return results
+            _ddg_status["ok"] = True
+            _ddg_status["error"] = None
+            _last_query_time = _time.monotonic()
 
-    except Exception as e:
-        err_str = str(e).lower()
-        if "ratelimit" in err_str or "429" in err_str:
-            _ddg_status["ok"] = False
-            _ddg_status["error"] = "rate_limited"
-            log.warning("[DDG] Rate limited on query '%s': %s", query[:60], e)
-            # Back off with exponential backoff and retry up to 2 times
-            for backoff_attempt in range(3):
-                wait_time = 15 * (2 ** backoff_attempt)
-                log.info(f"[DDG] Rate limit backoff: waiting {wait_time}s before retry...")
-                _time.sleep(wait_time)
-                try:
-                    from ddgs import DDGS as _DDGS2
-                    with _DDGS2(proxy=_DDG_PROXY, timeout=10) as ddgs:
-                        raw = list(ddgs.text(query, region=region, max_results=max_results, backend=_DDG_BACKENDS))
+            results = [
+                {
+                    "title": item.get("title", ""),
+                    "link": item.get("href", ""),
+                    "snippet": item.get("body", ""),
+                }
+                for item in raw
+            ]
+            log.debug("[DDG] '%s' → %d results (backend=%s)", query[:80], len(results), backend)
+            return results
+
+        except Exception as e:
+            last_exc = e
+            err_str = str(e).lower()
+
+            is_connect_error = "connecterror" in err_str or (
+                "connect" in err_str and "error" in err_str and "timeout" not in err_str
+            )
+
+            if is_connect_error:
+                # This backend's endpoint is blocked right now — try next backend immediately
+                log.debug("[DDG] ConnectError on backend=%s for '%s' — trying next backend", backend, query[:60])
+                continue
+
+            # Non-connect error (rate-limit, timeout, no results) — wait then retry same backend
+            if "ratelimit" in err_str or "429" in err_str:
+                wait = 15
+                _ddg_status["ok"] = False
+                _ddg_status["error"] = "rate_limited"
+            else:
+                wait = 3
+                _ddg_status["error"] = err_str[:100]
+
+            log.warning("[DDG] Query '%s' failed (backend=%s): %s — retrying in %ds", query[:60], backend, e, wait)
+            _time.sleep(wait)
+            # Retry the same backend once for non-connect errors
+            try:
+                with DDGS(proxy=_DDG_PROXY, timeout=10) as ddgs2:
+                    raw = list(ddgs2.text(query, region=region, max_results=max_results, backend=backend))
+                if raw:
                     _ddg_status["ok"] = True
                     _ddg_status["error"] = None
                     _last_query_time = _time.monotonic()
@@ -134,32 +158,15 @@ def search_text(
                         {"title": r.get("title", ""), "link": r.get("href", ""), "snippet": r.get("body", "")}
                         for r in raw
                     ]
-                except Exception as e2:
-                    log.warning(f"[DDG] Rate limit retry {backoff_attempt + 1} also failed: {e2}")
-                    continue
-            return []
-        elif "timeout" in err_str or "timed out" in err_str:
-            _ddg_status["error"] = "timeout"
-            log.warning("[DDG] Timeout for '%s', retrying after 5s...", query[:60])
-            _time.sleep(5)
-            try:
-                with DDGS(proxy=_DDG_PROXY, timeout=10) as ddgs2:
-                    raw = list(ddgs2.text(query, region=region, max_results=max_results, backend=_DDG_BACKENDS))
-                _ddg_status["ok"] = True
-                _ddg_status["error"] = None
-                _last_query_time = _time.monotonic()
-                return [
-                    {"title": r.get("title", ""), "link": r.get("href", ""), "snippet": r.get("body", "")}
-                    for r in raw
-                ]
-            except Exception as e2:
-                log.warning("[DDG] Timeout retry also failed: %s", e2)
-                return []
-        else:
-            _ddg_status["ok"] = False
-            _ddg_status["error"] = str(e)[:200]
-            log.warning("[DDG] Search failed for '%s': %s", query[:60], e)
-            return []
+            except Exception:
+                pass
+            # Still failed — try next backend
+            continue
+
+    _ddg_status["ok"] = False
+    _ddg_status["error"] = str(last_exc)[:200] if last_exc else "all_backends_failed"
+    log.warning("[DDG] Search failed for '%s' — all backends exhausted: %s", query[:60], last_exc)
+    return []
 
 
 async def async_search_text(
