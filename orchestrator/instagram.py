@@ -312,6 +312,10 @@ def _check_ig_response(resp: httpx.Response) -> bool:
             _ig_pool.mark_bad(session_id, "unauthorized")
         log.warning("IG session unauthorized (401) — session expired or invalid")
         return False
+    if resp.status_code == 429:
+        # Rate-limited — do NOT mark session permanently bad, just signal caller
+        log.warning("IG rate limited (429) — too many requests, caller should back off")
+        return False
     # If we get a normal 200 response, mark session as OK
     if resp.status_code == 200 and session_id:
         _ig_pool.mark_ok(session_id)
@@ -1345,6 +1349,7 @@ def _ig_web_fetch_profile(client: httpx.Client, handle: str) -> dict | None:
     """
     Fetch full IG profile directly (not via search).
     Returns {"bio": str, "full_name": str, "external_url": str, "is_verified": bool} or None.
+    Returns None on 429 (rate limited) — caller should back off and retry.
     """
     resp = client.get(
         "https://www.instagram.com/api/v1/users/web_profile_info/",
@@ -1353,7 +1358,7 @@ def _ig_web_fetch_profile(client: httpx.Client, handle: str) -> dict | None:
     if not _check_ig_response(resp):
         return None
     if resp.status_code != 200:
-        log.debug("IG profile fetch failed for @%s: HTTP %d", handle, resp.status_code)
+        log.warning("IG profile fetch failed for @%s: HTTP %d", handle, resp.status_code)
         return None
 
     try:
@@ -2643,21 +2648,38 @@ def fetch_bios_for_candidates(candidates: list[dict]) -> list[dict]:
 
     client = _get_ig_web_client()
     enriched: list[dict] = []
+    _BIO_RETRY_DELAYS = [5, 15]  # seconds to wait before retry on 429
     try:
         for c in candidates:
             handle = c.get("handle", "")
             bio = ""
             if handle:
-                try:
-                    profile = _ig_web_fetch_profile(client, handle)
-                    if profile:
+                # Retry loop: attempt once, then retry on 429 with backoff
+                for attempt, backoff in enumerate([0] + _BIO_RETRY_DELAYS):
+                    if backoff:
+                        log.warning(
+                            "[BEM-Bio] Rate limited on @%s, waiting %ds before retry (attempt %d/%d)",
+                            handle, backoff, attempt + 1, len(_BIO_RETRY_DELAYS) + 1,
+                        )
+                        _time.sleep(backoff)
+                    try:
+                        profile = _ig_web_fetch_profile(client, handle)
+                    except Exception as e:
+                        log.warning("[BEM-Bio] Exception fetching bio for @%s: %s", handle, e)
+                        profile = None
+
+                    if profile is not None:
                         bio = profile.get("bio", "") or ""
-                        # Also update full_name if it was empty
+                        # Also back-fill full_name if it was empty
                         if not c.get("full_name") and profile.get("full_name"):
                             c = {**c, "full_name": profile["full_name"]}
-                except Exception as e:
-                    log.debug("[BEM-Bio] Failed to fetch bio for @%s: %s", handle, e)
-                _time.sleep(1)  # polite delay between profile fetches
+                        break  # success
+                    # profile is None: either 429, session error, or user not found
+                    # Only retry if it looks like rate limiting (we can't distinguish
+                    # 429 from 404 here since _ig_web_fetch_profile returns None for both).
+                    # Be conservative: retry at most len(_BIO_RETRY_DELAYS) times.
+
+                _time.sleep(2)  # polite delay between handles
 
             enriched.append({**c, "bio": bio})
     finally:

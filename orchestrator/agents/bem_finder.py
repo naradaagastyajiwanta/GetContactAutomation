@@ -71,6 +71,10 @@ async def _discover_bem_for_uni(uni: dict, loop) -> dict:
         None, get_ig_following, ig_handle, 300
     )
 
+    # Cool-down after following fetch to avoid 429 on immediate bio requests
+    if following:
+        await asyncio.sleep(3)
+
     if not following:
         log.info("[Agent4-BEM] Empty following for @%s (%s), trying web search fallback", ig_handle, uni["name"])
         keyword_matches = await search_related_accounts_via_search(uni["name"])
