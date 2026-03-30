@@ -55,8 +55,8 @@ services:
       test: ["CMD", "curl", "-f", "--socks5", "127.0.0.1:1080", "https://cloudflare.com/cdn-cgi/trace"]
       interval: 30s
       timeout: 10s
-      retries: 5
-      start_period: 15s
+      retries: 10
+      start_period: 60s
 
   # ---------------------------------------------------------------
   # PinchTab (Headless browser automation via HTTP)
