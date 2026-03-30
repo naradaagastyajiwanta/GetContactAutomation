@@ -67,7 +67,7 @@ function clearDir(dir: string): void {
   }
 }
 
-const PORT = 3100;
+const PORT = parseInt(process.env.PORT || '3110', 10);
 const AUTH_STORE_DIR = path.join(__dirname, '..', 'auth_store');
 const AUTH_BACKUP_DIR = path.join(__dirname, '..', 'auth_store_backup');
 const WEBHOOK_FILE = path.join(__dirname, '..', 'webhook_url.txt');
