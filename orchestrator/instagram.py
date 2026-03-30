@@ -1067,6 +1067,7 @@ def scrape_ig_posts_sync(
     handle = ig_handle.lstrip("@")
     results: list[dict] = []
     total_scanned = 0
+    consecutive_no_new = 0
     # How many extra pages to fetch when going deeper
     MAX_DEEPER_PAGES = 10
 
@@ -1117,7 +1118,11 @@ def scrape_ig_posts_sync(
         while pages_fetched < max_pages:
             posts, next_max_id = _ig_web_get_posts(client, user_id, max_posts, max_id=next_max_id)
             if not posts:
-                break
+                # Empty page -- continue to next page if cursor available
+                if not next_max_id:
+                    break
+                pages_fetched += 1
+                continue
             pages_fetched += 1
             total_scanned += len(posts)
 
@@ -1132,11 +1137,16 @@ def scrape_ig_posts_sync(
                 # on images, so phone numbers can appear regardless of caption text.
                 results.append(post)
 
-            # Continue to next page as long as there is a pagination cursor.
-            # In deeper mode we stop early when all posts are already known.
-            # In initial mode we keep going until max_pages is reached.
-            if deeper and new_posts_on_page == 0:
-                break  # all posts already in DB, nothing new to add
+            # In deeper mode: track consecutive pages with zero new posts.
+            # Stop after 2 consecutive empty pages (all recent posts already saved).
+            if new_posts_on_page == 0:
+                consecutive_no_new += 1
+            else:
+                consecutive_no_new = 0
+            if deeper and consecutive_no_new >= 2:
+                log.info("@%s: deeper mode -- %d consecutive pages with no new posts, stopping",
+                          handle, consecutive_no_new)
+                break
             if not next_max_id:
                 break  # no more pages on IG
 
