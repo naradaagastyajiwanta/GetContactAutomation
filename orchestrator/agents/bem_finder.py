@@ -30,8 +30,10 @@ from orchestrator.instagram import (
     search_related_accounts_via_search,
 )
 
-# Minimum confidence to save a related IG account
-_MIN_CONFIDENCE = 0.40
+# Minimum confidence to save a related IG account.
+# Raised to 0.55 so only accounts with a clear university identifier
+# (acronym, location, or unique name word) in their username/bio are saved.
+_MIN_CONFIDENCE = 0.55
 
 
 async def _discover_bem_for_uni(uni: dict, loop) -> dict:

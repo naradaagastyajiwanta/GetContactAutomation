@@ -2207,14 +2207,16 @@ async def search_related_accounts_via_search(university_name: str) -> list[dict]
     Returns list of {"handle": str, "relation_type": str, "confidence": float}
     sorted by confidence descending.
     """
-    # Query prefixes per relation type (Indonesian + English)
+    # Query prefixes per relation type — ordered by priority (Fakultas → BEM → Senat → Humas first)
     _TYPE_QUERIES: dict[str, list[str]] = {
-        "bem":            ["BEM", "Badan Eksekutif Mahasiswa"],
-        "humas":          ["Humas", "Hubungan Masyarakat"],
-        "pmb":            ["PMB", "Penerimaan Mahasiswa Baru", "Admisi"],
-        "kemahasiswaan":  ["Kemahasiswaan", "Bidang Kemahasiswaan"],
-        "alumni":         ["Alumni", "IKA"],
-        "lppm":           ["LPPM", "LP2M"],
+        "fakultas":      ["Fakultas"],
+        "bem":           ["BEM", "Badan Eksekutif Mahasiswa"],
+        "senat":         ["Senat Mahasiswa", "DPM"],
+        "humas":         ["Humas", "Hubungan Masyarakat"],
+        "pmb":           ["PMB", "Penerimaan Mahasiswa Baru", "Admisi"],
+        "kemahasiswaan": ["Kemahasiswaan", "Bidang Kemahasiswaan"],
+        "alumni":        ["Alumni", "IKA"],
+        "lppm":          ["LPPM", "LP2M"],
     }
 
     # Build university acronym for queries (e.g. "Universitas Ahmad Dahlan" -> "UAD")
@@ -2466,9 +2468,19 @@ def find_related_accounts_from_following(
 
     # â”€â”€ Keyword â†’ relation_type mapping â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     _RELATION_KEYWORDS: list[tuple[list[str], str]] = [
+        # TIER 1 — FAKULTAS (official faculties)
+        (["fh_", "fh.", "ft_", "ft.", "fe_", "fe.", "fk_", "fk.", "fi_", "fi.",
+          "fp_", "fp.", "fs_", "fs.", "fa_", "fa.", "fkip", "fisip", "fikom",
+          "fkm", "fmipa", "fib", "fteknik", "fakultas_", "fakultas."], "fakultas"),
+        # TIER 2 — BEM (student executive board)
         (["bem_", "bem.", "bemfh", "bemft", "bemfe", "bemfk", "bemfi",
-          "bemfp", "bemfs", "bemfa", "bemu", "bemuniv"], "bem"),
+          "bemfp", "bemfs", "bemfa", "bemu", "bemuniv", "dema_", "dema."], "bem"),
+        # TIER 3 — SENAT (student senate / legislative)
+        (["senat_", "senat.", "senatmhs", "senatmahasiswa", "senatuniv",
+          "dpm_", "dpm.", "dpmmhs", "legislatif_"], "senat"),
+        # TIER 4 — HUMAS (public relations)
         (["humas", "humasuniv", "humas_", "public_relation"], "humas"),
+        # Other relation types (lower priority)
         (["pmb_", "pmb.", "pmbuniv", "admisi", "admission", "pendaftaran"], "pmb"),
         (["kemahasiswaan", "kemahasiswaanuniv", "kemhs"], "kemahasiswaan"),
         (["alumni_", "alumni.", "alumniassoc", "ika_"], "alumni"),
@@ -2476,8 +2488,11 @@ def find_related_accounts_from_following(
     ]
 
     _BIO_KEYWORDS: dict[str, list[str]] = {
+        "fakultas": ["fakultas", "faculty", "dekan", "program studi", "jurusan"],
         "bem": ["badan eksekutif mahasiswa", "student executive", "kabinet",
                 "dema ", "dewan eksekutif"],
+        "senat": ["senat mahasiswa", "dewan perwakilan mahasiswa", "dpm ",
+                  "legislatif mahasiswa", "majelis permusyawaratan"],
         "humas": ["humas", "public relation", "kehumasan", "informasi publik"],
         "pmb": ["penerimaan mahasiswa", "pendaftaran", "admission"],
         "kemahasiswaan": ["kemahasiswaan", "student affair"],
@@ -2502,6 +2517,17 @@ def find_related_accounts_from_following(
 
         # Skip super-generic / platform accounts
         if username in _NON_INSTITUTION_HANDLES:
+            continue
+
+        # Hard filter: account must contain at least one university identifier
+        # (acronym, location word, or unique name word) to be considered related.
+        # This prevents generic national accounts (e.g. @bem_indonesia) from matching.
+        has_uni_marker = (
+            (len(uni_initials) >= 3 and uni_initials in combined)
+            or (location_word and len(location_word) > 2 and location_word in combined)
+            or any(w in combined for w in unique_words)
+        )
+        if not has_uni_marker:
             continue
 
         # â”€â”€ Try to classify by handle keywords â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
