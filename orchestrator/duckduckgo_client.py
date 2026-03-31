@@ -97,6 +97,7 @@ def search_text(
     _rate_limit_wait()
 
     last_exc: Exception | None = None
+    saw_hard_failure = False
 
     for backend in _DDG_BACKEND_ROTATION:
         try:
@@ -143,6 +144,8 @@ def search_text(
                 log.debug("[DDG] ConnectError on backend=%s for '%s' — trying next backend", backend, query[:60])
                 continue
 
+            saw_hard_failure = True
+
             # Transient error (rate-limit, timeout) — wait then retry same backend once
             if "ratelimit" in err_str or "429" in err_str:
                 wait = 15
@@ -170,6 +173,18 @@ def search_text(
                 pass
             # Still failed — try next backend
             continue
+
+    if not saw_hard_failure and last_exc and "no results" in str(last_exc).lower():
+        _ddg_status["ok"] = True
+        _ddg_status["error"] = None
+        log.debug("[DDG] '%s' → no results across all backends", query[:60])
+        return []
+
+    if not saw_hard_failure and last_exc is None:
+        _ddg_status["ok"] = True
+        _ddg_status["error"] = None
+        log.debug("[DDG] '%s' → no results across all backends", query[:60])
+        return []
 
     _ddg_status["ok"] = False
     _ddg_status["error"] = str(last_exc)[:200] if last_exc else "all_backends_failed"
