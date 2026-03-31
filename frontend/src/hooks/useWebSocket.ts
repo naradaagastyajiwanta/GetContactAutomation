@@ -16,12 +16,23 @@ type WSEvent =
   | { type: 'blast_completed'; campaign_id: number; failed: Array<{ phone: string; name: string; university: string; error: string }> }
   | { type: 'email_quota_updated'; sent_today: number; daily_limit: number; remaining: number; is_exhausted: boolean; campaign_id: number }
   | { type: 'quota_exhausted'; campaign_id: number; remaining: number; daily_limit: number; pending_count: number }
+  | { type: 'log_line'; ts: string; level: string; text: string }
 
 // Singleton WebSocket across all hook instances
 let wsInstance: WebSocket | null = null
 let reconnectTimer: ReturnType<typeof setTimeout> | null = null
 let queryClientInstance: ReturnType<typeof useQueryClient> | null = null
 let notificationsInstance: ReturnType<typeof useNotifications> | null = null
+
+// ── Log-line subscriber registry ─────────────────────────────────────────────
+export interface LogLineEntry { ts: string; level: string; text: string }
+type LogLineCallback = (entry: LogLineEntry) => void
+const _logLineSubscribers = new Set<LogLineCallback>()
+
+export function subscribeToLogLines(cb: LogLineCallback): () => void {
+  _logLineSubscribers.add(cb)
+  return () => _logLineSubscribers.delete(cb)
+}
 
 function getWsUrl() {
   const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:'
@@ -163,6 +174,10 @@ function handleEventQuery(data: WSEvent, qc: ReturnType<typeof useQueryClient>) 
 function onMessage(event: MessageEvent) {
   try {
     const data: WSEvent = JSON.parse(event.data)
+    if (data.type === 'log_line') {
+      _logLineSubscribers.forEach(cb => cb({ ts: data.ts, level: data.level, text: data.text }))
+      return
+    }
     if (queryClientInstance) handleEventQuery(data, queryClientInstance)
     if (notificationsInstance) handleEventNotifications(data, notificationsInstance.add)
   } catch {

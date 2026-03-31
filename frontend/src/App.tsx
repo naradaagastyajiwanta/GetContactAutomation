@@ -20,6 +20,7 @@ const AudiensiQueuePage = lazy(() => import('./pages/AudiensiQueuePage'))
 const AudiensiDetailPage = lazy(() => import('./pages/AudiensiDetailPage'))
 const KnowledgeBasePage = lazy(() => import('./pages/KnowledgeBasePage'))
 const ApiLogsPage = lazy(() => import('./pages/ApiLogsPage'))
+const LogsPage = lazy(() => import('./pages/LogsPage'))
 const SettingsPage = lazy(() => import('./pages/SettingsPage'))
 const BlastCampaignsPage = lazy(() => import('./pages/BlastCampaignsPage'))
 const BlastCampaignDetailPage = lazy(() => import('./pages/BlastCampaignDetailPage'))
@@ -62,6 +63,7 @@ export default function App() {
                   <Route path="audiensi/:id" element={<ErrorBoundary><AudiensiDetailPage /></ErrorBoundary>} />
                   <Route path="knowledge" element={<ErrorBoundary><KnowledgeBasePage /></ErrorBoundary>} />
                   <Route path="api-logs" element={<ErrorBoundary><ApiLogsPage /></ErrorBoundary>} />
+                  <Route path="logs" element={<ErrorBoundary><LogsPage /></ErrorBoundary>} />
                   <Route path="blast" element={<ErrorBoundary><BlastCampaignsPage /></ErrorBoundary>} />
                   <Route path="blast/:id" element={<ErrorBoundary><BlastCampaignDetailPage /></ErrorBoundary>} />
                   <Route path="email-blast" element={<ErrorBoundary><EmailBlastPage /></ErrorBoundary>} />

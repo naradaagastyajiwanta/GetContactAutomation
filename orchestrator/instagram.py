@@ -2294,6 +2294,19 @@ async def search_related_accounts_via_search(
     _ddg_consecutive_failures = 0
     _DDG_CIRCUIT_BREAK = 3
 
+    # --- IG-handle regex for extracting handles from snippet / title text ---
+    _IG_HANDLE_IN_TEXT_RE = re.compile(
+        r"instagram\.com/([a-zA-Z0-9_.]{3,40})(?:/|\?|\"|'|\s|$)"
+    )
+
+    def _handles_from_text(text: str) -> list[str]:
+        """Extract IG handles embedded in snippet/title prose (not just URLs)."""
+        return [
+            h.strip("_").lower()
+            for h in _IG_HANDLE_IN_TEXT_RE.findall(text)
+            if h.lower() not in ("p", "reel", "explore", "accounts", "stories", "tv")
+        ]
+
     for rel_type, prefixes in _TYPE_QUERIES.items():
         if _ddg_consecutive_failures >= _DDG_CIRCUIT_BREAK:
             log.warning(
@@ -2308,6 +2321,11 @@ async def search_related_accounts_via_search(
         ]
         if handle_stem:
             queries_to_try.append(f"site:instagram.com {keyword} {handle_stem}")
+        # Prose query: searches the open web for pages that mention the BEM IG handle.
+        # E.g. news / university directory pages often embed the full IG URL in text.
+        # Only add once per university (using BEM type to avoid N duplicates).
+        if rel_type == "bem":
+            queries_to_try.append(f'instagram {keyword} "{short_name}" mahasiswa')
         for ddg_query in queries_to_try:
             try:
                 results = await duckduckgo_client.async_search_text(ddg_query, max_results=5)
@@ -2316,21 +2334,29 @@ async def search_related_accounts_via_search(
                 else:
                     _ddg_consecutive_failures += 1
                 for result in results:
+                    # Primary: extract from the result URL
                     handle = _extract_ig_handle(result.get("link", ""))
-                    if not handle or handle in seen_handles:
-                        continue
-                    seen_handles.add(handle)
-                    candidate_users.append({
-                        "username": handle,
-                        "full_name": result.get("title", ""),
-                        "is_verified": False,
-                    })
+                    handles_from_result = [handle] if handle else []
+                    # Secondary: also mine snippet + title for embedded IG URLs
+                    # (prose results from news/directory pages often contain the handle)
+                    prose_text = (result.get("snippet", "") or "") + " " + (result.get("title", "") or "")
+                    handles_from_result.extend(_handles_from_text(prose_text))
+                    for h in handles_from_result:
+                        if not h or h in seen_handles:
+                            continue
+                        seen_handles.add(h)
+                        candidate_users.append({
+                            "username": h,
+                            "full_name": result.get("title", ""),
+                            "is_verified": False,
+                        })
             except Exception as e:
                 _ddg_consecutive_failures += 1
                 log.warning("[BEM-DDG] Query '%s' failed: %s", ddg_query, e)
 
-    # ------------- Fallback: Serper (if configured and DDG found nothing or circuit broke) -------------
+    # ------------- Fallback: Serper (only if configured AND DDG found nothing or circuit broke) -------------
     ddg_incomplete = _ddg_consecutive_failures >= _DDG_CIRCUIT_BREAK
+
     if (not candidate_users or ddg_incomplete) and cfg.SERPER_API_KEY:
         consecutive_errors = 0
         async with httpx.AsyncClient(timeout=15) as client:
@@ -2381,7 +2407,6 @@ async def search_related_accounts_via_search(
 
     log.info("[BEM-Search] %s -> %d candidates, classifying...", university_name, len(candidate_users))
 
-    # Reuse existing classifier
     results = find_related_accounts_from_following(candidate_users, university_name)
 
     log.info(

@@ -71,8 +71,8 @@ function Upload-Orchestrator {
 }
 
 function Upload-Frontend {
-    Write-Info "Uploading frontend files..."
-    foreach ($f in @("Dockerfile.frontend", "docker-compose.yml")) {
+    Write-Info "Uploading frontend source files..."
+    foreach ($f in @("Dockerfile.frontend", "docker-compose.yml", "docker-compose.override.yml")) {
         $localPath = Join-Path $PSScriptRoot $f
         if (Test-Path $localPath) { scp $localPath "${VPS}:${RemoteDir}/${f}" 2>$null }
     }
@@ -84,6 +84,29 @@ function Upload-Frontend {
     ssh $VPS "cd $RemoteDir && tar -xzf frontend_deploy.tar.gz && rm -f frontend_deploy.tar.gz"
     Remove-Item $tmpTar -ErrorAction SilentlyContinue
     Write-Ok "Frontend uploaded"
+}
+
+function Deploy-Frontend-Local {
+    # Build locally, SCP dist to server, docker cp into container.
+    # Much faster than docker build on server (avoids slow npm ci on VPS).
+    Write-Info "Building frontend locally..."
+    Push-Location (Join-Path $PSScriptRoot "frontend")
+    try {
+        npm run build 2>&1 | Select-Object -Last 5 | ForEach-Object { Write-Info $_ }
+        if ($LASTEXITCODE -ne 0) { throw "npm run build failed" }
+    } finally {
+        Pop-Location
+    }
+    Write-Ok "Local build complete"
+
+    Write-Info "Uploading dist to server..."
+    $distPath = Join-Path $PSScriptRoot "frontend\dist"
+    scp -r $distPath "${VPS}:/tmp/frontend-dist-new" 2>$null
+    Write-Ok "dist uploaded"
+
+    Write-Info "Copying dist into container..."
+    ssh $VPS "docker cp /tmp/frontend-dist-new/. gc-frontend:/app/dist/ && rm -rf /tmp/frontend-dist-new"
+    Write-Ok "dist deployed to container (no restart needed)"
 }
 
 function Upload-Whatsapp {
@@ -159,10 +182,14 @@ if ($File -ne "") {
 
     if ($restartTarget) {
         $fileMode = if ($Mode) { $Mode } else { "quick" }
-        # Frontend always needs build (React must compile)
-        if ($restartTarget -eq "frontend") { $fileMode = "build" }
-        Write-Step 2 2 "Deploying $restartTarget ($fileMode)"
-        Deploy-Service $restartTarget $fileMode
+        # Frontend always uses local build + docker cp (avoids slow server-side npm ci)
+        if ($restartTarget -eq "frontend") {
+            Write-Step 2 2 "Deploying frontend (local build)"
+            Deploy-Frontend-Local
+        } else {
+            Write-Step 2 2 "Deploying $restartTarget ($fileMode)"
+            Deploy-Service $restartTarget $fileMode
+        }
     }
 }
 # ---------------------------------------------------------------
@@ -201,7 +228,7 @@ else {
 
         # Smart mode per service:
         #   orchestrator → quick (volume-mounted, restart is enough)
-        #   frontend     → build (React needs compile inside Docker)
+        #   frontend     → local build + docker cp (avoids slow npm ci on VPS)
         #   whatsapp     → build (TypeScript needs compile)
         # User can override with -Mode
         if ($Mode) {
@@ -209,13 +236,17 @@ else {
         } else {
             $svcMode = switch ($svc) {
                 "orchestrator" { "quick" }
-                "frontend"     { "build" }
+                "frontend"     { "local" }
                 "whatsapp"     { "build" }
             }
         }
 
         Write-Step $step $totalSteps "Deploy $svc ($svcMode)"
-        Deploy-Service $svc $svcMode
+        if ($svc -eq "frontend" -and $svcMode -eq "local") {
+            Deploy-Frontend-Local
+        } else {
+            Deploy-Service $svc $svcMode
+        }
     }
 }
 

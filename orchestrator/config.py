@@ -1,6 +1,9 @@
 import os
 import logging
 import threading
+import asyncio
+import datetime
+from collections import deque
 from pathlib import Path
 from typing import Any
 
@@ -166,6 +169,76 @@ def setup_logger(name: str = "getcontact") -> logging.Logger:
             datefmt="%Y-%m-%d %H:%M:%S"
         ))
         logger.addHandler(handler)
+    return logger
+
+
+# ---------------------------------------------------------------------------
+# In-memory log buffer — captures all log output for the System Logs page
+# ---------------------------------------------------------------------------
+
+_LOG_BUFFER: deque = deque(maxlen=2000)
+_log_broadcast_loop: asyncio.AbstractEventLoop | None = None
+_log_broadcast_lock = threading.Lock()
+
+
+def set_log_broadcast_loop(loop: asyncio.AbstractEventLoop) -> None:
+    """Register the running event loop so the log handler can schedule broadcasts."""
+    global _log_broadcast_loop
+    _log_broadcast_loop = loop
+
+
+def get_log_buffer() -> list[dict]:
+    """Return a snapshot of the in-memory log buffer (newest last)."""
+    return list(_LOG_BUFFER)
+
+
+class _LogStreamHandler(logging.Handler):
+    """Appends every log record to the in-memory buffer and broadcasts via WebSocket."""
+
+    def emit(self, record: logging.LogRecord) -> None:
+        try:
+            line = self.format(record)
+            entry = {
+                "ts": datetime.datetime.utcfromtimestamp(record.created).strftime("%Y-%m-%d %H:%M:%S"),
+                "level": record.levelname,
+                "text": line,
+            }
+            _LOG_BUFFER.append(entry)
+
+            # Broadcast to WebSocket clients if the event loop is available
+            with _log_broadcast_lock:
+                loop = _log_broadcast_loop
+            if loop is not None and not loop.is_closed():
+                loop.call_soon_threadsafe(_schedule_log_broadcast, entry)
+        except Exception:
+            pass  # Never let the log handler itself raise
+
+
+def _schedule_log_broadcast(entry: dict) -> None:
+    """Create a fire-and-forget Task to broadcast a log line to WS clients."""
+    try:
+        from orchestrator.websocket import manager as _ws_manager  # local import to avoid cycles
+        asyncio.ensure_future(_ws_manager.broadcast_type("log_line", **entry))
+    except Exception:
+        pass
+
+
+def setup_logger(name: str = "getcontact") -> logging.Logger:
+    logger = logging.getLogger(name)
+    if not logger.handlers:
+        logger.setLevel(logging.INFO)
+        formatter = logging.Formatter(
+            "%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+            datefmt="%Y-%m-%d %H:%M:%S",
+        )
+        # Console output
+        stream_handler = logging.StreamHandler()
+        stream_handler.setFormatter(formatter)
+        logger.addHandler(stream_handler)
+        # In-memory buffer + WebSocket broadcast
+        buffer_handler = _LogStreamHandler()
+        buffer_handler.setFormatter(formatter)
+        logger.addHandler(buffer_handler)
     return logger
 
 

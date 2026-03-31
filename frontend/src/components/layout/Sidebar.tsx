@@ -15,6 +15,7 @@ import {
   BookOpen,
   UserSearch,
   ScrollText,
+  Terminal,
   Settings,
   ChevronRight,
   Folder,
@@ -91,6 +92,7 @@ const NAV_SECTIONS: NavSection[] = [
     icon: ScrollText,
     items: [
       { to: '/api-logs', label: 'API Logs', icon: ScrollText },
+      { to: '/logs', label: 'System Logs', icon: Terminal },
     ],
   },
 ]

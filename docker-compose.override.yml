@@ -6,7 +6,7 @@
 #
 # - Orchestrator: source mounted + uvicorn --reload (auto-restart on change)
 # - WhatsApp: source mounted + ts-node (TypeScript on-the-fly, no compile)
-# - Frontend: source mounted + vite dev server (HMR, no build needed)
+# - Frontend: NO OVERRIDE on production — uses built image with 'serve' on port 3010
 #
 # This file is auto-loaded by docker compose alongside
 # docker-compose.yml. To DISABLE it (use baked-in image),
@@ -40,14 +40,17 @@ services:
       - ./whatsapp-service/data:/app/data
     command: ["npx", "ts-node", "src/index.ts"]
 
-  frontend:
-    build:
-      context: .
-      dockerfile: Dockerfile.frontend
-      target: deps
-    volumes:
-      - ./frontend:/app
-      - /app/node_modules
-    environment:
-      - API_TARGET=http://orchestrator:8000
-    command: ["npx", "vite", "--host", "--port", "80"]
+# Frontend override intentionally removed from production.
+# The Vite dev server override was overriding the production 'serve' CMD.
+# For LOCAL development only, uncomment:
+#  frontend:
+#    build:
+#      context: .
+#      dockerfile: Dockerfile.frontend
+#      target: deps
+#    volumes:
+#      - ./frontend:/app
+#      - /app/node_modules
+#    environment:
+#      - API_TARGET=http://orchestrator:8000
+#    command: ["npx", "vite", "--host", "--port", "80"]

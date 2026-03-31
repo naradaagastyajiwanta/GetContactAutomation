@@ -181,6 +181,10 @@ async def lifespan(app: FastAPI):
     await cfg.init_from_db()
     log.info("Database initialized")
 
+    # Register the running event loop so LogStreamHandler can broadcast log lines
+    from orchestrator.config import set_log_broadcast_loop
+    set_log_broadcast_loop(asyncio.get_running_loop())
+
     # Restore persistent pause state
     try:
         all_cfg = await get_all_config()
@@ -3489,6 +3493,19 @@ async def dms_research_result_by_schedule(schedule_id: int):
         return {"status": "ok", "data": result}
     except Exception as e:
         return {"status": "error", "message": str(e)}
+
+
+# ---------------------------------------------------------------------------
+# System Logs — in-memory buffer
+# ---------------------------------------------------------------------------
+
+@app.get("/api/logs/recent")
+async def get_recent_logs(limit: int = Query(default=200, ge=1, le=2000)):
+    """Return the most recent log lines from the in-memory buffer."""
+    from orchestrator.config import get_log_buffer
+    buf = get_log_buffer()
+    # Return tail (newest last), capped at limit
+    return buf[-limit:]
 
 
 # ---------------------------------------------------------------------------
