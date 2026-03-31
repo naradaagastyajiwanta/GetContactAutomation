@@ -32,14 +32,13 @@ for _noisy in ("primp", "httpx", "httpcore", "ddgs", "ddgs.ddgs"):
 # SOCKS5 proxy to bypass ISP DPI blocking (e.g. Cloudflare WARP)
 _DDG_PROXY: str | None = os.environ.get("DDG_PROXY")
 
-# Backends tried in order on ConnectError — each uses a different DDG endpoint.
-# html → html.duckduckgo.com, lite → lite.duckduckgo.com, api → duckduckgo.com/d.js
-# Any one may fail intermittently; rotating avoids the block without waiting.
-_DDG_BACKEND_ROTATION = ["html", "lite", "api"]
+# Engine rotation for ddgs v9.x (html/lite/api backends no longer exist).
+# ddgs v9 is a metasearch engine: each backend is a real search engine.
+# 'duckduckgo' is best for site: queries; 'google' and 'brave' as fallbacks.
+# 'auto' uses all engines but includes wikipedia/grokipedia which pollute results.
+_DDG_BACKEND_ROTATION = ["duckduckgo", "google", "brave", "yahoo"]
 
-# Backends for the ddgs metasearch library
-# Include 'duckduckgo' because site: queries work better there,
-# even though the engine fails sometimes through the proxy.
+# Comma-delimited string for passing multiple backends at once
 _DDG_BACKENDS = "auto"
 
 # Minimum seconds between DDG queries to avoid rate-limiting
@@ -105,7 +104,10 @@ def search_text(
                 raw = list(ddgs.text(query, region=region, max_results=max_results, backend=backend))
 
             if not raw:
-                raise Exception("No results found.")
+                # Genuine empty result — not an error, just no indexed pages.
+                # Move to next backend immediately without waiting.
+                log.debug("[DDG] '%s' → no results (backend=%s) — trying next backend", query[:60], backend)
+                continue
 
             _ddg_status["ok"] = True
             _ddg_status["error"] = None
@@ -126,6 +128,12 @@ def search_text(
             last_exc = e
             err_str = str(e).lower()
 
+            # "no results" surfaces as an exception in some ddgs versions — same treatment:
+            # genuine empty, not a transient error, skip to next backend.
+            if "no results" in err_str:
+                log.debug("[DDG] '%s' → no results (backend=%s) — trying next backend", query[:60], backend)
+                continue
+
             is_connect_error = "connecterror" in err_str or (
                 "connect" in err_str and "error" in err_str and "timeout" not in err_str
             )
@@ -135,7 +143,7 @@ def search_text(
                 log.debug("[DDG] ConnectError on backend=%s for '%s' — trying next backend", backend, query[:60])
                 continue
 
-            # Non-connect error (rate-limit, timeout, no results) — wait then retry same backend
+            # Transient error (rate-limit, timeout) — wait then retry same backend once
             if "ratelimit" in err_str or "429" in err_str:
                 wait = 15
                 _ddg_status["ok"] = False
@@ -146,7 +154,7 @@ def search_text(
 
             log.warning("[DDG] Query '%s' failed (backend=%s): %s — retrying in %ds", query[:60], backend, e, wait)
             _time.sleep(wait)
-            # Retry the same backend once for non-connect errors
+            # Retry the same backend once for transient errors
             try:
                 with DDGS(proxy=_DDG_PROXY, timeout=10) as ddgs2:
                     raw = list(ddgs2.text(query, region=region, max_results=max_results, backend=backend))

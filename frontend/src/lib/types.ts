@@ -17,12 +17,15 @@ export interface University {
   updated_at?: string | null
   total_contacts?: number
   contacted_contacts?: number
+  bem_discovery_status?: string | null
+  bem_discovery_attempts?: number | null
 }
 
 export type UniversityStatus =
   | 'pending'
   | 'ig_found'
   | 'ig_scraped'
+  | 'bem_discovered'
   | 'contacted'
   | 'got_number'
   | 'failed'

@@ -914,6 +914,15 @@ async def init_db() -> None:
         except Exception:
             pass  # Column already exists
 
+        # Migration: add bem_discovery_attempts to track retry count
+        try:
+            await db.execute(
+                "ALTER TABLE universities ADD COLUMN bem_discovery_attempts INTEGER DEFAULT 0"
+            )
+            await db.commit()
+        except Exception:
+            pass  # Column already exists
+
         # Migration: add source_ig_handle and source_ig_type to ig_posts (older DBs may lack them)
         try:
             await db.execute("ALTER TABLE ig_posts ADD COLUMN source_ig_handle TEXT")
@@ -1963,14 +1972,37 @@ async def update_bem_handle(uni_id: int, handle: str) -> None:
         await db.commit()
 
 
-async def update_bem_discovery_status(uni_id: int, status: str) -> None:
-    """Update the BEM discovery status on the university record."""
+async def update_bem_discovery_status(uni_id: int, status: str, increment_attempts: bool = False) -> None:
+    """Update the BEM discovery status on the university record.
+
+    When increment_attempts=True, also bumps the bem_discovery_attempts counter.
+    """
     async with get_db() as db:
-        await db.execute(
-            "UPDATE universities SET bem_discovery_status = ? WHERE id = ?",
-            (status, uni_id),
-        )
+        if increment_attempts:
+            await db.execute(
+                """UPDATE universities
+                   SET bem_discovery_status = ?,
+                       bem_discovery_attempts = COALESCE(bem_discovery_attempts, 0) + 1
+                   WHERE id = ?""",
+                (status, uni_id),
+            )
+        else:
+            await db.execute(
+                "UPDATE universities SET bem_discovery_status = ? WHERE id = ?",
+                (status, uni_id),
+            )
         await db.commit()
+
+
+async def get_bem_discovery_attempts(uni_id: int) -> int:
+    """Return the current bem_discovery_attempts count for a university."""
+    async with get_db() as db:
+        cursor = await db.execute(
+            "SELECT COALESCE(bem_discovery_attempts, 0) FROM universities WHERE id = ?",
+            (uni_id,),
+        )
+        row = await cursor.fetchone()
+        return row[0] if row else 0
 
 
 async def get_universities_for_bem_discovery(
@@ -1982,16 +2014,28 @@ async def get_universities_for_bem_discovery(
     Requires: ig_handle is set (ig_found or later), BEM not yet discovered,
     and university is enabled.
 
+    Retryable statuses:
+      - NULL / 'pending'     — never attempted
+      - 'no_following'       — IG account had empty following (transient: rate limit / private)
+      - 'not_found'          — following fetched but keyword/LLM found nothing (retry on next cycle)
+      - 'error'              — Python exception during processing (retry up to _MAX_BEM_ATTEMPTS)
+      - 'session_error'      — all IG sessions were down when this ran (infra failure, retry freely)
+
+    Non-retryable:
+      - 'discovered'         — already found related IGs, no need to re-run
+      - 'no_ig_handle'       — no IG handle, Agent 1 must run first
+
     Uses rolling mechanism when last_id > 0.
     """
+    _retryable = "('pending', 'no_following', 'not_found', 'error', 'session_error')"
     if last_id > 0:
         # Rolling mechanism
         async with get_db() as db:
             cursor = await db.execute(
-                """
+                f"""
                 SELECT * FROM universities
                 WHERE ig_handle IS NOT NULL AND ig_handle != ''
-                  AND (bem_discovery_status IS NULL OR bem_discovery_status = 'pending')
+                  AND (bem_discovery_status IS NULL OR bem_discovery_status IN {_retryable})
                   AND id > ?
                   AND (enabled = 1 OR enabled IS NULL)
                 ORDER BY id
@@ -2005,10 +2049,10 @@ async def get_universities_for_bem_discovery(
         # Legacy order by created_at
         async with get_db() as db:
             cursor = await db.execute(
-                """
+                f"""
                 SELECT * FROM universities
                 WHERE ig_handle IS NOT NULL AND ig_handle != ''
-                  AND (bem_discovery_status IS NULL OR bem_discovery_status = 'pending')
+                  AND (bem_discovery_status IS NULL OR bem_discovery_status IN {_retryable})
                   AND (enabled = 1 OR enabled IS NULL)
                 ORDER BY created_at
                 LIMIT ?

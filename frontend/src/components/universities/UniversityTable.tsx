@@ -305,9 +305,19 @@ export function UniversityTable({ universities, selected, onSelectedChange }: Un
                   )}
                 </TableCell>
                 <TableCell>
-                  <Badge className={`${colors.bg} ${colors.text}`}>
-                    {uni.status}
-                  </Badge>
+                  <span className="inline-flex items-center gap-1">
+                    <Badge className={`${colors.bg} ${colors.text}`}>
+                      {uni.status}
+                    </Badge>
+                    {uni.status === 'bem_discovered' && uni.bem_discovery_status !== 'discovered' && (
+                      <span
+                        title={`BEM belum ditemukan (${uni.bem_discovery_attempts ?? 0}/3 percobaan)`}
+                        className="text-amber-500 dark:text-amber-400"
+                      >
+                        <AlertTriangle className="h-3.5 w-3.5" />
+                      </span>
+                    )}
+                  </span>
                 </TableCell>
                 <TableCell className="text-center">
                   {(uni.total_contacts ?? 0) === 0 ? (

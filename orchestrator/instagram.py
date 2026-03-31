@@ -1348,23 +1348,30 @@ def search_ig_handle_via_ig(university_name: str) -> dict | None:
 def _ig_web_fetch_profile(client: httpx.Client, handle: str) -> dict | None:
     """
     Fetch full IG profile directly (not via search).
-    Returns {"bio": str, "full_name": str, "external_url": str, "is_verified": bool} or None.
-    Returns None on 429 (rate limited) — caller should back off and retry.
+    Requires an authenticated IG session (sessionid cookie).
+
+    Return values:
+    - dict with bio/full_name/etc  → success
+    - {}  (empty dict, falsy)      → handle not found (404) or empty profile — NOT a session error
+    - None                         → session error (429, 401, suspended, network) — caller should stop
     """
     resp = client.get(
         "https://www.instagram.com/api/v1/users/web_profile_info/",
         params={"username": handle},
     )
     if not _check_ig_response(resp):
-        return None
+        return None  # session error (429 / 401 / suspended)
+    if resp.status_code == 404:
+        log.debug("IG profile not found for @%s (404 — account deleted or private)", handle)
+        return {}  # handle gone / private — not a session error, caller should continue
     if resp.status_code != 200:
         log.warning("IG profile fetch failed for @%s: HTTP %d", handle, resp.status_code)
-        return None
+        return None  # unexpected server error — treat as session problem
 
     try:
         user = resp.json().get("data", {}).get("user", {})
         if not user:
-            return None
+            return {}  # empty profile (private/deleted) — not a session error
         return {
             "bio": user.get("biography", "") or "",
             "full_name": user.get("full_name", "") or "",
@@ -2199,10 +2206,19 @@ def search_bem_handle_via_ig(university_name: str) -> dict | None:
     return None
 
 
-async def search_related_accounts_via_search(university_name: str) -> list[dict]:
+async def search_related_accounts_via_search(
+    university_name: str,
+    ig_handle: str = "",
+) -> list[dict]:
     """Search for BEM, humas, pmb, kemahasiswaan, alumni, and lppm IG accounts
     via DuckDuckGo (free, primary) with Serper as optional fallback.
     Does NOT require an IG session.
+
+    Args:
+        ig_handle: Official IG handle of the university (e.g. ``yourunissula``).
+            When provided, a stem is extracted from the handle and used as a
+            third query variant — critical for universities whose common
+            abbreviation differs from the first-letter acronym.
 
     Strategy: build keyword-prefixed queries per relation type, collect all
     handles from search results, then pipe them through the existing
@@ -2212,27 +2228,69 @@ async def search_related_accounts_via_search(university_name: str) -> list[dict]
     Returns list of {"handle": str, "relation_type": str, "confidence": float}
     sorted by confidence descending.
     """
-    # Query prefixes per relation type — ordered by priority (Fakultas → BEM → Senat → Humas first)
+    # Relation types to search — only high-priority to limit DDG queries
     _TYPE_QUERIES: dict[str, list[str]] = {
-        "fakultas":      ["Fakultas"],
-        "bem":           ["BEM", "Badan Eksekutif Mahasiswa"],
-        "senat":         ["Senat Mahasiswa", "DPM"],
-        "humas":         ["Humas", "Hubungan Masyarakat"],
-        "pmb":           ["PMB", "Penerimaan Mahasiswa Baru", "Admisi"],
-        "kemahasiswaan": ["Kemahasiswaan", "Bidang Kemahasiswaan"],
-        "alumni":        ["Alumni", "IKA"],
-        "lppm":          ["LPPM", "LP2M"],
+        "bem":           ["BEM"],
+        "humas":         ["Humas"],
+        "kemahasiswaan": ["Kemahasiswaan"],
+        "alumni":        ["Alumni"],
+        "lppm":          ["LPPM"],
+        "pmb":           ["PMB"],
     }
 
-    # Build university acronym for queries (e.g. "Universitas Ahmad Dahlan" -> "UAD")
+    # Build acronym (e.g. "Universitas Ahmad Dahlan" → "UAD")
     uni_words = university_name.strip().split()
     acronym = "".join(w[0] for w in uni_words).upper()
+
+    # Build short name (drop leading generic word for more specific queries)
+    # e.g. "Universitas Ahmad Dahlan" → "Ahmad Dahlan"
+    #      "Institut Teknologi Bandung" → "Teknologi Bandung"
+    _GENERIC_PREFIXES = {
+        "universitas", "university", "institut", "institute", "politeknik",
+        "polytechnic", "sekolah", "akademi", "iain", "uin", "stie", "stikes",
+        "stkip", "stmik", "stisip", "stih", "stia",
+    }
+    short_name_words = uni_words[1:] if uni_words and uni_words[0].lower() in _GENERIC_PREFIXES else uni_words
+    short_name = " ".join(short_name_words)
+
+    # Derive a stem from the official IG handle, if provided.
+    # Many Indonesian universities use a short nickname in their handle that
+    # differs from the first-letter acronym — e.g. @yourunissula → "unissula".
+    # Strip common decorative prefixes/suffixes to get the core stem.
+    _HANDLE_GARBAGE = {
+        "your", "official", "info", "ig", "real", "the",
+        "resmi", "web", "humas", "pmb", "berita",
+    }
+    # Garbage that only appears as a prefix (joined directly, no separator)
+    _HANDLE_PREFIX_GARBAGE = ("your", "official", "ig", "real", "the", "resmi")
+    handle_stem = ""
+    if ig_handle:
+        # Remove dots/underscores, split on those boundaries
+        raw_stem = ig_handle.replace(".", "_").replace("-", "_")
+        parts = [p for p in raw_stem.split("_") if p and p.lower() not in _HANDLE_GARBAGE]
+        if parts:
+            # Prefer the first meaningful part (leftmost = university name in most handles)
+            # unless it's shorter than subsequent parts (e.g. "uad.jogja" → pick "uad" over "jogja")
+            first = parts[0].lower()
+            # Strip known prefixes directly glued without separator (e.g. "yourunissula" → "unissula")
+            for pfx in _HANDLE_PREFIX_GARBAGE:
+                if first.startswith(pfx) and len(first) > len(pfx) + 2:
+                    first = first[len(pfx):]
+                    break
+            handle_stem = first
+        # Only use stem if it's meaningfully different from the already-known acronym
+        if handle_stem.upper() == acronym or len(handle_stem) <= 2:
+            handle_stem = ""
 
     candidate_users: list[dict] = []
     seen_handles: set[str] = set()
 
     # ------------- Primary: DuckDuckGo (free) -------------
-    # Circuit breaker: if DDG fails 3 consecutive queries, bail to Serper early.
+    # Strategy: per relation type, try up to 3 query variants:
+    #   1. site:instagram.com {keyword} {acronym}          — unquoted, first-letter acronym
+    #   2. site:instagram.com {keyword} "{short_name}"     — quoted full short name
+    #   3. site:instagram.com {keyword} {handle_stem}      — stem from official IG handle (if differs)
+    # Circuit breaker: bail to Serper after 3 consecutive all-backend failures.
     _ddg_consecutive_failures = 0
     _DDG_CIRCUIT_BREAK = 3
 
@@ -2243,8 +2301,14 @@ async def search_related_accounts_via_search(university_name: str) -> list[dict]
                 _ddg_consecutive_failures,
             )
             break
-        for prefix in prefixes[:1]:  # 1 prefix per type to limit queries
-            ddg_query = f'site:instagram.com "{prefix} {acronym}"'
+        keyword = prefixes[0]
+        queries_to_try = [
+            f"site:instagram.com {keyword} {acronym}",
+            f'site:instagram.com {keyword} "{short_name}"',
+        ]
+        if handle_stem:
+            queries_to_try.append(f"site:instagram.com {keyword} {handle_stem}")
+        for ddg_query in queries_to_try:
             try:
                 results = await duckduckgo_client.async_search_text(ddg_query, max_results=5)
                 if results:
@@ -2277,39 +2341,39 @@ async def search_related_accounts_via_search(university_name: str) -> list[dict]
                         consecutive_errors,
                     )
                     break
-                for prefix in prefixes[:1]:
-                    serper_query = f'site:instagram.com "{prefix} {acronym}"'
-                    try:
-                        resp = await client.post(
-                            "https://google.serper.dev/search",
-                            headers={
-                                "X-API-KEY": cfg.SERPER_API_KEY,
-                                "Content-Type": "application/json",
-                            },
-                            json={"q": serper_query, "num": 5},
-                        )
-                        if resp.status_code != 200:
-                            _update_serper_status(False, "quota_exceeded")
-                            consecutive_errors += 1
-                            continue
-                        _update_serper_status(True)
-                        consecutive_errors = 0
-                        data = resp.json()
-                    except Exception as e:
-                        log.warning("[BEM-Serper] Query '%s' failed: %s", serper_query, e)
+                keyword = prefixes[0]
+                serper_query = f'site:instagram.com {keyword} {acronym}'
+                try:
+                    resp = await client.post(
+                        "https://google.serper.dev/search",
+                        headers={
+                            "X-API-KEY": cfg.SERPER_API_KEY,
+                            "Content-Type": "application/json",
+                        },
+                        json={"q": serper_query, "num": 5},
+                    )
+                    if resp.status_code != 200:
+                        _update_serper_status(False, "quota_exceeded")
                         consecutive_errors += 1
                         continue
+                    _update_serper_status(True)
+                    consecutive_errors = 0
+                    data = resp.json()
+                except Exception as e:
+                    log.warning("[BEM-Serper] Query '%s' failed: %s", serper_query, e)
+                    consecutive_errors += 1
+                    continue
 
-                    for result in data.get("organic", []):
-                        handle = _extract_ig_handle(result.get("link", ""))
-                        if not handle or handle in seen_handles:
-                            continue
-                        seen_handles.add(handle)
-                        candidate_users.append({
-                            "username": handle,
-                            "full_name": result.get("title", ""),
-                            "is_verified": False,
-                        })
+                for result in data.get("organic", []):
+                    handle = _extract_ig_handle(result.get("link", ""))
+                    if not handle or handle in seen_handles:
+                        continue
+                    seen_handles.add(handle)
+                    candidate_users.append({
+                        "username": handle,
+                        "full_name": result.get("title", ""),
+                        "is_verified": False,
+                    })
 
     if not candidate_users:
         log.info("[BEM-Search] No candidates found for %s", university_name)
@@ -2396,10 +2460,14 @@ def _score_bem_user(user_data: dict, university_name: str) -> float:
     return max(min(score, 1.0), 0.0)
 
 
-def get_ig_following(handle: str, max_results: int = 200) -> list[dict]:
+def get_ig_following(handle: str, max_results: int = 200) -> list[dict] | None:
     """Fetch the following list of an IG account via Web API.
 
     Returns list of: {"username": str, "full_name": str, "is_verified": bool}
+    Returns None when ALL sessions are exhausted / no sessions configured
+    (infrastructure failure — caller should NOT burn retry attempts).
+    Returns [] when sessions worked but the account has an empty following list
+    (genuine empty — caller may proceed to web search fallback).
     Sync function -- call from executor in async context.
 
     Retries across all available sessions: when a session returns 401 the
@@ -2407,7 +2475,8 @@ def get_ig_following(handle: str, max_results: int = 200) -> list[dict]:
     the new session and try again.
     """
     if not _ig_pool.get_current_session_id():
-        return []
+        log.warning("[BEM] No IG sessions configured — returning None (infra failure)")
+        return None
 
     # Try every available session before giving up.
     total_sessions = max(_ig_pool.get_status().get("total", 1), 1)
@@ -2489,8 +2558,8 @@ def get_ig_following(handle: str, max_results: int = 200) -> list[dict]:
         finally:
             client.close()
 
-    log.warning("[BEM] All %d session(s) exhausted for @%s -- returning empty following", total_sessions, handle)
-    return []
+    log.warning("[BEM] All %d session(s) exhausted for @%s -- returning None (infra failure)", total_sessions, handle)
+    return None
 
 
 def find_related_accounts_from_following(
@@ -2631,10 +2700,9 @@ def find_related_accounts_from_following(
 def fetch_bios_for_candidates(candidates: list[dict]) -> list[dict]:
     """Enrich each candidate dict with a ``bio`` field fetched from IG.
 
-    Makes one profile request per candidate (with a short delay between
-    requests to avoid rate-limiting).  If a profile fetch fails for any
-    reason the candidate is kept with ``bio=""`` so the LLM step can still
-    run without the information.
+    Uses a single authenticated session client shared across all handles.
+    Stops using the session immediately on the first 429 — bio is optional
+    for LLM accuracy, so missing bios are preferable to log spam.
 
     Returns a new list with the same candidates augmented by ``bio``.
     Sync function — call from executor in async context.
@@ -2642,46 +2710,45 @@ def fetch_bios_for_candidates(candidates: list[dict]) -> list[dict]:
     if not candidates:
         return candidates
 
+    # Bio enrichment requires a session; if none available, return immediately.
     if not _ig_pool.get_current_session_id():
-        log.debug("[BEM-Bio] No IG session available, skipping bio fetch")
+        log.info("[BEM-Bio] No session — skipping bio fetch for %d candidates", len(candidates))
         return [{**c, "bio": ""} for c in candidates]
 
-    client = _get_ig_web_client()
     enriched: list[dict] = []
-    _BIO_RETRY_DELAYS = [5, 15]  # seconds to wait before retry on 429
+    rate_limited = False  # once 429 seen, stop all further session calls
+
+    try:
+        client = _get_ig_web_client()
+    except RuntimeError:
+        log.info("[BEM-Bio] No session configured — skipping bio fetch")
+        return [{**c, "bio": ""} for c in candidates]
+
     try:
         for c in candidates:
             handle = c.get("handle", "")
             bio = ""
-            if handle:
-                # Retry loop: attempt once, then retry on 429 with backoff
-                for attempt, backoff in enumerate([0] + _BIO_RETRY_DELAYS):
-                    if backoff:
-                        log.warning(
-                            "[BEM-Bio] Rate limited on @%s, waiting %ds before retry (attempt %d/%d)",
-                            handle, backoff, attempt + 1, len(_BIO_RETRY_DELAYS) + 1,
-                        )
-                        _time.sleep(backoff)
-                    try:
-                        profile = _ig_web_fetch_profile(client, handle)
-                    except Exception as e:
-                        log.warning("[BEM-Bio] Exception fetching bio for @%s: %s", handle, e)
-                        profile = None
+            full_name_update = None
 
-                    if profile is not None:
-                        bio = profile.get("bio", "") or ""
-                        # Also back-fill full_name if it was empty
-                        if not c.get("full_name") and profile.get("full_name"):
-                            c = {**c, "full_name": profile["full_name"]}
-                        break  # success
-                    # profile is None: either 429, session error, or user not found
-                    # Only retry if it looks like rate limiting (we can't distinguish
-                    # 429 from 404 here since _ig_web_fetch_profile returns None for both).
-                    # Be conservative: retry at most len(_BIO_RETRY_DELAYS) times.
+            if handle and not rate_limited:
+                profile = _ig_web_fetch_profile(client, handle)
 
-                _time.sleep(2)  # polite delay between handles
+                if profile is None:
+                    # Session error (429 / 401 / suspended) — stop all further calls
+                    # to avoid cascading rate-limit hits.
+                    rate_limited = True
+                    log.warning("[BEM-Bio] Session error for @%s — stopping bio fetch", handle)
+                elif profile:  # non-empty dict = successful fetch
+                    bio = profile.get("bio", "") or ""
+                    if not c.get("full_name") and profile.get("full_name"):
+                        full_name_update = profile["full_name"]
+                    _time.sleep(2)  # polite delay between successful fetches
+                # else: {} = handle not found/private (404) — continue loop, bio stays ""
 
-            enriched.append({**c, "bio": bio})
+            updated = {**c, "bio": bio}
+            if full_name_update:
+                updated["full_name"] = full_name_update
+            enriched.append(updated)
     finally:
         client.close()
 

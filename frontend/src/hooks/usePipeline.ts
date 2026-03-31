@@ -151,6 +151,7 @@ export function usePauseBot() {
     onSuccess: () => {
       toast.success('Pipeline stopped — agents will finish current item and stop')
       queryClient.invalidateQueries({ queryKey: queryKeys.pipeline.status })
+      queryClient.invalidateQueries({ queryKey: queryKeys.control })
     },
     onError: () => {
       toast.error('Failed to pause pipeline')
@@ -165,6 +166,7 @@ export function useResumeBot() {
     onSuccess: () => {
       toast.success('Pipeline resumed')
       queryClient.invalidateQueries({ queryKey: queryKeys.pipeline.status })
+      queryClient.invalidateQueries({ queryKey: queryKeys.control })
     },
     onError: () => {
       toast.error('Failed to resume pipeline')

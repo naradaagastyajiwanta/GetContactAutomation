@@ -8,6 +8,7 @@ import {
   usePauseBot, useResumeBot,
   useProvinces,
 } from '../hooks/usePipeline'
+import { useControlStatus } from '../hooks/useControl'
 import { Spinner } from '../components/ui/Spinner'
 import { Select } from '../components/ui/Select'
 import { Button } from '../components/ui/Button'
@@ -270,8 +271,9 @@ export default function PipelinePage() {
   const collectUniv = useTriggerCollectUniversities()
   const pauseBot = usePauseBot()
   const resumeBot = useResumeBot()
+  const { data: controlStatus } = useControlStatus()
 
-  const isAnyAgentRunning = findHandles.isPending || discoverBem.isPending || scrapePosts.isPending || extractPhones.isPending || findRectors.isPending || collectUniv.isPending
+  const isBotPaused = controlStatus?.paused ?? false
 
   if (statusLoading) return <div className="flex h-64 items-center justify-center"><Spinner size="lg" /></div>
   if (!status) return null
@@ -293,7 +295,20 @@ export default function PipelinePage() {
           </p>
         </div>
         <div className="flex items-center gap-2">
-          {isAnyAgentRunning ? (
+          {isBotPaused ? (
+            <button
+              onClick={() => resumeBot.mutate()}
+              disabled={resumeBot.isPending}
+              className="flex h-8 items-center gap-1.5 rounded-full bg-emerald-50 px-3 text-xs font-medium text-emerald-600 transition-colors hover:bg-emerald-100 disabled:opacity-50 dark:bg-emerald-950/30 dark:text-emerald-400 dark:hover:bg-emerald-900/30"
+            >
+              {resumeBot.isPending ? (
+                <Loader2 className="h-3 w-3 animate-spin" />
+              ) : (
+                <RotateCcw className="h-3 w-3" />
+              )}
+              {resumeBot.isPending ? 'Resuming...' : 'Resume Pipeline'}
+            </button>
+          ) : (
             <button
               onClick={() => pauseBot.mutate()}
               disabled={pauseBot.isPending}
@@ -304,16 +319,7 @@ export default function PipelinePage() {
               ) : (
                 <Square className="h-3 w-3 fill-current" />
               )}
-              Stop Pipeline
-            </button>
-          ) : (
-            <button
-              onClick={() => resumeBot.mutate()}
-              disabled={resumeBot.isPending}
-              className="flex h-8 items-center gap-1.5 rounded-full bg-emerald-50 px-3 text-xs font-medium text-emerald-600 transition-colors hover:bg-emerald-100 disabled:opacity-50 dark:bg-emerald-950/30 dark:text-emerald-400 dark:hover:bg-emerald-900/30"
-            >
-              <RotateCcw className="h-3 w-3" />
-              Resume
+              {pauseBot.isPending ? 'Stopping...' : 'Stop Pipeline'}
             </button>
           )}
           <div className="flex h-8 items-center gap-1.5 rounded-full bg-emerald-50 px-3 dark:bg-emerald-950/30">

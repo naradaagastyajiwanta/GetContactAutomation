@@ -14,7 +14,7 @@ import re
 import httpx
 from openai import AsyncOpenAI
 
-from orchestrator.config import log, cfg
+from orchestrator.config import is_paused, log, cfg
 from orchestrator import duckduckgo_client
 from orchestrator.db import get_university_by_id, update_university_rector_name
 
@@ -397,6 +397,10 @@ async def run_rector_finder_batch(limit: int = 20) -> dict:
     Batch find rector names for universities that don't have one yet.
     Called by scheduler.
     """
+    if is_paused():
+        log.info("[Agent5] Bot is paused, skipping rector finder")
+        return {"checked": 0, "found": 0}
+
     from orchestrator.db import get_db, _rows_to_dicts
 
     async with get_db() as db:
@@ -413,6 +417,9 @@ async def run_rector_finder_batch(limit: int = 20) -> dict:
 
     found = 0
     for uni in universities:
+        if is_paused():
+            log.info("[Agent5] Bot paused during batch, stopping early")
+            break
         name = await find_rector_name(uni["id"])
         if name:
             found += 1

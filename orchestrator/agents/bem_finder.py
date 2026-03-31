@@ -23,6 +23,7 @@ from orchestrator.db import (
     add_related_ig,
     update_bem_handle,
     update_bem_discovery_status,
+    get_bem_discovery_attempts,
 )
 from orchestrator.instagram import (
     get_ig_following,
@@ -36,6 +37,10 @@ from orchestrator.instagram import (
 # Raised to 0.55 so only accounts with a clear university identifier
 # (acronym, location, or unique name word) in their username/bio are saved.
 _MIN_CONFIDENCE = 0.55
+
+# After this many failed attempts, give up and let the university proceed
+# to Agent 2 (scrape main IG only, no related IGs).
+_MAX_BEM_ATTEMPTS = 3
 
 
 async def _discover_bem_for_uni(uni: dict, loop) -> dict:
@@ -52,12 +57,39 @@ async def _discover_bem_for_uni(uni: dict, loop) -> dict:
         "related_accounts": [],
     }
 
-    async def _update_status_and_return(result_dict: dict, status_str: str) -> dict:
-        await update_bem_discovery_status(uni["id"], status_str)
-        # Advance funnel state if it was waiting at ig_found
-        if uni.get("status") == "ig_found":
+    async def _update_status_and_return(result_dict: dict, status_str: str, found: bool = False, skip_increment: bool = False) -> dict:
+        """Update bem_discovery_status and conditionally advance funnel state.
+
+        Rules:
+        - found=True         → status='discovered', advance universities.status to 'bem_discovered'
+        - found=False        → increment attempts counter (unless skip_increment=True)
+                              • attempts < _MAX_BEM_ATTEMPTS: keep universities.status at 'ig_found' (retry later)
+                              • attempts >= _MAX_BEM_ATTEMPTS: advance to 'bem_discovered' anyway
+                                (no BEM found after N tries — let Agent 2 scrape main IG only)
+        - skip_increment=True → infrastructure failure (session down), do NOT burn a retry attempt
+        """
+        await update_bem_discovery_status(uni["id"], status_str, increment_attempts=not found and not skip_increment)
+
+        should_advance = found
+        if not found:
+            attempts = await get_bem_discovery_attempts(uni["id"])
+            if not skip_increment and attempts >= _MAX_BEM_ATTEMPTS:
+                should_advance = True
+                log.warning(
+                    "[Agent4-BEM] %s: %d attempts with no BEM found (status=%s) — "
+                    "advancing to bem_discovered to unblock Agent 2",
+                    uni["name"], attempts, status_str,
+                )
+            else:
+                log.info(
+                    "[Agent4-BEM] %s: attempt %d/%d failed (status=%s, skip_increment=%s) — keeping ig_found for retry",
+                    uni["name"], attempts, _MAX_BEM_ATTEMPTS, status_str, skip_increment,
+                )
+
+        if should_advance and uni.get("status") == "ig_found":
             from orchestrator.db import update_university_status
             await update_university_status(uni["id"], "bem_discovered")
+
         return result_dict
 
     ig_handle = uni.get("ig_handle", "")
@@ -75,9 +107,20 @@ async def _discover_bem_for_uni(uni: dict, loop) -> dict:
     if following:
         await asyncio.sleep(3)
 
-    if not following:
-        log.info("[Agent4-BEM] Empty following for @%s (%s), trying web search fallback", ig_handle, uni["name"])
-        keyword_matches = await search_related_accounts_via_search(uni["name"])
+    if following is None:
+        # Infrastructure failure (all sessions down) — fallback to web search.
+        # Do NOT burn a retry attempt regardless of web search outcome.
+        log.warning("[Agent4-BEM] Session failure for @%s (%s) — falling back to web search (no retry burned)",
+                    ig_handle, uni["name"])
+
+    if following is None or not following:
+        # None  = IG session infra failure → try web search, skip_increment=True (don't burn retry)
+        # []    = genuine empty following  → try web search, skip_increment=False (counts as attempt)
+        is_infra_failure = following is None
+        if following == []:
+            log.info("[Agent4-BEM] Empty following for @%s (%s), trying web search fallback", ig_handle, uni["name"])
+
+        keyword_matches = await search_related_accounts_via_search(uni["name"], ig_handle=ig_handle)
         # Enrich candidates with bio before LLM
         keyword_matches = await loop.run_in_executor(None, fetch_bios_for_candidates, keyword_matches)
         related = await verify_related_accounts_with_llm(keyword_matches, uni["name"], ig_handle)
@@ -109,8 +152,12 @@ async def _discover_bem_for_uni(uni: dict, loop) -> dict:
                     acct["handle"], uni["name"], acct["confidence"],
                 )
 
-        status = "discovered" if result["related_igs_added"] > 0 else "no_following"
-        return await _update_status_and_return(result, status)
+        if result["related_igs_added"] > 0:
+            return await _update_status_and_return(result, "discovered", found=True, skip_increment=is_infra_failure)
+        else:
+            # No results from web search either
+            fallback_status = "session_error" if is_infra_failure else "no_following"
+            return await _update_status_and_return(result, fallback_status, found=False, skip_increment=is_infra_failure)
 
     log.info("[Agent4-BEM] @%s follows %d accounts", ig_handle, len(following))
 
@@ -120,7 +167,7 @@ async def _discover_bem_for_uni(uni: dict, loop) -> dict:
     if not keyword_matches:
         log.info("[Agent4-BEM] No related accounts found in @%s following for %s",
                  ig_handle, uni["name"])
-        return await _update_status_and_return(result, "not_found")
+        return await _update_status_and_return(result, "not_found", found=False)
 
     # Step 3: LLM verification — filter to only truly related accounts
     # Enrich candidates with bio before sending to LLM
@@ -129,7 +176,7 @@ async def _discover_bem_for_uni(uni: dict, loop) -> dict:
 
     if not related:
         log.info("[Agent4-BEM] LLM filtered out all candidates for %s", uni["name"])
-        return await _update_status_and_return(result, "not_found")
+        return await _update_status_and_return(result, "not_found", found=False)
 
     # Step 4: Save verified accounts
     bem_found = False
@@ -164,7 +211,7 @@ async def _discover_bem_for_uni(uni: dict, loop) -> dict:
     # (even if add_related_ig returned False due to duplicate records)
     is_discovered = bool(result["bem_handle"] or result["related_accounts"] or result["related_igs_added"] > 0)
     status = "discovered" if is_discovered else "not_found"
-    await _update_status_and_return(result, status)
+    await _update_status_and_return(result, status, found=is_discovered)
 
     log.info(
         "[Agent4-BEM] %s: %d new related IGs saved, %d total found (BEM: %s)",
@@ -185,6 +232,20 @@ async def run_bem_discovery_batch(limit: int = 30) -> dict:
     if is_paused():
         log.info("[Agent4-BEM] Bot is paused, skipping BEM discovery")
         return {"searched": 0, "found": 0, "details": []}
+
+    # Health gate: if all IG sessions are down and no web search key, skip the
+    # whole batch to avoid burning retry attempts on temporary infra failures.
+    # (Note: get_ig_following now returns None on session failure, so individuals
+    # already handle this — but skipping early avoids needless DB overhead.)
+    from orchestrator.instagram import get_ig_session_status
+    session_health = get_ig_session_status()
+    if session_health["healthy"] == 0 and not cfg.SERPER_API_KEY:
+        log.warning(
+            "[Agent4-BEM] All %d IG session(s) down and no Serper API key — "
+            "skipping batch to preserve retry slots",
+            session_health["total"],
+        )
+        return {"searched": 0, "found": 0, "details": [], "skipped": "no_session"}
 
     # Get last processed position for rolling
     last_id = int(cfg.AGENT_LAST_PROCESSED_UNIV_ID or 0)
@@ -217,6 +278,12 @@ async def run_bem_discovery_batch(limit: int = 30) -> dict:
             await asyncio.sleep(cfg.IG_REQUEST_DELAY_SECONDS)
         except Exception as e:
             log.error("[Agent4-BEM] Error for %s: %s", uni["name"], e, exc_info=True)
+            # Increment attempts so a persistent crash doesn't loop forever
+            try:
+                await update_bem_discovery_status(uni["id"], "error", increment_attempts=True)
+            except Exception as db_err:
+                log.error("[Agent4-BEM] Failed to update status after error for %s: %s", uni["name"], db_err)
+            last_processed_id = uni["id"]
 
     # Save rolling position
     from orchestrator.db import upsert_config

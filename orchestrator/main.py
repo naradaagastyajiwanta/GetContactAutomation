@@ -51,6 +51,7 @@ from orchestrator.db import (
     get_all_active_lessons,
     get_unprocessed_analyses,
     upsert_config,
+    get_all_config,
     delete_config as db_delete_config,
     create_conversation,
     update_conversation_state,
@@ -179,6 +180,15 @@ async def lifespan(app: FastAPI):
     await init_db()
     await cfg.init_from_db()
     log.info("Database initialized")
+
+    # Restore persistent pause state
+    try:
+        all_cfg = await get_all_config()
+        if all_cfg.get("BOT_PAUSED") == "true":
+            set_paused(True)
+            log.info("Bot started in PAUSED state (restored from DB)")
+    except Exception as e:
+        log.warning("Failed to restore pause state: %s", e)
 
     # Cleanup old API call logs
     try:
@@ -682,6 +692,9 @@ async def trigger_collect_universities(
             failed = 0
             details = []
             for u in universities:
+                if is_paused():
+                    log.info("[PDDIKTI] Bot paused during collection, stopping early")
+                    break
                 if is_duplicate(u["name"], existing_names):
                     continue
                 try:
@@ -1496,6 +1509,7 @@ async def trigger_followups(background_tasks: BackgroundTasks):
 async def pause_bot():
     """Pause automated outreach and auto-replies."""
     set_paused(True)
+    await upsert_config("BOT_PAUSED", "true")
     log.info("Bot PAUSED by operator")
     return {"paused": True}
 
@@ -1504,6 +1518,7 @@ async def pause_bot():
 async def resume_bot():
     """Resume automated outreach and auto-replies."""
     set_paused(False)
+    await upsert_config("BOT_PAUSED", "false")
     log.info("Bot RESUMED by operator")
     return {"paused": False}
 
