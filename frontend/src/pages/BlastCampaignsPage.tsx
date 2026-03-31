@@ -14,9 +14,11 @@ import {
   Clock,
   CheckCircle2,
   Send,
-  AlertCircle,
+  CalendarClock,
   Loader2,
   ChevronRight,
+  Sparkles,
+  RotateCw,
 } from 'lucide-react'
 import { cn } from '../lib/utils'
 import {
@@ -71,6 +73,29 @@ function ProgressBar({ sent, failed, total }: { sent: number; failed: number; to
         )}
       </div>
     </div>
+  )
+}
+
+function SafetyBadge({
+  icon: Icon,
+  label,
+  tone,
+}: {
+  icon: React.ElementType
+  label: string
+  tone: 'blue' | 'violet' | 'emerald'
+}) {
+  const tones = {
+    blue: 'bg-blue-50 text-blue-700 dark:bg-blue-900/30 dark:text-blue-300 border-blue-200 dark:border-blue-800',
+    violet: 'bg-violet-50 text-violet-700 dark:bg-violet-900/30 dark:text-violet-300 border-violet-200 dark:border-violet-800',
+    emerald: 'bg-emerald-50 text-emerald-700 dark:bg-emerald-900/30 dark:text-emerald-300 border-emerald-200 dark:border-emerald-800',
+  }
+
+  return (
+    <span className={cn('inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-[11px] font-medium', tones[tone])}>
+      <Icon className="h-3 w-3" />
+      {label}
+    </span>
   )
 }
 
@@ -261,6 +286,18 @@ function CampaignCard({
             {c.failed_count > 0 && <span className="text-red-500">{c.failed_count} failed</span>}
             <span>{c.device_id}</span>
             <span>{new Date(c.created_at).toLocaleDateString()}</span>
+          </div>
+
+          <div className="mt-2 flex flex-wrap gap-1.5">
+            {Boolean(c.schedule_enabled) && (
+              <SafetyBadge icon={CalendarClock} label="Scheduler on" tone="blue" />
+            )}
+            {Boolean(c.content_variation_enabled) && (
+              <SafetyBadge icon={Sparkles} label="Variation on" tone="violet" />
+            )}
+            {Boolean(c.auto_resume_enabled) && (
+              <SafetyBadge icon={RotateCw} label="Auto-resume on" tone="emerald" />
+            )}
           </div>
 
           {c.status === 'paused' && (c.paused_reason || resumeLabel) && (

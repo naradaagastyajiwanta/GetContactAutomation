@@ -41,48 +41,48 @@ export default function App() {
       <ThemeProvider>
         <ToastProvider>
           <WebSocketProvider>
-            <BrowserRouter>
-            <Suspense
-              fallback={
-                <div className="flex h-screen items-center justify-center">
-                  <Spinner size="lg" />
-                </div>
-              }
-            >
-              <Routes>
-                <Route element={<AppShell />}>
-                  <Route index element={<ErrorBoundary><DashboardPage /></ErrorBoundary>} />
-                  <Route path="universities" element={<ErrorBoundary><UniversitiesPage /></ErrorBoundary>} />
-                  <Route path="universities/:id" element={<ErrorBoundary><UniversityDetailPage /></ErrorBoundary>} />
-                  <Route path="pipeline" element={<ErrorBoundary><PipelinePage /></ErrorBoundary>} />
-                  <Route path="conversations" element={<ErrorBoundary><ConversationsPage /></ErrorBoundary>} />
-                  <Route path="conversations/:id" element={<ErrorBoundary><ConversationDetailPage /></ErrorBoundary>} />
-                  <Route path="learning" element={<ErrorBoundary><LearningPage /></ErrorBoundary>} />
-                  <Route path="whatsapp" element={<ErrorBoundary><WhatsAppPage /></ErrorBoundary>} />
-                  <Route path="audiensi" element={<ErrorBoundary><AudiensiQueuePage /></ErrorBoundary>} />
-                  <Route path="audiensi/:id" element={<ErrorBoundary><AudiensiDetailPage /></ErrorBoundary>} />
-                  <Route path="knowledge" element={<ErrorBoundary><KnowledgeBasePage /></ErrorBoundary>} />
-                  <Route path="api-logs" element={<ErrorBoundary><ApiLogsPage /></ErrorBoundary>} />
-                  <Route path="logs" element={<ErrorBoundary><LogsPage /></ErrorBoundary>} />
-                  <Route path="blast" element={<ErrorBoundary><BlastCampaignsPage /></ErrorBoundary>} />
-                  <Route path="blast/:id" element={<ErrorBoundary><BlastCampaignDetailPage /></ErrorBoundary>} />
-                  <Route path="email-blast" element={<ErrorBoundary><EmailBlastPage /></ErrorBoundary>} />
-                  <Route path="email-blast/:id" element={<ErrorBoundary><EmailBlastPage /></ErrorBoundary>} />
-                  <Route path="email-blast/inbox" element={<ErrorBoundary><EmailBlastPage /></ErrorBoundary>} />
-                  <Route path="email-blast/sent" element={<ErrorBoundary><EmailBlastPage /></ErrorBoundary>} />
-                  <Route path="email-blast/campaigns" element={<ErrorBoundary><EmailBlastPage /></ErrorBoundary>} />
-                  <Route path="email-blast/campaigns/:id" element={<ErrorBoundary><EmailBlastPage /></ErrorBoundary>} />
-                  <Route path="email-blast/settings" element={<ErrorBoundary><EmailBlastPage /></ErrorBoundary>} />
-                  <Route path="email-blast/letter-history" element={<ErrorBoundary><EmailBlastPage /></ErrorBoundary>} />
-                  <Route path="dms-schedules" element={<ErrorBoundary><DmsSchedulesPage /></ErrorBoundary>} />
-                  <Route path="dms-schedules/:id" element={<ErrorBoundary><DmsScheduleDetailPage /></ErrorBoundary>} />
-                  <Route path="crm" element={<ErrorBoundary><CrmPage /></ErrorBoundary>} />
-                  <Route path="crm/:id" element={<ErrorBoundary><CrmDetailPage /></ErrorBoundary>} />
-                  <Route path="university-groups" element={<ErrorBoundary><UniversityGroupsPage /></ErrorBoundary>} />
-                  <Route path="settings" element={<ErrorBoundary><SettingsPage /></ErrorBoundary>} />
-                </Route>
-              </Routes>
-            </Suspense>
+            <BrowserRouter future={{ v7_startTransition: true, v7_relativeSplatPath: true }}>
+              <Suspense
+                fallback={
+                  <div className="flex h-screen items-center justify-center">
+                    <Spinner size="lg" />
+                  </div>
+                }
+              >
+                <Routes>
+                  <Route element={<AppShell />}>
+                    <Route index element={<ErrorBoundary><DashboardPage /></ErrorBoundary>} />
+                    <Route path="universities" element={<ErrorBoundary><UniversitiesPage /></ErrorBoundary>} />
+                    <Route path="universities/:id" element={<ErrorBoundary><UniversityDetailPage /></ErrorBoundary>} />
+                    <Route path="pipeline" element={<ErrorBoundary><PipelinePage /></ErrorBoundary>} />
+                    <Route path="conversations" element={<ErrorBoundary><ConversationsPage /></ErrorBoundary>} />
+                    <Route path="conversations/:id" element={<ErrorBoundary><ConversationDetailPage /></ErrorBoundary>} />
+                    <Route path="learning" element={<ErrorBoundary><LearningPage /></ErrorBoundary>} />
+                    <Route path="whatsapp" element={<ErrorBoundary><WhatsAppPage /></ErrorBoundary>} />
+                    <Route path="audiensi" element={<ErrorBoundary><AudiensiQueuePage /></ErrorBoundary>} />
+                    <Route path="audiensi/:id" element={<ErrorBoundary><AudiensiDetailPage /></ErrorBoundary>} />
+                    <Route path="knowledge" element={<ErrorBoundary><KnowledgeBasePage /></ErrorBoundary>} />
+                    <Route path="api-logs" element={<ErrorBoundary><ApiLogsPage /></ErrorBoundary>} />
+                    <Route path="logs" element={<ErrorBoundary><LogsPage /></ErrorBoundary>} />
+                    <Route path="blast" element={<ErrorBoundary><BlastCampaignsPage /></ErrorBoundary>} />
+                    <Route path="blast/:id" element={<ErrorBoundary><BlastCampaignDetailPage /></ErrorBoundary>} />
+                    <Route path="email-blast" element={<ErrorBoundary><EmailBlastPage /></ErrorBoundary>} />
+                    <Route path="email-blast/:id" element={<ErrorBoundary><EmailBlastPage /></ErrorBoundary>} />
+                    <Route path="email-blast/inbox" element={<ErrorBoundary><EmailBlastPage /></ErrorBoundary>} />
+                    <Route path="email-blast/sent" element={<ErrorBoundary><EmailBlastPage /></ErrorBoundary>} />
+                    <Route path="email-blast/campaigns" element={<ErrorBoundary><EmailBlastPage /></ErrorBoundary>} />
+                    <Route path="email-blast/campaigns/:id" element={<ErrorBoundary><EmailBlastPage /></ErrorBoundary>} />
+                    <Route path="email-blast/settings" element={<ErrorBoundary><EmailBlastPage /></ErrorBoundary>} />
+                    <Route path="email-blast/letter-history" element={<ErrorBoundary><EmailBlastPage /></ErrorBoundary>} />
+                    <Route path="dms-schedules" element={<ErrorBoundary><DmsSchedulesPage /></ErrorBoundary>} />
+                    <Route path="dms-schedules/:id" element={<ErrorBoundary><DmsScheduleDetailPage /></ErrorBoundary>} />
+                    <Route path="crm" element={<ErrorBoundary><CrmPage /></ErrorBoundary>} />
+                    <Route path="crm/:id" element={<ErrorBoundary><CrmDetailPage /></ErrorBoundary>} />
+                    <Route path="university-groups" element={<ErrorBoundary><UniversityGroupsPage /></ErrorBoundary>} />
+                    <Route path="settings" element={<ErrorBoundary><SettingsPage /></ErrorBoundary>} />
+                  </Route>
+                </Routes>
+              </Suspense>
             </BrowserRouter>
           </WebSocketProvider>
         </ToastProvider>
