@@ -2223,91 +2223,23 @@ async def remove_ig_account(account_id: int):
 @app.post("/ig-accounts/{account_id}/login")
 async def ig_account_login(account_id: int):
     """
-    Start a headless login for an IG account.
-    Returns immediately with status: success | challenge | failed.
-    If challenge, includes session_id + screenshot for the FE to show.
+    Credential-based login is disabled.
     """
-    from orchestrator.db import get_ig_accounts, update_ig_account
-    rows = await get_ig_accounts()
-    acct_row = next((r for r in rows if r["id"] == account_id), None)
-    if not acct_row:
-        return JSONResponse(status_code=404, content={"detail": "Account not found"})
-
-    username = acct_row["username"]
-    password = acct_row["password"]
-
-    from orchestrator.playwright_ig import pw_headless_login, _account_pool, pw_invalidate_health_cache
-
-    loop = asyncio.get_running_loop()
-    result = await loop.run_in_executor(_pw_executor, pw_headless_login, username, password)
-
-    # Persist to DB
-    login_status = result["status"]  # "success", "challenge", "failed", or "ip_blocked"
-    now_ts = datetime.now(timezone.utc).isoformat()
-    db_status = ("success" if login_status == "success"
-                 else "challenge" if login_status == "challenge"
-                 else "failed")  # ip_blocked → stored as "failed" in DB
-    await update_ig_account(account_id, login_status=db_status, last_login_test=now_ts)
-
-    # Update pool
-    if login_status == "success":
-        with _account_pool._lock:
-            _account_pool._ensure_loaded()
-            for a in _account_pool._accounts:
-                if a.username == username:
-                    a.login_ok = True
-                    a.last_error = None
-                    break
-        pw_invalidate_health_cache()  # refresh health status
-    elif login_status in ("failed", "ip_blocked"):
-        _account_pool.mark_login_failed(username, result.get("message", ""))
-
-    await _reload_ig_account_pool()
-    return result
+    return JSONResponse(
+        status_code=410,
+        content={"detail": "Credential login disabled. Use /ig-accounts/{account_id}/session/import-cookies instead."},
+    )
 
 
 @app.post("/ig-accounts/{account_id}/login/challenge")
 async def ig_account_login_challenge(account_id: int, body: dict):
     """
-    Submit a verification code for an active challenge session.
-    Body: { "session_id": "...", "code": "123456" }
+    Challenge submission is disabled because credential login is disabled.
     """
-    session_id = body.get("session_id")
-    code = body.get("code")
-    if not session_id or not code:
-        return JSONResponse(status_code=400, content={"detail": "session_id and code are required"})
-
-    from orchestrator.db import get_ig_accounts, update_ig_account
-    rows = await get_ig_accounts()
-    acct_row = next((r for r in rows if r["id"] == account_id), None)
-    if not acct_row:
-        return JSONResponse(status_code=404, content={"detail": "Account not found"})
-
-    username = acct_row["username"]
-
-    from orchestrator.playwright_ig import pw_submit_challenge, _account_pool
-
-    loop = asyncio.get_running_loop()
-    result = await loop.run_in_executor(_pw_executor, pw_submit_challenge, session_id, code)
-
-    # Persist
-    login_status = result["status"]
-    now_ts = datetime.now(timezone.utc).isoformat()
-    await update_ig_account(account_id, login_status=login_status, last_login_test=now_ts)
-
-    if login_status == "success":
-        with _account_pool._lock:
-            _account_pool._ensure_loaded()
-            for a in _account_pool._accounts:
-                if a.username == username:
-                    a.login_ok = True
-                    a.last_error = None
-                    break
-    elif login_status == "failed":
-        _account_pool.mark_login_failed(username, result.get("message", ""))
-
-    await _reload_ig_account_pool()
-    return result
+    return JSONResponse(
+        status_code=410,
+        content={"detail": "Credential login challenge disabled. Import fresh cookies instead."},
+    )
 
 
 # ---- Legacy test-login endpoints (kept for backward compatibility) ----
@@ -2315,134 +2247,22 @@ async def ig_account_login_challenge(account_id: int, body: dict):
 @app.post("/ig-accounts/{account_id}/test-login")
 async def test_ig_account_login(account_id: int):
     """
-    Test whether the IG credentials for this account can successfully log in.
-    Runs Playwright in a thread-pool executor (blocking, ~10-30s).
+    Credential-based login testing is disabled.
     """
-    from orchestrator.db import get_ig_accounts, update_ig_account
-    rows = await get_ig_accounts()
-    acct_row = next((r for r in rows if r["id"] == account_id), None)
-    if not acct_row:
-        return JSONResponse(status_code=404, content={"detail": "Account not found"})
-
-    username = acct_row["username"]
-    password = acct_row["password"]
-
-    # Run blocking Playwright test in executor
-    from orchestrator.playwright_ig import pw_test_login
-    loop = asyncio.get_running_loop()
-    result = await loop.run_in_executor(None, pw_test_login, username, password)
-
-    # Persist result to DB
-    login_status = "success" if result["success"] else "failed"
-    now_ts = datetime.now(timezone.utc).isoformat()
-    await update_ig_account(
-        account_id,
-        login_status=login_status,
-        last_login_test=now_ts,
+    return JSONResponse(
+        status_code=410,
+        content={"detail": "Credential login testing disabled. Use session import and session verify endpoints instead."},
     )
-
-    # Update pool runtime state if applicable
-    from orchestrator.playwright_ig import _account_pool
-    if not result["success"]:
-        _account_pool.mark_login_failed(username, result.get("message", ""))
-    else:
-        # Restore login_ok if it was previously marked failed
-        with _account_pool._lock:
-            _account_pool._ensure_loaded()
-            for a in _account_pool._accounts:
-                if a.username == username:
-                    a.login_ok = True
-                    a.last_error = None
-                    break
-
-    await _reload_ig_account_pool()
-    return {"status": "ok", "result": result, "login_status": login_status}
 
 
 @app.get("/ig-accounts/{account_id}/test-login-live")
 async def test_ig_account_login_live(account_id: int):
     """
-    SSE endpoint: runs the login test with a *visible* browser and streams
-    live screenshot events to the frontend.
-
-    Event types pushed over SSE:
-      - ``status``      — progress text (no screenshot)
-      - ``screenshot``  — base64 JPEG screenshot + step name + message
-      - ``done``        — final result dict (test complete)
-      - ``result``      — DB-persisted result summary (very last event)
-
-    The frontend should connect via ``EventSource`` or ``fetch`` in
-    streaming mode and react to each event type.
+    Visible credential login testing is disabled.
     """
-    from orchestrator.db import get_ig_accounts, update_ig_account
-
-    rows = await get_ig_accounts()
-    acct_row = next((r for r in rows if r["id"] == account_id), None)
-    if not acct_row:
-        return JSONResponse(status_code=404, content={"detail": "Account not found"})
-
-    username = acct_row["username"]
-    password = acct_row["password"]
-
-    from orchestrator.playwright_ig import pw_test_login, _test_login_events, _account_pool
-
-    # Kick off the blocking pw_test_login in a *dedicated* thread-pool
-    # so it doesn't starve the default executor used by other requests.
-    loop = asyncio.get_running_loop()
-    task = loop.run_in_executor(
-        _pw_executor,
-        functools.partial(pw_test_login, username, password, live=True),
-    )
-
-    async def _event_stream():
-        seen = 0
-        done_result = None  # will hold the result dict from the "done" event
-        while done_result is None:
-            q = _test_login_events.get(username)
-            if q:
-                while seen < len(q):
-                    evt = q[seen]
-                    seen += 1
-                    yield f"data: {_json.dumps(evt, default=str)}\n\n"
-                    if evt.get("type") == "done":
-                        done_result = evt.get("result", {})
-            if done_result is None:
-                await asyncio.sleep(0.4)
-
-        # --- persist result to DB immediately (don't wait for browser cleanup) ---
-        login_status = "success" if done_result.get("success") else "failed"
-        now_ts = datetime.now(timezone.utc).isoformat()
-        await update_ig_account(
-            account_id,
-            login_status=login_status,
-            last_login_test=now_ts,
-        )
-        if not done_result.get("success"):
-            _account_pool.mark_login_failed(username, done_result.get("message", ""))
-        else:
-            with _account_pool._lock:
-                _account_pool._ensure_loaded()
-                for a in _account_pool._accounts:
-                    if a.username == username:
-                        a.login_ok = True
-                        a.last_error = None
-                        break
-        await _reload_ig_account_pool()
-
-        # Send final summary so FE can update its cache
-        yield f"data: {_json.dumps({'type': 'result', 'login_status': login_status, 'result': done_result}, default=str)}\n\n"
-
-        # Clean up event queue
-        _test_login_events.pop(username, None)
-
-    return StreamingResponse(
-        _event_stream(),
-        media_type="text/event-stream",
-        headers={
-            "Cache-Control": "no-cache",
-            "Connection": "keep-alive",
-            "X-Accel-Buffering": "no",
-        },
+    return JSONResponse(
+        status_code=410,
+        content={"detail": "Visible credential login testing disabled. Import cookies instead."},
     )
 
 

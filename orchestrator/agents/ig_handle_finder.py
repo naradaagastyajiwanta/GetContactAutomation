@@ -22,6 +22,7 @@ from orchestrator.instagram import (
     search_ig_handle,
     search_ig_handle_with_fallback,
     verify_ig_handle_with_fallback,
+    llm_verify_ig_handle,
 )
 
 
@@ -50,7 +51,20 @@ async def _search_handle_for_uni(uni: dict, loop) -> dict | None:
             None, verify_ig_handle_with_fallback, google_result["handle"], uni["name"]
         )
         fc = google_result["confidence"] + verification["confidence_boost"]
-        if fc >= 0.65:
+
+        # LLM final judge: confirm the handle truly belongs to this university
+        llm = await llm_verify_ig_handle(
+            google_result["handle"],
+            verification.get("bio", ""),
+            verification.get("full_name", ""),
+            uni["name"],
+        )
+        if llm["is_correct"] is False:
+            log.info(
+                "[Agent1] Tier1-Google @%s REJECTED by LLM for %s: %s — trying Tier 2",
+                google_result["handle"], uni["name"], llm["reason"],
+            )
+        elif fc >= 0.65:
             final_handle = google_result["handle"]
             final_confidence = fc
             final_source = "serper"
@@ -76,7 +90,20 @@ async def _search_handle_for_uni(uni: dict, loop) -> dict | None:
                 None, verify_ig_handle_with_fallback, ig_result["handle"], uni["name"]
             )
             fc = ig_result["confidence"] + verification["confidence_boost"]
-            if fc >= 0.55:
+
+            # LLM final judge
+            llm = await llm_verify_ig_handle(
+                ig_result["handle"],
+                verification.get("bio", ""),
+                verification.get("full_name", ""),
+                uni["name"],
+            )
+            if llm["is_correct"] is False:
+                log.info(
+                    "[Agent1] Tier2-IGWeb @%s REJECTED by LLM for %s: %s — trying Tier 3",
+                    ig_result["handle"], uni["name"], llm["reason"],
+                )
+            elif fc >= 0.55:
                 final_handle = ig_result["handle"]
                 final_confidence = fc
                 final_source = "ig_web"

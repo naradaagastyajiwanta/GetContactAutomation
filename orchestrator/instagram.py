@@ -1815,6 +1815,7 @@ def _verify_from_profile_data(handle: str, university_name: str, profile: dict) 
         "verified": verified,
         "confidence_boost": boost,
         "bio": profile.get("bio", ""),
+        "full_name": profile.get("full_name", ""),
         "reason": reason_str,
     }
 
@@ -2230,12 +2231,10 @@ async def search_related_accounts_via_search(
     """
     # Relation types to search — only high-priority to limit DDG queries
     _TYPE_QUERIES: dict[str, list[str]] = {
+        "fakultas":      ["Fakultas"],
         "bem":           ["BEM"],
+        "senat":         ["Senat"],
         "humas":         ["Humas"],
-        "kemahasiswaan": ["Kemahasiswaan"],
-        "alumni":        ["Alumni"],
-        "lppm":          ["LPPM"],
-        "pmb":           ["PMB"],
     }
 
     # Build acronym (e.g. "Universitas Ahmad Dahlan" → "UAD")
@@ -2616,11 +2615,6 @@ def find_related_accounts_from_following(
           "dpm_", "dpm.", "dpmmhs", "legislatif_"], "senat"),
         # TIER 4 — HUMAS (public relations)
         (["humas", "humasuniv", "humas_", "public_relation"], "humas"),
-        # Other relation types (lower priority)
-        (["pmb_", "pmb.", "pmbuniv", "admisi", "admission", "pendaftaran"], "pmb"),
-        (["kemahasiswaan", "kemahasiswaanuniv", "kemhs"], "kemahasiswaan"),
-        (["alumni_", "alumni.", "alumniassoc", "ika_"], "alumni"),
-        (["lppm", "lp2m", "penelitian"], "lppm"),
     ]
 
     _BIO_KEYWORDS: dict[str, list[str]] = {
@@ -2630,10 +2624,6 @@ def find_related_accounts_from_following(
         "senat": ["senat mahasiswa", "dewan perwakilan mahasiswa", "dpm ",
                   "legislatif mahasiswa", "majelis permusyawaratan"],
         "humas": ["humas", "public relation", "kehumasan", "informasi publik"],
-        "pmb": ["penerimaan mahasiswa", "pendaftaran", "admission"],
-        "kemahasiswaan": ["kemahasiswaan", "student affair"],
-        "alumni": ["alumni", "ikatan alumni"],
-        "lppm": ["penelitian", "pengabdian", "research"],
     }
 
     uni_lower = university_name.lower()
@@ -2723,11 +2713,12 @@ def find_related_accounts_from_following(
 
 
 def fetch_bios_for_candidates(candidates: list[dict]) -> list[dict]:
-    """Enrich each candidate dict with a ``bio`` field fetched from IG.
+    """Enrich candidate dicts with bios for better LLM verification.
 
-    Uses a single authenticated session client shared across all handles.
-    Stops using the session immediately on the first 429 — bio is optional
-    for LLM accuracy, so missing bios are preferable to log spam.
+    Strategy:
+      1. Only enrich the top-ranked candidates to reduce IG pressure.
+      2. Prefer Playwright profile fetch (more ban-resistant).
+      3. Fall back to session-cookie API only for unresolved top candidates.
 
     Returns a new list with the same candidates augmented by ``bio``.
     Sync function — call from executor in async context.
@@ -2735,50 +2726,87 @@ def fetch_bios_for_candidates(candidates: list[dict]) -> list[dict]:
     if not candidates:
         return candidates
 
-    # Bio enrichment requires a session; if none available, return immediately.
-    if not _ig_pool.get_current_session_id():
-        log.info("[BEM-Bio] No session — skipping bio fetch for %d candidates", len(candidates))
-        return [{**c, "bio": ""} for c in candidates]
+    max_candidates = min(len(candidates), 3)
+    playwright_enabled = playwright_ig.is_available()
+    session_enabled = bool(_ig_pool.get_current_session_id())
 
-    enriched: list[dict] = []
-    rate_limited = False  # once 429 seen, stop all further session calls
+    enriched: list[dict] = [{**c, "bio": c.get("bio", "") or ""} for c in candidates]
+    unresolved_indexes = list(range(max_candidates))
+    playwright_hits = 0
+    session_hits = 0
 
-    try:
-        client = _get_ig_web_client()
-    except RuntimeError:
-        log.info("[BEM-Bio] No session configured — skipping bio fetch")
-        return [{**c, "bio": ""} for c in candidates]
+    if playwright_enabled:
+        next_unresolved: list[int] = []
+        for idx in unresolved_indexes:
+            candidate = enriched[idx]
+            handle = candidate.get("handle", "")
+            if not handle:
+                continue
 
-    try:
-        for c in candidates:
-            handle = c.get("handle", "")
-            bio = ""
-            full_name_update = None
+            profile = playwright_ig.pw_get_profile(handle)
+            if not profile:
+                next_unresolved.append(idx)
+                continue
 
-            if handle and not rate_limited:
-                profile = _ig_web_fetch_profile(client, handle)
+            bio = profile.get("bio", "") or ""
+            full_name = profile.get("full_name", "") or ""
+            external_url = profile.get("external_url", "") or ""
+            if bio:
+                candidate["bio"] = bio
+                playwright_hits += 1
+            if full_name and not candidate.get("full_name"):
+                candidate["full_name"] = full_name
+            if external_url and not candidate.get("external_url"):
+                candidate["external_url"] = external_url
 
-                if profile is None:
-                    # Session error (429 / 401 / suspended) — stop all further calls
-                    # to avoid cascading rate-limit hits.
-                    rate_limited = True
-                    log.warning("[BEM-Bio] Session error for @%s — stopping bio fetch", handle)
-                elif profile:  # non-empty dict = successful fetch
+            if not bio and not full_name:
+                next_unresolved.append(idx)
+
+        unresolved_indexes = next_unresolved
+
+    if unresolved_indexes and session_enabled:
+        rate_limited = False
+        try:
+            client = _get_ig_web_client()
+        except RuntimeError:
+            client = None
+
+        if client is not None:
+            try:
+                for idx in unresolved_indexes:
+                    candidate = enriched[idx]
+                    handle = candidate.get("handle", "")
+                    if not handle or rate_limited:
+                        continue
+
+                    profile = _ig_web_fetch_profile(client, handle)
+                    if profile is None:
+                        # Stop after the first session-side 429/401 to avoid cascading limits.
+                        rate_limited = True
+                        log.warning("[BEM-Bio] Session error for @%s — stopping session fallback", handle)
+                        continue
+                    if not profile:
+                        continue
+
                     bio = profile.get("bio", "") or ""
-                    if not c.get("full_name") and profile.get("full_name"):
-                        full_name_update = profile["full_name"]
-                    _time.sleep(2)  # polite delay between successful fetches
-                # else: {} = handle not found/private (404) — continue loop, bio stays ""
-
-            updated = {**c, "bio": bio}
-            if full_name_update:
-                updated["full_name"] = full_name_update
-            enriched.append(updated)
-    finally:
-        client.close()
+                    full_name = profile.get("full_name", "") or ""
+                    external_url = profile.get("external_url", "") or ""
+                    if bio:
+                        candidate["bio"] = bio
+                        session_hits += 1
+                    if full_name and not candidate.get("full_name"):
+                        candidate["full_name"] = full_name
+                    if external_url and not candidate.get("external_url"):
+                        candidate["external_url"] = external_url
+                    _time.sleep(2)
+            finally:
+                client.close()
 
     fetched = sum(1 for c in enriched if c.get("bio"))
-    log.info("[BEM-Bio] Fetched bio for %d/%d candidates", fetched, len(enriched))
+    log.info(
+        "[BEM-Bio] Fetched bio for %d/%d candidates (top=%d, playwright=%d, session=%d)",
+        fetched, len(enriched), max_candidates, playwright_hits, session_hits,
+    )
     return enriched
 
 
@@ -2844,7 +2872,7 @@ Candidate accounts:
 
 For each candidate, return:
 - is_related: true/false — is this account genuinely affiliated with {university_name}?
-- relation_type: one of "fakultas", "bem", "senat", "humas", "pmb", "kemahasiswaan", "alumni", "lppm"
+- relation_type: one of "fakultas", "bem", "senat", "humas"
 - confidence: 0.0–1.0 — how confident are you?
 
 Return a JSON array (same order as input):
@@ -2902,6 +2930,74 @@ Return a JSON array (same order as input):
         )
         # Graceful fallback: return original candidates if LLM fails
         return candidates
+
+
+async def llm_verify_ig_handle(handle: str, bio: str, full_name: str, university_name: str) -> dict:
+    """Use GPT-4o-mini to decide if an IG account is the official account for a university.
+
+    Called after rule-based scoring — acts as a final judge before accepting a handle.
+    Only meaningful when bio or full_name is available; skipped otherwise.
+
+    Returns:
+        {
+            "is_correct": True | False | None,
+                # True  → LLM confirms this is the right account
+                # False → LLM rejects, caller should try next tier
+                # None  → not enough data or LLM error → caller falls back to threshold
+            "confidence": float (0.0–1.0),
+            "reason": str,
+        }
+    """
+    if not bio.strip() and not full_name.strip():
+        log.debug("[LLM-Verify] @%s — no bio/full_name, skipping LLM", handle)
+        return {"is_correct": None, "confidence": 0.0, "reason": "no bio or full_name to verify"}
+
+    client = _get_openai()
+
+    user_prompt = (
+        f"University: {university_name}\n"
+        f"Instagram account:\n"
+        f"- Handle: @{handle}\n"
+        f'- Full name: "{full_name}"\n'
+        f'- Bio: "{bio}"\n\n'
+        f"Is @{handle} the OFFICIAL Instagram account for {university_name}?\n"
+        f'Answer JSON: {{"is_correct": true/false, "confidence": 0.0-1.0, "reason": "brief explanation"}}'
+    )
+
+    try:
+        response = await client.chat.completions.create(
+            model="gpt-4o-mini",
+            messages=[
+                {
+                    "role": "system",
+                    "content": (
+                        "You are an expert at identifying official Indonesian university Instagram accounts. "
+                        "Decide if the given account is the main official IG for that specific university. "
+                        "Be strict: reject fan pages, subsidiary units (clinic, BEM, faculty), or lookalike accounts. "
+                        "Respond ONLY with valid JSON — no markdown, no explanation."
+                    ),
+                },
+                {"role": "user", "content": user_prompt},
+            ],
+            temperature=0,
+            max_tokens=120,
+            response_format={"type": "json_object"},
+        )
+        raw = response.choices[0].message.content or ""
+        data = json.loads(raw)
+        result = {
+            "is_correct": bool(data.get("is_correct", False)),
+            "confidence": float(data.get("confidence", 0.0)),
+            "reason": data.get("reason", ""),
+        }
+        log.info(
+            "[LLM-Verify] @%s for '%s': is_correct=%s (conf=%.2f) — %s",
+            handle, university_name[:40], result["is_correct"], result["confidence"], result["reason"],
+        )
+        return result
+    except Exception as e:
+        log.warning("[LLM-Verify] Failed for @%s (%s): %s", handle, university_name[:40], e)
+        return {"is_correct": None, "confidence": 0.0, "reason": f"llm_error: {e}"}
 
 
 # Backward-compatible aliases

@@ -103,9 +103,9 @@ async def _discover_bem_for_uni(uni: dict, loop) -> dict:
         None, get_ig_following, ig_handle, 300
     )
 
-    # Cool-down after following fetch to avoid 429 on immediate bio requests
+    # Cool-down after following fetch to avoid immediate 429 on profile lookups.
     if following:
-        await asyncio.sleep(3)
+        await asyncio.sleep(max(6, int(cfg.IG_REQUEST_DELAY_SECONDS) * 2))
 
     if following is None:
         # Infrastructure failure (all sessions down) — fallback to web search.
@@ -175,8 +175,13 @@ async def _discover_bem_for_uni(uni: dict, loop) -> dict:
     related = await verify_related_accounts_with_llm(keyword_matches, uni["name"], ig_handle)
 
     if not related:
-        log.info("[Agent4-BEM] LLM filtered out all candidates for %s", uni["name"])
-        return await _update_status_and_return(result, "not_found", found=False)
+        log.info("[Agent4-BEM] LLM filtered out all candidates for %s — falling back to web search", uni["name"])
+        keyword_matches = await search_related_accounts_via_search(uni["name"], ig_handle=ig_handle)
+        keyword_matches = await loop.run_in_executor(None, fetch_bios_for_candidates, keyword_matches)
+        related = await verify_related_accounts_with_llm(keyword_matches, uni["name"], ig_handle)
+        if not related:
+            log.info("[Agent4-BEM] Web search fallback also found nothing for %s", uni["name"])
+            return await _update_status_and_return(result, "not_found", found=False)
 
     # Step 4: Save verified accounts
     bem_found = False
@@ -210,6 +215,39 @@ async def _discover_bem_for_uni(uni: dict, loop) -> dict:
     # Status = discovered if we found a BEM handle OR any related accounts
     # (even if add_related_ig returned False due to duplicate records)
     is_discovered = bool(result["bem_handle"] or result["related_accounts"] or result["related_igs_added"] > 0)
+    if not is_discovered:
+        # All LLM-verified candidates scored below MIN_CONFIDENCE → try web search fallback
+        log.info(
+            "[Agent4-BEM] All candidates below confidence threshold for %s — falling back to web search",
+            uni["name"],
+        )
+        fallback_matches = await search_related_accounts_via_search(uni["name"], ig_handle=ig_handle)
+        fallback_matches = await loop.run_in_executor(None, fetch_bios_for_candidates, fallback_matches)
+        fallback_related = await verify_related_accounts_with_llm(fallback_matches, uni["name"], ig_handle)
+        for acct in fallback_related:
+            if acct["confidence"] < _MIN_CONFIDENCE:
+                continue
+            added = await add_related_ig(
+                university_id=uni["id"],
+                ig_handle=acct["handle"],
+                relation_type=acct["relation_type"],
+                source="web_search",
+                confidence=acct["confidence"],
+            )
+            if added:
+                result["related_igs_added"] += 1
+                result["related_accounts"].append(
+                    f"@{acct['handle']} ({acct['relation_type']}, {acct['confidence']:.0%})"
+                )
+            if acct["relation_type"] == "bem" and not result["bem_handle"]:
+                result["bem_handle"] = acct["handle"]
+                await update_bem_handle(uni["id"], acct["handle"])
+                log.info(
+                    "[Agent4-BEM] Web fallback found BEM @%s for %s (confidence: %.2f)",
+                    acct["handle"], uni["name"], acct["confidence"],
+                )
+        is_discovered = bool(result["bem_handle"] or result["related_igs_added"] > 0)
+
     status = "discovered" if is_discovered else "not_found"
     await _update_status_and_return(result, status, found=is_discovered)
 

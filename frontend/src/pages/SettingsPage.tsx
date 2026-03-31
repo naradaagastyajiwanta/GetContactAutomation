@@ -5,6 +5,7 @@ import { HealthStatus } from '../components/settings/HealthStatus'
 import { ConfigDisplay } from '../components/settings/ConfigDisplay'
 import { ExportSection } from '../components/settings/ExportSection'
 import { IGSessionUploader } from '../components/settings/IGSessionUploader'
+import { IGAccountsManager } from '../components/settings/IGAccountsManager'
 
 const SECTIONS: SectionItem[] = [
   { id: 'control', label: 'Control', icon: <Settings className="h-4 w-4" /> },
@@ -30,7 +31,8 @@ export default function SettingsPage() {
 
       <section id="settings-health" />
 
-      <section id="settings-instagram">
+      <section id="settings-instagram" className="space-y-4">
+        <IGAccountsManager />
         <IGSessionUploader />
       </section>
 

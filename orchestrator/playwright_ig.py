@@ -164,8 +164,9 @@ class _IGAccountPool:
     """
     Thread-safe pool of IG accounts for round-robin rotation.
 
-    Reads accounts from ``PW_IG_ACCOUNTS`` (comma-separated ``user:pass``).
-    Falls back to single ``IG_USERNAME`` / ``IG_PASSWORD`` env vars.
+    Reads account labels from the DB-backed IG accounts table.
+    Password fields may still exist in the schema for legacy reasons,
+    but runtime scraping no longer uses username/password login.
     """
 
     def __init__(self):
@@ -203,22 +204,15 @@ class _IGAccountPool:
             for r in rows:
                 u = r.get("username", "").strip()
                 p = r.get("password", "").strip()
-                if u and p:
+                if u:
                     self._accounts.append(_IGAccount(u, p))
             if self._accounts:
                 log.info("[AccountPool] Loaded %d IG accounts from DB", len(self._accounts))
         except Exception as exc:
-            log.debug("[AccountPool] Could not load from DB (%s), falling back to env", exc)
+            log.debug("[AccountPool] Could not load from DB (%s)", exc)
 
         if not self._accounts:
-            # Fallback to single account from env
-            u = getattr(cfg, "IG_USERNAME", "") or os.environ.get("IG_USERNAME", "")
-            p = getattr(cfg, "IG_PASSWORD", "") or os.environ.get("IG_PASSWORD", "")
-            if u and p:
-                self._accounts.append(_IGAccount(u, p))
-                log.info("[AccountPool] Using single IG account (@%s) from IG_USERNAME", u)
-            else:
-                log.warning("[AccountPool] No IG accounts configured — add them via Settings dashboard")
+            log.warning("[AccountPool] No IG browser profiles configured — import cookies via Settings dashboard")
 
     def next_account(self) -> _IGAccount | None:
         """
@@ -513,12 +507,11 @@ class _PlaywrightBrowser:
 
     def ensure_logged_in(self) -> bool:
         """
-        Check if we have a valid IG session.  If not, attempt login using
-        the account's credentials (or IG_USERNAME / IG_PASSWORD fallback).
-        Returns True if logged in.
+        Check if we have a valid IG session from persistent/imported cookies.
+        Runtime username/password login is intentionally disabled.
 
-        The persistent browser context stores cookies so login only happens
-        once; subsequent runs reuse the session automatically.
+        Returns True only when the browser profile already contains a valid
+        Instagram session cookie set.
         """
         # Quick check: navigate to IG home and see if we're redirected to login
         try:
@@ -538,111 +531,16 @@ class _PlaywrightBrowser:
                 return True
             # URL is not /accounts/login but no session cookies — IG may be showing
             # a login overlay or we're on a non-login page without auth.
-            log.info("[Playwright] On %s but no session cookies — navigating to login page", url)
-            try:
-                self._page.goto("https://www.instagram.com/accounts/login/", wait_until="domcontentloaded", timeout=20000)
-                _time.sleep(3)
-            except Exception as e:
-                log.warning("[Playwright] Could not navigate to login page: %s", e)
-                return False
-
-        # Determine credentials
-        if self._account:
-            username = self._account.username
-            password = self._account.password
+            log.info("[Playwright] On %s but no session cookies — cookie import required", url)
         else:
-            username = getattr(cfg, "IG_USERNAME", "") or os.environ.get("IG_USERNAME", "")
-            password = getattr(cfg, "IG_PASSWORD", "") or os.environ.get("IG_PASSWORD", "")
+            log.info("[Playwright] On login page with no valid cookies — cookie import required")
 
-        if not username or not password:
-            log.warning("[Playwright] Login required but IG_USERNAME/IG_PASSWORD not configured")
-            _pw_status["error"] = "login_required_no_credentials"
-            return False
-
-        log.info("[Playwright] Logging in as %s ...", username)
-        self._take_screenshot("login_form", f"Login page for @{username}")
-
-        try:
-            # Wait for login form
-            self._page.wait_for_selector('input[name="username"], input[name="email"]', timeout=10000)
-            _short_delay()
-
-            # Fill username
-            uname_input = self._page.locator('input[name="username"], input[name="email"]').first
-            uname_input.click()
-            _time.sleep(random.uniform(0.3, 0.8))
-            for ch in username:
-                uname_input.type(ch, delay=random.randint(40, 120))
-                _time.sleep(random.uniform(0.02, 0.08))
-
-            _time.sleep(random.uniform(0.5, 1.2))
-
-            # Fill password
-            pwd_input = self._page.locator('input[name="password"], input[name="pass"]').first
-            pwd_input.click()
-            _time.sleep(random.uniform(0.3, 0.8))
-            for ch in password:
-                pwd_input.type(ch, delay=random.randint(40, 120))
-                _time.sleep(random.uniform(0.02, 0.08))
-
-            _time.sleep(random.uniform(0.5, 1.5))
-
-            self._take_screenshot("credentials_filled", "Credentials entered, clicking login...")
-
-            # Click login button
-            login_btn = self._page.locator('button[type="submit"]').first
-            login_btn.click()
-
-            # Wait for navigation away from login page
-            _time.sleep(5)
-            self._take_screenshot("after_submit", "Login submitted, waiting for response...")
-
-            # Handle "Save Login Info" / "Not Now" popups
-            for _ in range(3):
-                try:
-                    not_now = self._page.locator('text="Not Now"').first
-                    if not_now.is_visible(timeout=3000):
-                        not_now.click()
-                        _time.sleep(2)
-                except Exception:
-                    break
-
-            url = self._page.url.lower()
-            if "/accounts/login" in url or "/challenge/" in url:
-                log.warning("[Playwright] Login failed or challenge required (URL: %s)", self._page.url)
-                _pw_status["error"] = "login_failed_or_challenge"
-                if self._account:
-                    self._account.mark_login_failed("login_failed_or_challenge")
-                return False
-
-            # Check for other suspicious pages (suspended, consent, etc.)
-            if any(s in url for s in ("/accounts/suspended", "/accounts/consent",
-                                      "/accounts/onetap", "/_n/noscript/")):
-                log.warning("[Playwright] Post-login page suggests issue (URL: %s)", self._page.url)
-                _pw_status["error"] = f"post_login_page: {self._page.url}"
-                if self._account:
-                    self._account.mark_login_failed(f"post_login_page: {url}")
-                return False
-
-            # Verify cookies are actually set
-            if not self._verify_session_cookies():
-                log.warning("[Playwright] Login form submitted but session cookies missing for @%s (URL: %s)",
-                            username, self._page.url)
-                _pw_status["error"] = "login_ok_but_cookies_missing"
-                if self._account:
-                    self._account.mark_login_failed("login_ok_but_cookies_missing")
-                return False
-
-            log.info("[Playwright] Login successful as @%s! Session will persist.", username)
-            self._take_screenshot("login_success", f"Logged in as @{username}")
-            return True
-
-        except Exception as e:
-            log.warning("[Playwright] Login error: %s: %s", type(e).__name__, e)
-            _pw_status["error"] = f"login_error: {type(e).__name__}"
-            if self._account:
-                self._account.mark_login_failed(f"login_error: {type(e).__name__}")
-            return False
+        acct_label = self._account.username if self._account else "(legacy)"
+        self._take_screenshot("cookie_required", f"Instagram session missing for @{acct_label}. Import fresh cookies.")
+        _pw_status["error"] = "cookie_required"
+        if self._account:
+            self._account.mark_login_failed("cookie_required")
+        return False
 
     def wait_for_manual_login(self, timeout: int = 180) -> bool:
         """
@@ -1696,32 +1594,17 @@ def pw_invalidate_health_cache() -> None:
 
 def pw_headless_login(username: str, password: str) -> dict:
     """
-    Attempt headless login for an IG account.
-    Runs in a fresh thread to avoid asyncio loop conflicts.
+    Credential-based headless login is disabled.
 
     Returns dict with keys: status, message, session_id, screenshot, details
     """
-    result_holder: list[dict | None] = [None]
-    error_holder: list[BaseException | None] = [None]
-    details_fallback: dict = {"cookies": {}, "final_url": "", "profile_nuked": False}
-
-    def _worker() -> None:
-        try:
-            result_holder[0] = _headless_login_impl(username, password)
-        except BaseException as exc:
-            error_holder[0] = exc
-
-    t = _threading.Thread(target=_worker, daemon=True, name=f"pw-hlogin-{username}")
-    t.start()
-    t.join(timeout=120)
-
-    if error_holder[0] is not None:
-        return {"status": "failed", "message": f"Error: {error_holder[0]}",
-                "session_id": None, "screenshot": None, "details": details_fallback}
-    if result_holder[0] is None:
-        return {"status": "failed", "message": f"Login timed out for @{username}.",
-                "session_id": None, "screenshot": None, "details": details_fallback}
-    return result_holder[0]
+    return {
+        "status": "failed",
+        "message": f"Credential login disabled for @{username}. Import Instagram cookies instead.",
+        "session_id": None,
+        "screenshot": None,
+        "details": {"cookies": {}, "final_url": "", "profile_nuked": False},
+    }
 
 
 def _submit_challenge_impl(session_id: str, code: str) -> dict:
@@ -2001,7 +1884,7 @@ def _pw_test_login_impl(username: str, password: str, *, live: bool = False) -> 
                                 message="Browser opened — please log in manually in the browser window.")
                     logged_in = browser.wait_for_manual_login(timeout=180)
                 else:
-                    _emit_event(username, "status", message="Browser opened, auto-logging in...")
+                    _emit_event(username, "status", message="Browser opened — checking imported cookies...")
                     logged_in = browser.ensure_logged_in()
 
                 details["cookies"] = browser._get_ig_cookies()
@@ -2009,14 +1892,18 @@ def _pw_test_login_impl(username: str, password: str, *, live: bool = False) -> 
 
                 if not logged_in:
                     browser._take_screenshot("login_failed", "Login failed or timed out")
-                    if not live:
+                    reason = _pw_status.get("error", "timeout" if live else "unknown")
+                    if not live and reason != "cookie_required":
                         _nuke_profile(acct)
                         details["profile_nuked"] = True
-                    reason = _pw_status.get("error", "timeout" if live else "unknown")
                     msg = (
                         f"Login timed out for @{username}. Please try again."
                         if live
-                        else f"Login failed for @{username}: {reason}. Browser profile wiped for fresh retry."
+                        else (
+                            f"Cookie session missing/invalid for @{username}. Import fresh Instagram cookies."
+                            if reason == "cookie_required"
+                            else f"Login failed for @{username}: {reason}. Browser profile wiped for fresh retry."
+                        )
                     )
                     return {"success": False, "message": msg, "details": details}
 
