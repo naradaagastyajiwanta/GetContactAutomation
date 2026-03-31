@@ -148,6 +148,8 @@ class _IGAccount:
 
     def mark_rate_limited(self, cooldown_minutes: int = 30) -> None:
         self.rate_limited_until = _time.time() + cooldown_minutes * 60
+        self.login_ok = True
+        self.last_error = "rate_limited"
         log.warning(
             "[AccountPool] @%s rate-limited, cooldown %d min (until %s)",
             self.username, cooldown_minutes,
@@ -262,6 +264,16 @@ class _IGAccountPool:
             for a in self._accounts:
                 if a.username == username:
                     a.mark_login_failed(error)
+                    return
+
+    def mark_connected(self, username: str) -> None:
+        with self._lock:
+            self._ensure_loaded()
+            for a in self._accounts:
+                if a.username == username:
+                    a.login_ok = True
+                    a.last_error = None
+                    a.rate_limited_until = 0.0
                     return
 
     def status(self) -> list[dict]:
@@ -1569,12 +1581,9 @@ def pw_verify_all_sessions() -> list[dict]:
         # Update pool state based on result
         status = result.get("status")
         if status == "connected":
-            with _account_pool._lock:
-                for a in _account_pool._accounts:
-                    if a.username == username:
-                        a.login_ok = True
-                        a.last_error = None
-                        break
+            _account_pool.mark_connected(username)
+        elif status == "rate_limited":
+            _account_pool.mark_rate_limited(username)
         elif status in ("disconnected", "banned"):
             _account_pool.mark_login_failed(
                 username, result.get("reason", status))
@@ -2034,99 +2043,202 @@ def pw_search_profiles(query: str, max_results: int = 10) -> list[dict]:
     if not is_available():
         return []
 
-    account = _account_pool.next_account()
-    results = []
+    max_account_retries = 3
+    account_attempts = 0
+    last_error = ""
 
-    try:
-        with _PlaywrightBrowser(account=account) as browser:
-            # Ensure we have a logged-in session
-            if not browser.ensure_logged_in():
-                log.warning("[Playwright] Cannot search — not logged in")
-                return []
+    while account_attempts < max_account_retries:
+        account = _account_pool.next_account()
+        if account is None:
+            log.warning("[Playwright] No healthy IG accounts available for search '%s'", query[:50])
+            break
 
-            _human_delay(3, 6)
+        account_attempts += 1
+        acct_label = account.username
+        results = []
 
-            # Click search icon/bar
-            try:
-                search_btn = browser.page.locator('[aria-label="Search"]').first
-                if search_btn.is_visible(timeout=5000):
-                    search_btn.click()
+        try:
+            with _PlaywrightBrowser(account=account) as browser:
+                # Ensure we have a logged-in session
+                if not browser.ensure_logged_in():
+                    log.warning("[Playwright] Cannot search as @%s — not logged in", acct_label)
+                    last_error = "not_logged_in"
+                    continue
+
+                _human_delay(3, 6)
+
+                # Prefer the same IG topsearch endpoint used by the web app.
+                try:
+                    import urllib.parse
+
+                    api_url = (
+                        "https://www.instagram.com/web/search/topsearch/"
+                        f"?context=user&query={urllib.parse.quote(query)}"
+                    )
+                    resp = browser.ig_api_fetch(api_url)
+                    if resp and not resp.get("__error"):
+                        users = resp.get("users") or []
+                        seen = set()
+                        for item in users:
+                            user = item.get("user") or {}
+                            username = (user.get("username") or "").strip().lower()
+                            if not username or username in seen:
+                                continue
+                            seen.add(username)
+                            results.append({
+                                "username": username,
+                                "full_name": (user.get("full_name") or username).strip(),
+                                "is_verified": bool(user.get("is_verified", False)),
+                            })
+                            if len(results) >= max_results:
+                                break
+
+                        _pw_status["ok"] = True
+                        _pw_status["error"] = None
+                        log.info(
+                            "[Playwright] Search '%s' via API on @%s → %d results",
+                            query[:50], acct_label, len(results),
+                        )
+                        return results
+
+                    if resp and resp.get("__error"):
+                        status = resp.get("status", 0)
+                        last_error = f"search_api_http_{status}" if status else "search_api_error"
+                        if status == 401:
+                            _account_pool.mark_login_failed(acct_label, last_error)
+                            log.warning(
+                                "[Playwright] Search API 401 on @%s for '%s' — trying next account (%d/%d)",
+                                acct_label, query[:50], account_attempts, max_account_retries,
+                            )
+                            continue
+                        if status == 429:
+                            _account_pool.mark_rate_limited(acct_label)
+                            log.warning(
+                                "[Playwright] Search API 429 on @%s for '%s' — trying next account (%d/%d)",
+                                acct_label, query[:50], account_attempts, max_account_retries,
+                            )
+                            continue
+                except Exception as e:
+                    log.warning("[Playwright] API search failed for '%s' on @%s: %s", query[:50], acct_label, e)
+                    last_error = str(e)
+
+                # Navigate to explicit search page before UI fallback.
+                try:
+                    browser.page.goto(
+                        "https://www.instagram.com/explore/search/",
+                        wait_until="domcontentloaded",
+                        timeout=20000,
+                    )
                     _short_delay()
-            except Exception:
-                pass
+                except Exception:
+                    pass
 
-            # Type search query
-            try:
-                search_input = browser.page.locator('input[aria-label="Search input"]').first
-                if not search_input.is_visible(timeout=5000):
-                    search_input = browser.page.locator('input[placeholder="Search"]').first
+                # Click search icon/bar
+                try:
+                    search_btn = browser.page.locator('[aria-label="Search"]').first
+                    if search_btn.is_visible(timeout=5000):
+                        search_btn.click()
+                        _short_delay()
+                except Exception:
+                    pass
 
-                search_input.fill("")
-                _short_delay()
-
-                # Type character by character for human-like behavior
-                for char in query:
-                    search_input.type(char, delay=random.randint(50, 150))
-                    _time.sleep(random.uniform(0.05, 0.15))
-
-                _human_delay(2, 4)  # Wait for results to load
-
-            except Exception as e:
-                log.warning("[Playwright] Could not interact with search: %s", e)
-                return []
-
-            # Extract search results from the dropdown
-            try:
-                # Wait for search results container
-                browser.page.wait_for_selector('[role="listbox"], [role="dialog"]', timeout=8000)
-                _short_delay()
-
-                # Get all result links
-                links = browser.page.locator('a[href*="instagram.com/"]').all()
-                seen = set()
-
-                for link in links[:max_results * 2]:  # Scan more than needed
-                    try:
-                        href = link.get_attribute("href") or ""
-                        text = link.inner_text().strip()
-
-                        # Extract username from href
-                        match = re.search(r'instagram\.com/([a-zA-Z0-9_.]+)', href)
-                        if not match:
+                # Type search query
+                try:
+                    search_selectors = [
+                        'input[aria-label="Search input"]',
+                        'input[aria-label="Search"]',
+                        'input[aria-label="Cari"]',
+                        'input[placeholder="Search"]',
+                        'input[placeholder="Cari"]',
+                        'input[type="search"]',
+                        'input[type="text"]',
+                    ]
+                    search_input = None
+                    for selector in search_selectors:
+                        candidate = browser.page.locator(selector).first
+                        try:
+                            if candidate.is_visible(timeout=1500):
+                                search_input = candidate
+                                break
+                        except Exception:
                             continue
-                        username = match.group(1).lower()
-                        if username in seen or username in ("explore", "accounts", "p", "reel"):
+
+                    if search_input is None:
+                        raise RuntimeError("search input not found")
+
+                    search_input.fill("")
+                    _short_delay()
+
+                    for char in query:
+                        search_input.type(char, delay=random.randint(50, 150))
+                        _time.sleep(random.uniform(0.05, 0.15))
+
+                    _human_delay(2, 4)
+
+                except Exception as e:
+                    last_error = str(e)
+                    log.warning(
+                        "[Playwright] Could not interact with search on @%s: %s",
+                        acct_label, e,
+                    )
+                    continue
+
+                # Extract search results from the dropdown
+                try:
+                    browser.page.wait_for_selector('[role="listbox"], [role="dialog"]', timeout=8000)
+                    _short_delay()
+
+                    links = browser.page.locator('a[href*="instagram.com/"]').all()
+                    seen = set()
+
+                    for link in links[:max_results * 2]:
+                        try:
+                            href = link.get_attribute("href") or ""
+                            text = link.inner_text().strip()
+
+                            match = re.search(r'instagram\.com/([a-zA-Z0-9_.]+)', href)
+                            if not match:
+                                continue
+                            username = match.group(1).lower()
+                            if username in seen or username in ("explore", "accounts", "p", "reel"):
+                                continue
+                            seen.add(username)
+
+                            lines = [l.strip() for l in text.split("\n") if l.strip()]
+                            full_name = lines[0] if lines else username
+
+                            results.append({
+                                "username": username,
+                                "full_name": full_name,
+                                "is_verified": False,
+                            })
+
+                            if len(results) >= max_results:
+                                break
+                        except Exception:
                             continue
-                        seen.add(username)
+                except Exception as e:
+                    last_error = str(e)
+                    log.warning("[Playwright] Could not extract search results on @%s: %s", acct_label, e)
+                    continue
 
-                        # Parse full name from text (first line is usually the name)
-                        lines = [l.strip() for l in text.split("\n") if l.strip()]
-                        full_name = lines[0] if lines else username
+                _pw_status["ok"] = True
+                _pw_status["error"] = None
+                log.info("[Playwright] Search '%s' via UI on @%s → %d results", query[:50], acct_label, len(results))
+                return results
 
-                        results.append({
-                            "username": username,
-                            "full_name": full_name,
-                            "is_verified": False,  # Hard to detect from search dropdown
-                        })
+        except Exception as e:
+            last_error = str(e) or type(e).__name__
+            log.warning(
+                "[Playwright] search_profiles failed on @%s: %s: %s",
+                acct_label, type(e).__name__, e or '(no details)',
+            )
+            continue
 
-                        if len(results) >= max_results:
-                            break
-                    except Exception:
-                        continue
-
-            except Exception as e:
-                log.warning("[Playwright] Could not extract search results: %s", e)
-
-        _pw_status["ok"] = True
-        _pw_status["error"] = None
-        log.info("[Playwright] Search '%s' → %d results", query[:50], len(results))
-
-    except Exception as e:
+    if last_error:
         _pw_status["ok"] = False
-        _pw_status["error"] = (str(e) or type(e).__name__)[:200]
-        log.warning("[Playwright] search_profiles failed: %s: %s", type(e).__name__, e or '(no details)')
-
-    return results
+        _pw_status["error"] = last_error[:200]
+    return []
 
 
 def pw_get_profile(handle: str) -> dict | None:
@@ -2708,6 +2820,30 @@ def pw_export_session(username: str) -> bytes | None:
     buf.seek(0)
     log.info("[SessionExport] Exported profile for @%s (%d bytes)", username, buf.getbuffer().nbytes)
     return buf.getvalue()
+
+
+def pw_rename_profile(old_username: str, new_username: str) -> dict:
+    """Rename the on-disk Playwright profile when an account username changes."""
+    old_profile_dir = _SESSION_DIR / f"chromium_{old_username}"
+    new_profile_dir = _SESSION_DIR / f"chromium_{new_username}"
+
+    if old_username == new_username:
+        return {"success": True, "renamed": False}
+    if not old_profile_dir.exists():
+        return {"success": True, "renamed": False}
+    if new_profile_dir.exists():
+        return {
+            "success": False,
+            "error": f"Target profile for @{new_username} already exists.",
+        }
+
+    try:
+        old_profile_dir.rename(new_profile_dir)
+        log.info("[SessionRename] Renamed profile @%s -> @%s", old_username, new_username)
+        return {"success": True, "renamed": True}
+    except Exception as exc:
+        log.error("[SessionRename] Failed to rename @%s -> @%s: %s", old_username, new_username, exc)
+        return {"success": False, "error": str(exc)}
 
 
 def pw_import_session(username: str, data: bytes) -> dict:

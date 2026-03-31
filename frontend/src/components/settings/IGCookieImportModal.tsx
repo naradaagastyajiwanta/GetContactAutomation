@@ -16,6 +16,7 @@ import {
 } from 'lucide-react'
 import { importIGCookies, type CookieImportResult } from '../../api/igAccounts'
 import { useQueryClient } from '@tanstack/react-query'
+import { queryKeys } from '../../lib/queryKeys'
 
 interface Props {
   accountId: number
@@ -84,7 +85,8 @@ export function IGCookieImportModal({ accountId, username, isOpen, onClose }: Pr
 
     try {
       const res = await importIGCookies(accountId, cookies)
-      queryClient.invalidateQueries({ queryKey: ['ig-accounts'] })
+      queryClient.invalidateQueries({ queryKey: queryKeys.igAccounts })
+      queryClient.invalidateQueries({ queryKey: queryKeys.igAccountsHealth })
 
       if (res.verify?.status === 'connected') {
         setResult(res)

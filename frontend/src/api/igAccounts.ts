@@ -6,7 +6,7 @@ export interface IGAccount {
   password: string // masked in responses
   enabled: boolean
   notes: string
-  login_status: 'untested' | 'success' | 'failed' | 'challenge' | 'banned'
+  login_status: 'untested' | 'success' | 'failed' | 'challenge' | 'banned' | 'rate_limited'
   last_login_test: string | null
   created_at: string
   updated_at: string

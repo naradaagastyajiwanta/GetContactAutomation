@@ -1,4 +1,5 @@
 import { useState, useRef, useEffect } from 'react'
+import { useQueryClient } from '@tanstack/react-query'
 import {
   Plus,
   Trash2,
@@ -14,7 +15,6 @@ import {
   ShieldQuestion,
   ShieldAlert,
   Loader2,
-  Play,
   AlertCircle,
   X,
   CheckCircle2,
@@ -38,8 +38,8 @@ import {
 } from '../../hooks/useIGAccounts'
 import type { IGAccount, IGAccountPoolStatus } from '../../api/igAccounts'
 import { exportIGSession, importIGSession } from '../../api/igAccounts'
-import { IGLoginFlow } from './IGLoginFlow'
 import { IGCookieImportModal } from './IGCookieImportModal'
+import { queryKeys } from '../../lib/queryKeys'
 
 // ---------------------------------------------------------------------------
 // Add / Edit form modal
@@ -309,6 +309,11 @@ function LoginStatusIndicator({ acct, isTesting }: { acct: IGAccount; isTesting:
       label: 'Banned',
       color: 'text-red-600 dark:text-red-400',
     },
+    rate_limited: {
+      icon: <Timer className="h-4 w-4" />,
+      label: 'Rate Limited',
+      color: 'text-yellow-600 dark:text-yellow-400',
+    },
     untested: {
       icon: <ShieldQuestion className="h-4 w-4" />,
       label: 'Untested',
@@ -468,9 +473,9 @@ function AccountCard({
           {isTesting ? (
             <Loader2 className="h-3.5 w-3.5 animate-spin" />
           ) : (
-            <Play className="h-3.5 w-3.5" />
+            <Cookie className="h-3.5 w-3.5" />
           )}
-          {isTesting ? 'Testing...' : 'Login'}
+          {isTesting ? 'Opening...' : 'Import Cookies'}
         </button>
       </div>
     </div>
@@ -483,19 +488,18 @@ function AccountCard({
 
 export function IGAccountsManager() {
   const { data, isLoading, refetch } = useIGAccounts()
+  const queryClient = useQueryClient()
   const deleteMut = useDeleteIGAccount()
   const updateMut = useUpdateIGAccount()
 
   const [showAddModal, setShowAddModal] = useState(false)
   const [editAccount, setEditAccount] = useState<IGAccount | null>(null)
   const [confirmDeleteId, setConfirmDeleteId] = useState<number | null>(null)
-  const [testingAccountId, setTestingAccountId] = useState<number | null>(null)
   const [lastTestResult, setLastTestResult] = useState<{
     accountId: number
     success: boolean
     message: string
   } | null>(null)
-  const [loginFlowAccount, setLoginFlowAccount] = useState<{ id: number; username: string } | null>(null)
   const [syncingAccountId, setSyncingAccountId] = useState<number | null>(null)
   const importFileRef = useRef<HTMLInputElement>(null)
   const [importTargetAccount, setImportTargetAccount] = useState<{ id: number; username: string } | null>(null)
@@ -515,27 +519,19 @@ export function IGAccountsManager() {
 
   const handleTestLogin = (acct: IGAccount) => {
     setLastTestResult(null)
-    setLoginFlowAccount({ id: acct.id, username: acct.username })
-    setTestingAccountId(acct.id)
-  }
-
-  const handleLoginDone = (status: 'success' | 'failed', message: string) => {
-    setTestingAccountId(null)
-    setLastTestResult({
-      accountId: loginFlowAccount?.id ?? 0,
-      success: status === 'success',
-      message,
-    })
+    setCookieImportAccount({ id: acct.id, username: acct.username })
   }
 
   const handleAccountCreated = (accountId: number) => {
     const acct = accounts.find((a) => a.id === accountId)
     if (acct) {
-      handleTestLogin(acct)
+      setCookieImportAccount({ id: acct.id, username: acct.username })
     } else {
       refetch().then((res) => {
         const freshAcct = res.data?.accounts?.find((a: IGAccount) => a.id === accountId)
-        if (freshAcct) handleTestLogin(freshAcct)
+        if (freshAcct) {
+          setCookieImportAccount({ id: freshAcct.id, username: freshAcct.username })
+        }
       })
     }
   }
@@ -578,6 +574,7 @@ export function IGAccountsManager() {
           ? `Session imported & verified for @${importTargetAccount.username}!`
           : `Session imported but verification ${result.verify?.status}: ${result.verify?.reason || 'unknown'}`,
       })
+      await queryClient.invalidateQueries({ queryKey: queryKeys.igAccountsHealth })
       refetch()
     } catch (e: any) {
       const msg = e?.response?.data?.detail || e?.message || 'Import failed'
@@ -589,6 +586,7 @@ export function IGAccountsManager() {
   }
 
   const healthyCount = poolStatus.filter((p) => p.healthy).length
+  const activePoolCount = poolStatus.length
 
   return (
     <>
@@ -606,9 +604,9 @@ export function IGAccountsManager() {
           <div className="flex items-center gap-2">
             <Instagram className="h-5 w-5 text-pink-500" />
             <CardTitle>Instagram Accounts</CardTitle>
-            {accounts.length > 0 && (
+            {activePoolCount > 0 && (
               <Badge variant="bg-indigo-100 text-indigo-700 dark:bg-indigo-900/40 dark:text-indigo-400">
-                {healthyCount}/{accounts.length} active
+                {healthyCount}/{activePoolCount} active
               </Badge>
             )}
           </div>
@@ -681,9 +679,9 @@ export function IGAccountsManager() {
                   key={acct.id}
                   acct={acct}
                   pool={poolMap.get(acct.username)}
-                  isTesting={testingAccountId === acct.id}
+                  isTesting={false}
                   isSyncing={syncingAccountId === acct.id}
-                  testingDisabled={testingAccountId !== null}
+                  testingDisabled={false}
                   onTestLogin={() => handleTestLogin(acct)}
                   onToggleEnabled={() => handleToggleEnabled(acct)}
                   onEdit={() => setEditAccount(acct)}
@@ -697,25 +695,6 @@ export function IGAccountsManager() {
           )}
         </div>
       </Card>
-
-      {/* Login flow modal */}
-      {loginFlowAccount && (
-        <IGLoginFlow
-          accountId={loginFlowAccount.id}
-          username={loginFlowAccount.username}
-          onClose={() => {
-            setLoginFlowAccount(null)
-            setTestingAccountId(null)
-          }}
-          onDone={handleLoginDone}
-          onOpenCookieImport={() => {
-            const acct = loginFlowAccount
-            setLoginFlowAccount(null)
-            setTestingAccountId(null)
-            setCookieImportAccount({ id: acct.id, username: acct.username })
-          }}
-        />
-      )}
 
       {/* Add modal */}
       {showAddModal && (

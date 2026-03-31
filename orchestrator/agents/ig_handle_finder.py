@@ -38,84 +38,98 @@ async def _search_handle_for_uni(uni: dict, loop) -> dict | None:
     final_handle: str | None = None
     final_confidence: float = 0.0
     final_source: str = ""
+    final_verified: bool = False
 
     # ------------------------------------------------------------------
     # Tier 1: Google / DuckDuckGo search (fast, no session needed)
     # Threshold after bio verify: ≥ 0.65 (stricter — Google results are
     # broad, bio confirm is mandatory to ensure we have the right account)
     # ------------------------------------------------------------------
-    google_result = await search_ig_handle(uni["name"])
-    if google_result and google_result.get("handle"):
+    tier1_excluded_handles: set[str] = set()
+    while not final_handle:
+        google_result = await search_ig_handle(uni["name"], exclude_handles=tier1_excluded_handles)
+        if not (google_result and google_result.get("handle")):
+            break
+
+        tier1_handle = google_result["handle"]
+        tier1_excluded_handles.add(tier1_handle.lower())
+
         await asyncio.sleep(2)
         verification = await loop.run_in_executor(
-            None, verify_ig_handle_with_fallback, google_result["handle"], uni["name"]
+            None, verify_ig_handle_with_fallback, tier1_handle, uni["name"]
         )
         fc = google_result["confidence"] + verification["confidence_boost"]
 
         # LLM final judge: confirm the handle truly belongs to this university
         llm = await llm_verify_ig_handle(
-            google_result["handle"],
+            tier1_handle,
             verification.get("bio", ""),
             verification.get("full_name", ""),
             uni["name"],
         )
         if llm["is_correct"] is False:
             log.info(
-                "[Agent1] Tier1-Google @%s REJECTED by LLM for %s: %s — trying Tier 2",
-                google_result["handle"], uni["name"], llm["reason"],
+                "[Agent1] Tier1-Google @%s REJECTED by LLM for %s: %s — trying next Tier 1 candidate",
+                tier1_handle, uni["name"], llm["reason"],
             )
-        elif fc >= 0.65:
-            final_handle = google_result["handle"]
-            final_confidence = fc
-            final_source = "serper"
-            log.info(
-                "[Agent1] Tier1-Google @%s ACCEPTED for %s (%.2f → %.2f: %s)",
-                final_handle, uni["name"], google_result["confidence"], fc, verification["reason"],
-            )
-        else:
-            log.info(
-                "[Agent1] Tier1-Google @%s confidence too low for %s (%.2f → %.2f: %s), trying Tier 2",
-                google_result["handle"], uni["name"], google_result["confidence"], fc, verification["reason"],
-            )
+            continue
+        final_handle = tier1_handle
+        final_confidence = fc
+        final_source = "web_search"
+        final_verified = True
+        log.info(
+            "[Agent1] Tier1-Google @%s ACCEPTED for %s (%.2f → %.2f: %s) — accepted by LLM",
+            final_handle, uni["name"], google_result["confidence"], fc, verification["reason"],
+        )
+        break
 
     # ------------------------------------------------------------------
     # Tier 2: IG Web Search API (Playwright stealth → direct session)
     # Threshold after bio verify: ≥ 0.55 (standard)
     # ------------------------------------------------------------------
     if not final_handle:
-        ig_result = await loop.run_in_executor(None, search_ig_handle_with_fallback, uni["name"])
-        if ig_result and ig_result.get("handle"):
+        tier2_excluded_handles: set[str] = set()
+        while not final_handle:
+            ig_result = await loop.run_in_executor(
+                None,
+                search_ig_handle_with_fallback,
+                uni["name"],
+                tier2_excluded_handles,
+            )
+            if not (ig_result and ig_result.get("handle")):
+                break
+
+            tier2_handle = ig_result["handle"]
+            tier2_excluded_handles.add(tier2_handle.lower())
+
             await asyncio.sleep(3)
             verification = await loop.run_in_executor(
-                None, verify_ig_handle_with_fallback, ig_result["handle"], uni["name"]
+                None, verify_ig_handle_with_fallback, tier2_handle, uni["name"]
             )
             fc = ig_result["confidence"] + verification["confidence_boost"]
 
             # LLM final judge
             llm = await llm_verify_ig_handle(
-                ig_result["handle"],
+                tier2_handle,
                 verification.get("bio", ""),
                 verification.get("full_name", ""),
                 uni["name"],
             )
             if llm["is_correct"] is False:
                 log.info(
-                    "[Agent1] Tier2-IGWeb @%s REJECTED by LLM for %s: %s — trying Tier 3",
-                    ig_result["handle"], uni["name"], llm["reason"],
+                    "[Agent1] Tier2-IGWeb @%s REJECTED by LLM for %s: %s — trying next Tier 2 candidate",
+                    tier2_handle, uni["name"], llm["reason"],
                 )
-            elif fc >= 0.55:
-                final_handle = ig_result["handle"]
-                final_confidence = fc
-                final_source = "ig_web"
-                log.info(
-                    "[Agent1] Tier2-IGWeb @%s ACCEPTED for %s (%.2f → %.2f: %s)",
-                    final_handle, uni["name"], ig_result["confidence"], fc, verification["reason"],
-                )
-            else:
-                log.info(
-                    "[Agent1] Tier2-IGWeb @%s rejected for %s (%.2f → %.2f: %s), trying Tier 3",
-                    ig_result["handle"], uni["name"], ig_result["confidence"], fc, verification["reason"],
-                )
+                continue
+            final_handle = tier2_handle
+            final_confidence = fc
+            final_source = "ig_web"
+            final_verified = True
+            log.info(
+                "[Agent1] Tier2-IGWeb @%s ACCEPTED for %s (%.2f → %.2f: %s) — accepted by LLM",
+                final_handle, uni["name"], ig_result["confidence"], fc, verification["reason"],
+            )
+            break
 
     # ------------------------------------------------------------------
     # Tier 3: University website scraping (most accurate — confidence 0.90)
@@ -133,6 +147,7 @@ async def _search_handle_for_uni(uni: dict, loop) -> dict | None:
             final_handle = website_result["handle"]
             final_confidence = website_result["confidence"]  # 0.90
             final_source = "website"
+            final_verified = True
             log.info(
                 "[Agent1] Tier3-Website @%s ACCEPTED for %s (confidence: %.2f)",
                 final_handle, uni["name"], final_confidence,
@@ -142,7 +157,7 @@ async def _search_handle_for_uni(uni: dict, loop) -> dict | None:
     # Persist result
     # ------------------------------------------------------------------
     if final_handle:
-        await update_ig_handle(uni["id"], final_handle, verified=final_confidence >= 0.6)
+        await update_ig_handle(uni["id"], final_handle, verified=final_verified)
         await update_university_status(uni["id"], "ig_found")
         log.info(
             "[Agent1] IG handle found for %s: @%s (confidence: %.2f, via %s)",

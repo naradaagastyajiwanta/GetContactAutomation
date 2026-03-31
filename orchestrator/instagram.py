@@ -195,9 +195,31 @@ class _IgSessionPool:
                     self._current_idx = idx
                     return self._sessions[idx]["session_id"]
 
-            # All sessions are down â€” return the current one anyway
-            # (caller will get an error and see the warning)
-            return self._sessions[self._current_idx]["session_id"]
+            # All sessions are down.
+            return None
+
+    def rotate(self, *, from_session_id: str | None = None) -> str | None:
+        """Move to the next healthy session without marking the current one bad."""
+        with self._lock:
+            self._sync_from_config()
+            if not self._sessions:
+                return None
+
+            n = len(self._sessions)
+            start_idx = self._current_idx
+            if from_session_id:
+                for i, session in enumerate(self._sessions):
+                    if session["session_id"] == from_session_id:
+                        start_idx = i
+                        break
+
+            for step in range(1, n + 1):
+                idx = (start_idx + step) % n
+                if self._sessions[idx]["ok"]:
+                    self._current_idx = idx
+                    return self._sessions[idx]["session_id"]
+
+            return None
 
     def mark_bad(self, session_id: str, error: str) -> None:
         """Mark a specific session as failed and rotate to next."""
@@ -313,8 +335,10 @@ def _check_ig_response(resp: httpx.Response) -> bool:
         log.warning("IG session unauthorized (401) — session expired or invalid")
         return False
     if resp.status_code == 429:
-        # Rate-limited — do NOT mark session permanently bad, just signal caller
-        log.warning("IG rate limited (429) — too many requests, caller should back off")
+        if session_id:
+            _ig_pool.rotate(from_session_id=session_id)
+        # Rate-limited — do NOT mark session permanently bad, just rotate away
+        log.warning("IG rate limited (429) — rotating to next session and backing off")
         return False
     # If we get a normal 200 response, mark session as OK
     if resp.status_code == 200 and session_id:
@@ -390,10 +414,9 @@ async def search_ig_from_website(university_name: str, website_url: str | None =
     """
     Scrape a university website for instagram.com links.
     Gets the website URL from PDDIKTI first, then DuckDuckGo (free).
-    Serper is kept as optional legacy fallback if configured.
     Returns: {"handle": str, "url": str, "confidence": float} or None.
     """
-    # Step 1: Get website URL (PDDIKTI -> DuckDuckGo -> Serper legacy)
+    # Step 1: Get website URL (PDDIKTI -> DuckDuckGo)
     if not website_url and not skip_pddikti:
         website_url = await _get_website_from_pddikti(university_name)
 
@@ -416,31 +439,6 @@ async def search_ig_from_website(university_name: str, website_url: str | None =
                     log.debug("DDG result '%s' rejected - not a homepage (path='%s')", url, path)
         except Exception as e:
             log.warning("DuckDuckGo website search failed for '%s': %s", name, e)
-
-    # Legacy fallback: Serper (if DDG didn't find anything and key is configured)
-    if not website_url and cfg.SERPER_API_KEY:
-        name = university_name.strip().title()
-        async with httpx.AsyncClient(timeout=15) as client:
-            try:
-                resp = await client.post(
-                    "https://google.serper.dev/search",
-                    headers={"X-API-KEY": cfg.SERPER_API_KEY, "Content-Type": "application/json"},
-                    json={"q": f'"{name}" site:ac.id OR site:sch.id', "num": 5},
-                )
-                if resp.status_code != 200:
-                    _update_serper_status(False, "quota_exceeded")
-                else:
-                    _update_serper_status(True)
-                for r in resp.json().get("organic", []):
-                    url = r.get("link", "")
-                    if not (".ac.id" in url or ".edu" in url or ".sch.id" in url):
-                        continue
-                    path = urlparse(url).path.rstrip("/")
-                    if path == "" or path == "/":
-                        website_url = url
-                        break
-            except Exception:
-                pass
     if not website_url:
         return None
 
@@ -511,49 +509,67 @@ async def search_ig_from_website(university_name: str, website_url: str | None =
 # Phase 2b: Search Instagram Handle via DuckDuckGo (free) + Serper fallback
 # ---------------------------------------------------------------------------
 
-async def search_ig_handle(university_name: str) -> dict | None:
+async def search_ig_handle(
+    university_name: str,
+    exclude_handles: set[str] | None = None,
+) -> dict | None:
     """
-    Search for university's Instagram handle via DuckDuckGo (free, primary)
-    with Serper as legacy fallback if configured.
+    Search for university's Instagram handle via DuckDuckGo only.
     Returns: {"handle": "@univ_name", "url": "...", "confidence": 0.0-1.0} or None
     """
+    excluded = {h.lower().lstrip("@") for h in (exclude_handles or set())}
 
     # Normalize: PDDIKTI names are ALL CAPS â†’ title case for better Google results
     name = university_name.strip().title()
 
-    # Build search queries â€” try exact match first, then relaxed
-    queries = [
-        f'site:instagram.com "{name}"',
-        f'site:instagram.com {name} instagram',
-    ]
+    # Build search queries â€” exact, relaxed, and human-like variants.
+    queries: list[str] = []
+    seen_queries: set[str] = set()
+
+    def add_query(query: str) -> None:
+        normalized = query.strip()
+        if normalized and normalized not in seen_queries:
+            seen_queries.add(normalized)
+            queries.append(normalized)
+
+    add_query(f'site:instagram.com "{name}"')
+    add_query(f'site:instagram.com {name} instagram')
+    add_query(f'site:instagram.com {name} ig')
+    add_query(f'IG {name} site:instagram.com')
+    add_query(f'instagram {name} site:instagram.com')
+
+    for variant in _build_search_queries(university_name):
+        add_query(f'site:instagram.com "{variant}"')
+        add_query(f'site:instagram.com {variant} instagram')
 
     # Primary: DuckDuckGo (free)
     for query in queries:
-        result = await _ddg_search_ig(query, university_name)
+        result = await _ddg_search_ig(query, university_name, excluded)
         if result:
             return result
-
-    # Legacy fallback: Serper (if configured)
-    if cfg.SERPER_API_KEY:
-        for query in queries:
-            result = await _serper_search_ig(query, university_name)
-            if result:
-                return result
 
     return None
 
 
 
-async def _ddg_search_ig(query: str, university_name: str) -> dict | None:
+async def _ddg_search_ig(
+    query: str,
+    university_name: str,
+    exclude_handles: set[str] | None = None,
+) -> dict | None:
     """Run a single DuckDuckGo search and return first matching IG handle."""
+    excluded = exclude_handles or set()
     try:
-        results = await duckduckgo_client.async_search_text(query, max_results=5)
+        results = await duckduckgo_client.async_search_text(query, max_results=8)
     except Exception as e:
         log.error("DuckDuckGo search failed for '%s': %s", university_name, e)
         return None
 
     if not results:
         return None
+
+    best_match: dict | None = None
+    best_score = -1.0
 
     for result in results:
         url = result.get("link", "")
@@ -564,24 +580,32 @@ async def _ddg_search_ig(query: str, university_name: str) -> dict | None:
         handle = _extract_ig_handle(url)
         if not handle:
             continue
+        if handle.lower() in excluded:
+            continue
 
         # Calculate confidence based on name match and keywords
         confidence = _calculate_confidence(
             university_name, handle, title, snippet
         )
 
-        if confidence >= 0.65:
-            return {
+        if confidence > best_score:
+            best_score = confidence
+            best_match = {
                 "handle": handle,
                 "url": url,
                 "confidence": confidence,
             }
 
-    return None
+    return best_match
 
 
-async def _serper_search_ig(query: str, university_name: str) -> dict | None:
+async def _serper_search_ig(
+    query: str,
+    university_name: str,
+    exclude_handles: set[str] | None = None,
+) -> dict | None:
     """Run a single Serper search and return first matching IG handle."""
+    excluded = exclude_handles or set()
     async with httpx.AsyncClient(timeout=15) as client:
         try:
             resp = await client.post(
@@ -607,6 +631,9 @@ async def _serper_search_ig(query: str, university_name: str) -> dict | None:
     if not organic:
         return None
 
+    best_match: dict | None = None
+    best_score = -1.0
+
     for result in organic:
         url = result.get("link", "")
         title = result.get("title", "").lower()
@@ -616,20 +643,23 @@ async def _serper_search_ig(query: str, university_name: str) -> dict | None:
         handle = _extract_ig_handle(url)
         if not handle:
             continue
+        if handle.lower() in excluded:
+            continue
 
         # Calculate confidence based on name match and keywords
         confidence = _calculate_confidence(
             university_name, handle, title, snippet
         )
 
-        if confidence >= 0.65:
-            return {
+        if confidence > best_score:
+            best_score = confidence
+            best_match = {
                 "handle": handle,
                 "url": url,
                 "confidence": confidence,
             }
 
-    return None
+    return best_match
 
 
 def _extract_ig_handle(url: str) -> str | None:
@@ -740,6 +770,11 @@ def _calculate_confidence(
         score += 0.15
 
     return max(min(score, 1.0), 0.0)
+
+
+def _confidence_at_least(score: float, threshold: float, epsilon: float = 1e-9) -> bool:
+    """Compare floating-point confidence values without brittle boundary misses."""
+    return score + epsilon >= threshold
 
 
 # ---------------------------------------------------------------------------
@@ -1289,7 +1324,60 @@ def _score_ig_user(user_data: dict, university_name: str) -> float:
     return max(min(score, 1.0), 0.0)
 
 
-def search_ig_handle_via_ig(university_name: str) -> dict | None:
+def _pick_best_profile_candidate(
+    profiles: list[dict],
+    university_name: str,
+    *,
+    source_label: str,
+    exclude_handles: set[str] | None = None,
+) -> dict | None:
+    """Pick the best IG search candidate and log near-miss cases for debugging."""
+    excluded = {h.lower().lstrip("@") for h in (exclude_handles or set())}
+    best = None
+    best_score = 0.0
+
+    for profile in profiles:
+        username = profile.get("username", "")
+        if not username or username.lower() in excluded:
+            continue
+
+        user_info = {
+            "username": username,
+            "full_name": profile.get("full_name", ""),
+            "is_verified": profile.get("is_verified", False),
+        }
+        score = _score_ig_user(user_info, university_name)
+        if score > best_score:
+            best_score = score
+            best = {
+                "handle": username,
+                "url": f"https://www.instagram.com/{username}/",
+                "confidence": score,
+                "full_name": profile.get("full_name", ""),
+            }
+
+    if best:
+        log.info(
+            "[%s] Best candidate @%s for '%s' (score=%.2f, full_name='%s')",
+            source_label,
+            best["handle"],
+            university_name[:40],
+            best["confidence"],
+            (best.get("full_name") or "")[:60],
+        )
+        return {
+            "handle": best["handle"],
+            "url": best["url"],
+            "confidence": best["confidence"],
+        }
+
+    return None
+
+
+def search_ig_handle_via_ig(
+    university_name: str,
+    exclude_handles: set[str] | None = None,
+) -> dict | None:
     """
     Search for university's Instagram handle directly via IG Web Search API.
     Tries multiple query variants (full name + abbreviated).
@@ -1301,8 +1389,7 @@ def search_ig_handle_via_ig(university_name: str) -> dict | None:
 
     queries = _build_search_queries(university_name)
 
-    best = None
-    best_score = 0.0
+    all_profiles: list[dict] = []
 
     client = _get_ig_web_client()
     try:
@@ -1323,22 +1410,29 @@ def search_ig_handle_via_ig(university_name: str) -> dict | None:
 
             for u in users:
                 uu = u["user"]
-                score = _score_ig_user(uu, university_name)
-                if score > best_score:
-                    best_score = score
-                    best = {
-                        "handle": uu["username"],
-                        "url": f"https://www.instagram.com/{uu['username']}/",
-                        "confidence": score,
-                    }
+                all_profiles.append({
+                    "username": uu.get("username", ""),
+                    "full_name": uu.get("full_name", ""),
+                    "is_verified": uu.get("is_verified", False),
+                })
 
             # If we already found a strong match, don't burn more searches
-            if best_score >= 0.6:
+            best = _pick_best_profile_candidate(
+                all_profiles,
+                university_name,
+                source_label="Tier1-Direct",
+                exclude_handles=exclude_handles,
+            )
+            if best and _confidence_at_least(best["confidence"], 0.6):
                 break
             _time.sleep(1)
 
-        if best and best["confidence"] >= 0.65:
-            return best
+        return _pick_best_profile_candidate(
+            all_profiles,
+            university_name,
+            source_label="Tier1-Direct",
+            exclude_handles=exclude_handles,
+        )
     finally:
         client.close()
 
@@ -1601,42 +1695,44 @@ def scrape_ig_posts_with_fallback(
     return []
 
 
-def search_ig_handle_with_fallback(university_name: str) -> dict | None:
+def search_ig_handle_with_fallback(
+    university_name: str,
+    exclude_handles: set[str] | None = None,
+) -> dict | None:
     """
-    Search for university IG handle with 4-tier fallback.
+    Search for university IG handle with runtime fallback.
 
     Tier 0: Playwright Stealth Browser (free)
     Tier 1: Direct IG Web API (session cookies)
-    Tier 2: Apify search (paid)
-    Tier 3: ScrapingBot (no search API, skipped)
+    Tier 2: ScrapingBot (no search API, skipped)
 
     Returns: {"handle": str, "url": str, "confidence": float} or None.
     """
     # Tier 0: Playwright Stealth Browser (free, ban-resistant)
     if playwright_ig.is_available():
         try:
-            profiles = playwright_ig.pw_search_profiles(university_name)
-            if profiles:
-                best = None
-                best_score = 0.0
-                for p in profiles:
-                    uu = {
-                        "username": p.get("username", ""),
-                        "full_name": p.get("full_name", ""),
-                        "is_verified": p.get("is_verified", False),
-                    }
-                    score = _score_ig_user(uu, university_name)
-                    if score > best_score:
-                        best_score = score
-                        best = {
-                            "handle": p["username"],
-                            "url": f"https://www.instagram.com/{p['username']}/",
-                            "confidence": score,
-                        }
-                if best and best["confidence"] >= 0.65:
-                    log.info("[Tier0-Playwright] Found @%s (score=%.2f) for '%s'",
-                             best["handle"], best["confidence"], university_name[:40])
-                    return best
+            all_profiles: list[dict] = []
+            for query in _build_search_queries(university_name):
+                profiles = playwright_ig.pw_search_profiles(query)
+                if profiles:
+                    all_profiles.extend(profiles)
+                    best = _pick_best_profile_candidate(
+                        all_profiles,
+                        university_name,
+                        source_label="Tier0-Playwright",
+                        exclude_handles=exclude_handles,
+                    )
+                    if best and _confidence_at_least(best["confidence"], 0.6):
+                        return best
+
+            best = _pick_best_profile_candidate(
+                all_profiles,
+                university_name,
+                source_label="Tier0-Playwright",
+                exclude_handles=exclude_handles,
+            )
+            if best:
+                return best
         except Exception as e:
             log.warning("[Tier0-Playwright] Search failed for '%s': %s", university_name[:40], e)
     else:
@@ -1645,7 +1741,10 @@ def search_ig_handle_with_fallback(university_name: str) -> dict | None:
     # Tier 1: Direct IG session
     if _ig_pool.get_current_session_id():
         try:
-            result = search_ig_handle_via_ig(university_name)
+            result = search_ig_handle_via_ig(
+                university_name,
+                exclude_handles=exclude_handles,
+            )
             if result:
                 log.info("[Tier1-Direct] Found @%s for '%s'", result["handle"], university_name[:40])
                 return result
@@ -1654,51 +1753,19 @@ def search_ig_handle_with_fallback(university_name: str) -> dict | None:
     else:
         log.info("[Tier1-Direct] Skipping search â€” no healthy IG sessions")
 
-    # Tier 2: Apify search
-    if apify_client.is_configured():
-        try:
-            profiles = apify_client.apify_search_profile(university_name, limit=10)
-            if profiles:
-                # Score each result using existing scoring logic
-                best = None
-                best_score = 0.0
-                for p in profiles:
-                    uu = {
-                        "username": p["username"],
-                        "full_name": p["full_name"],
-                        "is_verified": p["is_verified"],
-                    }
-                    score = _score_ig_user(uu, university_name)
-                    if score > best_score:
-                        best_score = score
-                        best = {
-                            "handle": p["username"],
-                            "url": f"https://www.instagram.com/{p['username']}/",
-                            "confidence": score,
-                        }
-
-                if best and best["confidence"] >= 0.65:
-                    log.info("[Tier2-Apify] Found @%s (score=%.2f) for '%s'",
-                             best["handle"], best["confidence"], university_name[:40])
-                    return best
-        except Exception as e:
-            log.warning("[Tier2-Apify] Search failed for '%s': %s", university_name[:40], e)
-    else:
-        log.debug("[Tier2-Apify] Skipping search â€” not configured")
-
-    # Tier 3: Scraping-Bot doesn't have search, skip
+    # Apify fallback intentionally disabled for handle search.
+    # Tier 2: Scraping-Bot doesn't have search, skip
     log.info("[Fallback] No IG handle found for '%s' across all tiers", university_name[:40])
     return None
 
 
 def verify_ig_handle_with_fallback(handle: str, university_name: str) -> dict:
     """
-    Verify an IG handle with 4-tier fallback for profile fetching.
+    Verify an IG handle with runtime fallback for profile fetching.
 
     Tier 0: Playwright Stealth Browser (free)
     Tier 1: Direct IG Web API (session cookies)
-    Tier 2: Apify profile fetch (paid)
-    Tier 3: ScrapingBot profile fetch (paid, last resort)
+    Tier 2: ScrapingBot profile fetch (paid, last resort)
 
     Returns: {"verified": bool, "confidence_boost": float, "bio": str, "reason": str}
     """
@@ -1722,23 +1789,15 @@ def verify_ig_handle_with_fallback(handle: str, university_name: str) -> dict:
         except Exception as e:
             log.warning("[Tier1-Direct] Verify failed for @%s: %s", handle, e)
 
-    # Tier 2: Apify profile fetch
-    if apify_client.is_configured():
-        try:
-            profile = apify_client.apify_get_profile(handle)
-            if profile:
-                return _verify_from_profile_data(handle, university_name, profile)
-        except Exception as e:
-            log.warning("[Tier2-Apify] Verify failed for @%s: %s", handle, e)
-
-    # Tier 3: Scraping-Bot profile fetch
+    # Apify fallback intentionally disabled for handle verification.
+    # Tier 2: Scraping-Bot profile fetch
     if scrapingbot_client.is_configured():
         try:
             profile = scrapingbot_client.scrapingbot_get_profile(handle, posts_number=0)
             if profile:
                 return _verify_from_profile_data(handle, university_name, profile)
         except Exception as e:
-            log.warning("[Tier3-ScrapingBot] Verify failed for @%s: %s", handle, e)
+            log.warning("[Tier2-ScrapingBot] Verify failed for @%s: %s", handle, e)
 
     return {"verified": True, "confidence_boost": 0, "bio": "", "reason": "all providers failed (skipped)"}
 

@@ -2059,6 +2059,33 @@ def _mask_password(pw: str) -> str:
     return "\u2022" * (len(pw) - 2) + pw[-2:]
 
 
+def _map_ig_account_login_status(status: str | None, current_status: str = "untested") -> str:
+    """Map runtime verification status to the DB login_status field."""
+    if status == "connected":
+        return "success"
+    if status == "banned":
+        return "banned"
+    if status == "rate_limited":
+        return "rate_limited"
+    if status == "challenge":
+        return "challenge"
+    if status == "disconnected":
+        return "failed"
+    return current_status or "failed"
+
+
+def _apply_ig_account_runtime_status(account_pool: Any, username: str, status: str | None, reason: str | None) -> None:
+    """Keep the in-memory Playwright pool aligned with a verification result."""
+    if status == "connected":
+        account_pool.mark_connected(username)
+        return
+    if status == "rate_limited":
+        account_pool.mark_rate_limited(username)
+        return
+    if status in {"disconnected", "banned", "error"}:
+        account_pool.mark_login_failed(username, reason or status or "login_failed")
+
+
 @app.get("/ig-accounts")
 async def list_ig_accounts():
     """Return all IG accounts (passwords masked)."""
@@ -2097,14 +2124,15 @@ async def ig_accounts_health(force: bool = False):
         results = await loop.run_in_executor(_pw_executor, pw_verify_all_sessions)
 
         rows = await get_ig_accounts(enabled_only=True)
-        uid_map = {r["username"]: r["id"] for r in rows}
+        row_map = {r["username"]: r for r in rows}
         for r in results:
-            acct_id = uid_map.get(r.get("username"))
-            if not acct_id:
+            username = r.get("username")
+            row = row_map.get(username)
+            if not row:
                 continue
             st = r.get("status", "error")
-            db_st = "success" if st == "connected" else ("banned" if st == "banned" else "failed")
-            await update_ig_account(acct_id, login_status=db_st,
+            db_st = _map_ig_account_login_status(st, row.get("login_status", "untested"))
+            await update_ig_account(row["id"], login_status=db_st,
                                     last_login_test=datetime.now(timezone.utc).isoformat())
 
         total = len(results)
@@ -2138,9 +2166,9 @@ async def ig_accounts_health(force: bool = False):
         elif not p["login_ok"]:
             status = "disconnected"
             reason = p.get("last_error") or "login_failed"
-        elif p.get("cooldown_remaining_s", 0) > 0:
+        elif p.get("cooldown_remaining_s", 0) > 0 or db_login == "rate_limited":
             status = "rate_limited"
-            reason = "cooldown_active"
+            reason = "cooldown_active" if p.get("cooldown_remaining_s", 0) > 0 else "rate_limited"
         elif db_login == "success" and p["healthy"]:
             status = "connected"
             reason = None
@@ -2192,7 +2220,14 @@ async def add_ig_account(payload: IGAccountPayload):
 @app.put("/ig-accounts/{account_id}")
 async def edit_ig_account(account_id: int, payload: IGAccountUpdatePayload):
     """Update an IG account."""
-    from orchestrator.db import update_ig_account
+    from orchestrator.db import get_ig_accounts, update_ig_account
+
+    rows = await get_ig_accounts()
+    existing = next((r for r in rows if r["id"] == account_id), None)
+    if not existing:
+        return JSONResponse(status_code=404, content={"detail": "Account not found"})
+
+    old_username = existing.get("username", "")
     updated = await update_ig_account(
         account_id,
         username=payload.username,
@@ -2202,9 +2237,28 @@ async def edit_ig_account(account_id: int, payload: IGAccountUpdatePayload):
     )
     if not updated:
         return JSONResponse(status_code=404, content={"detail": "Account not found"})
+
+    profile_sync_warning = None
+    new_username = updated.get("username", "")
+    if payload.username and new_username and new_username != old_username:
+        from orchestrator.playwright_ig import pw_rename_profile
+
+        rename_result = pw_rename_profile(old_username, new_username)
+        if not rename_result.get("success"):
+            profile_sync_warning = rename_result.get("error")
+            log.warning(
+                "IG account profile rename incomplete for @%s -> @%s: %s",
+                old_username,
+                new_username,
+                profile_sync_warning,
+            )
+
     updated["password"] = _mask_password(updated.get("password", ""))
     await _reload_ig_account_pool()
-    return {"status": "ok", "account": updated}
+    response = {"status": "ok", "account": updated}
+    if profile_sync_warning:
+        response["warning"] = profile_sync_warning
+    return response
 
 
 @app.delete("/ig-accounts/{account_id}")
@@ -2345,22 +2399,13 @@ async def import_ig_session(account_id: int, file: UploadFile = FastAPIFile(...)
 
     # Update DB status based on verification
     v_status = verify.get("status", "error")
-    db_status = "success" if v_status == "connected" else "failed"
+    db_status = _map_ig_account_login_status(v_status, acct_row.get("login_status", "untested"))
     now_ts = datetime.now(timezone.utc).isoformat()
     await update_ig_account(account_id, login_status=db_status, last_login_test=now_ts)
 
     # Update pool
-    if v_status == "connected":
-        with _account_pool._lock:
-            _account_pool._ensure_loaded()
-            for a in _account_pool._accounts:
-                if a.username == username:
-                    a.login_ok = True
-                    a.last_error = None
-                    break
-        pw_invalidate_health_cache()
-    else:
-        _account_pool.mark_login_failed(username, verify.get("reason", ""))
+    _apply_ig_account_runtime_status(_account_pool, username, v_status, verify.get("reason"))
+    pw_invalidate_health_cache()
 
     await _reload_ig_account_pool()
 
@@ -2416,22 +2461,13 @@ async def import_ig_cookies(account_id: int, body: dict):
     verify = await loop.run_in_executor(_pw_executor, pw_verify_session, username, acct_row["password"])
 
     v_status = verify.get("status", "error")
-    db_status = "success" if v_status == "connected" else "failed"
+    db_status = _map_ig_account_login_status(v_status, acct_row.get("login_status", "untested"))
     now_ts = datetime.now(timezone.utc).isoformat()
     await update_ig_account(account_id, login_status=db_status, last_login_test=now_ts)
 
     # Update pool
-    if v_status == "connected":
-        with _account_pool._lock:
-            _account_pool._ensure_loaded()
-            for a in _account_pool._accounts:
-                if a.username == username:
-                    a.login_ok = True
-                    a.last_error = None
-                    break
-        pw_invalidate_health_cache()
-    else:
-        _account_pool.mark_login_failed(username, verify.get("reason", ""))
+    _apply_ig_account_runtime_status(_account_pool, username, v_status, verify.get("reason"))
+    pw_invalidate_health_cache()
 
     await _reload_ig_account_pool()
 
