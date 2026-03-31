@@ -570,6 +570,7 @@ export default function BlastCampaignDetailPage() {
   const isSending = campaign?.status === 'sending'
   const isPaused = campaign?.status === 'paused'
   const isFinished = campaign?.status === 'completed' || campaign?.status === 'cancelled'
+  const canEditCampaign = isDraft || isPaused
 
   // Recipients
   const [recipientPage, setRecipientPage] = useState(0)
@@ -607,6 +608,17 @@ export default function BlastCampaignDetailPage() {
   const [delayDraft, setDelayDraft] = useState<number | null>(null)
   const [humanMinDraft, setHumanMinDraft] = useState<number | null>(null)
   const [humanMaxDraft, setHumanMaxDraft] = useState<number | null>(null)
+  const [variationDraft, setVariationDraft] = useState<boolean | null>(null)
+  const [scheduleEnabledDraft, setScheduleEnabledDraft] = useState<boolean | null>(null)
+  const [scheduleTimezoneDraft, setScheduleTimezoneDraft] = useState<string | null>(null)
+  const [activeStartDraft, setActiveStartDraft] = useState<number | null>(null)
+  const [activeEndDraft, setActiveEndDraft] = useState<number | null>(null)
+  const [peakStartDraft, setPeakStartDraft] = useState<number | null>(null)
+  const [peakEndDraft, setPeakEndDraft] = useState<number | null>(null)
+  const [lunchStartDraft, setLunchStartDraft] = useState<number | null>(null)
+  const [lunchEndDraft, setLunchEndDraft] = useState<number | null>(null)
+  const [weekendFactorDraft, setWeekendFactorDraft] = useState<number | null>(null)
+  const [autoResumeDraft, setAutoResumeDraft] = useState<boolean | null>(null)
   const templateRef = useRef<HTMLTextAreaElement>(null)
 
   // Derived values (draft state overrides server value)
@@ -615,6 +627,17 @@ export default function BlastCampaignDetailPage() {
   const currentDelay = delayDraft ?? campaign?.delay_between_ms ?? 5000
   const currentHumanMin = humanMinDraft ?? campaign?.human_delay_min_ms ?? 2000
   const currentHumanMax = humanMaxDraft ?? campaign?.human_delay_max_ms ?? 8000
+  const currentVariationEnabled = variationDraft ?? Boolean(campaign?.content_variation_enabled ?? true)
+  const currentScheduleEnabled = scheduleEnabledDraft ?? Boolean(campaign?.schedule_enabled ?? true)
+  const currentScheduleTimezone = scheduleTimezoneDraft ?? campaign?.schedule_timezone ?? 'Asia/Jakarta'
+  const currentActiveStart = activeStartDraft ?? campaign?.active_hours_start ?? 8
+  const currentActiveEnd = activeEndDraft ?? campaign?.active_hours_end ?? 21
+  const currentPeakStart = peakStartDraft ?? campaign?.peak_hours_start ?? 10
+  const currentPeakEnd = peakEndDraft ?? campaign?.peak_hours_end ?? 14
+  const currentLunchStart = lunchStartDraft ?? campaign?.lunch_break_start ?? 12
+  const currentLunchEnd = lunchEndDraft ?? campaign?.lunch_break_end ?? 13
+  const currentWeekendFactor = weekendFactorDraft ?? campaign?.weekend_factor ?? 0.5
+  const currentAutoResumeEnabled = autoResumeDraft ?? Boolean(campaign?.auto_resume_enabled ?? true)
 
   // Contact selector modal
   const [showContactModal, setShowContactModal] = useState(false)
@@ -629,7 +652,39 @@ export default function BlastCampaignDetailPage() {
     (deviceDraft !== null && deviceDraft !== campaign?.device_id) ||
     (delayDraft !== null && delayDraft !== campaign?.delay_between_ms) ||
     (humanMinDraft !== null && humanMinDraft !== campaign?.human_delay_min_ms) ||
-    (humanMaxDraft !== null && humanMaxDraft !== campaign?.human_delay_max_ms)
+    (humanMaxDraft !== null && humanMaxDraft !== campaign?.human_delay_max_ms) ||
+    (variationDraft !== null && variationDraft !== Boolean(campaign?.content_variation_enabled ?? true)) ||
+    (scheduleEnabledDraft !== null && scheduleEnabledDraft !== Boolean(campaign?.schedule_enabled ?? true)) ||
+    (scheduleTimezoneDraft !== null && scheduleTimezoneDraft !== (campaign?.schedule_timezone ?? 'Asia/Jakarta')) ||
+    (activeStartDraft !== null && activeStartDraft !== campaign?.active_hours_start) ||
+    (activeEndDraft !== null && activeEndDraft !== campaign?.active_hours_end) ||
+    (peakStartDraft !== null && peakStartDraft !== campaign?.peak_hours_start) ||
+    (peakEndDraft !== null && peakEndDraft !== campaign?.peak_hours_end) ||
+    (lunchStartDraft !== null && lunchStartDraft !== campaign?.lunch_break_start) ||
+    (lunchEndDraft !== null && lunchEndDraft !== campaign?.lunch_break_end) ||
+    (weekendFactorDraft !== null && weekendFactorDraft !== campaign?.weekend_factor) ||
+    (autoResumeDraft !== null && autoResumeDraft !== Boolean(campaign?.auto_resume_enabled ?? true))
+
+  const buildUpdatePayload = () => {
+    const payload: Record<string, unknown> = { id: campaignId }
+    if (templateDraft !== null) payload.template_message = templateDraft
+    if (deviceDraft !== null) payload.device_id = deviceDraft
+    if (delayDraft !== null) payload.delay_between_ms = delayDraft
+    if (humanMinDraft !== null) payload.human_delay_min_ms = humanMinDraft
+    if (humanMaxDraft !== null) payload.human_delay_max_ms = humanMaxDraft
+    if (variationDraft !== null) payload.content_variation_enabled = variationDraft
+    if (scheduleEnabledDraft !== null) payload.schedule_enabled = scheduleEnabledDraft
+    if (scheduleTimezoneDraft !== null) payload.schedule_timezone = scheduleTimezoneDraft
+    if (activeStartDraft !== null) payload.active_hours_start = activeStartDraft
+    if (activeEndDraft !== null) payload.active_hours_end = activeEndDraft
+    if (peakStartDraft !== null) payload.peak_hours_start = peakStartDraft
+    if (peakEndDraft !== null) payload.peak_hours_end = peakEndDraft
+    if (lunchStartDraft !== null) payload.lunch_break_start = lunchStartDraft
+    if (lunchEndDraft !== null) payload.lunch_break_end = lunchEndDraft
+    if (weekendFactorDraft !== null) payload.weekend_factor = weekendFactorDraft
+    if (autoResumeDraft !== null) payload.auto_resume_enabled = autoResumeDraft
+    return payload
+  }
 
   // Insert placeholder at cursor
   const insertPlaceholder = useCallback(
@@ -655,19 +710,24 @@ export default function BlastCampaignDetailPage() {
 
   // Save handler
   const handleSave = () => {
-    const payload: Record<string, unknown> = { id: campaignId }
-    if (templateDraft !== null) payload.template_message = templateDraft
-    if (deviceDraft !== null) payload.device_id = deviceDraft
-    if (delayDraft !== null) payload.delay_between_ms = delayDraft
-    if (humanMinDraft !== null) payload.human_delay_min_ms = humanMinDraft
-    if (humanMaxDraft !== null) payload.human_delay_max_ms = humanMaxDraft
-    updateMutation.mutate(payload as any, {
+    updateMutation.mutate(buildUpdatePayload() as any, {
       onSuccess: () => {
         setTemplateDraft(null)
         setDeviceDraft(null)
         setDelayDraft(null)
         setHumanMinDraft(null)
         setHumanMaxDraft(null)
+        setVariationDraft(null)
+        setScheduleEnabledDraft(null)
+        setScheduleTimezoneDraft(null)
+        setActiveStartDraft(null)
+        setActiveEndDraft(null)
+        setPeakStartDraft(null)
+        setPeakEndDraft(null)
+        setLunchStartDraft(null)
+        setLunchEndDraft(null)
+        setWeekendFactorDraft(null)
+        setAutoResumeDraft(null)
       },
     })
   }
@@ -732,7 +792,7 @@ export default function BlastCampaignDetailPage() {
 
         {/* Action buttons */}
         <div className="flex items-center gap-2">
-          {hasUnsavedChanges && isDraft && (
+          {hasUnsavedChanges && canEditCampaign && (
             <button
               onClick={handleSave}
               disabled={updateMutation.isPending}
@@ -747,13 +807,7 @@ export default function BlastCampaignDetailPage() {
               onClick={() => {
                 // Save first if needed, then start
                 if (hasUnsavedChanges) {
-                  const payload: Record<string, unknown> = { id: campaignId }
-                  if (templateDraft !== null) payload.template_message = templateDraft
-                  if (deviceDraft !== null) payload.device_id = deviceDraft
-                  if (delayDraft !== null) payload.delay_between_ms = delayDraft
-                  if (humanMinDraft !== null) payload.human_delay_min_ms = humanMinDraft
-                  if (humanMaxDraft !== null) payload.human_delay_max_ms = humanMaxDraft
-                  updateMutation.mutate(payload as any, {
+                  updateMutation.mutate(buildUpdatePayload() as any, {
                     onSuccess: () => startMutation.mutate(campaignId),
                   })
                 } else {
@@ -769,7 +823,15 @@ export default function BlastCampaignDetailPage() {
           )}
           {isPaused && (
             <button
-              onClick={() => startMutation.mutate(campaignId)}
+              onClick={() => {
+                if (hasUnsavedChanges) {
+                  updateMutation.mutate(buildUpdatePayload() as any, {
+                    onSuccess: () => startMutation.mutate(campaignId),
+                  })
+                } else {
+                  startMutation.mutate(campaignId)
+                }
+              }}
               disabled={startMutation.isPending}
               className="flex items-center gap-1.5 px-3 py-1.5 bg-green-600 hover:bg-green-700 text-white text-sm font-medium rounded-lg disabled:opacity-50 transition-colors"
             >
@@ -828,6 +890,14 @@ export default function BlastCampaignDetailPage() {
               {campaign.sent_count} sent · {campaign.failed_count} failed · {campaign.total_recipients - campaign.sent_count - campaign.failed_count} remaining
             </span>
           </div>
+          {isPaused && (campaign.paused_reason || campaign.auto_resume_at) && (
+            <div className="mt-2 rounded-lg bg-amber-50 dark:bg-amber-900/20 border border-amber-200 dark:border-amber-800 px-3 py-2 text-xs text-amber-700 dark:text-amber-300 space-y-1">
+              {campaign.paused_reason && <p>Reason: {campaign.paused_reason}</p>}
+              {campaign.auto_resume_at && currentAutoResumeEnabled && (
+                <p>Auto-resume: {new Date(campaign.auto_resume_at).toLocaleString()}</p>
+              )}
+            </div>
+          )}
           <div className="h-2.5 bg-gray-100 dark:bg-gray-700 rounded-full overflow-hidden flex">
             {campaign.sent_count > 0 && (
               <div
@@ -919,7 +989,7 @@ export default function BlastCampaignDetailPage() {
                 <button
                   key={p.key}
                   onClick={() => insertPlaceholder(p.key)}
-                  disabled={!isDraft}
+                  disabled={!canEditCampaign}
                   className="flex items-center gap-1 px-2.5 py-1 text-xs font-medium bg-indigo-50 dark:bg-indigo-900/30 text-indigo-600 dark:text-indigo-400 rounded-lg hover:bg-indigo-100 dark:hover:bg-indigo-900/50 disabled:opacity-40 transition-colors border border-indigo-200 dark:border-indigo-800"
                 >
                   <Icon className="w-3 h-3" />
@@ -932,7 +1002,7 @@ export default function BlastCampaignDetailPage() {
             ref={templateRef}
             value={currentTemplate}
             onChange={(e) => setTemplateDraft(e.target.value)}
-            disabled={!isDraft}
+            disabled={!canEditCampaign}
             rows={6}
             placeholder="Halo {nama_kontak}, kami dari LSP ingin menghubungi {nama_universitas}..."
             className="w-full px-3 py-2.5 border border-gray-300 dark:border-gray-600 rounded-lg text-sm dark:bg-gray-900 dark:text-gray-100 focus:ring-1 focus:ring-indigo-500 focus:border-indigo-500 disabled:opacity-60 disabled:cursor-not-allowed resize-none"
@@ -957,7 +1027,7 @@ export default function BlastCampaignDetailPage() {
               )}
             </h2>
           </div>
-          {isDraft && (
+          {canEditCampaign && (
             <div className="flex items-center gap-2">
               {totalRecipients > 0 && (
                 <button
@@ -989,7 +1059,7 @@ export default function BlastCampaignDetailPage() {
           <div className="text-center py-10">
             <Users className="w-8 h-8 mx-auto text-gray-300 dark:text-gray-600 mb-2" />
             <p className="text-sm text-gray-400 dark:text-gray-500">No recipients yet</p>
-            {isDraft && (
+            {canEditCampaign && (
               <button
                 onClick={() => setShowContactModal(true)}
                 className="mt-2 text-sm text-indigo-600 hover:text-indigo-700 dark:text-indigo-400 font-medium"
@@ -1023,7 +1093,7 @@ export default function BlastCampaignDetailPage() {
                 <span className="text-gray-600 dark:text-gray-400 text-xs font-mono">{r.phone_number}</span>
                 <RecipientStatusBadge status={r.status} />
                 <div>
-                  {isDraft && r.status === 'pending' && (
+                  {canEditCampaign && r.status === 'pending' && (
                     <button
                       onClick={() => removeMutation.mutate({ campaignId, recipientId: r.id })}
                       className="p-1 rounded text-gray-300 hover:text-red-500 transition-colors"
@@ -1098,7 +1168,7 @@ export default function BlastCampaignDetailPage() {
               <select
                 value={currentDevice}
                 onChange={(e) => setDeviceDraft(e.target.value)}
-                disabled={!isDraft}
+                disabled={!canEditCampaign}
                 className="w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-lg text-sm dark:bg-gray-900 dark:text-gray-100 focus:ring-1 focus:ring-indigo-500 focus:border-indigo-500 disabled:opacity-60"
               >
                 {['device_1', 'device_2', 'device_3', 'device_4', 'device_5'].map((did) => {
@@ -1128,7 +1198,7 @@ export default function BlastCampaignDetailPage() {
                 type="number"
                 value={currentDelay}
                 onChange={(e) => setDelayDraft(Math.max(1000, Number(e.target.value)))}
-                disabled={!isDraft}
+                disabled={!canEditCampaign}
                 min={1000}
                 step={1000}
                 className="w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-lg text-sm dark:bg-gray-900 dark:text-gray-100 focus:ring-1 focus:ring-indigo-500 focus:border-indigo-500 disabled:opacity-60"
@@ -1149,7 +1219,7 @@ export default function BlastCampaignDetailPage() {
                   type="number"
                   value={currentHumanMin}
                   onChange={(e) => setHumanMinDraft(Math.max(500, Number(e.target.value)))}
-                  disabled={!isDraft}
+                  disabled={!canEditCampaign}
                   min={500}
                   step={500}
                   className="w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-lg text-sm dark:bg-gray-900 dark:text-gray-100 focus:ring-1 focus:ring-indigo-500 focus:border-indigo-500 disabled:opacity-60"
@@ -1164,7 +1234,7 @@ export default function BlastCampaignDetailPage() {
                   type="number"
                   value={currentHumanMax}
                   onChange={(e) => setHumanMaxDraft(Math.max(currentHumanMin + 500, Number(e.target.value)))}
-                  disabled={!isDraft}
+                  disabled={!canEditCampaign}
                   min={1000}
                   step={500}
                   className="w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-lg text-sm dark:bg-gray-900 dark:text-gray-100 focus:ring-1 focus:ring-indigo-500 focus:border-indigo-500 disabled:opacity-60"
@@ -1174,6 +1244,156 @@ export default function BlastCampaignDetailPage() {
             <p className="text-[11px] text-gray-400">
               Random extra delay added per message to mimic human behavior. Total delay = fixed + random(min, max).
             </p>
+
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+              <label className="flex items-start gap-2 rounded-lg border border-gray-200 dark:border-gray-700 px-3 py-2">
+                <input
+                  type="checkbox"
+                  checked={currentVariationEnabled}
+                  onChange={(e) => setVariationDraft(e.target.checked)}
+                  disabled={!canEditCampaign}
+                  className="mt-0.5 h-4 w-4 rounded border-gray-300 text-indigo-600 focus:ring-indigo-500"
+                />
+                <span>
+                  <span className="block text-sm font-medium text-gray-700 dark:text-gray-300">Content variation</span>
+                  <span className="block text-[11px] text-gray-400">Adds invisible per-recipient variation so bulk messages are not byte-identical.</span>
+                </span>
+              </label>
+              <label className="flex items-start gap-2 rounded-lg border border-gray-200 dark:border-gray-700 px-3 py-2">
+                <input
+                  type="checkbox"
+                  checked={currentAutoResumeEnabled}
+                  onChange={(e) => setAutoResumeDraft(e.target.checked)}
+                  disabled={!canEditCampaign}
+                  className="mt-0.5 h-4 w-4 rounded border-gray-300 text-indigo-600 focus:ring-indigo-500"
+                />
+                <span>
+                  <span className="block text-sm font-medium text-gray-700 dark:text-gray-300">Auto-resume after anti-ban cooldown</span>
+                  <span className="block text-[11px] text-gray-400">If the device is temporarily blocked, resume automatically when retry-after expires.</span>
+                </span>
+              </label>
+            </div>
+
+            <label className="flex items-start gap-2 rounded-lg border border-gray-200 dark:border-gray-700 px-3 py-2">
+              <input
+                type="checkbox"
+                checked={currentScheduleEnabled}
+                onChange={(e) => setScheduleEnabledDraft(e.target.checked)}
+                disabled={!canEditCampaign}
+                className="mt-0.5 h-4 w-4 rounded border-gray-300 text-indigo-600 focus:ring-indigo-500"
+              />
+              <span>
+                <span className="block text-sm font-medium text-gray-700 dark:text-gray-300">Safe-hours scheduler</span>
+                <span className="block text-[11px] text-gray-400">Only sends during business-safe windows, slows down on weekends, and speeds up slightly during peak hours.</span>
+              </span>
+            </label>
+
+            {currentScheduleEnabled && (
+              <div className="space-y-3 rounded-xl border border-gray-200 dark:border-gray-700 p-3 bg-gray-50/60 dark:bg-gray-900/20">
+                <div>
+                  <label className="block text-xs font-medium text-gray-600 dark:text-gray-400 mb-1.5">Timezone</label>
+                  <input
+                    type="text"
+                    value={currentScheduleTimezone}
+                    onChange={(e) => setScheduleTimezoneDraft(e.target.value)}
+                    disabled={!canEditCampaign}
+                    placeholder="Asia/Jakarta"
+                    className="w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-lg text-sm dark:bg-gray-900 dark:text-gray-100 focus:ring-1 focus:ring-indigo-500 focus:border-indigo-500 disabled:opacity-60"
+                  />
+                </div>
+
+                <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+                  <div>
+                    <label className="block text-xs font-medium text-gray-600 dark:text-gray-400 mb-1.5">Active Start</label>
+                    <input
+                      type="number"
+                      value={currentActiveStart}
+                      onChange={(e) => setActiveStartDraft(Math.max(0, Math.min(23, Number(e.target.value))))}
+                      disabled={!canEditCampaign}
+                      min={0}
+                      max={23}
+                      className="w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-lg text-sm dark:bg-gray-900 dark:text-gray-100 focus:ring-1 focus:ring-indigo-500 focus:border-indigo-500 disabled:opacity-60"
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-xs font-medium text-gray-600 dark:text-gray-400 mb-1.5">Active End</label>
+                    <input
+                      type="number"
+                      value={currentActiveEnd}
+                      onChange={(e) => setActiveEndDraft(Math.max(currentActiveStart + 1, Math.min(24, Number(e.target.value))))}
+                      disabled={!canEditCampaign}
+                      min={1}
+                      max={24}
+                      className="w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-lg text-sm dark:bg-gray-900 dark:text-gray-100 focus:ring-1 focus:ring-indigo-500 focus:border-indigo-500 disabled:opacity-60"
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-xs font-medium text-gray-600 dark:text-gray-400 mb-1.5">Peak Start</label>
+                    <input
+                      type="number"
+                      value={currentPeakStart}
+                      onChange={(e) => setPeakStartDraft(Math.max(0, Math.min(23, Number(e.target.value))))}
+                      disabled={!canEditCampaign}
+                      min={0}
+                      max={23}
+                      className="w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-lg text-sm dark:bg-gray-900 dark:text-gray-100 focus:ring-1 focus:ring-indigo-500 focus:border-indigo-500 disabled:opacity-60"
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-xs font-medium text-gray-600 dark:text-gray-400 mb-1.5">Peak End</label>
+                    <input
+                      type="number"
+                      value={currentPeakEnd}
+                      onChange={(e) => setPeakEndDraft(Math.max(currentPeakStart, Math.min(24, Number(e.target.value))))}
+                      disabled={!canEditCampaign}
+                      min={0}
+                      max={24}
+                      className="w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-lg text-sm dark:bg-gray-900 dark:text-gray-100 focus:ring-1 focus:ring-indigo-500 focus:border-indigo-500 disabled:opacity-60"
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-xs font-medium text-gray-600 dark:text-gray-400 mb-1.5">Lunch Start</label>
+                    <input
+                      type="number"
+                      value={currentLunchStart}
+                      onChange={(e) => setLunchStartDraft(Math.max(0, Math.min(23, Number(e.target.value))))}
+                      disabled={!canEditCampaign}
+                      min={0}
+                      max={23}
+                      className="w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-lg text-sm dark:bg-gray-900 dark:text-gray-100 focus:ring-1 focus:ring-indigo-500 focus:border-indigo-500 disabled:opacity-60"
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-xs font-medium text-gray-600 dark:text-gray-400 mb-1.5">Lunch End</label>
+                    <input
+                      type="number"
+                      value={currentLunchEnd}
+                      onChange={(e) => setLunchEndDraft(Math.max(currentLunchStart, Math.min(24, Number(e.target.value))))}
+                      disabled={!canEditCampaign}
+                      min={0}
+                      max={24}
+                      className="w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-lg text-sm dark:bg-gray-900 dark:text-gray-100 focus:ring-1 focus:ring-indigo-500 focus:border-indigo-500 disabled:opacity-60"
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-xs font-medium text-gray-600 dark:text-gray-400 mb-1.5">Weekend Factor</label>
+                    <input
+                      type="number"
+                      value={currentWeekendFactor}
+                      onChange={(e) => setWeekendFactorDraft(Math.max(0, Number(e.target.value)))}
+                      disabled={!canEditCampaign}
+                      min={0}
+                      max={2}
+                      step={0.1}
+                      className="w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-lg text-sm dark:bg-gray-900 dark:text-gray-100 focus:ring-1 focus:ring-indigo-500 focus:border-indigo-500 disabled:opacity-60"
+                    />
+                  </div>
+                </div>
+                <p className="text-[11px] text-gray-400">
+                  Weekend factor below 1 slows down weekend sending. Set to 0 to block weekends completely.
+                </p>
+              </div>
+            )}
           </div>
         )}
       </section>

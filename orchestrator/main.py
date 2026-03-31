@@ -232,6 +232,12 @@ async def lifespan(app: FastAPI):
     # Start message queue send worker
     worker_task = asyncio.create_task(message_queue.send_worker())
 
+    # Restore blast auto-resume timers after restart
+    try:
+        await blast_service.restore_background_tasks()
+    except Exception as e:
+        log.warning("Failed to restore blast background tasks: %s", e)
+
     # Start periodic IG session health checker (every 5 min)
     ig_health_task = asyncio.create_task(_periodic_ig_health_check())
 
@@ -3737,7 +3743,10 @@ async def blast_check_previously_blasted(payload: dict):
 async def blast_create_campaign(payload: dict):
     """Create a new blast campaign.
 
-    Body: { name, template_message?, device_id?, delay_between_ms?, human_delay_min_ms?, human_delay_max_ms? }
+    Body: { name, template_message?, device_id?, delay_between_ms?, human_delay_min_ms?, human_delay_max_ms?,
+            content_variation_enabled?, schedule_enabled?, schedule_timezone?, active_hours_start?, active_hours_end?,
+            peak_hours_start?, peak_hours_end?, lunch_break_start?, lunch_break_end?, weekend_factor?,
+            auto_resume_enabled? }
     """
     name = payload.get("name", "").strip()
     if not name:
@@ -3750,6 +3759,17 @@ async def blast_create_campaign(payload: dict):
         delay_between_ms=payload.get("delay_between_ms", 5000),
         human_delay_min_ms=payload.get("human_delay_min_ms", 2000),
         human_delay_max_ms=payload.get("human_delay_max_ms", 8000),
+        content_variation_enabled=payload.get("content_variation_enabled", True),
+        schedule_enabled=payload.get("schedule_enabled", True),
+        schedule_timezone=payload.get("schedule_timezone", "Asia/Jakarta"),
+        active_hours_start=payload.get("active_hours_start", 8),
+        active_hours_end=payload.get("active_hours_end", 21),
+        peak_hours_start=payload.get("peak_hours_start", 10),
+        peak_hours_end=payload.get("peak_hours_end", 14),
+        lunch_break_start=payload.get("lunch_break_start", 12),
+        lunch_break_end=payload.get("lunch_break_end", 13),
+        weekend_factor=payload.get("weekend_factor", 0.5),
+        auto_resume_enabled=payload.get("auto_resume_enabled", True),
     )
     return {"success": True, "campaign": campaign}
 
@@ -3777,7 +3797,10 @@ async def blast_get_campaign(campaign_id: int):
 async def blast_update_campaign(campaign_id: int, payload: dict):
     """Update campaign settings.
 
-    Body: { name?, template_message?, device_id?, delay_between_ms?, human_delay_min_ms?, human_delay_max_ms? }
+    Body: { name?, template_message?, device_id?, delay_between_ms?, human_delay_min_ms?, human_delay_max_ms?,
+            content_variation_enabled?, schedule_enabled?, schedule_timezone?, active_hours_start?, active_hours_end?,
+            peak_hours_start?, peak_hours_end?, lunch_break_start?, lunch_break_end?, weekend_factor?,
+            auto_resume_enabled? }
     """
     campaign = await blast_service.update_campaign(campaign_id, **payload)
     if not campaign:

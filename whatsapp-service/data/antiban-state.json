@@ -1,0 +1,124 @@
+{
+  "version": 1,
+  "devices": {
+    "device_1": {
+      "knownChats": [
+        "6281717171037@s.whatsapp.net"
+      ],
+      "sendEvents": [
+        {
+          "at": 1774964206296,
+          "jid": "6281717171037@s.whatsapp.net",
+          "contentHash": "8cc7bdd6419b7be477fd42b4e58307c08752136c"
+        },
+        {
+          "at": 1774964255858,
+          "jid": "6281717171037@s.whatsapp.net",
+          "contentHash": "f179bead2e9a2afb5226df1cbbcc04aa7a65c2a4"
+        },
+        {
+          "at": 1774964300573,
+          "jid": "6281717171037@s.whatsapp.net",
+          "contentHash": "5a7287dbffc7f59e3d5793d882cc60c9ae6cf1b6"
+        }
+      ],
+      "failedEvents": [],
+      "disconnectEvents": [
+        {
+          "at": 1774963997617,
+          "reason": "428"
+        },
+        {
+          "at": 1774964073807,
+          "reason": "515"
+        }
+      ],
+      "warmUp": {
+        "startedAt": 1774962440543,
+        "dailyCounts": {
+          "2026-03-31": 3
+        }
+      },
+      "timelock": {
+        "isActive": false,
+        "expiresAt": null,
+        "enforcementType": null
+      },
+      "pausedManually": false,
+      "nextAllowedAt": null,
+      "lastSentAt": 1774964300573
+    },
+    "device_2": {
+      "knownChats": [],
+      "sendEvents": [],
+      "failedEvents": [],
+      "disconnectEvents": [],
+      "warmUp": {
+        "startedAt": 1774962440543,
+        "dailyCounts": {}
+      },
+      "timelock": {
+        "isActive": false,
+        "expiresAt": null,
+        "enforcementType": null
+      },
+      "pausedManually": false,
+      "nextAllowedAt": null,
+      "lastSentAt": null
+    },
+    "device_3": {
+      "knownChats": [],
+      "sendEvents": [],
+      "failedEvents": [],
+      "disconnectEvents": [],
+      "warmUp": {
+        "startedAt": 1774962440543,
+        "dailyCounts": {}
+      },
+      "timelock": {
+        "isActive": false,
+        "expiresAt": null,
+        "enforcementType": null
+      },
+      "pausedManually": false,
+      "nextAllowedAt": null,
+      "lastSentAt": null
+    },
+    "device_4": {
+      "knownChats": [],
+      "sendEvents": [],
+      "failedEvents": [],
+      "disconnectEvents": [],
+      "warmUp": {
+        "startedAt": 1774962440543,
+        "dailyCounts": {}
+      },
+      "timelock": {
+        "isActive": false,
+        "expiresAt": null,
+        "enforcementType": null
+      },
+      "pausedManually": false,
+      "nextAllowedAt": null,
+      "lastSentAt": null
+    },
+    "device_5": {
+      "knownChats": [],
+      "sendEvents": [],
+      "failedEvents": [],
+      "disconnectEvents": [],
+      "warmUp": {
+        "startedAt": 1774962440543,
+        "dailyCounts": {}
+      },
+      "timelock": {
+        "isActive": false,
+        "expiresAt": null,
+        "enforcementType": null
+      },
+      "pausedManually": false,
+      "nextAllowedAt": null,
+      "lastSentAt": null
+    }
+  }
+}

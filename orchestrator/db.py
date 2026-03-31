@@ -299,6 +299,19 @@ CREATE TABLE IF NOT EXISTS blast_campaigns (
     delay_between_ms INTEGER DEFAULT 5000,
     human_delay_min_ms INTEGER DEFAULT 2000,
     human_delay_max_ms INTEGER DEFAULT 8000,
+    content_variation_enabled INTEGER DEFAULT 1,
+    schedule_enabled INTEGER DEFAULT 1,
+    schedule_timezone TEXT DEFAULT 'Asia/Jakarta',
+    active_hours_start INTEGER DEFAULT 8,
+    active_hours_end INTEGER DEFAULT 21,
+    peak_hours_start INTEGER DEFAULT 10,
+    peak_hours_end INTEGER DEFAULT 14,
+    lunch_break_start INTEGER DEFAULT 12,
+    lunch_break_end INTEGER DEFAULT 13,
+    weekend_factor REAL DEFAULT 0.5,
+    auto_resume_enabled INTEGER DEFAULT 1,
+    auto_resume_at TIMESTAMP,
+    paused_reason TEXT,
     status TEXT NOT NULL DEFAULT 'draft',
     total_recipients INTEGER DEFAULT 0,
     sent_count INTEGER DEFAULT 0,
@@ -328,6 +341,7 @@ CREATE TABLE IF NOT EXISTS blast_recipients (
 
 _INDEXES_BLAST = """
 CREATE INDEX IF NOT EXISTS idx_blast_campaigns_status ON blast_campaigns(status);
+CREATE INDEX IF NOT EXISTS idx_blast_campaigns_auto_resume ON blast_campaigns(auto_resume_at);
 CREATE INDEX IF NOT EXISTS idx_blast_recipients_campaign ON blast_recipients(campaign_id);
 CREATE INDEX IF NOT EXISTS idx_blast_recipients_status ON blast_recipients(status);
 """
@@ -710,7 +724,6 @@ async def init_db() -> None:
         await db.executescript(_INDEXES_RELATED_IGS)
         await db.executescript(_DDL_IG_ACCOUNTS)
         await db.executescript(_DDL_BLAST)
-        await db.executescript(_INDEXES_BLAST)
         await db.executescript(_DDL_EMAIL_BLAST)
         await db.executescript(_DDL_OSINT)
         await db.executescript(_INDEXES_OSINT)
@@ -983,6 +996,101 @@ async def init_db() -> None:
             await db.commit()
         except Exception:
             pass  # Column already exists
+
+        # Migration: add advanced blast safety columns
+        try:
+            await db.execute(
+                "ALTER TABLE blast_campaigns ADD COLUMN content_variation_enabled INTEGER DEFAULT 1"
+            )
+            await db.commit()
+        except Exception:
+            pass  # Column already exists
+        try:
+            await db.execute(
+                "ALTER TABLE blast_campaigns ADD COLUMN schedule_enabled INTEGER DEFAULT 1"
+            )
+            await db.commit()
+        except Exception:
+            pass  # Column already exists
+        try:
+            await db.execute(
+                "ALTER TABLE blast_campaigns ADD COLUMN schedule_timezone TEXT DEFAULT 'Asia/Jakarta'"
+            )
+            await db.commit()
+        except Exception:
+            pass  # Column already exists
+        try:
+            await db.execute(
+                "ALTER TABLE blast_campaigns ADD COLUMN active_hours_start INTEGER DEFAULT 8"
+            )
+            await db.commit()
+        except Exception:
+            pass  # Column already exists
+        try:
+            await db.execute(
+                "ALTER TABLE blast_campaigns ADD COLUMN active_hours_end INTEGER DEFAULT 21"
+            )
+            await db.commit()
+        except Exception:
+            pass  # Column already exists
+        try:
+            await db.execute(
+                "ALTER TABLE blast_campaigns ADD COLUMN peak_hours_start INTEGER DEFAULT 10"
+            )
+            await db.commit()
+        except Exception:
+            pass  # Column already exists
+        try:
+            await db.execute(
+                "ALTER TABLE blast_campaigns ADD COLUMN peak_hours_end INTEGER DEFAULT 14"
+            )
+            await db.commit()
+        except Exception:
+            pass  # Column already exists
+        try:
+            await db.execute(
+                "ALTER TABLE blast_campaigns ADD COLUMN lunch_break_start INTEGER DEFAULT 12"
+            )
+            await db.commit()
+        except Exception:
+            pass  # Column already exists
+        try:
+            await db.execute(
+                "ALTER TABLE blast_campaigns ADD COLUMN lunch_break_end INTEGER DEFAULT 13"
+            )
+            await db.commit()
+        except Exception:
+            pass  # Column already exists
+        try:
+            await db.execute(
+                "ALTER TABLE blast_campaigns ADD COLUMN weekend_factor REAL DEFAULT 0.5"
+            )
+            await db.commit()
+        except Exception:
+            pass  # Column already exists
+        try:
+            await db.execute(
+                "ALTER TABLE blast_campaigns ADD COLUMN auto_resume_enabled INTEGER DEFAULT 1"
+            )
+            await db.commit()
+        except Exception:
+            pass  # Column already exists
+        try:
+            await db.execute(
+                "ALTER TABLE blast_campaigns ADD COLUMN auto_resume_at TIMESTAMP"
+            )
+            await db.commit()
+        except Exception:
+            pass  # Column already exists
+        try:
+            await db.execute(
+                "ALTER TABLE blast_campaigns ADD COLUMN paused_reason TEXT"
+            )
+            await db.commit()
+        except Exception:
+            pass  # Column already exists
+
+        await db.executescript(_INDEXES_BLAST)
 
         # Migration: create contact_memory table for persistent per-contact notes
         await db.executescript("""

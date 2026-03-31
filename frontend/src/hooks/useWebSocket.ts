@@ -14,6 +14,8 @@ type WSEvent =
   | { type: 'quota_reached'; remaining: number }
   | { type: 'blast_progress'; campaign_id: number; sent_count: number; failed_count: number; invalid_count: number; total: number; percent: number; status: string }
   | { type: 'blast_completed'; campaign_id: number; failed: Array<{ phone: string; name: string; university: string; error: string }> }
+  | { type: 'blast_paused'; campaign_id: number; reason?: string; retry_after_ms?: number; auto_resume_at?: string | null; phone?: string }
+  | { type: 'blast_resumed'; campaign_id: number; source?: string }
   | { type: 'email_quota_updated'; sent_today: number; daily_limit: number; remaining: number; is_exhausted: boolean; campaign_id: number }
   | { type: 'quota_exhausted'; campaign_id: number; remaining: number; daily_limit: number; pending_count: number }
   | { type: 'log_line'; ts: string; level: string; text: string }
@@ -21,8 +23,12 @@ type WSEvent =
 // Singleton WebSocket across all hook instances
 let wsInstance: WebSocket | null = null
 let reconnectTimer: ReturnType<typeof setTimeout> | null = null
+let shutdownTimer: ReturnType<typeof setTimeout> | null = null
 let queryClientInstance: ReturnType<typeof useQueryClient> | null = null
 let notificationsInstance: ReturnType<typeof useNotifications> | null = null
+let connectedState = false
+let wsSubscriberCount = 0
+const _connectionSubscribers = new Set<(connected: boolean) => void>()
 
 // ── Log-line subscriber registry ─────────────────────────────────────────────
 export interface LogLineEntry { ts: string; level: string; text: string }
@@ -37,6 +43,11 @@ export function subscribeToLogLines(cb: LogLineCallback): () => void {
 function getWsUrl() {
   const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:'
   return `${protocol}//${window.location.host}/ws`
+}
+
+function publishConnectionState(connected: boolean) {
+  connectedState = connected
+  _connectionSubscribers.forEach((callback) => callback(connected))
 }
 
 function handleEventNotifications(data: WSEvent, add: ReturnType<typeof useNotifications>['add']) {
@@ -66,6 +77,20 @@ function handleEventNotifications(data: WSEvent, add: ReturnType<typeof useNotif
       })
       break
     }
+    case 'blast_paused':
+      add({
+        type: 'blast_completed',
+        title: 'Blast paused by anti-ban',
+        body: data.reason || 'Outbound sending paused temporarily.',
+      })
+      break
+    case 'blast_resumed':
+      add({
+        type: 'blast_completed',
+        title: 'Blast resumed',
+        body: data.source === 'auto_resume' ? 'Campaign resumed automatically.' : 'Campaign resumed.',
+      })
+      break
     case 'quota_reached':
       add({ type: 'quota_reached', title: 'Daily quota reached', body: `Only ${data.remaining} conversations remaining.` })
       break
@@ -158,6 +183,14 @@ function handleEventQuery(data: WSEvent, qc: ReturnType<typeof useQueryClient>) 
       qc.invalidateQueries({ queryKey: ['email-blast-campaigns'] })
       break
     }
+    case 'blast_paused':
+      toast('Blast paused by anti-ban', { duration: 5000, icon: '⏸️' })
+      qc.invalidateQueries({ queryKey: queryKeys.blast })
+      break
+    case 'blast_resumed':
+      toast.success('Blast resumed', { duration: 4000, icon: '▶️' })
+      qc.invalidateQueries({ queryKey: queryKeys.blast })
+      break
     case 'email_quota_updated':
       // Immediately update the quota query cache with fresh data from WebSocket
       qc.setQueryData(['email-blast-quota'], (old: unknown) => ({
@@ -186,20 +219,29 @@ function onMessage(event: MessageEvent) {
 }
 
 function connectWs() {
-  if (wsInstance && wsInstance.readyState !== WebSocket.CLOSED) return
+  if (shutdownTimer) {
+    clearTimeout(shutdownTimer)
+    shutdownTimer = null
+  }
+  if (wsInstance && (wsInstance.readyState === WebSocket.OPEN || wsInstance.readyState === WebSocket.CONNECTING)) {
+    return
+  }
   wsInstance = new WebSocket(getWsUrl())
   wsInstance.onopen = () => {
+    publishConnectionState(true)
     if (queryClientInstance) queryClientInstance.invalidateQueries({ queryKey: queryKeys.pipeline.status })
   }
   wsInstance.onmessage = onMessage
   wsInstance.onclose = (e) => {
-    if (e.code !== 1000) reconnectTimer = setTimeout(connectWs, 3000)
+    wsInstance = null
+    publishConnectionState(false)
+    if (e.code !== 1000 && wsSubscriberCount > 0) reconnectTimer = setTimeout(connectWs, 3000)
   }
   wsInstance.onerror = () => wsInstance?.close()
 }
 
 export function useWebSocket() {
-  const [connected, setConnected] = useState(false)
+  const [connected, setConnected] = useState(connectedState)
   const queryClient = useQueryClient()
   const notifications = useNotifications()
 
@@ -213,14 +255,25 @@ export function useWebSocket() {
   }, [queryClient, notifications])
 
   useEffect(() => {
+    wsSubscriberCount += 1
+    _connectionSubscribers.add(setConnected)
     connectWs()
-    const timer = setTimeout(() => setConnected(true), 500)
+
     return () => {
-      clearTimeout(timer)
-      if (reconnectTimer) clearTimeout(reconnectTimer)
-      if (wsInstance) wsInstance.close(1000)
-      wsInstance = null
-      setConnected(false)
+      _connectionSubscribers.delete(setConnected)
+      wsSubscriberCount = Math.max(0, wsSubscriberCount - 1)
+      if (wsSubscriberCount === 0) {
+        if (reconnectTimer) {
+          clearTimeout(reconnectTimer)
+          reconnectTimer = null
+        }
+        shutdownTimer = setTimeout(() => {
+          if (wsSubscriberCount === 0 && wsInstance && wsInstance.readyState !== WebSocket.CLOSED) {
+            wsInstance.close(1000)
+          }
+          shutdownTimer = null
+        }, 1000)
+      }
     }
   }, [])
 

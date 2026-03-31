@@ -12,6 +12,19 @@ export interface BlastCampaign {
   delay_between_ms: number
   human_delay_min_ms: number
   human_delay_max_ms: number
+  content_variation_enabled: boolean | number
+  schedule_enabled: boolean | number
+  schedule_timezone: string
+  active_hours_start: number
+  active_hours_end: number
+  peak_hours_start: number
+  peak_hours_end: number
+  lunch_break_start: number
+  lunch_break_end: number
+  weekend_factor: number
+  auto_resume_enabled: boolean | number
+  auto_resume_at: string | null
+  paused_reason: string | null
   status: 'draft' | 'sending' | 'paused' | 'completed' | 'cancelled'
   total_recipients: number
   sent_count: number
@@ -105,6 +118,17 @@ export interface CreateCampaignPayload {
   delay_between_ms?: number
   human_delay_min_ms?: number
   human_delay_max_ms?: number
+  content_variation_enabled?: boolean
+  schedule_enabled?: boolean
+  schedule_timezone?: string
+  active_hours_start?: number
+  active_hours_end?: number
+  peak_hours_start?: number
+  peak_hours_end?: number
+  lunch_break_start?: number
+  lunch_break_end?: number
+  weekend_factor?: number
+  auto_resume_enabled?: boolean
 }
 
 export async function createCampaign(

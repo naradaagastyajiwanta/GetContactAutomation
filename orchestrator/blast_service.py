@@ -6,14 +6,191 @@ rendering template messages with placeholders, and executing blast sends.
 """
 
 import asyncio
+import hashlib
+import random
 import re
-from datetime import datetime, timezone
-from typing import Optional
+from datetime import datetime, time, timedelta, timezone
+from typing import Any, Optional
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from orchestrator.config import log
 from orchestrator.db import get_db
 from orchestrator.message_queue import message_queue
 from orchestrator.websocket import manager as ws_manager
+
+DEFAULT_BLAST_TIMEZONE = "Asia/Jakarta"
+PEAK_HOUR_SPEED_BOOST = 1.15
+MIN_BLAST_DELAY_MS = 1000
+ZERO_WIDTH_VARIANTS = ("\u200b", "\u200c", "\u200d", "\ufeff")
+
+
+def _as_bool(value: Any, default: bool) -> bool:
+    if value is None:
+        return default
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return bool(value)
+    if isinstance(value, str):
+        return value.strip().lower() not in {"", "0", "false", "no", "off"}
+    return bool(value)
+
+
+def _as_int(value: Any, default: int) -> int:
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def _as_float(value: Any, default: float) -> float:
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def _stable_seed(*parts: Any) -> int:
+    raw = "|".join(str(part or "") for part in parts)
+    digest = hashlib.sha1(raw.encode("utf-8")).digest()
+    return int.from_bytes(digest[:8], "big", signed=False)
+
+
+def _get_campaign_timezone(campaign: dict) -> timezone | ZoneInfo:
+    timezone_name = (campaign.get("schedule_timezone") or DEFAULT_BLAST_TIMEZONE).strip()
+    try:
+        return ZoneInfo(timezone_name)
+    except ZoneInfoNotFoundError:
+        log.warning("[Blast] Unknown timezone '%s', falling back to %s", timezone_name, DEFAULT_BLAST_TIMEZONE)
+        return timezone(timedelta(hours=7))
+
+
+def _parse_iso_datetime(value: Any) -> datetime | None:
+    if not value:
+        return None
+    if isinstance(value, datetime):
+        return value if value.tzinfo else value.replace(tzinfo=timezone.utc)
+    if isinstance(value, str):
+        try:
+            parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+            return parsed if parsed.tzinfo else parsed.replace(tzinfo=timezone.utc)
+        except ValueError:
+            return None
+    return None
+
+
+def _normalize_campaign(campaign: Optional[dict]) -> Optional[dict]:
+    if not campaign:
+        return campaign
+
+    normalized = dict(campaign)
+    normalized["content_variation_enabled"] = _as_bool(
+        normalized.get("content_variation_enabled"), True
+    )
+    normalized["schedule_enabled"] = _as_bool(normalized.get("schedule_enabled"), True)
+    normalized["schedule_timezone"] = normalized.get("schedule_timezone") or DEFAULT_BLAST_TIMEZONE
+    normalized["active_hours_start"] = max(0, min(23, _as_int(normalized.get("active_hours_start"), 8)))
+    normalized["active_hours_end"] = max(1, min(24, _as_int(normalized.get("active_hours_end"), 21)))
+    normalized["peak_hours_start"] = max(0, min(23, _as_int(normalized.get("peak_hours_start"), 10)))
+    normalized["peak_hours_end"] = max(0, min(24, _as_int(normalized.get("peak_hours_end"), 14)))
+    normalized["lunch_break_start"] = max(0, min(23, _as_int(normalized.get("lunch_break_start"), 12)))
+    normalized["lunch_break_end"] = max(0, min(24, _as_int(normalized.get("lunch_break_end"), 13)))
+    normalized["weekend_factor"] = max(0.0, _as_float(normalized.get("weekend_factor"), 0.5))
+    normalized["auto_resume_enabled"] = _as_bool(normalized.get("auto_resume_enabled"), True)
+    normalized["paused_reason"] = normalized.get("paused_reason")
+    return normalized
+
+
+def _campaign_allows_schedule(campaign: dict, now_utc: datetime) -> tuple[bool, int, str | None]:
+    if not campaign.get("schedule_enabled", True):
+        return True, 0, None
+
+    tz = _get_campaign_timezone(campaign)
+    local_now = now_utc.astimezone(tz)
+    start_hour = campaign["active_hours_start"]
+    end_hour = max(start_hour + 1, campaign["active_hours_end"])
+    lunch_start = campaign["lunch_break_start"]
+    lunch_end = max(lunch_start, campaign["lunch_break_end"])
+    weekend_factor = campaign["weekend_factor"]
+
+    if local_now.weekday() >= 5 and weekend_factor <= 0:
+        days_until_monday = (7 - local_now.weekday()) or 7
+        next_start = datetime.combine(
+            (local_now + timedelta(days=days_until_monday)).date(),
+            time(hour=start_hour, minute=0),
+            tzinfo=tz,
+        )
+        return False, max(0, int((next_start.astimezone(timezone.utc) - now_utc).total_seconds() * 1000)), "Weekend quiet hours"
+
+    start_today = datetime.combine(local_now.date(), time(hour=start_hour, minute=0), tzinfo=tz)
+    end_today = datetime.combine(local_now.date(), time(hour=end_hour % 24, minute=0), tzinfo=tz)
+    if end_hour >= 24:
+        end_today = end_today + timedelta(days=1)
+
+    if local_now < start_today:
+        wait_ms = int((start_today.astimezone(timezone.utc) - now_utc).total_seconds() * 1000)
+        return False, max(0, wait_ms), "Outside active sending hours"
+
+    if local_now >= end_today:
+        next_day = local_now.date() + timedelta(days=1)
+        next_start = datetime.combine(next_day, time(hour=start_hour, minute=0), tzinfo=tz)
+        wait_ms = int((next_start.astimezone(timezone.utc) - now_utc).total_seconds() * 1000)
+        return False, max(0, wait_ms), "Outside active sending hours"
+
+    if lunch_end > lunch_start:
+        lunch_start_at = datetime.combine(local_now.date(), time(hour=lunch_start, minute=0), tzinfo=tz)
+        lunch_end_at = datetime.combine(local_now.date(), time(hour=lunch_end % 24, minute=0), tzinfo=tz)
+        if lunch_end >= 24:
+            lunch_end_at = lunch_end_at + timedelta(days=1)
+        if lunch_start_at <= local_now < lunch_end_at:
+            wait_ms = int((lunch_end_at.astimezone(timezone.utc) - now_utc).total_seconds() * 1000)
+            return False, max(0, wait_ms), "Lunch-break slowdown window"
+
+    return True, 0, None
+
+
+def _compute_inter_message_delay_ms(campaign: dict, now_utc: datetime) -> int:
+    base_delay = max(MIN_BLAST_DELAY_MS, _as_int(campaign.get("delay_between_ms"), 5000))
+    human_min = max(0, _as_int(campaign.get("human_delay_min_ms"), 2000))
+    human_max = max(human_min, _as_int(campaign.get("human_delay_max_ms"), 8000))
+    effective_delay = base_delay + random.randint(human_min, human_max)
+
+    if campaign.get("schedule_enabled", True):
+        tz = _get_campaign_timezone(campaign)
+        local_now = now_utc.astimezone(tz)
+        speed_factor = 1.0
+        if local_now.weekday() >= 5:
+            weekend_factor = max(0.1, campaign["weekend_factor"])
+            speed_factor *= weekend_factor
+        peak_start = campaign["peak_hours_start"]
+        peak_end = max(peak_start, campaign["peak_hours_end"])
+        if peak_end > peak_start and peak_start <= local_now.hour < peak_end:
+            speed_factor *= PEAK_HOUR_SPEED_BOOST
+        if speed_factor > 0:
+            effective_delay = int(effective_delay / speed_factor)
+
+    return max(MIN_BLAST_DELAY_MS, effective_delay)
+
+
+def _apply_content_variation(message: str, campaign_id: int, recipient: dict) -> str:
+    if not message.strip():
+        return message
+
+    seed = _stable_seed(campaign_id, recipient.get("id"), recipient.get("phone_number"), message)
+    rng = random.Random(seed)
+    positions = [index for index, char in enumerate(message) if char in ".!?\n"]
+    insert_at = positions[rng.randrange(len(positions))] if positions else len(message)
+    if insert_at < len(message):
+        insert_at += 1
+    zero_width = ZERO_WIDTH_VARIANTS[rng.randrange(len(ZERO_WIDTH_VARIANTS))]
+    return f"{message[:insert_at]}{zero_width}{message[insert_at:]}"
+
+
+def render_campaign_message(campaign: dict, recipient: dict) -> str:
+    base_message = render_template(campaign["template_message"], recipient)
+    if not campaign.get("content_variation_enabled", True):
+        return base_message
+    return _apply_content_variation(base_message, campaign["id"], recipient)
 
 
 # ---------------------------------------------------------------------------
@@ -24,14 +201,46 @@ from orchestrator.websocket import manager as ws_manager
 async def create_campaign(name: str, template_message: str = "", device_id: str = "device_1",
                           delay_between_ms: int = 5000,
                           human_delay_min_ms: int = 2000,
-                          human_delay_max_ms: int = 8000) -> dict:
+                          human_delay_max_ms: int = 8000,
+                          content_variation_enabled: bool = True,
+                          schedule_enabled: bool = True,
+                          schedule_timezone: str = DEFAULT_BLAST_TIMEZONE,
+                          active_hours_start: int = 8,
+                          active_hours_end: int = 21,
+                          peak_hours_start: int = 10,
+                          peak_hours_end: int = 14,
+                          lunch_break_start: int = 12,
+                          lunch_break_end: int = 13,
+                          weekend_factor: float = 0.5,
+                          auto_resume_enabled: bool = True) -> dict:
     """Create a new blast campaign."""
     async with get_db() as db:
         cursor = await db.execute(
             """INSERT INTO blast_campaigns
-               (name, template_message, device_id, delay_between_ms, human_delay_min_ms, human_delay_max_ms)
-               VALUES (?, ?, ?, ?, ?, ?)""",
-            (name, template_message, device_id, delay_between_ms, human_delay_min_ms, human_delay_max_ms),
+               (name, template_message, device_id, delay_between_ms, human_delay_min_ms, human_delay_max_ms,
+                content_variation_enabled, schedule_enabled, schedule_timezone, active_hours_start, active_hours_end,
+                peak_hours_start, peak_hours_end, lunch_break_start, lunch_break_end, weekend_factor,
+                auto_resume_enabled)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            (
+                name,
+                template_message,
+                device_id,
+                delay_between_ms,
+                human_delay_min_ms,
+                human_delay_max_ms,
+                int(content_variation_enabled),
+                int(schedule_enabled),
+                schedule_timezone,
+                active_hours_start,
+                active_hours_end,
+                peak_hours_start,
+                peak_hours_end,
+                lunch_break_start,
+                lunch_break_end,
+                weekend_factor,
+                int(auto_resume_enabled),
+            ),
         )
         await db.commit()
         campaign_id = cursor.lastrowid
@@ -47,7 +256,7 @@ async def get_campaign(campaign_id: int) -> Optional[dict]:
         row = await cursor.fetchone()
         if not row:
             return None
-        return dict(row)
+        return _normalize_campaign(dict(row))
 
 
 async def list_campaigns(status: Optional[str] = None, limit: int = 50, offset: int = 0) -> dict:
@@ -72,13 +281,16 @@ async def list_campaigns(status: Optional[str] = None, limit: int = 50, offset: 
             params + [limit, offset],
         )
         rows = await cursor.fetchall()
-        return {"data": [dict(r) for r in rows], "total": total}
+        return {"data": [_normalize_campaign(dict(r)) for r in rows], "total": total}
 
 
 async def update_campaign(campaign_id: int, **fields) -> Optional[dict]:
     """Update campaign fields. Only draft campaigns can be fully edited."""
     allowed = {"name", "template_message", "device_id",
-               "delay_between_ms", "human_delay_min_ms", "human_delay_max_ms"}
+               "delay_between_ms", "human_delay_min_ms", "human_delay_max_ms",
+               "content_variation_enabled", "schedule_enabled", "schedule_timezone",
+               "active_hours_start", "active_hours_end", "peak_hours_start", "peak_hours_end",
+               "lunch_break_start", "lunch_break_end", "weekend_factor", "auto_resume_enabled"}
     updates = {k: v for k, v in fields.items() if k in allowed and v is not None}
 
     if not updates:
@@ -363,7 +575,6 @@ async def render_all_messages(campaign_id: int) -> int:
     if not campaign:
         return 0
 
-    template = campaign["template_message"]
     rendered = 0
 
     async with get_db() as db:
@@ -375,7 +586,7 @@ async def render_all_messages(campaign_id: int) -> int:
 
         for row in rows:
             recipient = dict(row)
-            msg = render_template(template, recipient)
+            msg = render_campaign_message(campaign, recipient)
             await db.execute(
                 "UPDATE blast_recipients SET rendered_message = ? WHERE id = ?",
                 (msg, recipient["id"]),
@@ -393,8 +604,6 @@ async def preview_messages(campaign_id: int, limit: int = 3) -> list[dict]:
     if not campaign:
         return []
 
-    template = campaign["template_message"]
-
     async with get_db() as db:
         cursor = await db.execute(
             "SELECT * FROM blast_recipients WHERE campaign_id = ? LIMIT ?",
@@ -409,7 +618,7 @@ async def preview_messages(campaign_id: int, limit: int = 3) -> list[dict]:
             "phone_number": r["phone_number"],
             "contact_name": r.get("contact_name"),
             "university_name": r.get("university_name"),
-            "rendered_message": render_template(template, r),
+            "rendered_message": render_campaign_message(campaign, r),
         })
     return previews
 
@@ -420,6 +629,72 @@ async def preview_messages(campaign_id: int, limit: int = 3) -> list[dict]:
 
 # Global reference to running blast task so we can cancel it
 _blast_tasks: dict[int, asyncio.Task] = {}
+_resume_tasks: dict[int, asyncio.Task] = {}
+
+
+def _clear_resume_task(campaign_id: int) -> None:
+    task = _resume_tasks.pop(campaign_id, None)
+    current = asyncio.current_task()
+    if task and task is not current and not task.done():
+        task.cancel()
+
+
+def _schedule_auto_resume_task(campaign_id: int, resume_at: datetime) -> None:
+    _clear_resume_task(campaign_id)
+    _resume_tasks[campaign_id] = asyncio.create_task(_auto_resume_worker(campaign_id, resume_at))
+
+
+async def _auto_resume_worker(campaign_id: int, resume_at: datetime) -> None:
+    try:
+        delay_seconds = max(0.0, (resume_at - datetime.now(timezone.utc)).total_seconds())
+        if delay_seconds > 0:
+            await asyncio.sleep(delay_seconds)
+
+        campaign = await get_campaign(campaign_id)
+        if not campaign or campaign["status"] != "paused" or not campaign["auto_resume_enabled"]:
+            return
+
+        stored_resume_at = _parse_iso_datetime(campaign.get("auto_resume_at"))
+        now_utc = datetime.now(timezone.utc)
+        if stored_resume_at and stored_resume_at > now_utc:
+            _schedule_auto_resume_task(campaign_id, stored_resume_at)
+            return
+
+        result = await start_campaign(campaign_id)
+        if result.get("success"):
+            await ws_manager.broadcast_type(
+                "blast_resumed",
+                campaign_id=campaign_id,
+                source="auto_resume",
+            )
+    except asyncio.CancelledError:
+        raise
+    except Exception as exc:
+        log.error("[Blast] Auto-resume failed for campaign %d: %s", campaign_id, exc)
+    finally:
+        current = asyncio.current_task()
+        if _resume_tasks.get(campaign_id) is current:
+            _resume_tasks.pop(campaign_id, None)
+
+
+async def restore_background_tasks() -> None:
+    """Restore pending auto-resume timers after orchestrator restart."""
+    async with get_db() as db:
+        cursor = await db.execute(
+            """SELECT * FROM blast_campaigns
+               WHERE status = 'paused' AND auto_resume_enabled = 1 AND auto_resume_at IS NOT NULL"""
+        )
+        rows = await cursor.fetchall()
+
+    for row in rows:
+        campaign = _normalize_campaign(dict(row))
+        resume_at = _parse_iso_datetime(campaign.get("auto_resume_at"))
+        if not resume_at:
+            continue
+        if resume_at <= datetime.now(timezone.utc):
+            asyncio.create_task(_auto_resume_worker(campaign["id"], resume_at))
+        else:
+            _schedule_auto_resume_task(campaign["id"], resume_at)
 
 
 async def start_campaign(campaign_id: int) -> dict:
@@ -439,18 +714,19 @@ async def start_campaign(campaign_id: int) -> dict:
 
     # Pre-render all messages
     await render_all_messages(campaign_id)
+    _clear_resume_task(campaign_id)
 
     # Update status
     async with get_db() as db:
         now = datetime.now(timezone.utc).isoformat()
         if campaign["status"] == "draft":
             await db.execute(
-                "UPDATE blast_campaigns SET status = 'sending', started_at = ? WHERE id = ?",
+                "UPDATE blast_campaigns SET status = 'sending', started_at = ?, auto_resume_at = NULL, paused_reason = NULL WHERE id = ?",
                 (now, campaign_id),
             )
         else:
             await db.execute(
-                "UPDATE blast_campaigns SET status = 'sending', paused_at = NULL WHERE id = ?",
+                "UPDATE blast_campaigns SET status = 'sending', paused_at = NULL, auto_resume_at = NULL, paused_reason = NULL WHERE id = ?",
                 (campaign_id,),
             )
         await db.commit()
@@ -472,12 +748,13 @@ async def pause_campaign(campaign_id: int) -> dict:
     task = _blast_tasks.get(campaign_id)
     if task and not task.done():
         task.cancel()
+    _clear_resume_task(campaign_id)
 
     async with get_db() as db:
         now = datetime.now(timezone.utc).isoformat()
         await db.execute(
-            "UPDATE blast_campaigns SET status = 'paused', paused_at = ? WHERE id = ?",
-            (now, campaign_id),
+            "UPDATE blast_campaigns SET status = 'paused', paused_at = ?, auto_resume_at = NULL, paused_reason = ? WHERE id = ?",
+            (now, "Paused manually", campaign_id),
         )
         await db.commit()
 
@@ -494,6 +771,7 @@ async def cancel_campaign(campaign_id: int) -> dict:
     task = _blast_tasks.get(campaign_id)
     if task and not task.done():
         task.cancel()
+    _clear_resume_task(campaign_id)
 
     async with get_db() as db:
         now = datetime.now(timezone.utc).isoformat()
@@ -502,7 +780,7 @@ async def cancel_campaign(campaign_id: int) -> dict:
             (campaign_id,),
         )
         await db.execute(
-            "UPDATE blast_campaigns SET status = 'cancelled', completed_at = ? WHERE id = ?",
+            "UPDATE blast_campaigns SET status = 'cancelled', completed_at = ?, auto_resume_at = NULL, paused_reason = NULL WHERE id = ?",
             (now, campaign_id),
         )
         await db.commit()
@@ -519,15 +797,28 @@ async def _blast_worker(campaign_id: int) -> None:
         if not campaign:
             return
 
-        device_id = campaign["device_id"] or "device_1"
-        delay_ms = campaign["delay_between_ms"] or 5000
-
         while True:
             # Check if still sending
             current = await get_campaign(campaign_id)
             if not current or current["status"] != "sending":
                 log.info("[Blast] Campaign %d no longer sending, stopping worker", campaign_id)
                 break
+
+            device_id = current["device_id"] or "device_1"
+            allowed_now, wait_ms, wait_reason = _campaign_allows_schedule(
+                current,
+                datetime.now(timezone.utc),
+            )
+            if not allowed_now:
+                sleep_ms = min(max(wait_ms, MIN_BLAST_DELAY_MS), 60_000)
+                log.info(
+                    "[Blast] Campaign %d waiting %dms for schedule window: %s",
+                    campaign_id,
+                    sleep_ms,
+                    wait_reason,
+                )
+                await asyncio.sleep(sleep_ms / 1000.0)
+                continue
 
             # Get next pending recipient
             async with get_db() as db:
@@ -616,27 +907,42 @@ async def _blast_worker(campaign_id: int) -> None:
                     )
                 elif result.blocked:
                     retry_after_ms = result.retry_after_ms or 0
+                    paused_reason = result.error or "Blocked by anti-ban policy"
+                    auto_resume_at = None
+                    if current.get("auto_resume_enabled") and retry_after_ms > 0:
+                        auto_resume_at = (
+                            datetime.now(timezone.utc) + timedelta(milliseconds=retry_after_ms)
+                        ).isoformat()
+
                     log.warning(
                         "[Blast] Anti-ban blocked campaign %d on %s for %sms: %s",
                         campaign_id,
                         recipient["phone_number"],
                         retry_after_ms,
-                        result.error,
+                        paused_reason,
                     )
 
                     async with get_db() as db:
                         now = datetime.now(timezone.utc).isoformat()
                         await db.execute(
-                            "UPDATE blast_campaigns SET status = 'paused', paused_at = ? WHERE id = ? AND status = 'sending'",
-                            (now, campaign_id),
+                            """UPDATE blast_campaigns
+                               SET status = 'paused', paused_at = ?, auto_resume_at = ?, paused_reason = ?
+                               WHERE id = ? AND status = 'sending'""",
+                            (now, auto_resume_at, paused_reason, campaign_id),
                         )
                         await db.commit()
+
+                    if auto_resume_at:
+                        _schedule_auto_resume_task(campaign_id, _parse_iso_datetime(auto_resume_at) or datetime.now(timezone.utc))
+                    else:
+                        _clear_resume_task(campaign_id)
 
                     await ws_manager.broadcast_type(
                         "blast_paused",
                         campaign_id=campaign_id,
-                        reason=result.error or "Blocked by anti-ban policy",
+                        reason=paused_reason,
                         retry_after_ms=retry_after_ms,
+                        auto_resume_at=auto_resume_at,
                         phone=recipient["phone_number"],
                     )
                     break
@@ -680,6 +986,7 @@ async def _blast_worker(campaign_id: int) -> None:
                     await db.commit()
 
             # Delay between messages
+            delay_ms = _compute_inter_message_delay_ms(current, datetime.now(timezone.utc))
             await asyncio.sleep(delay_ms / 1000.0)
 
     except asyncio.CancelledError:
@@ -689,8 +996,8 @@ async def _blast_worker(campaign_id: int) -> None:
         # Mark campaign as paused on error
         async with get_db() as db:
             await db.execute(
-                "UPDATE blast_campaigns SET status = 'paused' WHERE id = ? AND status = 'sending'",
-                (campaign_id,),
+                "UPDATE blast_campaigns SET status = 'paused', paused_reason = ? WHERE id = ? AND status = 'sending'",
+                (str(e), campaign_id),
             )
             await db.commit()
     finally:

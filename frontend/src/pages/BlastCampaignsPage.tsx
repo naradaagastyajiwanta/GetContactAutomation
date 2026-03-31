@@ -2,7 +2,7 @@
  * BlastCampaignsPage — List all blast campaigns with status, progress, and quick actions.
  */
 
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { Link, useNavigate } from 'react-router-dom'
 import {
   Megaphone,
@@ -74,10 +74,33 @@ function ProgressBar({ sent, failed, total }: { sent: number; failed: number; to
   )
 }
 
+function formatRelativeCountdown(target: string | null, now: number): string | null {
+  if (!target) return null
+  const targetMs = new Date(target).getTime()
+  if (!Number.isFinite(targetMs)) return null
+  const diffMs = targetMs - now
+  if (diffMs <= 0) return 'resuming now'
+
+  const totalSeconds = Math.ceil(diffMs / 1000)
+  const hours = Math.floor(totalSeconds / 3600)
+  const minutes = Math.floor((totalSeconds % 3600) / 60)
+  const seconds = totalSeconds % 60
+
+  if (hours > 0) return `auto-resume in ${hours}h ${minutes}m`
+  if (minutes > 0) return `auto-resume in ${minutes}m ${seconds}s`
+  return `auto-resume in ${seconds}s`
+}
+
 export default function BlastCampaignsPage() {
   const navigate = useNavigate()
   const [showCreate, setShowCreate] = useState(false)
   const [newName, setNewName] = useState('')
+  const [now, setNow] = useState(() => Date.now())
+
+  useEffect(() => {
+    const interval = window.setInterval(() => setNow(Date.now()), 1000)
+    return () => window.clearInterval(interval)
+  }, [])
 
   const { data, isLoading } = useBlastCampaigns()
   const createMutation = useCreateCampaign()
@@ -178,6 +201,7 @@ export default function BlastCampaignsPage() {
             <CampaignCard
               key={c.id}
               campaign={c}
+              now={now}
               onStart={() => startMutation.mutate(c.id)}
               onPause={() => pauseMutation.mutate(c.id)}
               onCancel={() => cancelMutation.mutate(c.id)}
@@ -194,17 +218,21 @@ export default function BlastCampaignsPage() {
 
 function CampaignCard({
   campaign: c,
+  now,
   onStart,
   onPause,
   onCancel,
   onDelete,
 }: {
   campaign: BlastCampaign
+  now: number
   onStart: () => void
   onPause: () => void
   onCancel: () => void
   onDelete: () => void
 }) {
+  const resumeLabel = formatRelativeCountdown(c.auto_resume_at, now)
+
   return (
     <Link
       to={`/blast/${c.id}`}
@@ -234,6 +262,21 @@ function CampaignCard({
             <span>{c.device_id}</span>
             <span>{new Date(c.created_at).toLocaleDateString()}</span>
           </div>
+
+          {c.status === 'paused' && (c.paused_reason || resumeLabel) && (
+            <div className="mt-2 space-y-1">
+              {c.paused_reason && (
+                <p className="text-[11px] text-amber-700 dark:text-amber-300 line-clamp-2">
+                  Paused: {c.paused_reason}
+                </p>
+              )}
+              {resumeLabel && Boolean(c.auto_resume_enabled) && (
+                <p className="text-[11px] text-blue-600 dark:text-blue-400">
+                  {resumeLabel}
+                </p>
+              )}
+            </div>
+          )}
 
           {/* Progress bar for active campaigns */}
           {(c.status === 'sending' || c.status === 'paused' || c.status === 'completed') &&
