@@ -2543,14 +2543,14 @@ def pw_get_posts(handle: str, max_posts: int = 12) -> list[dict]:
     return posts
 
 
-def pw_get_following(handle: str, max_results: int = 200) -> list[dict]:
+def pw_get_following(handle: str, max_results: int = 200) -> list[dict] | None:
     """
     Get following list from an IG profile.
 
     Returns list of: {"username": str, "full_name": str, "is_verified": bool}
     """
     if not is_available():
-        return []
+        return None
 
     _check_daily_reset()
     handle = handle.lstrip("@")
@@ -2562,31 +2562,119 @@ def pw_get_following(handle: str, max_results: int = 200) -> list[dict]:
         with _PlaywrightBrowser(account=account) as browser:
             if not browser.ensure_logged_in():
                 log.warning("[Playwright] Cannot get following -- not logged in")
-                return []
+                return None
+
+            user = browser.ig_get_web_profile(handle)
+            user_id = (user or {}).get("id")
+            if user_id:
+                try:
+                    user_id = int(user_id)
+                except (TypeError, ValueError):
+                    user_id = None
+
+            if user_id:
+                following: list[dict] = []
+                max_id = ""
+                max_pages = max_results // 50 + 1
+
+                for _ in range(max_pages):
+                    if len(following) >= max_results:
+                        break
+
+                    params = [f"count={min(50, max_results - len(following))}"]
+                    if max_id:
+                        params.append(f"max_id={max_id}")
+                    api_url = (
+                        f"https://www.instagram.com/api/v1/friendships/{user_id}/following/?"
+                        + "&".join(params)
+                    )
+                    resp = browser.ig_api_fetch(api_url)
+                    if resp is None:
+                        log.warning("[Playwright] Following API returned no response for @%s", handle)
+                        return None
+                    if resp.get("__error"):
+                        status_code = resp.get("status")
+                        if status_code == 401:
+                            log.warning(
+                                "[Playwright] Following API requires authenticated session for @%s",
+                                handle,
+                            )
+                            return None
+                        if status_code == 429:
+                            _pw_status["ok"] = False
+                            _pw_status["error"] = "following_rate_limited"
+                            log.warning("[Playwright] Following API rate-limited for @%s", handle)
+                            return None
+                        log.warning(
+                            "[Playwright] Following API failed for @%s with status %s",
+                            handle,
+                            status_code,
+                        )
+                        return None
+
+                    users = resp.get("users") or []
+                    for raw_user in users:
+                        username = (raw_user.get("username") or "").strip().lower()
+                        if not username or username in (handle.lower(), "explore"):
+                            continue
+                        following.append({
+                            "username": username,
+                            "full_name": raw_user.get("full_name", ""),
+                            "is_verified": raw_user.get("is_verified", False),
+                        })
+
+                    max_id = resp.get("next_max_id") or ""
+                    if not max_id:
+                        break
+                    _time.sleep(random.uniform(1.5, 3.0))
+
+                _pw_status["profiles_today"] += 1
+                _pw_status["ok"] = True
+                _pw_status["error"] = None
+                log.info("[Playwright] @%s: got %d following via API", handle, len(following))
+                return following[:max_results]
 
             if not browser.navigate(f"https://www.instagram.com/{handle}/"):
-                return []
+                return None
 
             _human_delay(3, 6)
+
+            page_text = ""
+            try:
+                page_text = browser.page.locator("body").inner_text(timeout=5000).lower()
+            except Exception:
+                page_text = ""
+
+            if "masuk" in page_text and "daftar" in page_text:
+                log.warning(
+                    "[Playwright] Profile @%s opened in public view only; following requires a stronger IG session",
+                    handle,
+                )
+                return None
 
             # Click "following" link
             try:
                 following_link = browser.page.locator(f'a[href="/{handle}/following/"]').first
                 if not following_link.is_visible(timeout=5000):
+                    following_link = browser.page.locator('a').filter(has_text=re.compile(r'\\bdiikuti\\b', re.IGNORECASE)).first
+                if not following_link.is_visible(timeout=5000):
                     log.warning("[Playwright] Following link not visible for @%s", handle)
-                    return []
-                following_link.click()
+                    return None
+                try:
+                    following_link.click(timeout=5000, force=True)
+                except Exception:
+                    following_link.evaluate("(el) => el.click()")
                 _human_delay(3, 6)
             except Exception as e:
                 log.warning("[Playwright] Could not click following for @%s: %s", handle, e)
-                return []
+                return None
 
             # Wait for dialog/list to appear
             try:
                 browser.page.wait_for_selector('[role="dialog"]', timeout=8000)
             except Exception:
                 log.warning("[Playwright] Following dialog did not appear for @%s", handle)
-                return []
+                return None
 
             # Scroll through the following list
             seen_usernames = set()

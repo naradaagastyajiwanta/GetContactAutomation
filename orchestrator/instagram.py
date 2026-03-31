@@ -2340,8 +2340,46 @@ async def search_related_accounts_via_search(
         if handle_stem.upper() == acronym or len(handle_stem) <= 2:
             handle_stem = ""
 
+    location_word = uni_words[-1] if len(uni_words) > 1 else ""
+
     candidate_users: list[dict] = []
     seen_handles: set[str] = set()
+
+    def _build_related_search_queries(rel_type: str, keyword: str) -> list[str]:
+        """Build broader search queries for the same relation type.
+
+        This is used only in the no-session fallback path, so we bias toward
+        recall while still keeping queries focused on the expected handle stem.
+        """
+        queries: list[str] = []
+        seen: set[str] = set()
+
+        def _add(query: str) -> None:
+            q = query.strip()
+            if q and q.lower() not in seen:
+                seen.add(q.lower())
+                queries.append(q)
+
+        if rel_type == "bem":
+            for raw_query in _build_bem_queries(university_name):
+                _add(f"site:instagram.com {raw_query}")
+
+        _add(f"site:instagram.com {keyword} {acronym}")
+        _add(f'site:instagram.com {keyword} "{short_name}"')
+
+        if handle_stem:
+            _add(f"site:instagram.com {keyword} {handle_stem}")
+            _add(f'site:instagram.com "{keyword} {handle_stem}"')
+            _add(f'instagram "{keyword}" "{handle_stem}"')
+
+        if location_word:
+            _add(f"site:instagram.com {keyword} {location_word}")
+            _add(f'site:instagram.com {keyword} "{short_name}" {location_word}')
+
+        if rel_type == "bem":
+            _add(f'instagram {keyword} "{short_name}" mahasiswa')
+
+        return queries
 
     # ------------- Primary: DuckDuckGo (free) -------------
     # Strategy: per relation type, try up to 3 query variants:
@@ -2365,6 +2403,26 @@ async def search_related_accounts_via_search(
             if h.lower() not in ("p", "reel", "explore", "accounts", "stories", "tv")
         ]
 
+    def _clean_search_title(title: str, handle: str) -> str:
+        """Extract a cleaner profile name from a search result title.
+
+        Search titles often look like:
+        "BEM UNISSAS (@bem_unissas) • Instagram photos and videos"
+        We only want the profile-name portion that belongs to the linked handle.
+        """
+        raw = (title or "").strip()
+        if not raw:
+            return ""
+
+        marker = f"(@{handle})"
+        marker_idx = raw.lower().find(marker.lower())
+        if marker_idx > 0:
+            raw = raw[:marker_idx].strip()
+
+        raw = re.sub(r"\s*[•\-|–—]\s*instagram.*$", "", raw, flags=re.IGNORECASE).strip()
+        raw = re.sub(r"\s+photos\s+and\s+videos.*$", "", raw, flags=re.IGNORECASE).strip()
+        return raw
+
     for rel_type, prefixes in _TYPE_QUERIES.items():
         if _ddg_consecutive_failures >= _DDG_CIRCUIT_BREAK:
             log.warning(
@@ -2373,20 +2431,14 @@ async def search_related_accounts_via_search(
             )
             break
         keyword = prefixes[0]
-        queries_to_try = [
-            f"site:instagram.com {keyword} {acronym}",
-            f'site:instagram.com {keyword} "{short_name}"',
-        ]
-        if handle_stem:
-            queries_to_try.append(f"site:instagram.com {keyword} {handle_stem}")
-        # Prose query: searches the open web for pages that mention the BEM IG handle.
-        # E.g. news / university directory pages often embed the full IG URL in text.
-        # Only add once per university (using BEM type to avoid N duplicates).
-        if rel_type == "bem":
-            queries_to_try.append(f'instagram {keyword} "{short_name}" mahasiswa')
+        queries_to_try = _build_related_search_queries(rel_type, keyword)
         for ddg_query in queries_to_try:
             try:
-                results = await duckduckgo_client.async_search_text(ddg_query, max_results=5)
+                results = await duckduckgo_client.async_search_text(
+                    ddg_query,
+                    max_results=8,
+                    region="id-id",
+                )
                 if results:
                     _ddg_consecutive_failures = 0  # reset on success
                 else:
@@ -2394,18 +2446,27 @@ async def search_related_accounts_via_search(
                 for result in results:
                     # Primary: extract from the result URL
                     handle = _extract_ig_handle(result.get("link", ""))
-                    handles_from_result = [handle] if handle else []
+                    title = result.get("title", "")
+                    if handle and handle not in seen_handles:
+                        seen_handles.add(handle)
+                        candidate_users.append({
+                            "username": handle,
+                            "full_name": _clean_search_title(title, handle),
+                            "is_verified": False,
+                        })
+
                     # Secondary: also mine snippet + title for embedded IG URLs
                     # (prose results from news/directory pages often contain the handle)
                     prose_text = (result.get("snippet", "") or "") + " " + (result.get("title", "") or "")
-                    handles_from_result.extend(_handles_from_text(prose_text))
-                    for h in handles_from_result:
+                    for h in _handles_from_text(prose_text):
                         if not h or h in seen_handles:
                             continue
                         seen_handles.add(h)
                         candidate_users.append({
                             "username": h,
-                            "full_name": result.get("title", ""),
+                            # Do not reuse the search title for snippet-mined handles;
+                            # it often describes a different profile and contaminates scoring.
+                            "full_name": "",
                             "is_verified": False,
                         })
             except Exception as e:
@@ -2426,38 +2487,39 @@ async def search_related_accounts_via_search(
                     )
                     break
                 keyword = prefixes[0]
-                serper_query = f'site:instagram.com {keyword} {acronym}'
-                try:
-                    resp = await client.post(
-                        "https://google.serper.dev/search",
-                        headers={
-                            "X-API-KEY": cfg.SERPER_API_KEY,
-                            "Content-Type": "application/json",
-                        },
-                        json={"q": serper_query, "num": 5},
-                    )
-                    if resp.status_code != 200:
-                        _update_serper_status(False, "quota_exceeded")
+                queries_to_try = _build_related_search_queries(rel_type, keyword)[:4]
+                for serper_query in queries_to_try:
+                    try:
+                        resp = await client.post(
+                            "https://google.serper.dev/search",
+                            headers={
+                                "X-API-KEY": cfg.SERPER_API_KEY,
+                                "Content-Type": "application/json",
+                            },
+                            json={"q": serper_query, "num": 8},
+                        )
+                        if resp.status_code != 200:
+                            _update_serper_status(False, "quota_exceeded")
+                            consecutive_errors += 1
+                            continue
+                        _update_serper_status(True)
+                        consecutive_errors = 0
+                        data = resp.json()
+                    except Exception as e:
+                        log.warning("[BEM-Serper] Query '%s' failed: %s", serper_query, e)
                         consecutive_errors += 1
                         continue
-                    _update_serper_status(True)
-                    consecutive_errors = 0
-                    data = resp.json()
-                except Exception as e:
-                    log.warning("[BEM-Serper] Query '%s' failed: %s", serper_query, e)
-                    consecutive_errors += 1
-                    continue
 
-                for result in data.get("organic", []):
-                    handle = _extract_ig_handle(result.get("link", ""))
-                    if not handle or handle in seen_handles:
-                        continue
-                    seen_handles.add(handle)
-                    candidate_users.append({
-                        "username": handle,
-                        "full_name": result.get("title", ""),
-                        "is_verified": False,
-                    })
+                    for result in data.get("organic", []):
+                        handle = _extract_ig_handle(result.get("link", ""))
+                        if not handle or handle in seen_handles:
+                            continue
+                        seen_handles.add(handle)
+                        candidate_users.append({
+                            "username": handle,
+                            "full_name": _clean_search_title(result.get("title", ""), handle),
+                            "is_verified": False,
+                        })
 
     if not candidate_users:
         log.info("[BEM-Search] No candidates found for %s", university_name)
@@ -2557,9 +2619,25 @@ def get_ig_following(handle: str, max_results: int = 200) -> list[dict] | None:
     pool auto-rotates to the next one; we then create a fresh client with
     the new session and try again.
     """
+    def _fallback_to_playwright(reason: str) -> list[dict] | None:
+        if not playwright_ig.is_available():
+            log.warning("[BEM] %s and Playwright is unavailable — returning None (infra failure)", reason)
+            return None
+
+        try:
+            log.info("[BEM] %s — falling back to Playwright following fetch for @%s", reason, handle)
+            return playwright_ig.pw_get_following(handle, max_results=max_results)
+        except Exception as exc:
+            log.warning(
+                "[BEM] Playwright following fallback failed for @%s after %s: %s",
+                handle,
+                reason.lower(),
+                exc,
+            )
+            return None
+
     if not _ig_pool.get_current_session_id():
-        log.warning("[BEM] No IG sessions configured — returning None (infra failure)")
-        return None
+        return _fallback_to_playwright("No IG sessions configured")
 
     # Try every available session before giving up.
     total_sessions = max(_ig_pool.get_status().get("total", 1), 1)
@@ -2641,8 +2719,7 @@ def get_ig_following(handle: str, max_results: int = 200) -> list[dict] | None:
         finally:
             client.close()
 
-    log.warning("[BEM] All %d session(s) exhausted for @%s -- returning None (infra failure)", total_sessions, handle)
-    return None
+    return _fallback_to_playwright(f"All {total_sessions} session(s) exhausted")
 
 
 def find_related_accounts_from_following(
@@ -2771,13 +2848,16 @@ def find_related_accounts_from_following(
     return results
 
 
-def fetch_bios_for_candidates(candidates: list[dict]) -> list[dict]:
+def fetch_bios_for_candidates(
+    candidates: list[dict],
+    max_candidates: int | None = 3,
+) -> list[dict]:
     """Enrich candidate dicts with bios for better LLM verification.
 
     Strategy:
-      1. Only enrich the top-ranked candidates to reduce IG pressure.
+      1. Enrich the top-ranked candidates, or all candidates when requested.
       2. Prefer Playwright profile fetch (more ban-resistant).
-      3. Fall back to session-cookie API only for unresolved top candidates.
+      3. Fall back to session-cookie API only for unresolved candidates.
 
     Returns a new list with the same candidates augmented by ``bio``.
     Sync function — call from executor in async context.
@@ -2785,7 +2865,10 @@ def fetch_bios_for_candidates(candidates: list[dict]) -> list[dict]:
     if not candidates:
         return candidates
 
-    max_candidates = min(len(candidates), 3)
+    if max_candidates is None or max_candidates <= 0:
+        max_candidates = len(candidates)
+
+    max_candidates = min(len(candidates), max_candidates)
     playwright_enabled = playwright_ig.is_available()
     session_enabled = bool(_ig_pool.get_current_session_id())
 
@@ -2813,9 +2896,10 @@ def fetch_bios_for_candidates(candidates: list[dict]) -> list[dict]:
             if bio:
                 candidate["bio"] = bio
                 playwright_hits += 1
-            if full_name and not candidate.get("full_name"):
+            # Prefer profile data over search-result titles/snippets.
+            if full_name:
                 candidate["full_name"] = full_name
-            if external_url and not candidate.get("external_url"):
+            if external_url:
                 candidate["external_url"] = external_url
 
             if not bio and not full_name:
@@ -2853,9 +2937,10 @@ def fetch_bios_for_candidates(candidates: list[dict]) -> list[dict]:
                     if bio:
                         candidate["bio"] = bio
                         session_hits += 1
-                    if full_name and not candidate.get("full_name"):
+                    # Prefer profile data over search-result titles/snippets.
+                    if full_name:
                         candidate["full_name"] = full_name
-                    if external_url and not candidate.get("external_url"):
+                    if external_url:
                         candidate["external_url"] = external_url
                     _time.sleep(2)
             finally:
@@ -2863,7 +2948,7 @@ def fetch_bios_for_candidates(candidates: list[dict]) -> list[dict]:
 
     fetched = sum(1 for c in enriched if c.get("bio"))
     log.info(
-        "[BEM-Bio] Fetched bio for %d/%d candidates (top=%d, playwright=%d, session=%d)",
+        "[BEM-Bio] Fetched bio for %d/%d candidates (target=%d, playwright=%d, session=%d)",
         fetched, len(enriched), max_candidates, playwright_hits, session_hits,
     )
     return enriched
@@ -2892,6 +2977,7 @@ async def verify_related_accounts_with_llm(
         return []
 
     client = _get_openai()
+    bio_known = sum(1 for c in candidates if (c.get("bio") or "").strip())
 
     # Build university acronym for the prompt
     uni_words = university_name.strip().split()
@@ -2900,7 +2986,7 @@ async def verify_related_accounts_with_llm(
     # Prepare candidate list for the prompt — include bio when available
     def _fmt_candidate(i: int, c: dict) -> str:
         bio = (c.get("bio") or "").strip()
-        bio_part = f' | bio: "{bio[:120]}"' if bio else ""
+        bio_part = f' | bio: "{bio[:160]}"' if bio else ' | bio: ""'
         return (
             f'{i+1}. @{c["handle"]}'
             f' | full_name: "{c["full_name"]}"'
@@ -2920,7 +3006,11 @@ async def verify_related_accounts_with_llm(
         "You are an expert at identifying Indonesian university Instagram accounts. "
         "Given a university name and a list of candidate Instagram accounts, "
         "determine whether each account truly belongs to that university. "
-        "Pay close attention to shared abbreviations/stems between the official handle and candidates. "
+        "Use the candidate bio as the primary evidence whenever it is available. "
+        "Pay close attention to shared abbreviations/stems between the official handle and candidates, "
+        "but never approve an account based only on acronym overlap or generic handles. "
+        "Reject candidates whose bio or full_name clearly points to another university or whose evidence is weak/generic. "
+        "When bio is empty, be conservative and prefer false unless the profile identity is explicit. "
         "Respond ONLY with valid JSON — no markdown, no explanation."
     )
 
@@ -2928,6 +3018,13 @@ async def verify_related_accounts_with_llm(
 {official_handle_line}
 Candidate accounts:
 {candidate_lines}
+
+Evidence notes:
+- Bio is the strongest evidence and should be weighted most heavily.
+- An empty bio means the evidence is weaker, not stronger.
+- Do not mark an account as related just because it contains BEM/Humas keywords or a matching acronym.
+- Reject accounts that look like other universities, other cities, or generic organizations.
+- Prefer precision over recall: false negatives are better than false positives.
 
 For each candidate, return:
 - is_related: true/false — is this account genuinely affiliated with {university_name}?
@@ -2977,8 +3074,8 @@ Return a JSON array (same order as input):
             })
 
         log.info(
-            "[BEM-LLM] %s: %d/%d candidates verified by LLM",
-            university_name, len(verified), len(candidates),
+            "[BEM-LLM] %s: %d/%d candidates verified by LLM (bio known for %d)",
+            university_name, len(verified), len(candidates), bio_known,
         )
         return verified
 

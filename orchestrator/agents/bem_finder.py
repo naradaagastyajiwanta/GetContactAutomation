@@ -42,6 +42,81 @@ _MIN_CONFIDENCE = 0.55
 # to Agent 2 (scrape main IG only, no related IGs).
 _MAX_BEM_ATTEMPTS = 3
 
+_UNI_GENERIC_WORDS = {
+    "universitas", "institut", "sekolah", "tinggi", "negeri", "islam",
+    "agama", "politeknik", "akademi", "ilmu", "teknologi", "swasta",
+    "katolik", "kristen", "stie", "stkip",
+}
+
+_HANDLE_GARBAGE = {
+    "your", "official", "info", "ig", "real", "the",
+    "resmi", "web", "humas", "pmb", "berita",
+}
+
+_HANDLE_PREFIX_GARBAGE = ("your", "official", "ig", "real", "the", "resmi")
+
+
+def _derive_official_handle_stem(ig_handle: str) -> str:
+    raw_stem = (ig_handle or "").replace(".", "_").replace("-", "_")
+    parts = [p for p in raw_stem.split("_") if p and p.lower() not in _HANDLE_GARBAGE]
+    if not parts:
+        return ""
+
+    stem = parts[0].lower()
+    for prefix in _HANDLE_PREFIX_GARBAGE:
+        if stem.startswith(prefix) and len(stem) > len(prefix) + 2:
+            stem = stem[len(prefix):]
+            break
+
+    return stem if len(stem) >= 4 else ""
+
+
+def _filter_precise_web_fallback_matches(
+    related: list[dict],
+    candidate_by_handle: dict[str, dict],
+    university_name: str,
+    official_handle: str,
+) -> list[dict]:
+    unique_tokens = [
+        word for word in university_name.lower().split()
+        if len(word) > 3 and word not in _UNI_GENERIC_WORDS
+    ]
+    handle_stem = _derive_official_handle_stem(official_handle)
+    filtered: list[dict] = []
+
+    for account in related:
+        source = candidate_by_handle.get(account["handle"], {})
+        bio = (source.get("bio") or "").strip().lower()
+        full_name = (source.get("full_name") or account.get("full_name") or "").strip().lower()
+        evidence = " ".join(part for part in [account["handle"].lower(), full_name, bio] if part)
+
+        stem_hit = bool(handle_stem and handle_stem in evidence)
+        token_hits = sum(1 for token in unique_tokens if token in evidence)
+        has_bio = bool(bio)
+        min_confidence = 0.9 if has_bio else 0.97
+
+        if account.get("confidence", 0.0) < min_confidence:
+            log.info(
+                "[Agent4-BEM] Rejecting web fallback @%s: confidence %.2f < %.2f",
+                account["handle"], account.get("confidence", 0.0), min_confidence,
+            )
+            continue
+
+        if not stem_hit and token_hits < 2:
+            log.info(
+                "[Agent4-BEM] Rejecting web fallback @%s: weak identity evidence (stem=%s, token_hits=%d)",
+                account["handle"], stem_hit, token_hits,
+            )
+            continue
+
+        filtered.append({
+            **account,
+            "full_name": source.get("full_name") or account.get("full_name", ""),
+            "bio": source.get("bio") or "",
+        })
+
+    return filtered
+
 
 async def _discover_bem_for_uni(uni: dict, loop) -> dict:
     """Scan the official IG's following list to find BEM & related accounts.
@@ -121,9 +196,16 @@ async def _discover_bem_for_uni(uni: dict, loop) -> dict:
             log.info("[Agent4-BEM] Empty following for @%s (%s), trying web search fallback", ig_handle, uni["name"])
 
         keyword_matches = await search_related_accounts_via_search(uni["name"], ig_handle=ig_handle)
-        # Enrich candidates with bio before LLM
-        keyword_matches = await loop.run_in_executor(None, fetch_bios_for_candidates, keyword_matches)
+        # LLM must see actual profile evidence, not just handles or search snippets.
+        keyword_matches = await loop.run_in_executor(
+            None,
+            fetch_bios_for_candidates,
+            keyword_matches,
+            len(keyword_matches),
+        )
         related = await verify_related_accounts_with_llm(keyword_matches, uni["name"], ig_handle)
+        candidate_by_handle = {c.get("handle", ""): c for c in keyword_matches if c.get("handle")}
+        related = _filter_precise_web_fallback_matches(related, candidate_by_handle, uni["name"], ig_handle)
 
         bem_found = False
         for acct in related:
@@ -169,16 +251,28 @@ async def _discover_bem_for_uni(uni: dict, loop) -> dict:
                  ig_handle, uni["name"])
         return await _update_status_and_return(result, "not_found", found=False)
 
-    # Step 3: LLM verification — filter to only truly related accounts
-    # Enrich candidates with bio before sending to LLM
-    keyword_matches = await loop.run_in_executor(None, fetch_bios_for_candidates, keyword_matches)
+    # Step 3: LLM verification — filter to only truly related accounts.
+    # Enrich every candidate so LLM sees real profile bios/full_names.
+    keyword_matches = await loop.run_in_executor(
+        None,
+        fetch_bios_for_candidates,
+        keyword_matches,
+        len(keyword_matches),
+    )
     related = await verify_related_accounts_with_llm(keyword_matches, uni["name"], ig_handle)
 
     if not related:
         log.info("[Agent4-BEM] LLM filtered out all candidates for %s — falling back to web search", uni["name"])
         keyword_matches = await search_related_accounts_via_search(uni["name"], ig_handle=ig_handle)
-        keyword_matches = await loop.run_in_executor(None, fetch_bios_for_candidates, keyword_matches)
+        keyword_matches = await loop.run_in_executor(
+            None,
+            fetch_bios_for_candidates,
+            keyword_matches,
+            len(keyword_matches),
+        )
         related = await verify_related_accounts_with_llm(keyword_matches, uni["name"], ig_handle)
+        candidate_by_handle = {c.get("handle", ""): c for c in keyword_matches if c.get("handle")}
+        related = _filter_precise_web_fallback_matches(related, candidate_by_handle, uni["name"], ig_handle)
         if not related:
             log.info("[Agent4-BEM] Web search fallback also found nothing for %s", uni["name"])
             return await _update_status_and_return(result, "not_found", found=False)
@@ -222,8 +316,20 @@ async def _discover_bem_for_uni(uni: dict, loop) -> dict:
             uni["name"],
         )
         fallback_matches = await search_related_accounts_via_search(uni["name"], ig_handle=ig_handle)
-        fallback_matches = await loop.run_in_executor(None, fetch_bios_for_candidates, fallback_matches)
+        fallback_matches = await loop.run_in_executor(
+            None,
+            fetch_bios_for_candidates,
+            fallback_matches,
+            len(fallback_matches),
+        )
         fallback_related = await verify_related_accounts_with_llm(fallback_matches, uni["name"], ig_handle)
+        fallback_by_handle = {c.get("handle", ""): c for c in fallback_matches if c.get("handle")}
+        fallback_related = _filter_precise_web_fallback_matches(
+            fallback_related,
+            fallback_by_handle,
+            uni["name"],
+            ig_handle,
+        )
         for acct in fallback_related:
             if acct["confidence"] < _MIN_CONFIDENCE:
                 continue
