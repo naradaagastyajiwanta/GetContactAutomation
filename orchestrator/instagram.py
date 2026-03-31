@@ -2294,6 +2294,10 @@ async def search_related_accounts_via_search(
         "bem":           ["BEM"],
         "senat":         ["Senat"],
         "humas":         ["Humas"],
+        "pmb":           ["PMB"],
+        "kemahasiswaan": ["Kemahasiswaan"],
+        "alumni":        ["Alumni"],
+        "lppm":          ["LPPM"],
     }
 
     # Build acronym (e.g. "Universitas Ahmad Dahlan" → "UAD")
@@ -2737,30 +2741,37 @@ def find_related_accounts_from_following(
     if not following:
         return []
 
-    # â”€â”€ Keyword â†’ relation_type mapping â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     _RELATION_KEYWORDS: list[tuple[list[str], str]] = [
-        # TIER 1 — FAKULTAS (official faculties)
         (["fh_", "fh.", "ft_", "ft.", "fe_", "fe.", "fk_", "fk.", "fi_", "fi.",
           "fp_", "fp.", "fs_", "fs.", "fa_", "fa.", "fkip", "fisip", "fikom",
           "fkm", "fmipa", "fib", "fteknik", "fakultas_", "fakultas."], "fakultas"),
-        # TIER 2 — BEM (student executive board)
         (["bem_", "bem.", "bemfh", "bemft", "bemfe", "bemfk", "bemfi",
           "bemfp", "bemfs", "bemfa", "bemu", "bemuniv", "dema_", "dema."], "bem"),
-        # TIER 3 — SENAT (student senate / legislative)
         (["senat_", "senat.", "senatmhs", "senatmahasiswa", "senatuniv",
           "dpm_", "dpm.", "dpmmhs", "legislatif_"], "senat"),
-        # TIER 4 — HUMAS (public relations)
         (["humas", "humasuniv", "humas_", "public_relation"], "humas"),
+        (["pmb", "admisi", "admission", "penerimaanmahasiswa"], "pmb"),
+        (["kemahasiswaan", "studentaffairs", "student_affairs", "baak_", "bak_"], "kemahasiswaan"),
+        (["alumni", "ika_", "ikaalumni", "tracerstudy"], "alumni"),
+        (["lppm", "penelitianpengabdian", "researchcommunityservice"], "lppm"),
     ]
 
     _BIO_KEYWORDS: dict[str, list[str]] = {
         "fakultas": ["fakultas", "faculty", "dekan", "program studi", "jurusan"],
-        "bem": ["badan eksekutif mahasiswa", "student executive", "kabinet",
-                "dema ", "dewan eksekutif"],
-        "senat": ["senat mahasiswa", "dewan perwakilan mahasiswa", "dpm ",
-                  "legislatif mahasiswa", "majelis permusyawaratan"],
+        "bem": ["badan eksekutif mahasiswa", "student executive", "kabinet", "dema ", "dewan eksekutif"],
+        "senat": ["senat mahasiswa", "dewan perwakilan mahasiswa", "dpm ", "legislatif mahasiswa", "majelis permusyawaratan"],
         "humas": ["humas", "public relation", "kehumasan", "informasi publik"],
+        "pmb": ["pmb", "penerimaan mahasiswa baru", "admission", "admisi"],
+        "kemahasiswaan": ["kemahasiswaan", "student affairs", "biro kemahasiswaan"],
+        "alumni": ["alumni", "ikatan alumni", "tracer study"],
+        "lppm": ["lppm", "lembaga penelitian", "pengabdian kepada masyarakat"],
     }
+
+    def _username_matches_keyword(username: str, keyword: str) -> bool:
+        username_tokens = [token for token in re.split(r"[._]+", username) if token]
+        if keyword.endswith(("_", ".")):
+            return keyword[:-1] in username_tokens
+        return keyword in username
 
     uni_lower = university_name.lower()
     all_words = uni_lower.split()
@@ -2784,7 +2795,7 @@ def find_related_accounts_from_following(
         # â”€â”€ Try to classify by handle keywords â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
         matched_type = None
         for keywords, rel_type in _RELATION_KEYWORDS:
-            if any(kw in username for kw in keywords):
+            if any(_username_matches_keyword(username, kw) for kw in keywords):
                 matched_type = rel_type
                 break
 
@@ -3028,7 +3039,7 @@ Evidence notes:
 
 For each candidate, return:
 - is_related: true/false — is this account genuinely affiliated with {university_name}?
-- relation_type: one of "fakultas", "bem", "senat", "humas"
+- relation_type: one of "fakultas", "bem", "senat", "humas", "pmb", "kemahasiswaan", "alumni", "lppm"
 - confidence: 0.0–1.0 — how confident are you?
 
 Return a JSON array (same order as input):

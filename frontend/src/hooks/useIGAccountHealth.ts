@@ -44,6 +44,12 @@ export function useIGAccountHealth() {
             duration: 10_000,
             id: `ig-banned-${acct.username}`,
           })
+        } else if (acct.status === 'auth_limited') {
+          toast(`🔐 @${acct.username} hanya punya akses profil publik — following tidak bisa diambil`, {
+            duration: 8_000,
+            icon: '⚠️',
+            id: `ig-auth-limited-${acct.username}`,
+          })
         } else if (acct.status === 'disconnected') {
           toast.error(`🔌 @${acct.username} sesi terputus — perlu login ulang`, {
             duration: 8_000,

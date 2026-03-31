@@ -6,7 +6,7 @@ export interface IGAccount {
   password: string // masked in responses
   enabled: boolean
   notes: string
-  login_status: 'untested' | 'success' | 'failed' | 'challenge' | 'banned' | 'rate_limited'
+  login_status: 'untested' | 'success' | 'failed' | 'challenge' | 'banned' | 'rate_limited' | 'auth_limited'
   last_login_test: string | null
   created_at: string
   updated_at: string
@@ -174,7 +174,7 @@ export async function submitLoginChallenge(
 
 export interface IGAccountHealthItem {
   username: string
-  status: 'connected' | 'disconnected' | 'banned' | 'rate_limited' | 'error'
+  status: 'connected' | 'disconnected' | 'banned' | 'rate_limited' | 'error' | 'auth_limited'
   reason: string | null
   username_verified: string | null
 }

@@ -94,7 +94,9 @@ export function IGCookieImportModal({ accountId, username, isOpen, onClose }: Pr
       } else {
         setResult(res)
         setErrorMsg(
-          res.verify?.reason ||
+          (res.verify?.status === 'auth_limited'
+            ? 'Cookies berhasil diimpor, tetapi sesi hanya punya akses profil publik. Following list belum bisa diakses.'
+            : res.verify?.reason) ||
           'Cookies were imported but session verification failed. The cookies may be expired.',
         )
         setStep('error')

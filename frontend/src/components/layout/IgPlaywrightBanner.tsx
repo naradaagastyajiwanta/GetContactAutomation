@@ -41,6 +41,7 @@ export function IgPlaywrightBanner() {
   }
 
   const disconnected = health.accounts.filter((a) => a.status === 'disconnected')
+  const authLimited = health.accounts.filter((a) => a.status === 'auth_limited')
   const banned = health.accounts.filter((a) => a.status === 'banned')
   const rateLimited = health.accounts.filter((a) => a.status === 'rate_limited')
   const errored = health.accounts.filter((a) => a.status === 'error')
@@ -151,6 +152,12 @@ export function IgPlaywrightBanner() {
                 dot: 'bg-amber-500',
                 label: 'Rate Limited',
               },
+              auth_limited: {
+                bg: 'bg-amber-100 dark:bg-amber-900/30',
+                text: 'text-amber-700 dark:text-amber-400',
+                dot: 'bg-amber-500',
+                label: 'Auth Limited',
+              },
               error: {
                 bg: 'bg-gray-100 dark:bg-gray-800',
                 text: 'text-gray-700 dark:text-gray-400',
@@ -180,7 +187,7 @@ export function IgPlaywrightBanner() {
         {/* Actions */}
         <div className={`mt-2 flex items-center justify-between text-xs ${textColor}`}>
           <div className="flex items-center gap-2">
-            {disconnected.length > 0 && (
+            {(disconnected.length > 0 || authLimited.length > 0) && (
               <a
                 href="/settings"
                 className="inline-flex items-center gap-1 font-medium underline hover:opacity-80"
@@ -190,6 +197,9 @@ export function IgPlaywrightBanner() {
             )}
             {hasBanned && (
               <span className="text-[11px]">Akun banned perlu diganti</span>
+            )}
+            {!hasBanned && authLimited.length > 0 && (
+              <span className="text-[11px]">Sebagian akun hanya punya akses profil publik</span>
             )}
           </div>
           <button

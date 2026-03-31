@@ -1371,10 +1371,9 @@ def _verify_session_impl(username: str, password: str) -> dict:
     acct = _IGAccount(username, password)
 
     # ------------------------------------------------------------------
-    # Fast path: if we have a sidecar cookie file from a previous import,
-    # trust it directly.  Navigating to IG from a datacenter IP often
-    # causes "Execution context destroyed" or IG clearing cookies.
-    # The cookies will be validated at actual scraping time anyway.
+    # Read sidecar cookies for diagnostics, but do not trust them blindly.
+    # We still need a runtime verification because a stored session can be
+    # degraded to profile-only access or rejected entirely by Instagram.
     # ------------------------------------------------------------------
     import json as _json
     cookie_file = Path(acct.profile_dir) / "imported_cookies.json"
@@ -1384,15 +1383,11 @@ def _verify_session_impl(username: str, password: str) -> dict:
             saved_map = {c["name"]: c["value"] for c in saved
                          if c.get("name") in ("ds_user_id", "csrftoken", "sessionid", "ig_did", "mid")}
             if saved_map.get("ds_user_id") and saved_map.get("sessionid"):
-                log.info("[VerifySession] Found valid imported_cookies.json for @%s "
-                         "(ds_user_id=%s..., sessionid=%s...). Trusting import.",
+                log.info("[VerifySession] Found imported_cookies.json for @%s "
+                         "(ds_user_id=%s..., sessionid=%s...). Verifying live session.",
                          username,
                          saved_map["ds_user_id"][:6],
                          saved_map["sessionid"][:8])
-                return {"status": "connected",
-                        "reason": "cookies_imported",
-                        "username_verified": username,
-                        "cookies": saved_map}
         except Exception as exc:
             log.warning("[VerifySession] Failed to read imported_cookies.json for @%s: %s",
                         username, exc)
@@ -1424,10 +1419,12 @@ def _verify_session_impl(username: str, password: str) -> dict:
             except Exception as nav_exc:
                 log.warning("[VerifySession] Navigation failed for @%s: %s. "
                             "Checking pre-nav cookies instead.", username, nav_exc)
-                # If we had cookies before navigation blew up, trust them
+                # If we had cookies before navigation blew up, report that the
+                # session exists but could not be proven to support authenticated
+                # endpoints from this runtime.
                 if pre_nav_cookies.get("ds_user_id") and pre_nav_cookies.get("sessionid"):
-                    return {"status": "connected",
-                            "reason": "cookies_valid_nav_failed",
+                    return {"status": "auth_limited",
+                            "reason": "cookies_present_navigation_failed",
                             "username_verified": username,
                             "cookies": pre_nav_cookies}
                 return {"status": "error",
@@ -1445,15 +1442,18 @@ def _verify_session_impl(username: str, password: str) -> dict:
                 # IG rejected from this IP/fingerprint.
                 if pre_nav_cookies.get("ds_user_id") and pre_nav_cookies.get("sessionid"):
                     log.warning("[VerifySession] Cookies existed pre-navigation but IG cleared them "
-                                "post-navigation for @%s — likely IP/fingerprint mismatch. "
-                                "Treating as conditionally connected.", username)
-                    return {"status": "connected",
-                            "reason": "cookies_valid_ip_mismatch",
+                                "post-navigation for @%s — likely IP/fingerprint mismatch.", username)
+                    return {"status": "auth_limited",
+                            "reason": "cookies_rejected_after_navigation",
                             "username_verified": username,
                             "cookies": pre_nav_cookies}
 
                 return {"status": "disconnected", "reason": "no_session_cookie",
                         "username_verified": None, "cookies": cookies}
+
+            if not cookies.get("sessionid"):
+                return {"status": "auth_limited", "reason": "missing_sessionid",
+                        "username_verified": username, "cookies": cookies}
 
             # Make lightweight API call to verify session is still valid
             # Try current_user first; if it fails (e.g. 400 on datacenter IPs),
@@ -1481,7 +1481,7 @@ def _verify_session_impl(username: str, password: str) -> dict:
                 if fb_resp and not fb_resp.get("__error"):
                     fb_user = fb_resp.get("data", {}).get("user", {})
                     verified_username = fb_user.get("username", username)
-                    return {"status": "connected", "reason": None,
+                    return {"status": "auth_limited", "reason": "profile_only_access",
                             "username_verified": verified_username, "cookies": cookies}
 
                 # Also check page content — if we see feed content, session is valid
@@ -1493,8 +1493,7 @@ def _verify_session_impl(username: str, password: str) -> dict:
                     has_login_form = False
 
                 if not has_login_form and cookies.get("ds_user_id"):
-                    # No login form + has cookies = session likely valid
-                    return {"status": "connected", "reason": "cookies_valid_api_limited",
+                    return {"status": "auth_limited", "reason": "cookies_valid_api_limited",
                             "username_verified": username, "cookies": cookies}
 
                 # Truly failed
@@ -1584,7 +1583,7 @@ def pw_verify_all_sessions() -> list[dict]:
             _account_pool.mark_connected(username)
         elif status == "rate_limited":
             _account_pool.mark_rate_limited(username)
-        elif status in ("disconnected", "banned"):
+        elif status in ("disconnected", "banned", "auth_limited"):
             _account_pool.mark_login_failed(
                 username, result.get("reason", status))
 
@@ -2558,10 +2557,15 @@ def pw_get_following(handle: str, max_results: int = 200) -> list[dict] | None:
 
     account = _account_pool.next_account()
 
+    def _mark_auth_limited(reason: str) -> None:
+        if account:
+            account.mark_login_failed(reason)
+
     try:
         with _PlaywrightBrowser(account=account) as browser:
             if not browser.ensure_logged_in():
                 log.warning("[Playwright] Cannot get following -- not logged in")
+                _mark_auth_limited("not_logged_in")
                 return None
 
             user = browser.ig_get_web_profile(handle)
@@ -2591,6 +2595,7 @@ def pw_get_following(handle: str, max_results: int = 200) -> list[dict] | None:
                     resp = browser.ig_api_fetch(api_url)
                     if resp is None:
                         log.warning("[Playwright] Following API returned no response for @%s", handle)
+                        _mark_auth_limited("following_api_no_response")
                         return None
                     if resp.get("__error"):
                         status_code = resp.get("status")
@@ -2599,10 +2604,13 @@ def pw_get_following(handle: str, max_results: int = 200) -> list[dict] | None:
                                 "[Playwright] Following API requires authenticated session for @%s",
                                 handle,
                             )
+                            _mark_auth_limited("following_requires_login")
                             return None
                         if status_code == 429:
                             _pw_status["ok"] = False
                             _pw_status["error"] = "following_rate_limited"
+                            if account:
+                                account.mark_rate_limited(getattr(cfg, "PW_ACCOUNT_COOLDOWN_MINUTES", 30))
                             log.warning("[Playwright] Following API rate-limited for @%s", handle)
                             return None
                         log.warning(
@@ -2610,6 +2618,7 @@ def pw_get_following(handle: str, max_results: int = 200) -> list[dict] | None:
                             handle,
                             status_code,
                         )
+                        _mark_auth_limited(f"following_http_{status_code}")
                         return None
 
                     users = resp.get("users") or []
@@ -2635,6 +2644,7 @@ def pw_get_following(handle: str, max_results: int = 200) -> list[dict] | None:
                 return following[:max_results]
 
             if not browser.navigate(f"https://www.instagram.com/{handle}/"):
+                _mark_auth_limited("profile_navigation_failed")
                 return None
 
             _human_delay(3, 6)
@@ -2650,6 +2660,7 @@ def pw_get_following(handle: str, max_results: int = 200) -> list[dict] | None:
                     "[Playwright] Profile @%s opened in public view only; following requires a stronger IG session",
                     handle,
                 )
+                _mark_auth_limited("public_profile_only")
                 return None
 
             # Click "following" link
@@ -2659,6 +2670,7 @@ def pw_get_following(handle: str, max_results: int = 200) -> list[dict] | None:
                     following_link = browser.page.locator('a').filter(has_text=re.compile(r'\\bdiikuti\\b', re.IGNORECASE)).first
                 if not following_link.is_visible(timeout=5000):
                     log.warning("[Playwright] Following link not visible for @%s", handle)
+                    _mark_auth_limited("following_link_not_visible")
                     return None
                 try:
                     following_link.click(timeout=5000, force=True)
@@ -2667,6 +2679,7 @@ def pw_get_following(handle: str, max_results: int = 200) -> list[dict] | None:
                 _human_delay(3, 6)
             except Exception as e:
                 log.warning("[Playwright] Could not click following for @%s: %s", handle, e)
+                _mark_auth_limited("following_click_failed")
                 return None
 
             # Wait for dialog/list to appear
@@ -2674,6 +2687,7 @@ def pw_get_following(handle: str, max_results: int = 200) -> list[dict] | None:
                 browser.page.wait_for_selector('[role="dialog"]', timeout=8000)
             except Exception:
                 log.warning("[Playwright] Following dialog did not appear for @%s", handle)
+                _mark_auth_limited("following_dialog_missing")
                 return None
 
             # Scroll through the following list

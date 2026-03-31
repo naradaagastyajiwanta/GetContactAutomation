@@ -2063,6 +2063,8 @@ def _map_ig_account_login_status(status: str | None, current_status: str = "unte
     """Map runtime verification status to the DB login_status field."""
     if status == "connected":
         return "success"
+    if status == "auth_limited":
+        return "auth_limited"
     if status == "banned":
         return "banned"
     if status == "rate_limited":
@@ -2082,7 +2084,7 @@ def _apply_ig_account_runtime_status(account_pool: Any, username: str, status: s
     if status == "rate_limited":
         account_pool.mark_rate_limited(username)
         return
-    if status in {"disconnected", "banned", "error"}:
+    if status in {"disconnected", "banned", "error", "auth_limited"}:
         account_pool.mark_login_failed(username, reason or status or "login_failed")
 
 
@@ -2163,6 +2165,23 @@ async def ig_accounts_health(force: bool = False):
         if db_login == "banned":
             status = "banned"
             reason = "account_banned"
+        elif db_login == "auth_limited" or (p.get("last_error") or "").startswith((
+            "profile_only_access",
+            "cookies_valid_api_limited",
+            "cookies_rejected_after_navigation",
+            "missing_sessionid",
+            "cookies_present_navigation_failed",
+            "following_requires_login",
+            "public_profile_only",
+            "following_link_not_visible",
+            "following_click_failed",
+            "following_dialog_missing",
+            "following_api_no_response",
+            "profile_navigation_failed",
+            "following_http_",
+        )):
+            status = "auth_limited"
+            reason = p.get("last_error") or "auth_limited"
         elif not p["login_ok"]:
             status = "disconnected"
             reason = p.get("last_error") or "login_failed"

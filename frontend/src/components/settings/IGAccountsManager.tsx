@@ -314,6 +314,11 @@ function LoginStatusIndicator({ acct, isTesting }: { acct: IGAccount; isTesting:
       label: 'Rate Limited',
       color: 'text-yellow-600 dark:text-yellow-400',
     },
+    auth_limited: {
+      icon: <ShieldQuestion className="h-4 w-4" />,
+      label: 'Auth Limited',
+      color: 'text-amber-600 dark:text-amber-400',
+    },
     untested: {
       icon: <ShieldQuestion className="h-4 w-4" />,
       label: 'Untested',
@@ -369,6 +374,8 @@ function AccountCard({
     ? 'border-gray-200 dark:border-gray-700'
     : acct.login_status === 'success'
       ? 'border-green-200 dark:border-green-800'
+      : acct.login_status === 'auth_limited' || acct.login_status === 'rate_limited'
+        ? 'border-amber-200 dark:border-amber-800'
       : acct.login_status === 'failed' || acct.login_status === 'banned'
         ? 'border-red-200 dark:border-red-800'
         : 'border-gray-200 dark:border-gray-700'
@@ -572,7 +579,9 @@ export function IGAccountsManager() {
         success: verified,
         message: verified
           ? `Session imported & verified for @${importTargetAccount.username}!`
-          : `Session imported but verification ${result.verify?.status}: ${result.verify?.reason || 'unknown'}`,
+          : result.verify?.status === 'auth_limited'
+            ? `Session imported for @${importTargetAccount.username}, but it only has public-profile access. Following list is still unavailable.`
+            : `Session imported but verification ${result.verify?.status}: ${result.verify?.reason || 'unknown'}`,
       })
       await queryClient.invalidateQueries({ queryKey: queryKeys.igAccountsHealth })
       refetch()
