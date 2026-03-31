@@ -33,6 +33,7 @@ import {
   type DocumentPayload,
   type SendMessageResult,
 } from './deviceManager';
+import { AntiBanManager, type AntiBanStatus } from './antiBan';
 
 // Extended Express interfaces for our custom properties
 interface SendMessageBody {
@@ -67,14 +68,16 @@ function clearDir(dir: string): void {
   }
 }
 
-const PORT = parseInt(process.env.PORT || '3110', 10);
+const PORT = parseInt(process.env.PORT || '3100', 10);
 const AUTH_STORE_DIR = path.join(__dirname, '..', 'auth_store');
 const AUTH_BACKUP_DIR = path.join(__dirname, '..', 'auth_store_backup');
 const WEBHOOK_FILE = path.join(__dirname, '..', 'webhook_url.txt');
+const ANTIBAN_STATE_FILE = path.join(__dirname, '..', 'data', 'antiban-state.json');
 
 const logger: Logger = pino({ level: 'info' });
 // Properly typed logger for Baileys - it accepts a Logger interface
 const baileysLogger: Logger = pino({ level: 'silent' });
+const antiBanManager = new AntiBanManager(logger, ANTIBAN_STATE_FILE);
 
 // Device Manager for multi-device support
 const deviceManager = new DeviceManager(logger, {
@@ -156,11 +159,19 @@ async function resolveLidToPhone(
  */
 function handleDeviceConnectionUpdate(deviceId: string, state: Partial<ConnectionState>): void {
   const { connection, lastDisconnect } = state;
+  const reachoutTimeLock = (state as Partial<ConnectionState> & {
+    reachoutTimeLock?: {
+      isActive?: boolean;
+      timeEnforcementEnds?: Date;
+      enforcementType?: string;
+    };
+  }).reachoutTimeLock;
 
   if (connection === 'open') {
     const device = deviceManager.getDevice(deviceId);
     if (device) {
       logger.info({ deviceId, phoneNumber: device.phoneNumber }, 'Device connected');
+      antiBanManager.recordReconnect(deviceId);
       // Update device in database
       const messageQueue = getMessageQueue();
       if (device.phoneNumber) {
@@ -168,7 +179,15 @@ function handleDeviceConnectionUpdate(deviceId: string, state: Partial<Connectio
       }
     }
   } else if (connection === 'close') {
+    antiBanManager.recordDisconnect(
+      deviceId,
+      (lastDisconnect?.error as Boom)?.output?.statusCode ?? 'unknown',
+    );
     logger.info({ deviceId }, 'Device disconnected');
+  }
+
+  if (reachoutTimeLock) {
+    antiBanManager.updateTimelock(deviceId, reachoutTimeLock);
   }
 }
 
@@ -181,6 +200,7 @@ async function handleDeviceMessage(deviceId: string, msg: WAMessage): Promise<vo
   const device = deviceManager.getDevice(deviceId);
   const remoteJid = msg.key.remoteJid;
   if (!remoteJid) return;
+  antiBanManager.registerKnownChat(deviceId, remoteJid);
 
   // Only process messages from others (not from me)
   if (msg.key.fromMe) return;
@@ -834,6 +854,115 @@ const messageQueue = getMessageQueue();
 let queueProcessorActive = false;
 let queueProcessorTimer: ReturnType<typeof setInterval> | null = null;
 
+interface ProtectedSendResult {
+  success: boolean;
+  blocked: boolean;
+  retryAfterMs?: number;
+  error?: string;
+  messageId?: string;
+  deviceId: string;
+  antiBanStatus: AntiBanStatus;
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+async function performProtectedTextSend(
+  deviceId: string,
+  payload: MessagePayload,
+): Promise<ProtectedSendResult> {
+  const jid = normalizePhone(payload.to);
+  const decision = antiBanManager.beforeSend(deviceId, jid, payload.message);
+
+  if (!decision.allowed) {
+    logger.warn({ deviceId, to: payload.to, reason: decision.reason }, 'Anti-ban blocked text send');
+    return {
+      success: false,
+      blocked: true,
+      retryAfterMs: decision.resumeAfterMs,
+      error: decision.reason,
+      deviceId,
+      antiBanStatus: antiBanManager.getStatus(deviceId),
+    };
+  }
+
+  if (decision.delayMs > 0) {
+    await sleep(decision.delayMs);
+  }
+
+  const result = await deviceManager.sendMessage(deviceId, payload);
+  if (result.success) {
+    antiBanManager.afterSend(deviceId, jid, payload.message);
+    metrics.recordMessageSent();
+    return {
+      success: true,
+      blocked: false,
+      messageId: result.messageId,
+      deviceId,
+      antiBanStatus: antiBanManager.getStatus(deviceId),
+    };
+  }
+
+  antiBanManager.afterSendFailed(deviceId, jid, result.error || 'Failed to send message');
+  metrics.recordMessageFailed(result.error || 'send_failed');
+  return {
+    success: false,
+    blocked: false,
+    error: result.error || 'Failed to send message',
+    deviceId,
+    antiBanStatus: antiBanManager.getStatus(deviceId),
+  };
+}
+
+async function performProtectedDocumentSend(
+  deviceId: string,
+  payload: DocumentPayload,
+): Promise<ProtectedSendResult> {
+  const jid = normalizePhone(payload.to);
+  const auditText = `${payload.fileName} ${payload.caption || ''}`.trim() || payload.fileName;
+  const decision = antiBanManager.beforeSend(deviceId, jid, auditText);
+
+  if (!decision.allowed) {
+    logger.warn({ deviceId, to: payload.to, reason: decision.reason }, 'Anti-ban blocked document send');
+    return {
+      success: false,
+      blocked: true,
+      retryAfterMs: decision.resumeAfterMs,
+      error: decision.reason,
+      deviceId,
+      antiBanStatus: antiBanManager.getStatus(deviceId),
+    };
+  }
+
+  if (decision.delayMs > 0) {
+    await sleep(decision.delayMs);
+  }
+
+  const result = await deviceManager.sendDocument(deviceId, payload);
+  if (result.success) {
+    antiBanManager.afterSend(deviceId, jid, auditText);
+    metrics.recordMessageSent();
+    return {
+      success: true,
+      blocked: false,
+      messageId: result.messageId,
+      deviceId,
+      antiBanStatus: antiBanManager.getStatus(deviceId),
+    };
+  }
+
+  antiBanManager.afterSendFailed(deviceId, jid, result.error || 'Failed to send document');
+  metrics.recordMessageFailed(result.error || 'document_send_failed');
+  return {
+    success: false,
+    blocked: false,
+    error: result.error || 'Failed to send document',
+    deviceId,
+    antiBanStatus: antiBanManager.getStatus(deviceId),
+  };
+}
+
 /**
  * Process a single queued message by sending it via WhatsApp
  * Now uses DeviceManager for multi-device support
@@ -856,15 +985,18 @@ async function processQueuedMessage(msg: QueuedMessage): Promise<boolean> {
         allMsgKeys: msg.allMsgKeys ? JSON.parse(msg.allMsgKeys as string) : undefined,
       };
 
-      const result = await deviceManager.sendMessage(deviceId, payload);
+      const result = await performProtectedTextSend(deviceId, payload);
 
       if (result.success) {
-        messageQueue.markSent(msg.id, result.messageId);
+        messageQueue.markSent(msg.id, result.messageId || '');
         logger.info({ messageId: msg.message_id, waMessageId: result.messageId, deviceId }, 'Queued message sent successfully');
         return true;
-      } else {
-        throw new Error(result.error || 'Failed to send message');
       }
+      if (result.blocked) {
+        logger.info({ messageId: msg.message_id, deviceId, retryAfterMs: result.retryAfterMs }, 'Queued message deferred by anti-ban policy');
+        return false;
+      }
+      throw new Error(result.error || 'Failed to send message');
     } else if (msg.type === MessageType.DOCUMENT) {
       const payload: DocumentPayload = {
         to: msg.to,
@@ -874,15 +1006,18 @@ async function processQueuedMessage(msg: QueuedMessage): Promise<boolean> {
         caption: msg.caption,
       };
 
-      const result = await deviceManager.sendDocument(deviceId, payload);
+      const result = await performProtectedDocumentSend(deviceId, payload);
 
       if (result.success) {
-        messageQueue.markSent(msg.id, result.messageId);
+        messageQueue.markSent(msg.id, result.messageId || '');
         logger.info({ messageId: msg.message_id, waMessageId: result.messageId, deviceId }, 'Queued document sent successfully');
         return true;
-      } else {
-        throw new Error(result.error || 'Failed to send document');
       }
+      if (result.blocked) {
+        logger.info({ messageId: msg.message_id, deviceId, retryAfterMs: result.retryAfterMs }, 'Queued document deferred by anti-ban policy');
+        return false;
+      }
+      throw new Error(result.error || 'Failed to send document');
     }
 
     return false;
@@ -922,13 +1057,25 @@ async function processMessageQueue(): Promise<void> {
 
     // Process pending messages for each connected device
     for (const deviceId of connectedDeviceIds) {
+      const antiBanStatus = antiBanManager.getStatus(deviceId);
+      if (antiBanStatus.pausedManually) {
+        logger.info({ deviceId }, 'Skipping queue processing because anti-ban is paused manually');
+        continue;
+      }
+      if (antiBanStatus.nextAllowedAt && antiBanStatus.nextAllowedAt > Date.now()) {
+        continue;
+      }
+
       const pendingMessages = messageQueue.getPendingMessages(5, deviceId);
 
       if (pendingMessages.length > 0) {
         logger.info({ deviceId, count: pendingMessages.length }, 'Processing queued messages for device');
 
         for (const msg of pendingMessages) {
-          await processQueuedMessage(msg);
+          const sent = await processQueuedMessage(msg);
+          if (!sent) {
+            break;
+          }
           // Small delay between messages to avoid rate limiting
           await humanDelay(500, 1500);
           totalProcessed++;
@@ -986,7 +1133,7 @@ app.use(express.json({ limit: '10mb' }));
 app.use(metricsMiddleware);
 
 // POST /send — with human-like behavior (Item 1)
-app.post('/send', async (req: Request, res: Response) => {
+app.post('/send', sendRateLimitMiddleware, async (req: Request, res: Response) => {
   const { to, message, replyToMsgKey, allMsgKeys, queue = false, messageId, device_id = 'device_1' } = req.body as {
     to?: string;
     message?: string;
@@ -1015,6 +1162,7 @@ app.post('/send', async (req: Request, res: Response) => {
     });
 
     if (added) {
+      metrics.recordMessagePending();
       res.json({ success: true, queued: true, messageId: msgId, device_id });
     } else {
       res.status(409).json({ success: false, error: 'Message already queued (duplicate)' });
@@ -1030,17 +1178,37 @@ app.post('/send', async (req: Request, res: Response) => {
     allMsgKeys,
   };
 
-  const result = await deviceManager.sendMessage(device_id, payload);
+  const result = await performProtectedTextSend(device_id, payload);
 
   if (result.success) {
-    res.json({ success: true, messageId: result.messageId, deviceId: result.deviceId });
+    res.json({
+      success: true,
+      messageId: result.messageId,
+      deviceId: result.deviceId,
+      antiBan: result.antiBanStatus,
+    });
+  } else if (result.blocked) {
+    if (result.retryAfterMs) {
+      res.setHeader('Retry-After', Math.ceil(result.retryAfterMs / 1000).toString());
+    }
+    res.status(429).json({
+      success: false,
+      blocked: true,
+      error: result.error || 'Blocked by anti-ban policy',
+      retryAfterMs: result.retryAfterMs,
+      antiBan: result.antiBanStatus,
+    });
   } else {
-    res.status(500).json({ success: false, error: result.error || 'Failed to send message' });
+    res.status(500).json({
+      success: false,
+      error: result.error || 'Failed to send message',
+      antiBan: result.antiBanStatus,
+    });
   }
 });
 
 // POST /send-document — send a file (PDF, etc.) as a document message
-app.post('/send-document', async (req: Request, res: Response) => {
+app.post('/send-document', sendRateLimitMiddleware, async (req: Request, res: Response) => {
   const { to, fileBase64, fileName, mimetype, caption, queue = false, messageId, device_id = 'device_1' } = req.body as {
     to?: string;
     fileBase64?: string;
@@ -1074,6 +1242,7 @@ app.post('/send-document', async (req: Request, res: Response) => {
     });
 
     if (added) {
+      metrics.recordMessagePending();
       res.json({ success: true, queued: true, messageId: msgId, device_id });
     } else {
       res.status(409).json({ success: false, error: 'Document already queued (duplicate)' });
@@ -1090,15 +1259,31 @@ app.post('/send-document', async (req: Request, res: Response) => {
     caption,
   };
 
-  const result = await deviceManager.sendDocument(device_id, payload);
+  const result = await performProtectedDocumentSend(device_id, payload);
 
   if (result.success) {
     logger.info({ to, fileName, deviceId: device_id }, 'Document sent successfully');
-    res.json({ success: true, messageId: result.messageId, deviceId: result.deviceId });
+    res.json({
+      success: true,
+      messageId: result.messageId,
+      deviceId: result.deviceId,
+      antiBan: result.antiBanStatus,
+    });
+  } else if (result.blocked) {
+    if (result.retryAfterMs) {
+      res.setHeader('Retry-After', Math.ceil(result.retryAfterMs / 1000).toString());
+    }
+    res.status(429).json({
+      success: false,
+      blocked: true,
+      error: result.error || 'Blocked by anti-ban policy',
+      retryAfterMs: result.retryAfterMs,
+      antiBan: result.antiBanStatus,
+    });
   } else {
     const error = result.error || 'Failed to send document';
     logger.error({ to, fileName, deviceId: device_id, error }, 'Failed to send document');
-    res.status(500).json({ success: false, error });
+    res.status(500).json({ success: false, error, antiBan: result.antiBanStatus });
   }
 });
 
@@ -1123,9 +1308,11 @@ app.get('/qr', async (req: Request, res: Response) => {
 app.get('/status', (_req: Request, res: Response) => {
   const allDevices = deviceManager.getAllDevicesStatus();
   const queueStats = messageQueue.getStats();
+  const antiBanStatuses = antiBanManager.getAllStatuses(allDevices.map((device) => device.id));
 
   res.json({
     devices: allDevices,
+    antiBan: antiBanStatuses,
     queue: queueStats,
     processorActive: queueProcessorActive,
   });
@@ -1294,8 +1481,64 @@ app.get('/devices/:id/status', async (req: Request, res: Response) => {
     isConnecting: device.isConnecting,
     metrics: device.metrics,
     lastError: device.lastError,
+    antiBan: antiBanManager.getStatus(deviceId),
     queueStats,
   });
+});
+
+app.get('/devices/:id/antiban', async (req: Request, res: Response) => {
+  const { id } = req.params;
+  const deviceId = Array.isArray(id) ? id[0] : id;
+  const device = deviceManager.getDevice(deviceId);
+
+  if (!device) {
+    res.status(404).json({ success: false, error: `Device ${deviceId} not found` });
+    return;
+  }
+
+  res.json({ success: true, deviceId, antiBan: antiBanManager.getStatus(deviceId) });
+});
+
+app.post('/devices/:id/antiban/pause', async (req: Request, res: Response) => {
+  const { id } = req.params;
+  const deviceId = Array.isArray(id) ? id[0] : id;
+  const device = deviceManager.getDevice(deviceId);
+
+  if (!device) {
+    res.status(404).json({ success: false, error: `Device ${deviceId} not found` });
+    return;
+  }
+
+  antiBanManager.pause(deviceId);
+  res.json({ success: true, deviceId, antiBan: antiBanManager.getStatus(deviceId) });
+});
+
+app.post('/devices/:id/antiban/resume', async (req: Request, res: Response) => {
+  const { id } = req.params;
+  const deviceId = Array.isArray(id) ? id[0] : id;
+  const device = deviceManager.getDevice(deviceId);
+
+  if (!device) {
+    res.status(404).json({ success: false, error: `Device ${deviceId} not found` });
+    return;
+  }
+
+  antiBanManager.resume(deviceId);
+  res.json({ success: true, deviceId, antiBan: antiBanManager.getStatus(deviceId) });
+});
+
+app.post('/devices/:id/antiban/reset', async (req: Request, res: Response) => {
+  const { id } = req.params;
+  const deviceId = Array.isArray(id) ? id[0] : id;
+  const device = deviceManager.getDevice(deviceId);
+
+  if (!device) {
+    res.status(404).json({ success: false, error: `Device ${deviceId} not found` });
+    return;
+  }
+
+  antiBanManager.reset(deviceId);
+  res.json({ success: true, deviceId, antiBan: antiBanManager.getStatus(deviceId) });
 });
 
 // GET /devices/:id/messages — get messages for a specific device

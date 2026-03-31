@@ -579,14 +579,14 @@ async def _blast_worker(campaign_id: int) -> None:
             )
 
             try:
-                # Send directly (not via queue) so we get an actual success/failure result
-                success = await message_queue.send_now(
+                # Send directly (not via queue) so we get an actual success/failure result.
+                result = await message_queue.send_now_detailed(
                     recipient["phone_number"],
                     message,
                     device_id=device_id,
                 )
 
-                if success:
+                if result.success:
                     # Mark as sent only when WA service actually confirmed delivery
                     async with get_db() as db:
                         now = datetime.now(timezone.utc).isoformat()
@@ -614,13 +614,43 @@ async def _blast_worker(campaign_id: int) -> None:
                         phone=recipient["phone_number"],
                         status="sent",
                     )
+                elif result.blocked:
+                    retry_after_ms = result.retry_after_ms or 0
+                    log.warning(
+                        "[Blast] Anti-ban blocked campaign %d on %s for %sms: %s",
+                        campaign_id,
+                        recipient["phone_number"],
+                        retry_after_ms,
+                        result.error,
+                    )
+
+                    async with get_db() as db:
+                        now = datetime.now(timezone.utc).isoformat()
+                        await db.execute(
+                            "UPDATE blast_campaigns SET status = 'paused', paused_at = ? WHERE id = ? AND status = 'sending'",
+                            (now, campaign_id),
+                        )
+                        await db.commit()
+
+                    await ws_manager.broadcast_type(
+                        "blast_paused",
+                        campaign_id=campaign_id,
+                        reason=result.error or "Blocked by anti-ban policy",
+                        retry_after_ms=retry_after_ms,
+                        phone=recipient["phone_number"],
+                    )
+                    break
                 else:
                     # WA service returned failure — mark as failed
-                    log.warning("[Blast] send_now returned False for %s", recipient["phone_number"])
+                    log.warning(
+                        "[Blast] send_now returned failure for %s: %s",
+                        recipient["phone_number"],
+                        result.error,
+                    )
                     async with get_db() as db:
                         await db.execute(
-                            "UPDATE blast_recipients SET status = 'failed', error_message = 'WA service returned failure (not connected or send rejected)' WHERE id = ?",
-                            (recipient["id"],),
+                            "UPDATE blast_recipients SET status = 'failed', error_message = ? WHERE id = ?",
+                            (result.error or 'WA service returned failure (not connected or send rejected)', recipient["id"]),
                         )
                         await db.execute(
                             "UPDATE blast_campaigns SET failed_count = failed_count + 1 WHERE id = ?",

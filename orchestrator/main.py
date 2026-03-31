@@ -1737,6 +1737,42 @@ async def wa_disconnect_device(device_id: str):
         return response.json()
 
 
+@app.get("/wa/devices/{device_id}/antiban")
+async def wa_get_device_antiban(device_id: str):
+    """Proxy to WhatsApp service to get anti-ban status for a device."""
+    from orchestrator.config import WA_SERVICE_URL
+    async with httpx.AsyncClient() as client:
+        response = await client.get(f"{WA_SERVICE_URL}/devices/{device_id}/antiban")
+        return response.json()
+
+
+@app.post("/wa/devices/{device_id}/antiban/pause")
+async def wa_pause_device_antiban(device_id: str):
+    """Proxy to WhatsApp service to pause outbound sends for a device."""
+    from orchestrator.config import WA_SERVICE_URL
+    async with httpx.AsyncClient() as client:
+        response = await client.post(f"{WA_SERVICE_URL}/devices/{device_id}/antiban/pause")
+        return response.json()
+
+
+@app.post("/wa/devices/{device_id}/antiban/resume")
+async def wa_resume_device_antiban(device_id: str):
+    """Proxy to WhatsApp service to resume outbound sends for a device."""
+    from orchestrator.config import WA_SERVICE_URL
+    async with httpx.AsyncClient() as client:
+        response = await client.post(f"{WA_SERVICE_URL}/devices/{device_id}/antiban/resume")
+        return response.json()
+
+
+@app.post("/wa/devices/{device_id}/antiban/reset")
+async def wa_reset_device_antiban(device_id: str):
+    """Proxy to WhatsApp service to reset anti-ban state for a device."""
+    from orchestrator.config import WA_SERVICE_URL
+    async with httpx.AsyncClient() as client:
+        response = await client.post(f"{WA_SERVICE_URL}/devices/{device_id}/antiban/reset")
+        return response.json()
+
+
 @app.post("/wa/bulk-send")
 async def wa_bulk_send(payload: dict):
     """
