@@ -76,9 +76,16 @@ from orchestrator.db import (
     get_db,
     count_active_auth_role_assignments,
     count_auth_audit_logs,
+    count_auth_role_upgrade_requests,
+    create_auth_role_upgrade_request,
     get_active_auth_role_assignment,
+    get_auth_role_upgrade_request,
+    get_pending_auth_role_upgrade_request_for_user,
     list_auth_audit_logs,
+    list_auth_role_upgrade_requests,
+    list_auth_role_upgrade_requests_for_user,
     list_auth_role_assignments,
+    resolve_auth_role_upgrade_request,
     upsert_auth_user_role,
     deactivate_auth_user_role,
     revoke_auth_sessions_for_user,
@@ -128,6 +135,11 @@ learning_system = LearningSystem()
 
 _TERMINAL_STATES = {"GOT_NUMBER", "REFUSED", "ABANDONED"}
 _AUDIENSI_TERMINAL_STATES = {"ZOOM_SENT", "REFUSED", "ABANDONED"}
+_ROLE_PRIORITY = {
+    "viewer": 1,
+    "operator": 2,
+    "admin": 3,
+}
 
 # ---------------------------------------------------------------------------
 # Per-phone concurrency lock (prevents race conditions from overlapping
@@ -379,7 +391,7 @@ def _required_permission_for_request(method: str, path: str) -> str | None:
         return "knowledge.view" if upper_method == "GET" else "knowledge.manage"
 
     if normalized.startswith("/api-logs"):
-        return "logs.view"
+        return "settings.manage"
 
     if normalized.startswith("/audiensi"):
         return "audiensi.view" if upper_method == "GET" else "audiensi.manage"
@@ -391,6 +403,26 @@ def _required_permission_for_request(method: str, path: str) -> str | None:
         return "blast.view" if upper_method == "GET" else "blast.manage"
 
     return None
+
+
+def _campaign_actor_name(user: dict[str, Any] | None) -> str | None:
+    if not user:
+        return None
+    return str(user.get("name") or user.get("email") or "").strip() or None
+
+
+async def _require_blast_campaign_access(campaign_id: int) -> dict[str, Any]:
+    campaign = await blast_service.get_campaign(campaign_id)
+    if not campaign:
+        raise HTTPException(status_code=404, detail="Campaign not found")
+    return campaign
+
+
+async def _require_email_campaign_access(campaign_id: int) -> dict[str, Any]:
+    campaign = await email_blast.get_campaign_status(campaign_id)
+    if not campaign:
+        raise HTTPException(status_code=404, detail="Campaign not found")
+    return campaign
 
 
 @app.middleware("http")
@@ -432,9 +464,35 @@ class AuthRevokeRolePayload(BaseModel):
     role_key: str
 
 
+class AuthRoleUpgradeRequestPayload(BaseModel):
+    role_key: str
+    request_note: str | None = None
+
+
+class AuthRoleUpgradeDecisionPayload(BaseModel):
+    review_note: str | None = None
+
+
 class AuthAuditLogsResponse(BaseModel):
     logs: list[dict[str, Any]]
     total: int
+
+
+def _highest_role_key(user: dict[str, Any]) -> str:
+    role_keys = [str(role) for role in user.get("roles", []) if role in _ROLE_PRIORITY]
+    if not role_keys:
+        return "viewer"
+    return max(role_keys, key=lambda role_key: _ROLE_PRIORITY[role_key])
+
+
+def _available_role_upgrade_keys(user: dict[str, Any]) -> list[str]:
+    current_role_key = _highest_role_key(user)
+    current_priority = _ROLE_PRIORITY.get(current_role_key, 0)
+    return [
+        role_key
+        for role_key in _ROLE_PRIORITY
+        if _ROLE_PRIORITY[role_key] > current_priority
+    ]
 
 
 @app.get("/auth/bootstrap-status")
@@ -578,6 +636,200 @@ async def auth_audit_logs(request: Request, limit: int = 50, offset: int = 0):
         "logs": await list_auth_audit_logs(limit=bounded_limit, offset=bounded_offset),
         "total": await count_auth_audit_logs(),
     }
+
+
+@app.get("/auth/role-requests/me")
+async def auth_role_requests_me(request: Request, limit: int = 20):
+    """Return recent role-upgrade requests for the signed-in user."""
+    current_user = await get_request_user(request)
+    bounded_limit = max(1, min(limit, 50))
+    return {
+        "requests": await list_auth_role_upgrade_requests_for_user(
+            int(current_user["dms_user_id"]),
+            limit=bounded_limit,
+        ),
+        "available_roles": [
+            role_key
+            for role_key in _available_role_upgrade_keys(current_user)
+            if role_key != "viewer"
+        ],
+    }
+
+
+@app.post("/auth/role-requests")
+async def auth_role_requests_create(payload: AuthRoleUpgradeRequestPayload, request: Request):
+    """Create a role-upgrade request for a signed-in viewer user."""
+    current_user = await get_request_user(request)
+    requested_role_key = normalize_role_key(payload.role_key)
+    current_role_key = _highest_role_key(current_user)
+    allowed_role_keys = [
+        role_key
+        for role_key in _available_role_upgrade_keys(current_user)
+        if role_key != "viewer"
+    ]
+    if current_role_key != "viewer":
+        await log_auth_event(
+            "request_role_upgrade",
+            request=request,
+            actor=current_user,
+            subject=current_user,
+            role_key=requested_role_key,
+            success=False,
+            detail="Role upgrade request is only available for viewer users",
+        )
+        return JSONResponse(status_code=403, content={"detail": "Role upgrade request is only available for viewer users"})
+
+    if requested_role_key not in allowed_role_keys:
+        await log_auth_event(
+            "request_role_upgrade",
+            request=request,
+            actor=current_user,
+            subject=current_user,
+            role_key=requested_role_key,
+            success=False,
+            detail="Requested role is not a valid upgrade target",
+        )
+        return JSONResponse(status_code=422, content={"detail": "Requested role is not a valid upgrade target"})
+
+    existing_request = await get_pending_auth_role_upgrade_request_for_user(int(current_user["dms_user_id"]))
+    if existing_request:
+        await log_auth_event(
+            "request_role_upgrade",
+            request=request,
+            actor=current_user,
+            subject=current_user,
+            role_key=requested_role_key,
+            success=False,
+            detail=f"Pending request #{existing_request['id']} already exists",
+        )
+        return JSONResponse(status_code=409, content={"detail": "You already have a pending role request"})
+
+    note = (payload.request_note or "").strip() or None
+    request_id = await create_auth_role_upgrade_request(
+        requester_dms_user_id=int(current_user["dms_user_id"]),
+        requester_email=str(current_user.get("email") or ""),
+        requester_name=str(current_user.get("name") or "Unknown User"),
+        current_role_key=current_role_key,
+        requested_role_key=requested_role_key,
+        request_note=note,
+    )
+    created_request = await get_auth_role_upgrade_request(request_id)
+    await log_auth_event(
+        "request_role_upgrade",
+        request=request,
+        actor=current_user,
+        subject=current_user,
+        role_key=requested_role_key,
+        success=True,
+        detail=f"Submitted role upgrade request #{request_id}",
+    )
+    return {
+        "status": "ok",
+        "request": created_request,
+    }
+
+
+@app.get("/auth/role-requests")
+async def auth_role_requests_list(
+    request: Request,
+    status: str | None = Query(default="pending"),
+    limit: int = 50,
+    offset: int = 0,
+):
+    """Return role-upgrade requests for admin review."""
+    await require_permission(request, "settings.manage")
+    normalized_status = None
+    if status:
+        normalized_status = status.strip().lower()
+        if normalized_status not in {"pending", "approved", "rejected"}:
+            return JSONResponse(status_code=422, content={"detail": "Invalid request status"})
+    bounded_limit = max(1, min(limit, 200))
+    bounded_offset = max(0, offset)
+    return {
+        "requests": await list_auth_role_upgrade_requests(
+            status=normalized_status,
+            limit=bounded_limit,
+            offset=bounded_offset,
+        ),
+        "total": await count_auth_role_upgrade_requests(status=normalized_status),
+    }
+
+
+@app.post("/auth/role-requests/{request_id}/approve")
+async def auth_role_requests_approve(
+    request_id: int,
+    payload: AuthRoleUpgradeDecisionPayload,
+    request: Request,
+):
+    """Approve a pending role-upgrade request and grant the requested role."""
+    current_user = await require_permission(request, "settings.manage")
+    existing_request = await get_auth_role_upgrade_request(request_id)
+    if not existing_request:
+        return JSONResponse(status_code=404, content={"detail": "Role request not found"})
+    if existing_request.get("status") != "pending":
+        return JSONResponse(status_code=409, content={"detail": "Role request has already been processed"})
+
+    requested_role_key = normalize_role_key(str(existing_request.get("requested_role_key") or ""))
+    await upsert_auth_user_role(
+        dms_user_id=int(existing_request["requester_dms_user_id"]),
+        user_email=str(existing_request.get("requester_email") or ""),
+        user_name=str(existing_request.get("requester_name") or "Unknown User"),
+        role_key=requested_role_key,
+        granted_by_email=str(current_user.get("email") or ""),
+    )
+    await resolve_auth_role_upgrade_request(
+        request_id=request_id,
+        status="approved",
+        reviewed_by_dms_user_id=int(current_user["dms_user_id"]),
+        reviewed_by_email=str(current_user.get("email") or ""),
+        review_note=(payload.review_note or "").strip() or None,
+    )
+    await log_auth_event(
+        "approve_role_upgrade_request",
+        request=request,
+        actor=current_user,
+        subject_dms_user_id=int(existing_request["requester_dms_user_id"]),
+        subject_email=str(existing_request.get("requester_email") or ""),
+        role_key=requested_role_key,
+        success=True,
+        detail=f"Approved role request #{request_id}",
+    )
+    return {"status": "ok"}
+
+
+@app.post("/auth/role-requests/{request_id}/reject")
+async def auth_role_requests_reject(
+    request_id: int,
+    payload: AuthRoleUpgradeDecisionPayload,
+    request: Request,
+):
+    """Reject a pending role-upgrade request."""
+    current_user = await require_permission(request, "settings.manage")
+    existing_request = await get_auth_role_upgrade_request(request_id)
+    if not existing_request:
+        return JSONResponse(status_code=404, content={"detail": "Role request not found"})
+    if existing_request.get("status") != "pending":
+        return JSONResponse(status_code=409, content={"detail": "Role request has already been processed"})
+
+    requested_role_key = normalize_role_key(str(existing_request.get("requested_role_key") or ""))
+    await resolve_auth_role_upgrade_request(
+        request_id=request_id,
+        status="rejected",
+        reviewed_by_dms_user_id=int(current_user["dms_user_id"]),
+        reviewed_by_email=str(current_user.get("email") or ""),
+        review_note=(payload.review_note or "").strip() or None,
+    )
+    await log_auth_event(
+        "reject_role_upgrade_request",
+        request=request,
+        actor=current_user,
+        subject_dms_user_id=int(existing_request["requester_dms_user_id"]),
+        subject_email=str(existing_request.get("requester_email") or ""),
+        role_key=requested_role_key,
+        success=True,
+        detail=f"Rejected role request #{request_id}",
+    )
+    return {"status": "ok"}
 
 
 @app.post("/auth/access/grant")
@@ -4085,7 +4337,6 @@ async def blast_check_previously_blasted(payload: dict):
     """
     contact_ids = payload.get("contact_ids", [])
     university_ids = payload.get("university_ids", [])
-
     from orchestrator.db import get_db
 
     async with get_db() as db:
@@ -4103,8 +4354,7 @@ async def blast_check_previously_blasted(payload: dict):
             return {"previously_blasted": [], "total_contacts": 0}
 
         placeholders = ",".join("?" for _ in contact_ids)
-        cursor = await db.execute(
-            f"""SELECT DISTINCT
+        query = f"""SELECT DISTINCT
                     br.contact_id,
                     br.phone_number,
                     br.contact_name,
@@ -4115,9 +4365,11 @@ async def blast_check_previously_blasted(payload: dict):
                 JOIN blast_campaigns bc ON bc.id = br.campaign_id
                 WHERE br.contact_id IN ({placeholders})
                   AND br.status = 'sent'
-                ORDER BY br.sent_at DESC""",
-            contact_ids,
-        )
+        """
+        params: list[object] = list(contact_ids)
+        query += " ORDER BY br.sent_at DESC"
+
+        cursor = await db.execute(query, params)
         rows = await cursor.fetchall()
 
     # Deduplicate by contact_id (keep the most recent blast)
@@ -4134,7 +4386,7 @@ async def blast_check_previously_blasted(payload: dict):
 
 
 @app.post("/blast/campaigns")
-async def blast_create_campaign(payload: dict):
+async def blast_create_campaign(payload: dict, request: Request):
     """Create a new blast campaign.
 
     Body: { name, template_message?, device_id?, delay_between_ms?, human_delay_min_ms?, human_delay_max_ms?,
@@ -4145,6 +4397,8 @@ async def blast_create_campaign(payload: dict):
     name = payload.get("name", "").strip()
     if not name:
         return JSONResponse({"success": False, "error": "Campaign name is required"}, status_code=400)
+
+    current_user = await get_request_user(request)
 
     campaign = await blast_service.create_campaign(
         name=name,
@@ -4164,6 +4418,9 @@ async def blast_create_campaign(payload: dict):
         lunch_break_end=payload.get("lunch_break_end", 13),
         weekend_factor=payload.get("weekend_factor", 0.5),
         auto_resume_enabled=payload.get("auto_resume_enabled", True),
+        created_by_dms_user_id=current_user.get("dms_user_id"),
+        created_by_email=current_user.get("email"),
+        created_by_name=_campaign_actor_name(current_user),
     )
     return {"success": True, "campaign": campaign}
 
@@ -4175,20 +4432,22 @@ async def blast_list_campaigns(
     offset: int = Query(0),
 ):
     """List all blast campaigns."""
-    return await blast_service.list_campaigns(status=status, limit=limit, offset=offset)
+    return await blast_service.list_campaigns(
+        status=status,
+        limit=limit,
+        offset=offset,
+    )
 
 
 @app.get("/blast/campaigns/{campaign_id}")
-async def blast_get_campaign(campaign_id: int):
+async def blast_get_campaign(campaign_id: int, request: Request):
     """Get campaign detail."""
-    campaign = await blast_service.get_campaign(campaign_id)
-    if not campaign:
-        return JSONResponse({"detail": "Campaign not found"}, status_code=404)
+    campaign = await _require_blast_campaign_access(campaign_id)
     return campaign
 
 
 @app.put("/blast/campaigns/{campaign_id}")
-async def blast_update_campaign(campaign_id: int, payload: dict):
+async def blast_update_campaign(campaign_id: int, payload: dict, request: Request):
     """Update campaign settings.
 
     Body: { name?, template_message?, device_id?, delay_between_ms?, human_delay_min_ms?, human_delay_max_ms?,
@@ -4196,6 +4455,8 @@ async def blast_update_campaign(campaign_id: int, payload: dict):
             peak_hours_start?, peak_hours_end?, lunch_break_start?, lunch_break_end?, weekend_factor?,
             auto_resume_enabled? }
     """
+    await _require_blast_campaign_access(campaign_id)
+
     campaign = await blast_service.update_campaign(campaign_id, **payload)
     if not campaign:
         return JSONResponse({"detail": "Campaign not found"}, status_code=404)
@@ -4203,8 +4464,10 @@ async def blast_update_campaign(campaign_id: int, payload: dict):
 
 
 @app.delete("/blast/campaigns/{campaign_id}")
-async def blast_delete_campaign(campaign_id: int):
+async def blast_delete_campaign(campaign_id: int, request: Request):
     """Delete a draft/completed/cancelled campaign."""
+    await _require_blast_campaign_access(campaign_id)
+
     deleted = await blast_service.delete_campaign(campaign_id)
     if not deleted:
         return JSONResponse(
@@ -4215,7 +4478,7 @@ async def blast_delete_campaign(campaign_id: int):
 
 
 @app.post("/blast/campaigns/{campaign_id}/recipients")
-async def blast_add_recipients(campaign_id: int, payload: dict):
+async def blast_add_recipients(campaign_id: int, payload: dict, request: Request):
     """Add recipients to a campaign.
 
     Body: { contact_ids: [1,2,3] }  — from ig_contacts
@@ -4223,9 +4486,7 @@ async def blast_add_recipients(campaign_id: int, payload: dict):
     OR:   { recipients: [{phone_number, contact_name?, university_name?, university_id?, contact_id?}] }
     OR:   { group_ids: [1,2] } — all universities from these groups
     """
-    campaign = await blast_service.get_campaign(campaign_id)
-    if not campaign:
-        return JSONResponse({"detail": "Campaign not found"}, status_code=404)
+    await _require_blast_campaign_access(campaign_id)
 
     contact_ids = payload.get("contact_ids", [])
     university_ids = payload.get("university_ids", [])
@@ -4251,17 +4512,21 @@ async def blast_add_recipients(campaign_id: int, payload: dict):
 @app.get("/blast/campaigns/{campaign_id}/recipients")
 async def blast_get_recipients(
     campaign_id: int,
+    request: Request,
     status: Optional[str] = Query(None),
     limit: int = Query(100, le=1000),
     offset: int = Query(0),
 ):
     """Get recipients of a campaign."""
+    await _require_blast_campaign_access(campaign_id)
     return await blast_service.get_recipients(campaign_id, status=status, limit=limit, offset=offset)
 
 
 @app.delete("/blast/campaigns/{campaign_id}/recipients/{recipient_id}")
-async def blast_remove_recipient(campaign_id: int, recipient_id: int):
+async def blast_remove_recipient(campaign_id: int, recipient_id: int, request: Request):
     """Remove a pending recipient."""
+    await _require_blast_campaign_access(campaign_id)
+
     removed = await blast_service.remove_recipient(campaign_id, recipient_id)
     if not removed:
         return JSONResponse({"detail": "Recipient not found or already sent"}, status_code=400)
@@ -4269,31 +4534,45 @@ async def blast_remove_recipient(campaign_id: int, recipient_id: int):
 
 
 @app.delete("/blast/campaigns/{campaign_id}/recipients")
-async def blast_clear_recipients(campaign_id: int):
+async def blast_clear_recipients(campaign_id: int, request: Request):
     """Remove all pending recipients from a campaign."""
+    await _require_blast_campaign_access(campaign_id)
+
     removed = await blast_service.clear_recipients(campaign_id)
     return {"success": True, "removed": removed}
 
 
 @app.get("/blast/campaigns/{campaign_id}/preview")
-async def blast_preview_messages(campaign_id: int, limit: int = Query(3)):
+async def blast_preview_messages(campaign_id: int, request: Request, limit: int = Query(3)):
     """Preview rendered messages for a few recipients."""
+    await _require_blast_campaign_access(campaign_id)
+
     previews = await blast_service.preview_messages(campaign_id, limit=limit)
     return {"previews": previews}
 
 
 @app.post("/blast/campaigns/{campaign_id}/start")
-async def blast_start_campaign(campaign_id: int):
+async def blast_start_campaign(campaign_id: int, request: Request):
     """Start or resume sending a blast campaign."""
-    result = await blast_service.start_campaign(campaign_id)
+    current_user = await get_request_user(request)
+    await _require_blast_campaign_access(campaign_id)
+
+    result = await blast_service.start_campaign(
+        campaign_id,
+        started_by_dms_user_id=current_user.get("dms_user_id"),
+        started_by_email=current_user.get("email"),
+        started_by_name=_campaign_actor_name(current_user),
+    )
     if not result.get("success"):
         return JSONResponse(result, status_code=400)
     return result
 
 
 @app.post("/blast/campaigns/{campaign_id}/pause")
-async def blast_pause_campaign(campaign_id: int):
+async def blast_pause_campaign(campaign_id: int, request: Request):
     """Pause a running campaign."""
+    await _require_blast_campaign_access(campaign_id)
+
     result = await blast_service.pause_campaign(campaign_id)
     if not result.get("success"):
         return JSONResponse(result, status_code=400)
@@ -4301,8 +4580,10 @@ async def blast_pause_campaign(campaign_id: int):
 
 
 @app.post("/blast/campaigns/{campaign_id}/cancel")
-async def blast_cancel_campaign(campaign_id: int):
+async def blast_cancel_campaign(campaign_id: int, request: Request):
     """Cancel a campaign."""
+    await _require_blast_campaign_access(campaign_id)
+
     result = await blast_service.cancel_campaign(campaign_id)
     if not result.get("success"):
         return JSONResponse(result, status_code=400)
@@ -4327,54 +4608,58 @@ class EmailBlastStartRequest(BaseModel):
 
 
 @app.post("/email-blast/campaigns")
-async def create_email_campaign(request: EmailBlastCampaignCreate):
+async def create_email_campaign(payload: EmailBlastCampaignCreate, request: Request):
     """Create new email blast campaign."""
+    current_user = await get_request_user(request)
     campaign_id = await email_blast.create_email_campaign(
-        name=request.name,
-        subject=request.subject,
-        template=request.template_message,
-        from_email=request.from_email or "sekretariat@asosiasi.ai",
-        from_name=request.from_name or "Sekretariat Asosiasi AI",
-        delay_ms=request.delay_between_ms or 20_000
+        name=payload.name,
+        subject=payload.subject,
+        template=payload.template_message,
+        from_email=payload.from_email or "sekretariat@asosiasi.ai",
+        from_name=payload.from_name or "Sekretariat Asosiasi AI",
+        delay_ms=payload.delay_between_ms or 20_000,
+        created_by_dms_user_id=current_user.get("dms_user_id"),
+        created_by_email=current_user.get("email"),
+        created_by_name=_campaign_actor_name(current_user),
     )
     return {"success": True, "campaign_id": campaign_id}
 
 
 @app.get("/email-blast/campaigns")
-async def list_email_campaigns(status: str | None = None):
+async def list_email_campaigns(request: Request, status: str | None = None):
     """List email blast campaigns."""
     campaigns = await email_blast.list_campaigns(status)
     return {"success": True, "campaigns": campaigns}
 
 
 @app.get("/email-blast/campaigns/{campaign_id}")
-async def get_email_campaign(campaign_id: int):
+async def get_email_campaign(campaign_id: int, request: Request):
     """Get email campaign details."""
-    campaign = await email_blast.get_campaign_status(campaign_id)
-    if not campaign:
-        return JSONResponse({"success": False, "error": "Campaign not found"}, status_code=404)
+    campaign = await _require_email_campaign_access(campaign_id)
     return {"success": True, "campaign": campaign}
 
 
 @app.patch("/email-blast/campaigns/{campaign_id}")
-async def update_email_campaign(campaign_id: int, request: dict):
+async def update_email_campaign(campaign_id: int, payload: dict, request: Request):
     """Update email campaign details."""
+    await _require_email_campaign_access(campaign_id)
+
     async with get_db() as db:
         updates = []
         params = []
 
-        if 'name' in request:
+        if 'name' in payload:
             updates.append("name = ?")
-            params.append(request['name'])
-        if 'subject' in request:
+            params.append(payload['name'])
+        if 'subject' in payload:
             updates.append("subject = ?")
-            params.append(request['subject'])
-        if 'template_message' in request:
+            params.append(payload['subject'])
+        if 'template_message' in payload:
             updates.append("template_message = ?")
-            params.append(request['template_message'])
-        if 'delay_between_ms' in request:
+            params.append(payload['template_message'])
+        if 'delay_between_ms' in payload:
             updates.append("delay_between_ms = ?")
-            params.append(request['delay_between_ms'])
+            params.append(payload['delay_between_ms'])
 
         if not updates:
             return {"success": False, "error": "No fields to update"}
@@ -4391,10 +4676,13 @@ async def update_email_campaign(campaign_id: int, request: dict):
 @app.post("/email-blast/campaigns/{campaign_id}/recipients/add-all")
 async def add_all_recipients_to_email_campaign(
     campaign_id: int,
-    request: dict | None = None
+    request: Request,
+    payload: dict | None = None,
 ):
     """Add all universities with emails as recipients."""
-    provinces = request.get("provinces") if request else None
+    await _require_email_campaign_access(campaign_id)
+
+    provinces = payload.get("provinces") if payload else None
     count = await email_blast.add_all_emails_to_campaign(campaign_id, provinces)
     return {"success": True, "recipients_added": count}
 
@@ -4402,14 +4690,17 @@ async def add_all_recipients_to_email_campaign(
 @app.post("/email-blast/campaigns/{campaign_id}/recipients/add")
 async def add_selected_recipients(
     campaign_id: int,
-    request: dict
+    payload: dict,
+    request: Request,
 ):
     """Add selected universities as recipients.
     Body: { university_ids: [...] }  — specific universities
     OR:   { group_ids: [...] } — all universities from these groups
     """
-    university_ids = request.get("university_ids", [])
-    group_ids = request.get("group_ids", [])
+    await _require_email_campaign_access(campaign_id)
+
+    university_ids = payload.get("university_ids", [])
+    group_ids = payload.get("group_ids", [])
 
     if group_ids:
         from orchestrator.university_groups import get_university_ids_from_groups
@@ -4424,12 +4715,26 @@ async def add_selected_recipients(
 
 
 @app.post("/email-blast/campaigns/{campaign_id}/start")
-async def start_email_campaign(campaign_id: int, request: EmailBlastStartRequest):
+async def start_email_campaign(campaign_id: int, payload: EmailBlastStartRequest, request: Request):
     """Start email blast campaign."""
+    current_user = await get_request_user(request)
+    await _require_email_campaign_access(campaign_id)
+
     async with get_db() as db:
         await db.execute(
-            "UPDATE email_blast_campaigns SET status = 'running', started_at = datetime('now') WHERE id = ?",
-            (campaign_id,)
+            """UPDATE email_blast_campaigns
+               SET status = 'running',
+                   started_at = datetime('now'),
+                   started_by_dms_user_id = ?,
+                   started_by_email = ?,
+                   started_by_name = ?
+               WHERE id = ?""",
+            (
+                current_user.get("dms_user_id"),
+                current_user.get("email"),
+                _campaign_actor_name(current_user),
+                campaign_id,
+            )
         )
         await db.commit()
 
@@ -4437,7 +4742,7 @@ async def start_email_campaign(campaign_id: int, request: EmailBlastStartRequest
     asyncio.create_task(
         email_blast.run_email_blast_campaign(
             campaign_id,
-            max_recipients=request.max_recipients
+            max_recipients=payload.max_recipients
         )
     )
 
@@ -4445,23 +4750,44 @@ async def start_email_campaign(campaign_id: int, request: EmailBlastStartRequest
 
 
 @app.post("/email-blast/campaigns/{campaign_id}/pause")
-async def pause_email_campaign(campaign_id: int):
+async def pause_email_campaign(campaign_id: int, request: Request):
     """Pause email campaign."""
+    await _require_email_campaign_access(campaign_id)
+
     await email_blast.pause_campaign(campaign_id)
     return {"success": True, "message": "Campaign paused"}
 
 
 @app.post("/email-blast/campaigns/{campaign_id}/cancel")
-async def cancel_email_campaign(campaign_id: int):
+async def cancel_email_campaign(campaign_id: int, request: Request):
     """Cancel email campaign."""
+    await _require_email_campaign_access(campaign_id)
+
     await email_blast.cancel_campaign(campaign_id)
     return {"success": True, "message": "Campaign cancelled"}
 
 
 @app.post("/email-blast/campaigns/{campaign_id}/retry-failed")
-async def retry_failed_email_campaign(campaign_id: int, request: EmailBlastStartRequest):
+async def retry_failed_email_campaign(campaign_id: int, payload: EmailBlastStartRequest, request: Request):
     """Retry sending emails to failed recipients in a campaign."""
+    current_user = await get_request_user(request)
+    await _require_email_campaign_access(campaign_id)
+
     async with get_db() as db:
+        await db.execute(
+            """UPDATE email_blast_campaigns
+               SET started_at = datetime('now'),
+                   started_by_dms_user_id = ?,
+                   started_by_email = ?,
+                   started_by_name = ?
+               WHERE id = ?""",
+            (
+                current_user.get("dms_user_id"),
+                current_user.get("email"),
+                _campaign_actor_name(current_user),
+                campaign_id,
+            )
+        )
         # Count failed recipients
         cursor = await db.execute(
             "SELECT COUNT(*) FROM email_blast_recipients WHERE campaign_id = ? AND status = 'failed'",
@@ -4482,17 +4808,19 @@ async def retry_failed_email_campaign(campaign_id: int, request: EmailBlastStart
 
     # Run async with only failed (now-pending) recipients
     asyncio.create_task(
-        email_blast.retry_failed_email_blast(campaign_id, max_recipients=request.max_recipients)
+        email_blast.retry_failed_email_blast(campaign_id, max_recipients=payload.max_recipients)
     )
 
     return {"success": True, "message": f"Retrying {failed_count} failed emails", "recipients_retried": failed_count}
 
 
 @app.post("/email-blast/campaigns/{campaign_id}/sync-counters")
-async def sync_email_blast_counters(campaign_id: int):
+async def sync_email_blast_counters(campaign_id: int, request: Request):
     """Force-recalculate sent_count, failed_count, and total_recipients from the actual
     recipient table. Use when counters have drifted from reality (e.g. after a crash or
     concurrent run). Returns the corrected counters."""
+    await _require_email_campaign_access(campaign_id)
+
     result = await email_blast.sync_campaign_counters(campaign_id)
     return {"success": True, "campaign_id": campaign_id, **result}
 
@@ -4508,17 +4836,19 @@ class EmailBlastTestEmailRequest(BaseModel):
 
 
 @app.post("/email-blast/campaigns/{campaign_id}/test-email")
-async def send_test_email(campaign_id: int, request: EmailBlastTestEmailRequest):
+async def send_test_email(campaign_id: int, payload: EmailBlastTestEmailRequest, request: Request):
     """Send a test email to validate campaign template and SMTP connection."""
+    await _require_email_campaign_access(campaign_id)
+
     success, message = await email_blast.send_test_email(
         campaign_id,
-        request.to_email,
-        subject=request.subject,
-        body=request.body,
-        from_email=request.from_email,
-        from_name=request.from_name,
-        attachment_filename=request.attachment_filename,
-        custom_vars=request.custom_vars
+        payload.to_email,
+        subject=payload.subject,
+        body=payload.body,
+        from_email=payload.from_email,
+        from_name=payload.from_name,
+        attachment_filename=payload.attachment_filename,
+        custom_vars=payload.custom_vars
     )
     if success:
         return {"success": True, "message": message}
@@ -4527,8 +4857,10 @@ async def send_test_email(campaign_id: int, request: EmailBlastTestEmailRequest)
 
 
 @app.get("/email-blast/campaigns/{campaign_id}/recipients")
-async def get_email_recipients(campaign_id: int, status: str | None = None):
+async def get_email_recipients(campaign_id: int, request: Request, status: str | None = None):
     """Get recipients of an email campaign."""
+    await _require_email_campaign_access(campaign_id)
+
     async with get_db() as db:
         query = """SELECT id, university_id, email, university_name, status, error_message,
                           sent_at, rendered_subject, rendered_message, letter_number
@@ -4563,32 +4895,39 @@ async def get_email_recipients(campaign_id: int, status: str | None = None):
 
 
 @app.delete("/email-blast/campaigns/{campaign_id}/recipients/{recipient_id}")
-async def delete_email_recipient(campaign_id: int, recipient_id: int):
+async def delete_email_recipient(campaign_id: int, recipient_id: int, request: Request):
     """Delete a recipient from campaign"""
     from orchestrator.email_blast import delete_recipient
 
-    success = await delete_recipient(recipient_id)
+    await _require_email_campaign_access(campaign_id)
+
+    success = await delete_recipient(recipient_id, campaign_id=campaign_id)
     if success:
         return {"success": True, "message": "Recipient deleted"}
     return {"success": False, "message": "Recipient not found"}
 
 
 @app.get("/email-blast/campaigns/{campaign_id}/sent-emails")
-async def get_sent_emails(campaign_id: int, status: str = None):
+async def get_sent_emails(campaign_id: int, request: Request, status: str = None):
     """Get sent emails for a campaign"""
     from orchestrator.db import get_db
-    import json
 
-    query = """SELECT id, email, university_name, rendered_subject, rendered_message, status, sent_at, error_message
-               FROM email_blast_recipients
-               WHERE campaign_id = ? AND sent_at IS NOT NULL"""
+    await _require_email_campaign_access(campaign_id)
+
+    query = """SELECT r.id, r.email, r.university_name, r.rendered_subject, r.rendered_message,
+                      r.status, r.sent_at, r.error_message,
+                      c.name as campaign_name, c.started_by_email, c.started_by_name,
+                      c.created_by_email, c.created_by_name
+               FROM email_blast_recipients r
+               JOIN email_blast_campaigns c ON c.id = r.campaign_id
+               WHERE r.campaign_id = ? AND r.sent_at IS NOT NULL"""
     params = [campaign_id]
 
     if status:
-        query += " AND status = ?"
+        query += " AND r.status = ?"
         params.append(status)
 
-    query += " ORDER BY sent_at DESC"
+    query += " ORDER BY r.sent_at DESC"
 
     async with get_db() as db:
         cursor = await db.execute(query, params)
@@ -4604,16 +4943,23 @@ async def get_sent_emails(campaign_id: int, status: str = None):
             "body": row[4],
             "status": row[5],
             "sent_at": row[6],
-            "error_message": row[7]
+            "error_message": row[7],
+            "campaign_name": row[8],
+            "started_by_email": row[9],
+            "started_by_name": row[10],
+            "created_by_email": row[11],
+            "created_by_name": row[12],
         })
 
     return {"success": True, "emails": emails, "total": len(emails)}
 
 
 @app.get("/email-blast/campaigns/{campaign_id}/sent-emails/{email_id}")
-async def get_sent_email(campaign_id: int, email_id: int):
+async def get_sent_email(campaign_id: int, email_id: int, request: Request):
     """Get a specific sent email details"""
     from orchestrator.db import get_db
+
+    await _require_email_campaign_access(campaign_id)
 
     async with get_db() as db:
         cursor = await db.execute(
@@ -4643,16 +4989,18 @@ async def get_sent_email(campaign_id: int, email_id: int):
 
 
 @app.get("/email-blast/campaigns/{campaign_id}/inbox")
-async def get_inbox_emails(campaign_id: int, limit: int = 50, offset: int = 0):
+async def get_inbox_emails(campaign_id: int, request: Request, limit: int = 50, offset: int = 0):
     """Get inbound emails (replies) for a campaign with pagination"""
     from orchestrator import email_blast
+
+    await _require_email_campaign_access(campaign_id)
 
     replies, total = await email_blast.get_campaign_replies(campaign_id, limit)
     return {"success": True, "emails": replies, "total": total, "offset": offset, "limit": limit}
 
 
 @app.get("/email-blast/inbox")
-async def get_all_inbox_emails(limit: int = 50, offset: int = 0):
+async def get_all_inbox_emails(request: Request, limit: int = 50, offset: int = 0):
     """Get all inbound emails from INBOX with pagination"""
     from orchestrator import email_blast
 
@@ -4662,6 +5010,7 @@ async def get_all_inbox_emails(limit: int = 50, offset: int = 0):
 
 @app.get("/email-blast/sent-emails")
 async def get_all_sent_emails(
+    request: Request,
     limit: int = 50,
     offset: int = 0,
     status: str = None
@@ -4682,8 +5031,10 @@ async def get_all_sent_emails(
         total = count_row[0] if count_row else 0
 
         data_query = """SELECT o.id, o.email, o.university_name, o.rendered_subject,
-                               o.rendered_message, o.status, o.sent_at, o.error_message,
-                               c.name as campaign_name, o.source
+                       o.rendered_message, o.status, o.sent_at, o.error_message,
+                       c.name as campaign_name, o.source,
+                       c.started_by_email, c.started_by_name,
+                       c.created_by_email, c.created_by_name
                         FROM email_outbox o
                         LEFT JOIN email_blast_campaigns c ON o.campaign_id = c.id"""
         data_params: list = []
@@ -4709,13 +5060,17 @@ async def get_all_sent_emails(
             "error_message": row[7],
             "campaign_name": row[8],
             "source": row[9],
+            "started_by_email": row[10],
+            "started_by_name": row[11],
+            "created_by_email": row[12],
+            "created_by_name": row[13],
         })
 
     return {"success": True, "emails": emails, "total": total, "offset": offset, "limit": limit}
 
 
 @app.get("/email-blast/sent-folder")
-async def get_sent_folder_emails(limit: int = 50, offset: int = 0):
+async def get_sent_folder_emails(request: Request, limit: int = 50, offset: int = 0):
     """Get emails from the Sent folder (IMAP) with pagination."""
     from orchestrator import email_blast
 
@@ -4724,7 +5079,7 @@ async def get_sent_folder_emails(limit: int = 50, offset: int = 0):
 
 
 @app.post("/email-blast/test-smtp")
-async def test_smtp_connection():
+async def test_smtp_connection(request: Request):
     """Test SMTP connection."""
     smtp = email_blast.get_smtp_client()
     success = smtp.connect()
@@ -4741,7 +5096,7 @@ async def get_email_blast_quota():
 
 
 @app.post("/email-blast/test-imap")
-async def test_imap_connection():
+async def test_imap_connection(request: Request):
     """Test IMAP connection."""
     from orchestrator import email_blast
 
@@ -4754,7 +5109,7 @@ async def test_imap_connection():
 
 
 @app.get("/email-blast/test-inbox")
-async def test_inbox_fetch(limit: int = 10):
+async def test_inbox_fetch(request: Request, limit: int = 10):
     """Test fetching from INBOX - debug endpoint."""
     from orchestrator import email_blast
 
@@ -4767,7 +5122,7 @@ async def test_inbox_fetch(limit: int = 10):
 
 
 @app.get("/email-blast/debug-campaign-replies/{campaign_id}")
-async def debug_campaign_replies(campaign_id: int):
+async def debug_campaign_replies(campaign_id: int, request: Request):
     """Debug endpoint to see campaign recipients and matching inbox emails."""
     from orchestrator import email_blast
 
@@ -4808,12 +5163,15 @@ async def debug_campaign_replies(campaign_id: int):
 @app.post("/email-blast/campaigns/{campaign_id}/attachment")
 async def upload_attachment(
     campaign_id: int,
+    request: Request,
     file: UploadFile = FastAPIFile(...),
     variables: str = Form("")
 ):
     """Upload DOCX template and set variables for campaign"""
     try:
         from orchestrator.email_blast import TEMPLATE_DIR, extract_docx_variables, save_campaign_attachment
+
+        await _require_email_campaign_access(campaign_id)
 
         # Validate file type
         if not file.filename.endswith('.docx'):
@@ -4872,9 +5230,11 @@ async def upload_attachment(
 
 
 @app.get("/email-blast/campaigns/{campaign_id}/attachment")
-async def get_attachment(campaign_id: int):
+async def get_attachment(campaign_id: int, request: Request):
     """Get attachment info for campaign"""
     from orchestrator.email_blast import get_campaign_attachment
+
+    await _require_email_campaign_access(campaign_id)
 
     attachment = await get_campaign_attachment(campaign_id)
     return {
@@ -4917,6 +5277,7 @@ async def update_letter_config(request: Request):
 
 @app.get("/email-blast/letter-history")
 async def get_letter_history(
+    request: Request,
     campaign_id: int | None = None,
     duplicate_only: bool = False,
     search: str | None = None,
@@ -4927,11 +5288,16 @@ async def get_letter_history(
     Get all sent letters with letter numbers.
     Highlights duplicates for easy identification.
     """
+    if campaign_id is not None:
+        await _require_email_campaign_access(campaign_id)
+
     async with get_db() as db:
         # Base query — only sent recipients with letter_number
         base_cols = """
             r.id, r.campaign_id, c.name as campaign_name,
-            r.letter_number, r.university_name, r.email, r.sent_at
+            r.letter_number, r.university_name, r.email, r.sent_at,
+            c.started_by_email, c.started_by_name,
+            c.created_by_email, c.created_by_name
         """
         query = f"""
             SELECT {base_cols}
@@ -4956,9 +5322,10 @@ async def get_letter_history(
             params.append(campaign_id)
 
         if search:
-            query += " AND (r.letter_number LIKE ? OR r.university_name LIKE ?)"
-            count_query += " AND (r.letter_number LIKE ? OR r.university_name LIKE ?)"
-            params.extend([f"%{search}%", f"%{search}%"])
+            query += " AND (r.letter_number LIKE ? OR r.university_name LIKE ? OR r.email LIKE ? OR c.name LIKE ? OR c.started_by_name LIKE ? OR c.started_by_email LIKE ?)"
+            count_query += " AND (r.letter_number LIKE ? OR r.university_name LIKE ? OR r.email LIKE ? OR c.name LIKE ? OR c.started_by_name LIKE ? OR c.started_by_email LIKE ?)"
+            pattern = f"%{search}%"
+            params.extend([pattern, pattern, pattern, pattern, pattern, pattern])
 
         query += " ORDER BY r.sent_at DESC"
 
@@ -4966,6 +5333,8 @@ async def get_letter_history(
         rows_query = f"SELECT {base_cols} FROM email_blast_recipients r JOIN email_blast_campaigns c ON c.id = r.campaign_id WHERE r.status = 'sent' AND r.letter_number IS NOT NULL AND r.letter_number != ''"
         if campaign_id is not None:
             rows_query += " AND r.campaign_id = ?"
+        if search:
+            rows_query += " AND (r.letter_number LIKE ? OR r.university_name LIKE ? OR r.email LIKE ? OR c.name LIKE ? OR c.started_by_name LIKE ? OR c.started_by_email LIKE ?)"
         rows_query += " ORDER BY r.sent_at DESC"
 
         async with get_db() as db2:
@@ -5001,6 +5370,10 @@ async def get_letter_history(
                 "university_name": row[4],
                 "email": row[5],
                 "sent_at": row[6],
+                "started_by_email": row[7],
+                "started_by_name": row[8],
+                "created_by_email": row[9],
+                "created_by_name": row[10],
                 "is_duplicate": row[3] in duplicate_letters,
             }
             for row in paginated

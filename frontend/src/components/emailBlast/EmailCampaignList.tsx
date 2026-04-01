@@ -194,6 +194,12 @@ function CampaignRow({
           </span>
           <span>{formatDate(campaign.created_at)}</span>
         </div>
+        <div className="mt-1 flex flex-wrap gap-x-3 gap-y-1 text-[11px] text-gray-400">
+          <span>Dibuat oleh {campaign.created_by_name || campaign.created_by_email || 'Unknown'}</span>
+          {campaign.started_by_name || campaign.started_by_email ? (
+            <span>Terakhir dijalankan oleh {campaign.started_by_name || campaign.started_by_email}</span>
+          ) : null}
+        </div>
       </div>
 
       {/* Progress */}

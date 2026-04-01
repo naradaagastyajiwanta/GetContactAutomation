@@ -93,8 +93,8 @@ const NAV_SECTIONS: NavSection[] = [
     label: 'System',
     icon: ScrollText,
     items: [
-      { to: '/api-logs', label: 'API Logs', icon: ScrollText, permission: 'logs.view' },
-      { to: '/logs', label: 'System Logs', icon: Terminal, permission: 'logs.view' },
+      { to: '/api-logs', label: 'API Logs', icon: ScrollText, permission: 'settings.manage' },
+      { to: '/logs', label: 'System Logs', icon: Terminal, permission: 'settings.manage' },
     ],
   },
 ]

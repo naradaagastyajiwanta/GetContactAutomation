@@ -174,7 +174,7 @@ export function EmailLetterHistory() {
           <Search className="absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-gray-400" />
           <input
             type="text"
-            placeholder="Cari nomor surat, universitas, email..."
+            placeholder="Cari nomor surat, universitas, campaign, pengirim..."
             value={search}
             onChange={(e) => setSearch(e.target.value)}
             className="h-8 w-64 rounded-lg border border-gray-200 bg-white pl-8 pr-3 text-[12px] text-gray-900 placeholder:text-gray-400 focus:border-indigo-500 focus:outline-none focus:ring-1 focus:ring-indigo-500 dark:border-gray-700 dark:bg-gray-900 dark:text-white dark:placeholder:text-gray-500"
@@ -267,7 +267,14 @@ export function EmailLetterHistory() {
 
                   {/* Campaign */}
                   <td className="px-4 py-2.5">
-                    <span className="text-gray-500 dark:text-gray-400">{item.campaign_name}</span>
+                    <div>
+                      <span className="text-gray-500 dark:text-gray-400">{item.campaign_name}</span>
+                      {(item.started_by_name || item.started_by_email) && (
+                        <p className="mt-0.5 text-[11px] text-gray-400 dark:text-gray-500">
+                          Dijalankan oleh {item.started_by_name || item.started_by_email}
+                        </p>
+                      )}
+                    </div>
                   </td>
 
                   {/* Email */}

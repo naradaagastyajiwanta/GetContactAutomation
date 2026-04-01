@@ -1211,6 +1211,8 @@ function SentTab({ campaignId, campaign }: { campaignId: number; campaign: Email
   const sentCount = emails.filter((e) => e.status === 'sent').length
   const failedCount = emails.filter((e) => e.status === 'failed').length
   const pendingCount = emails.filter((e) => e.status === 'pending').length
+  const creatorName = campaign.created_by_name || campaign.created_by_email || 'Unknown'
+  const operatorName = campaign.started_by_name || campaign.started_by_email
 
   return (
     <div className="flex h-full flex-col overflow-hidden">
@@ -1244,6 +1246,13 @@ function SentTab({ campaignId, campaign }: { campaignId: number; campaign: Email
         <span className="ml-auto text-xs text-gray-400">{emails.length} emails</span>
       </div>
 
+      <div className="border-b border-gray-100 bg-gray-50/80 px-4 py-2.5 text-[11px] text-gray-500 dark:border-gray-800 dark:bg-gray-900/40 dark:text-gray-400">
+        <div className="flex flex-wrap gap-x-4 gap-y-1">
+          <span>Dibuat oleh {creatorName}</span>
+          {operatorName ? <span>Terakhir dijalankan oleh {operatorName}</span> : null}
+        </div>
+      </div>
+
       <div className="flex-1 overflow-y-auto">
         {isLoading ? (
           <div className="flex h-48 items-center justify-center"><Spinner /></div>
@@ -1259,6 +1268,9 @@ function SentTab({ campaignId, campaign }: { campaignId: number; campaign: Email
                 <div className="min-w-0 flex-1">
                   <p className="truncate text-[13px] font-medium text-gray-900 dark:text-gray-100">{email.university_name || email.email}</p>
                   <p className="truncate text-[11px] text-gray-400">{email.subject}</p>
+                  {operatorName && (
+                    <p className="mt-0.5 truncate text-[11px] text-gray-400">Dijalankan oleh {operatorName}</p>
+                  )}
                 </div>
                 {email.error_message && <span className="max-w-[150px] truncate text-[10px] text-red-500">{email.error_message}</span>}
                 <span className="shrink-0 text-[11px] text-gray-400">{email.sent_at ? formatRelative(email.sent_at) : '—'}</span>
@@ -1441,6 +1453,12 @@ export function EmailCampaignDetail({ campaignId, canManage, onClose }: Props) {
           <div className="flex items-center gap-2">
             <span className="truncate text-sm font-semibold text-gray-900 dark:text-white">{campaign.name || 'Untitled'}</span>
             <span className={cn('shrink-0 rounded-full px-2 py-0.5 text-[10px] font-medium', cfg.bg)}>{cfg.label}</span>
+          </div>
+          <div className="mt-1 flex flex-wrap gap-x-3 gap-y-1 text-[11px] text-gray-400">
+            <span>Dibuat oleh {campaign.created_by_name || campaign.created_by_email || 'Unknown'}</span>
+            {campaign.started_by_name || campaign.started_by_email ? (
+              <span>Terakhir dijalankan oleh {campaign.started_by_name || campaign.started_by_email}</span>
+            ) : null}
           </div>
           {campaign.status === 'running' && (
             <div className="mt-1 flex items-center gap-2">

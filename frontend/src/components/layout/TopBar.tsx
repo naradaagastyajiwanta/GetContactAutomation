@@ -4,6 +4,7 @@ import { useMutation, useQueryClient } from '@tanstack/react-query'
 import { LogOut, Menu, Moon, Sun } from 'lucide-react'
 import { ThemeContext } from '../../context/ThemeContext'
 import { NotificationCenter } from '../notifications/NotificationCenter'
+import { RoleUpgradeRequestButton } from '../auth/RoleUpgradeRequestButton'
 import { useAuth } from '../../context/AuthContext'
 import { logout } from '../../api/auth'
 import { queryKeys } from '../../lib/queryKeys'
@@ -36,7 +37,9 @@ export function TopBar({ onMenuClick }: TopBarProps) {
   const logoutMutation = useMutation({
     mutationFn: logout,
     onSuccess: async () => {
-      await queryClient.invalidateQueries({ queryKey: queryKeys.auth.me })
+      queryClient.setQueryData(queryKeys.auth.me, null)
+      await queryClient.cancelQueries()
+      queryClient.clear()
       navigate('/login', { replace: true })
     },
   })
@@ -56,6 +59,7 @@ export function TopBar({ onMenuClick }: TopBarProps) {
       </div>
 
       <div className="flex items-center gap-2">
+        <RoleUpgradeRequestButton />
         {user && (
           <div className="hidden items-center rounded-lg border border-gray-200 px-3 py-1.5 text-right dark:border-gray-700 md:flex">
             <div>

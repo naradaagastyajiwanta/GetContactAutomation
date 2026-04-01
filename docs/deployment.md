@@ -438,6 +438,7 @@ sudo systemctl status getcontact-whatsapp
 ```bash
 cd /opt/getcontact-ai-agent
 docker compose -f docker-compose.prod.yml exec -T orchestrator python scripts/test_auth_permissions.py
+docker compose -f docker-compose.prod.yml exec -T orchestrator python scripts/test_blast_attribution.py
 curl -sf http://localhost:8000/health
 curl -sf http://localhost:3100/status
 ```
@@ -447,6 +448,7 @@ curl -sf http://localhost:3100/status
 ```bash
 cd /opt/getcontact/app
 sudo -u getcontact venv/bin/python scripts/test_auth_permissions.py
+sudo -u getcontact venv/bin/python scripts/test_blast_attribution.py
 curl -sf http://localhost:8000/health
 curl -sf http://localhost:3100/status
 ```

@@ -22,6 +22,7 @@ export interface University {
 }
 
 export type AuthRoleKey = 'admin' | 'operator' | 'viewer'
+export type AuthRoleUpgradeRequestStatus = 'pending' | 'approved' | 'rejected'
 
 export interface AuthUser {
   dms_user_id: number
@@ -71,6 +72,23 @@ export interface AuthAuditLog {
   ip_address: string | null
   user_agent: string | null
   created_at: string
+}
+
+export interface AuthRoleUpgradeRequest {
+  id: number
+  requester_dms_user_id: number
+  requester_email: string
+  requester_name: string
+  current_role_key: AuthRoleKey
+  requested_role_key: AuthRoleKey
+  status: AuthRoleUpgradeRequestStatus
+  request_note: string | null
+  reviewed_by_dms_user_id: number | null
+  reviewed_by_email: string | null
+  review_note: string | null
+  reviewed_at: string | null
+  created_at: string
+  updated_at: string
 }
 
 export type UniversityStatus =

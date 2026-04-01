@@ -914,6 +914,12 @@ export default function BlastCampaignDetailPage() {
                   <p className="mt-2 max-w-2xl text-sm leading-6 text-gray-500 dark:text-gray-400">
                     Susun pesan, pilih recipient yang tepat, lalu jalankan blast dengan device dan pengaturan yang aman.
                   </p>
+                  <div className="mt-2 flex flex-wrap gap-x-4 gap-y-1 text-xs text-gray-500 dark:text-gray-400">
+                    <span>Dibuat oleh {campaign.created_by_name || campaign.created_by_email || 'Unknown'}</span>
+                    {campaign.started_by_name || campaign.started_by_email ? (
+                      <span>Terakhir dijalankan oleh {campaign.started_by_name || campaign.started_by_email}</span>
+                    ) : null}
+                  </div>
                 </div>
               </div>
 

@@ -8,6 +8,7 @@ import { useNavigate, useParams } from 'react-router-dom'
 import {
   Inbox,
   Send,
+  Mail,
   FileText,
   Rocket,
   Pause,
@@ -26,6 +27,7 @@ import { Modal } from '../components/ui/Modal'
 import { EmailComposeBox } from '../components/emailBlast/EmailComposeBox'
 import { EmailInboxView } from '../components/emailBlast/EmailInboxView'
 import { EmailSentView } from '../components/emailBlast/EmailSentView'
+import { EmailImapSentView } from '../components/emailBlast/EmailImapSentView'
 import { EmailCampaignList } from '../components/emailBlast/EmailCampaignList'
 import { EmailCampaignDetail } from '../components/emailBlast/EmailCampaignDetail'
 import { EmailSettingsPanel } from '../components/emailBlast/EmailSettingsPanel'
@@ -35,7 +37,7 @@ import type { EmailBlastCampaign } from '../api/emailBlast'
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 
-type View = 'inbox' | 'sent' | 'campaigns' | 'settings' | 'letter-history' | 'campaign-detail'
+type View = 'inbox' | 'sent' | 'imap-sent' | 'campaigns' | 'settings' | 'letter-history' | 'campaign-detail'
 
 interface NavItem {
   id: View
@@ -81,8 +83,9 @@ function EmailLeftRail({
   canManage: boolean
 }) {
   const navItems: NavItem[] = [
-    { id: 'inbox', label: 'Inbox', icon: Inbox, badge: inboxCount, section: 'messages' },
-    { id: 'sent', label: 'Sent', icon: Send, badge: sentCount, section: 'messages' },
+    { id: 'inbox' as const, label: 'Inbox', icon: Inbox, badge: inboxCount, section: 'messages' },
+    { id: 'sent' as const, label: 'Sent Aplikasi', icon: Send, badge: sentCount, section: 'messages' },
+    { id: 'imap-sent' as const, label: 'Sent IMAP', icon: Mail, section: 'messages' },
     { id: 'letter-history', label: 'Riwayat Surat', icon: History, section: 'messages' },
   ]
 
@@ -207,18 +210,25 @@ function EmailLeftRail({
           </div>
           <div className="space-y-1.5">
             <div className="flex items-center justify-between text-[12px]">
-              <span className="text-gray-500 dark:text-gray-400">Sent</span>
+              <span className="text-gray-500 dark:text-gray-400" title="Jumlah email yang tercatat terkirim oleh aplikasi blast.">
+                Sent Aplikasi
+              </span>
               <span className="font-semibold text-gray-700 dark:text-gray-200">
                 {stats.totalSent.toLocaleString('id-ID')}
               </span>
             </div>
             <div className="flex items-center justify-between text-[12px]">
-              <span className="text-gray-500 dark:text-gray-400">Replies</span>
+              <span className="text-gray-500 dark:text-gray-400" title="Jumlah email balasan yang terdeteksi di inbox.">
+                Reply Inbox
+              </span>
               <span className="font-semibold text-gray-700 dark:text-gray-200">
                 {inboxCount > 0 ? inboxCount.toLocaleString('id-ID') : '—'}
               </span>
             </div>
           </div>
+          <p className="mt-2 text-[10px] leading-4 text-gray-400 dark:text-gray-500">
+            Sent IMAP tersedia sebagai mailbox view terpisah dan tidak dihitung di kartu ini.
+          </p>
 
           {/* Daily Quota */}
           {quota && (
@@ -314,6 +324,7 @@ export default function EmailBlastPage() {
     if (campaignIdFromUrl !== undefined) return 'campaign-detail'
     const path = window.location.pathname
     if (path.includes('/email-blast/inbox')) return 'inbox'
+    if (path.includes('/email-blast/imap-sent')) return 'imap-sent'
     if (path.includes('/email-blast/sent')) return 'sent'
     if (path.includes('/email-blast/settings')) return 'settings'
     if (path.includes('/email-blast/letter-history')) return 'letter-history'
@@ -379,6 +390,7 @@ export default function EmailBlastPage() {
       setActiveCampaignId(undefined)
       if (view === 'campaigns') navigate('/email-blast/campaigns')
       else if (view === 'inbox') navigate('/email-blast/inbox')
+      else if (view === 'imap-sent') navigate('/email-blast/imap-sent')
       else if (view === 'sent') navigate('/email-blast/sent')
       else if (view === 'settings') navigate('/email-blast/settings')
       else if (view === 'letter-history') navigate('/email-blast/letter-history')
@@ -433,6 +445,10 @@ export default function EmailBlastPage() {
 
     if (activeView === 'sent') {
       return <EmailSentView />
+    }
+
+    if (activeView === 'imap-sent') {
+      return <EmailImapSentView />
     }
 
     // Default: campaigns

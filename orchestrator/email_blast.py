@@ -829,14 +829,28 @@ async def get_next_letter_number() -> tuple[str, int]:
 async def create_email_campaign(name: str, subject: str, template: str,
                                 from_email: str = "sekretariat@asosiasi.ai",
                                 from_name: str = "Sekretariat Asosiasi AI",
-                                delay_ms: int = 20_000) -> int:
+                                delay_ms: int = 20_000,
+                                created_by_dms_user_id: int | None = None,
+                                created_by_email: str | None = None,
+                                created_by_name: str | None = None) -> int:
     """Create new email blast campaign"""
     async with get_db() as db:
         cursor = await db.execute(
             """INSERT INTO email_blast_campaigns
-               (name, subject, template_message, from_email, from_name, delay_between_ms)
-               VALUES (?, ?, ?, ?, ?, ?)""",
-            (name, subject, template, from_email, from_name, delay_ms)
+               (name, subject, template_message, from_email, from_name, delay_between_ms,
+                created_by_dms_user_id, created_by_email, created_by_name)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            (
+                name,
+                subject,
+                template,
+                from_email,
+                from_name,
+                delay_ms,
+                created_by_dms_user_id,
+                created_by_email,
+                created_by_name,
+            )
         )
         await db.commit()
         return cursor.lastrowid
@@ -1580,15 +1594,20 @@ async def _retry_failed_email_blast_inner(campaign_id: int, max_recipients: int 
 
 async def get_campaign_status(campaign_id: int) -> dict:
     """Get campaign status"""
-    async with get_db() as db:
-        cursor = await db.execute(
-            """SELECT id, name, subject, template_message, from_email, from_name,
+    query = """SELECT id, name, subject, template_message, from_email, from_name,
                       delay_between_ms, status, total_recipients, sent_count, failed_count,
                       invalid_count,
                       attachment_filename, attachment_variables,
+                      created_by_dms_user_id, created_by_email, created_by_name,
+                      started_by_dms_user_id, started_by_email, started_by_name,
                       created_at, started_at, completed_at, paused_at
-               FROM email_blast_campaigns WHERE id = ?""",
-            (campaign_id,)
+               FROM email_blast_campaigns WHERE id = ?"""
+    params: list[object] = [campaign_id]
+
+    async with get_db() as db:
+        cursor = await db.execute(
+            query,
+            params,
         )
         campaign = await cursor.fetchone()
 
@@ -1610,10 +1629,16 @@ async def get_campaign_status(campaign_id: int) -> dict:
             "invalid_count": campaign[11],
             "attachment_filename": campaign[12],
             "attachment_variables": campaign[13],
-            "created_at": campaign[14],
-            "started_at": campaign[15],
-            "completed_at": campaign[16],
-            "paused_at": campaign[17],
+            "created_by_dms_user_id": campaign[14],
+            "created_by_email": campaign[15],
+            "created_by_name": campaign[16],
+            "started_by_dms_user_id": campaign[17],
+            "started_by_email": campaign[18],
+            "started_by_name": campaign[19],
+            "created_at": campaign[20],
+            "started_at": campaign[21],
+            "completed_at": campaign[22],
+            "paused_at": campaign[23],
         }
 
 
@@ -1621,14 +1646,22 @@ async def list_campaigns(status: str = None) -> list[dict]:
     """List all campaigns"""
     async with get_db() as db:
         query = """SELECT id, name, subject, status, total_recipients,
-                          sent_count, failed_count, invalid_count, created_at
+                          sent_count, failed_count, invalid_count,
+                          created_by_dms_user_id, created_by_email, created_by_name,
+                          started_by_dms_user_id, started_by_email, started_by_name,
+                          created_at
                    FROM email_blast_campaigns"""
+        conditions: list[str] = []
+        params: list[object] = []
 
         if status:
-            query += " WHERE status = ?"
-            cursor = await db.execute(query, (status,))
-        else:
-            cursor = await db.execute(query + " ORDER BY created_at DESC")
+            conditions.append("status = ?")
+            params.append(status)
+
+        if conditions:
+            query += " WHERE " + " AND ".join(conditions)
+
+        cursor = await db.execute(query + " ORDER BY created_at DESC", params)
 
         campaigns = await cursor.fetchall()
 
@@ -1642,7 +1675,13 @@ async def list_campaigns(status: str = None) -> list[dict]:
                 "sent_count": c[5],
                 "failed_count": c[6],
                 "invalid_count": c[7],
-                "created_at": c[8]
+                "created_by_dms_user_id": c[8],
+                "created_by_email": c[9],
+                "created_by_name": c[10],
+                "started_by_dms_user_id": c[11],
+                "started_by_email": c[12],
+                "started_by_name": c[13],
+                "created_at": c[14]
             }
             for c in campaigns
         ]
@@ -1670,14 +1709,17 @@ async def cancel_campaign(campaign_id: int) -> bool:
         return True
 
 
-async def delete_recipient(recipient_id: int) -> bool:
+async def delete_recipient(recipient_id: int, campaign_id: int | None = None) -> bool:
     """Delete a recipient from campaign"""
     async with get_db() as db:
         # Get campaign_id first
-        cursor = await db.execute(
-            "SELECT campaign_id FROM email_blast_recipients WHERE id = ?",
-            (recipient_id,)
-        )
+        query = "SELECT campaign_id FROM email_blast_recipients WHERE id = ?"
+        params: list[object] = [recipient_id]
+        if campaign_id is not None:
+            query += " AND campaign_id = ?"
+            params.append(campaign_id)
+
+        cursor = await db.execute(query, params)
         row = await cursor.fetchone()
         if not row:
             return False
@@ -2595,7 +2637,7 @@ async def get_campaign_replies(campaign_id: int, limit: int = 50) -> tuple[list[
         return [], 0
 
     # Fetch inbox emails
-    all_inbox, total = await fetch_inbox_emails(limit=limit)
+    all_inbox, _ = await fetch_inbox_emails(limit=limit)
 
     # Filter emails that are replies from recipients
     replies = []
@@ -2607,7 +2649,7 @@ async def get_campaign_replies(campaign_id: int, limit: int = 50) -> tuple[list[
                 replies.append(inbox_email)
                 break
 
-    return replies, total
+    return replies, len(replies)
 
 
 async def send_test_email(

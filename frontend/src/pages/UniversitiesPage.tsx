@@ -18,8 +18,10 @@ import { BulkSelectModal } from '../components/universities/BulkSelectModal'
 import { BulkUpdateContactsModal } from '../components/universities/BulkUpdateContactsModal'
 import { AddToBlastModal } from '../components/blast/AddToBlastModal'
 import { ITEMS_PER_PAGE } from '../lib/constants'
+import { useAuth } from '../context/AuthContext'
 
 export default function UniversitiesPage() {
+  const { hasPermission } = useAuth()
   const [searchParams, setSearchParams] = useSearchParams()
 
   // Initialize state from URL params
@@ -48,6 +50,10 @@ export default function UniversitiesPage() {
   const [selected, setSelected] = useState<Set<number>>(new Set())
   const [lastUpdated, setLastUpdated] = useState<Date>(new Date())
   const [isAutoRefreshing, setIsAutoRefreshing] = useState(true)
+  const canManageUniversities = hasPermission('universities.manage')
+  const canRunPipeline = hasPermission('pipeline.run')
+  const canManageBlast = hasPermission('blast.manage')
+  const canSelectUniversities = canManageUniversities || canRunPipeline || canManageBlast
 
   // Helper to update URL params
   const updateUrlParams = (updates: Record<string, string | null | number>) => {
@@ -108,6 +114,12 @@ export default function UniversitiesPage() {
       setLastUpdated(new Date())
     }
   }, [isFetching, isLoading])
+
+  useEffect(() => {
+    if (!canSelectUniversities && selected.size > 0) {
+      setSelected(new Set())
+    }
+  }, [canSelectUniversities, selected])
 
   const universities = result?.data ?? []
   const total = result?.total ?? 0
@@ -184,19 +196,25 @@ export default function UniversitiesPage() {
           Universities
         </h1>
         <div className="flex items-center gap-2">
-          <Button onClick={() => setAddOpen(true)}>
-            <Plus className="h-4 w-4" />
-            Add University
-          </Button>
-          <Button variant="secondary" onClick={() => setBulkSelectOpen(true)}>
-            <ClipboardList className="h-4 w-4" />
-            Bulk Select
-          </Button>
-          <Button variant="secondary" onClick={() => setBulkContactsOpen(true)}>
-            <ListChecks className="h-4 w-4" />
-            Bulk Update Status
-          </Button>
-          {selected.size > 0 && (
+          {canManageUniversities && (
+            <Button onClick={() => setAddOpen(true)}>
+              <Plus className="h-4 w-4" />
+              Add University
+            </Button>
+          )}
+          {canSelectUniversities && (
+            <Button variant="secondary" onClick={() => setBulkSelectOpen(true)}>
+              <ClipboardList className="h-4 w-4" />
+              Bulk Select
+            </Button>
+          )}
+          {canManageUniversities && (
+            <Button variant="secondary" onClick={() => setBulkContactsOpen(true)}>
+              <ListChecks className="h-4 w-4" />
+              Bulk Update Status
+            </Button>
+          )}
+          {canManageBlast && selected.size > 0 && (
             <Button variant="secondary" onClick={() => setBlastOpen(true)}>
               <Megaphone className="h-4 w-4" />
               Add to Blast ({selected.size})
@@ -206,10 +224,12 @@ export default function UniversitiesPage() {
             <Download className="h-4 w-4" />
             {selected.size > 0 ? `Export Contacts (${selected.size})` : 'Export All Contacts'}
           </Button>
-          <Button variant="secondary" onClick={() => setImportOpen(true)}>
-            <Upload className="h-4 w-4" />
-            Import CSV/Excel
-          </Button>
+          {canManageUniversities && (
+            <Button variant="secondary" onClick={() => setImportOpen(true)}>
+              <Upload className="h-4 w-4" />
+              Import CSV/Excel
+            </Button>
+          )}
         </div>
       </div>
 
@@ -368,12 +388,12 @@ export default function UniversitiesPage() {
             icon={Building2}
             title="No universities found"
             description="Try adjusting your filters or import universities from a CSV file."
-            action={
+            action={canManageUniversities ? (
               <Button onClick={() => setImportOpen(true)} size="sm">
                 <Upload className="h-4 w-4" />
                 Import CSV
               </Button>
-            }
+            ) : undefined}
           />
         </Card>
       ) : (
@@ -383,6 +403,9 @@ export default function UniversitiesPage() {
               universities={universities}
               selected={selected}
               onSelectedChange={setSelected}
+              canManageUniversities={canManageUniversities}
+              canRunPipeline={canRunPipeline}
+              canSelectUniversities={canSelectUniversities}
             />
           </Card>
           <div className="flex justify-center">
@@ -395,25 +418,31 @@ export default function UniversitiesPage() {
         </>
       )}
 
-      <ImportModal isOpen={importOpen} onClose={() => setImportOpen(false)} />
-      <AddUniversityModal isOpen={addOpen} onClose={() => setAddOpen(false)} />
-      <BulkSelectModal
-        isOpen={bulkSelectOpen}
-        onClose={() => setBulkSelectOpen(false)}
-        currentSelected={selected}
-        onSelect={setSelected}
-      />
-      <BulkUpdateContactsModal
-        isOpen={bulkContactsOpen}
-        onClose={() => setBulkContactsOpen(false)}
-        onUpdated={() => {}}
-      />
-      <AddToBlastModal
-        isOpen={blastOpen}
-        onClose={() => setBlastOpen(false)}
-        universityIds={Array.from(selected)}
-        label={`Contacts from ${selected.size} selected universities`}
-      />
+      {canManageUniversities && <ImportModal isOpen={importOpen} onClose={() => setImportOpen(false)} />}
+      {canManageUniversities && <AddUniversityModal isOpen={addOpen} onClose={() => setAddOpen(false)} />}
+      {canSelectUniversities && (
+        <BulkSelectModal
+          isOpen={bulkSelectOpen}
+          onClose={() => setBulkSelectOpen(false)}
+          currentSelected={selected}
+          onSelect={setSelected}
+        />
+      )}
+      {canManageUniversities && (
+        <BulkUpdateContactsModal
+          isOpen={bulkContactsOpen}
+          onClose={() => setBulkContactsOpen(false)}
+          onUpdated={() => {}}
+        />
+      )}
+      {canManageBlast && (
+        <AddToBlastModal
+          isOpen={blastOpen}
+          onClose={() => setBlastOpen(false)}
+          universityIds={Array.from(selected)}
+          label={`Contacts from ${selected.size} selected universities`}
+        />
+      )}
     </div>
   )
 }

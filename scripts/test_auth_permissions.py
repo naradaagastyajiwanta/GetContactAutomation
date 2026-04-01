@@ -63,6 +63,7 @@ def test_role_definitions() -> None:
         "pipeline.run",
         "whatsapp.manage",
         "blast.manage",
+        "settings.manage",
     }
 
     for permission in required_operator_permissions:
@@ -97,6 +98,7 @@ def test_route_permissions() -> None:
         ("GET", "/email-blast/campaigns", "blast.view", True, True),
         ("POST", "/email-blast/campaigns", "blast.manage", False, True),
         ("GET", "/universities/with-emails", "blast.manage", False, True),
+        ("GET", "/api-logs", "settings.manage", False, False),
     ]
 
     for method, path, expected_permission, viewer_allowed, operator_allowed in cases:

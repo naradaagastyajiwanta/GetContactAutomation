@@ -1,11 +1,18 @@
 import { useMemo, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import toast from 'react-hot-toast'
-import { KeyRound, Shield, ShieldAlert, Trash2, UserPlus, Users } from 'lucide-react'
-import { getAuthAccess, grantAuthRole, revokeAuthRole } from '../../api/auth'
+import { CheckCircle2, Clock3, KeyRound, Shield, ShieldAlert, ShieldX, Trash2, UserPlus, Users } from 'lucide-react'
+import {
+  approveAuthRoleRequest,
+  getAuthAccess,
+  getAuthRoleRequests,
+  grantAuthRole,
+  rejectAuthRoleRequest,
+  revokeAuthRole,
+} from '../../api/auth'
 import { useAuth } from '../../context/AuthContext'
 import { queryKeys } from '../../lib/queryKeys'
-import type { AuthAccessAssignment, AuthRoleKey } from '../../lib/types'
+import type { AuthAccessAssignment, AuthRoleKey, AuthRoleUpgradeRequest, AuthRoleUpgradeRequestStatus } from '../../lib/types'
 import { Badge } from '../ui/Badge'
 import { Button } from '../ui/Button'
 import { Card, CardContent, CardHeader, CardTitle } from '../ui/Card'
@@ -35,6 +42,20 @@ function countAssignments(assignments: AuthAccessAssignment[], roleKey: AuthRole
   return assignments.filter((assignment) => assignment.role_key === roleKey).length
 }
 
+function requestStatusBadgeVariant(status: AuthRoleUpgradeRequestStatus): string {
+  if (status === 'approved') {
+    return 'bg-emerald-100 text-emerald-700 dark:bg-emerald-900/40 dark:text-emerald-200'
+  }
+  if (status === 'rejected') {
+    return 'bg-red-100 text-red-700 dark:bg-red-900/40 dark:text-red-200'
+  }
+  return 'bg-amber-100 text-amber-700 dark:bg-amber-900/40 dark:text-amber-200'
+}
+
+function formatRoleRequestDate(value: string): string {
+  return new Date(value).toLocaleString()
+}
+
 export function AuthAccessManager() {
   const queryClient = useQueryClient()
   const { user } = useAuth()
@@ -45,15 +66,22 @@ export function AuthAccessManager() {
     queryKey: queryKeys.auth.access,
     queryFn: getAuthAccess,
   })
+  const roleRequestsQuery = useQuery({
+    queryKey: queryKeys.auth.roleRequests('pending'),
+    queryFn: () => getAuthRoleRequests('pending', 50, 0),
+  })
 
   const assignments = accessQuery.data?.assignments ?? []
   const roles = accessQuery.data?.roles ?? []
   const adminCount = useMemo(() => countAssignments(assignments, 'admin'), [assignments])
+  const pendingRoleRequests = roleRequestsQuery.data?.requests ?? []
 
   const refreshAuthData = async () => {
     await queryClient.invalidateQueries({ queryKey: queryKeys.auth.access })
     await queryClient.invalidateQueries({ queryKey: queryKeys.auth.auditLogs })
     await queryClient.invalidateQueries({ queryKey: queryKeys.auth.me })
+    await queryClient.invalidateQueries({ queryKey: queryKeys.auth.roleRequestsBase })
+    await queryClient.invalidateQueries({ queryKey: queryKeys.auth.myRoleRequests })
   }
 
   const grantMutation = useMutation({
@@ -80,6 +108,28 @@ export function AuthAccessManager() {
     },
   })
 
+  const approveRequestMutation = useMutation({
+    mutationFn: (requestId: number) => approveAuthRoleRequest(requestId),
+    onSuccess: async () => {
+      toast.success('Role request approved')
+      await refreshAuthData()
+    },
+    onError: (error) => {
+      toast.error(normalizeErrorMessage(error))
+    },
+  })
+
+  const rejectRequestMutation = useMutation({
+    mutationFn: (requestId: number) => rejectAuthRoleRequest(requestId),
+    onSuccess: async () => {
+      toast.success('Role request rejected')
+      await refreshAuthData()
+    },
+    onError: (error) => {
+      toast.error(normalizeErrorMessage(error))
+    },
+  })
+
   const handleGrant = (event: React.FormEvent<HTMLFormElement>) => {
     event.preventDefault()
     grantMutation.mutate({ email: email.trim(), role_key: roleKey })
@@ -90,6 +140,37 @@ export function AuthAccessManager() {
       return false
     }
     return true
+  }
+
+  const requestActionPending = approveRequestMutation.isPending || rejectRequestMutation.isPending
+
+  const RequestActionButtons = ({ roleRequest }: { roleRequest: AuthRoleUpgradeRequest }) => {
+    const pending = requestActionPending
+
+    return (
+      <div className="flex justify-end gap-2">
+        <Button
+          type="button"
+          variant="outline"
+          size="sm"
+          disabled={pending}
+          onClick={() => rejectRequestMutation.mutate(roleRequest.id)}
+        >
+          <ShieldX className="h-4 w-4" />
+          Reject
+        </Button>
+        <Button
+          type="button"
+          variant="success"
+          size="sm"
+          disabled={pending}
+          onClick={() => approveRequestMutation.mutate(roleRequest.id)}
+        >
+          <CheckCircle2 className="h-4 w-4" />
+          Approve
+        </Button>
+      </div>
+    )
   }
 
   return (
@@ -210,6 +291,75 @@ export function AuthAccessManager() {
           </CardContent>
         </Card>
       </div>
+
+      <Card>
+        <CardHeader>
+          <div className="flex items-start justify-between gap-3">
+            <div>
+              <CardTitle>Pending Role Requests</CardTitle>
+              <p className="mt-1 text-sm text-gray-500 dark:text-gray-400">
+                Viewer users can request a higher role here. Any active admin can approve or reject the request.
+              </p>
+            </div>
+            <div className="rounded-lg bg-amber-50 p-2 text-amber-600 dark:bg-amber-900/30 dark:text-amber-300">
+              <Clock3 className="h-5 w-5" />
+            </div>
+          </div>
+        </CardHeader>
+
+        <CardContent>
+          {roleRequestsQuery.isLoading ? (
+            <div className="flex items-center justify-center py-12">
+              <Spinner size="lg" />
+            </div>
+          ) : pendingRoleRequests.length === 0 ? (
+            <div className="rounded-lg border border-dashed border-gray-300 px-6 py-12 text-center dark:border-gray-700">
+              <p className="text-sm font-medium text-gray-900 dark:text-gray-100">No pending role requests</p>
+              <p className="mt-2 text-sm text-gray-500 dark:text-gray-400">New viewer requests will appear here for any admin to review.</p>
+            </div>
+          ) : (
+            <Table>
+              <TableHeader>
+                <TableRow>
+                  <TableHead>Requester</TableHead>
+                  <TableHead>Current</TableHead>
+                  <TableHead>Requested</TableHead>
+                  <TableHead>Note</TableHead>
+                  <TableHead>Requested At</TableHead>
+                  <TableHead className="text-right">Action</TableHead>
+                </TableRow>
+              </TableHeader>
+              <TableBody>
+                {pendingRoleRequests.map((roleRequest) => (
+                  <TableRow key={roleRequest.id}>
+                    <TableCell>
+                      <div>
+                        <p className="font-medium text-gray-900 dark:text-gray-100">{roleRequest.requester_name}</p>
+                        <p className="text-xs text-gray-500 dark:text-gray-400">{roleRequest.requester_email}</p>
+                      </div>
+                    </TableCell>
+                    <TableCell>
+                      <Badge variant={roleBadgeVariant(roleRequest.current_role_key)}>{roleRequest.current_role_key}</Badge>
+                    </TableCell>
+                    <TableCell>
+                      <Badge variant={roleBadgeVariant(roleRequest.requested_role_key)}>{roleRequest.requested_role_key}</Badge>
+                    </TableCell>
+                    <TableCell>
+                      <div className="max-w-sm text-sm text-gray-600 dark:text-gray-300">{roleRequest.request_note || '-'}</div>
+                    </TableCell>
+                    <TableCell>
+                      <div className="text-sm text-gray-600 dark:text-gray-300">{formatRoleRequestDate(roleRequest.created_at)}</div>
+                    </TableCell>
+                    <TableCell className="text-right">
+                      <RequestActionButtons roleRequest={roleRequest} />
+                    </TableCell>
+                  </TableRow>
+                ))}
+              </TableBody>
+            </Table>
+          )}
+        </CardContent>
+      </Card>
 
       <Card>
         <CardHeader>

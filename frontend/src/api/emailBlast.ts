@@ -18,6 +18,12 @@ export interface EmailBlastCampaign {
   sent_count: number
   failed_count: number
   invalid_count: number
+  created_by_dms_user_id?: number | null
+  created_by_email?: string | null
+  created_by_name?: string | null
+  started_by_dms_user_id?: number | null
+  started_by_email?: string | null
+  started_by_name?: string | null
   created_at: string
   started_at: string | null
   completed_at: string | null
@@ -179,6 +185,10 @@ export interface SentEmail {
   error_message: string | null
   campaign_name?: string | null
   source?: string  // 'campaign' or 'test'
+  started_by_email?: string | null
+  started_by_name?: string | null
+  created_by_email?: string | null
+  created_by_name?: string | null
 }
 
 export async function getSentEmails(campaignId: number, status?: string): Promise<{ success: boolean; emails: SentEmail[]; total: number }> {
@@ -315,6 +325,10 @@ export interface LetterHistoryItem {
   university_name: string | null
   email: string
   sent_at: string | null
+  started_by_email?: string | null
+  started_by_name?: string | null
+  created_by_email?: string | null
+  created_by_name?: string | null
   is_duplicate: boolean
 }
 

@@ -67,14 +67,15 @@ export default function App() {
                       <Route path="audiensi" element={<PermissionGuard permission="audiensi.view"><ErrorBoundary><AudiensiQueuePage /></ErrorBoundary></PermissionGuard>} />
                       <Route path="audiensi/:id" element={<PermissionGuard permission="audiensi.view"><ErrorBoundary><AudiensiDetailPage /></ErrorBoundary></PermissionGuard>} />
                       <Route path="knowledge" element={<PermissionGuard permission="knowledge.view"><ErrorBoundary><KnowledgeBasePage /></ErrorBoundary></PermissionGuard>} />
-                      <Route path="api-logs" element={<PermissionGuard permission="logs.view"><ErrorBoundary><ApiLogsPage /></ErrorBoundary></PermissionGuard>} />
-                      <Route path="logs" element={<PermissionGuard permission="logs.view"><ErrorBoundary><LogsPage /></ErrorBoundary></PermissionGuard>} />
+                      <Route path="api-logs" element={<PermissionGuard permission="settings.manage"><ErrorBoundary><ApiLogsPage /></ErrorBoundary></PermissionGuard>} />
+                      <Route path="logs" element={<PermissionGuard permission="settings.manage"><ErrorBoundary><LogsPage /></ErrorBoundary></PermissionGuard>} />
                       <Route path="blast" element={<PermissionGuard permission="blast.view"><ErrorBoundary><BlastCampaignsPage /></ErrorBoundary></PermissionGuard>} />
                       <Route path="blast/:id" element={<PermissionGuard permission="blast.view"><ErrorBoundary><BlastCampaignDetailPage /></ErrorBoundary></PermissionGuard>} />
                       <Route path="email-blast" element={<PermissionGuard permission="blast.view"><ErrorBoundary><EmailBlastPage /></ErrorBoundary></PermissionGuard>} />
                       <Route path="email-blast/:id" element={<PermissionGuard permission="blast.view"><ErrorBoundary><EmailBlastPage /></ErrorBoundary></PermissionGuard>} />
                       <Route path="email-blast/inbox" element={<PermissionGuard permission="blast.view"><ErrorBoundary><EmailBlastPage /></ErrorBoundary></PermissionGuard>} />
                       <Route path="email-blast/sent" element={<PermissionGuard permission="blast.view"><ErrorBoundary><EmailBlastPage /></ErrorBoundary></PermissionGuard>} />
+                      <Route path="email-blast/imap-sent" element={<PermissionGuard permission="blast.view"><ErrorBoundary><EmailBlastPage /></ErrorBoundary></PermissionGuard>} />
                       <Route path="email-blast/campaigns" element={<PermissionGuard permission="blast.view"><ErrorBoundary><EmailBlastPage /></ErrorBoundary></PermissionGuard>} />
                       <Route path="email-blast/campaigns/:id" element={<PermissionGuard permission="blast.view"><ErrorBoundary><EmailBlastPage /></ErrorBoundary></PermissionGuard>} />
                       <Route path="email-blast/settings" element={<PermissionGuard permission="blast.view"><ErrorBoundary><EmailBlastPage /></ErrorBoundary></PermissionGuard>} />

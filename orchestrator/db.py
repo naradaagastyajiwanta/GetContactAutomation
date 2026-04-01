@@ -189,6 +189,23 @@ CREATE TABLE IF NOT EXISTS auth_audit_logs (
     user_agent TEXT,
     created_at TEXT DEFAULT (datetime('now'))
 );
+
+CREATE TABLE IF NOT EXISTS auth_role_upgrade_requests (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    requester_dms_user_id INTEGER NOT NULL,
+    requester_email TEXT NOT NULL,
+    requester_name TEXT NOT NULL,
+    current_role_key TEXT NOT NULL,
+    requested_role_key TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'pending',
+    request_note TEXT,
+    reviewed_by_dms_user_id INTEGER,
+    reviewed_by_email TEXT,
+    review_note TEXT,
+    reviewed_at TEXT,
+    created_at TEXT DEFAULT (datetime('now')),
+    updated_at TEXT DEFAULT (datetime('now'))
+);
 """
 
 _INDEXES_AGENT = """
@@ -210,6 +227,9 @@ CREATE INDEX IF NOT EXISTS idx_auth_audit_logs_action ON auth_audit_logs(action)
 CREATE INDEX IF NOT EXISTS idx_auth_audit_logs_actor_email ON auth_audit_logs(actor_email);
 CREATE INDEX IF NOT EXISTS idx_auth_audit_logs_subject_email ON auth_audit_logs(subject_email);
 CREATE INDEX IF NOT EXISTS idx_auth_audit_logs_created_at ON auth_audit_logs(created_at);
+CREATE INDEX IF NOT EXISTS idx_auth_role_upgrade_requests_requester ON auth_role_upgrade_requests(requester_dms_user_id);
+CREATE INDEX IF NOT EXISTS idx_auth_role_upgrade_requests_status ON auth_role_upgrade_requests(status);
+CREATE INDEX IF NOT EXISTS idx_auth_role_upgrade_requests_created_at ON auth_role_upgrade_requests(created_at);
 """
 
 _DDL_AUDIENSI = """
@@ -375,6 +395,9 @@ CREATE TABLE IF NOT EXISTS blast_campaigns (
     created_by_dms_user_id INTEGER,
     created_by_email TEXT,
     created_by_name TEXT,
+    started_by_dms_user_id INTEGER,
+    started_by_email TEXT,
+    started_by_name TEXT,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     started_at TIMESTAMP,
     completed_at TIMESTAMP,
@@ -429,6 +452,9 @@ CREATE TABLE IF NOT EXISTS email_blast_campaigns (
     created_by_dms_user_id INTEGER,
     created_by_email TEXT,
     created_by_name TEXT,
+    started_by_dms_user_id INTEGER,
+    started_by_email TEXT,
+    started_by_name TEXT,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     started_at TIMESTAMP,
     completed_at TIMESTAMP,
@@ -1051,6 +1077,50 @@ async def init_db() -> None:
         except Exception:
             pass  # Column already exists
 
+        # Migration: add ownership metadata to email blast campaigns
+        try:
+            await db.execute(
+                "ALTER TABLE email_blast_campaigns ADD COLUMN created_by_dms_user_id INTEGER"
+            )
+            await db.commit()
+        except Exception:
+            pass  # Column already exists
+        try:
+            await db.execute(
+                "ALTER TABLE email_blast_campaigns ADD COLUMN created_by_email TEXT"
+            )
+            await db.commit()
+        except Exception:
+            pass  # Column already exists
+        try:
+            await db.execute(
+                "ALTER TABLE email_blast_campaigns ADD COLUMN created_by_name TEXT"
+            )
+            await db.commit()
+        except Exception:
+            pass  # Column already exists
+        try:
+            await db.execute(
+                "ALTER TABLE email_blast_campaigns ADD COLUMN started_by_dms_user_id INTEGER"
+            )
+            await db.commit()
+        except Exception:
+            pass  # Column already exists
+        try:
+            await db.execute(
+                "ALTER TABLE email_blast_campaigns ADD COLUMN started_by_email TEXT"
+            )
+            await db.commit()
+        except Exception:
+            pass  # Column already exists
+        try:
+            await db.execute(
+                "ALTER TABLE email_blast_campaigns ADD COLUMN started_by_name TEXT"
+            )
+            await db.commit()
+        except Exception:
+            pass  # Column already exists
+
         # Migration: add embedding column to knowledge_items for semantic search
         try:
             await db.execute("ALTER TABLE knowledge_items ADD COLUMN embedding BLOB")
@@ -1158,7 +1228,52 @@ async def init_db() -> None:
         except Exception:
             pass  # Column already exists
 
+        # Migration: add ownership metadata to blast campaigns
+        try:
+            await db.execute(
+                "ALTER TABLE blast_campaigns ADD COLUMN created_by_dms_user_id INTEGER"
+            )
+            await db.commit()
+        except Exception:
+            pass  # Column already exists
+        try:
+            await db.execute(
+                "ALTER TABLE blast_campaigns ADD COLUMN created_by_email TEXT"
+            )
+            await db.commit()
+        except Exception:
+            pass  # Column already exists
+        try:
+            await db.execute(
+                "ALTER TABLE blast_campaigns ADD COLUMN created_by_name TEXT"
+            )
+            await db.commit()
+        except Exception:
+            pass  # Column already exists
+        try:
+            await db.execute(
+                "ALTER TABLE blast_campaigns ADD COLUMN started_by_dms_user_id INTEGER"
+            )
+            await db.commit()
+        except Exception:
+            pass  # Column already exists
+        try:
+            await db.execute(
+                "ALTER TABLE blast_campaigns ADD COLUMN started_by_email TEXT"
+            )
+            await db.commit()
+        except Exception:
+            pass  # Column already exists
+        try:
+            await db.execute(
+                "ALTER TABLE blast_campaigns ADD COLUMN started_by_name TEXT"
+            )
+            await db.commit()
+        except Exception:
+            pass  # Column already exists
+
         await db.executescript(_INDEXES_BLAST)
+        await db.executescript(_INDEXES_EMAIL_BLAST)
 
         # Migration: create contact_memory table for persistent per-contact notes
         await db.executescript("""
@@ -3275,6 +3390,191 @@ async def list_auth_audit_logs(limit: int = 50, offset: int = 0) -> list[dict[st
         for item in items:
             item["success"] = bool(item.get("success"))
         return items
+
+
+async def get_auth_role_upgrade_request(request_id: int) -> dict[str, Any] | None:
+    """Return one role-upgrade request by id."""
+    async with get_db() as db:
+        cursor = await db.execute(
+            """
+            SELECT id, requester_dms_user_id, requester_email, requester_name,
+                   current_role_key, requested_role_key, status, request_note,
+                   reviewed_by_dms_user_id, reviewed_by_email, review_note,
+                   reviewed_at, created_at, updated_at
+            FROM auth_role_upgrade_requests
+            WHERE id = ?
+            LIMIT 1
+            """,
+            (request_id,),
+        )
+        row = await cursor.fetchone()
+        return _row_to_dict(row) if row else None
+
+
+async def get_pending_auth_role_upgrade_request_for_user(dms_user_id: int) -> dict[str, Any] | None:
+    """Return the latest pending role-upgrade request for a requester."""
+    async with get_db() as db:
+        cursor = await db.execute(
+            """
+            SELECT id, requester_dms_user_id, requester_email, requester_name,
+                   current_role_key, requested_role_key, status, request_note,
+                   reviewed_by_dms_user_id, reviewed_by_email, review_note,
+                   reviewed_at, created_at, updated_at
+            FROM auth_role_upgrade_requests
+            WHERE requester_dms_user_id = ? AND status = 'pending'
+            ORDER BY created_at DESC, id DESC
+            LIMIT 1
+            """,
+            (dms_user_id,),
+        )
+        row = await cursor.fetchone()
+        return _row_to_dict(row) if row else None
+
+
+async def count_auth_role_upgrade_requests(status: str | None = None) -> int:
+    """Return total role-upgrade requests, optionally filtered by status."""
+    async with get_db() as db:
+        if status:
+            cursor = await db.execute(
+                "SELECT COUNT(*) AS total FROM auth_role_upgrade_requests WHERE status = ?",
+                (status,),
+            )
+        else:
+            cursor = await db.execute(
+                "SELECT COUNT(*) AS total FROM auth_role_upgrade_requests"
+            )
+        row = await cursor.fetchone()
+        return int(row["total"] if row else 0)
+
+
+async def list_auth_role_upgrade_requests(
+    status: str | None = None,
+    limit: int = 100,
+    offset: int = 0,
+) -> list[dict[str, Any]]:
+    """Return role-upgrade requests ordered from newest to oldest."""
+    async with get_db() as db:
+        if status:
+            cursor = await db.execute(
+                """
+                SELECT id, requester_dms_user_id, requester_email, requester_name,
+                       current_role_key, requested_role_key, status, request_note,
+                       reviewed_by_dms_user_id, reviewed_by_email, review_note,
+                       reviewed_at, created_at, updated_at
+                FROM auth_role_upgrade_requests
+                WHERE status = ?
+                ORDER BY created_at DESC, id DESC
+                LIMIT ? OFFSET ?
+                """,
+                (status, limit, offset),
+            )
+        else:
+            cursor = await db.execute(
+                """
+                SELECT id, requester_dms_user_id, requester_email, requester_name,
+                       current_role_key, requested_role_key, status, request_note,
+                       reviewed_by_dms_user_id, reviewed_by_email, review_note,
+                       reviewed_at, created_at, updated_at
+                FROM auth_role_upgrade_requests
+                ORDER BY created_at DESC, id DESC
+                LIMIT ? OFFSET ?
+                """,
+                (limit, offset),
+            )
+        rows = await cursor.fetchall()
+        return _rows_to_dicts(rows)
+
+
+async def list_auth_role_upgrade_requests_for_user(
+    dms_user_id: int,
+    limit: int = 20,
+) -> list[dict[str, Any]]:
+    """Return recent role-upgrade requests created by a specific requester."""
+    async with get_db() as db:
+        cursor = await db.execute(
+            """
+            SELECT id, requester_dms_user_id, requester_email, requester_name,
+                   current_role_key, requested_role_key, status, request_note,
+                   reviewed_by_dms_user_id, reviewed_by_email, review_note,
+                   reviewed_at, created_at, updated_at
+            FROM auth_role_upgrade_requests
+            WHERE requester_dms_user_id = ?
+            ORDER BY created_at DESC, id DESC
+            LIMIT ?
+            """,
+            (dms_user_id, limit),
+        )
+        rows = await cursor.fetchall()
+        return _rows_to_dicts(rows)
+
+
+async def create_auth_role_upgrade_request(
+    requester_dms_user_id: int,
+    requester_email: str,
+    requester_name: str,
+    current_role_key: str,
+    requested_role_key: str,
+    request_note: str | None = None,
+) -> int:
+    """Create a new pending role-upgrade request and return its id."""
+    now = _utcnow()
+    async with get_db() as db:
+        cursor = await db.execute(
+            """
+            INSERT INTO auth_role_upgrade_requests (
+                requester_dms_user_id, requester_email, requester_name,
+                current_role_key, requested_role_key, status,
+                request_note, created_at, updated_at
+            )
+            VALUES (?, ?, ?, ?, ?, 'pending', ?, ?, ?)
+            """,
+            (
+                requester_dms_user_id,
+                requester_email,
+                requester_name,
+                current_role_key,
+                requested_role_key,
+                request_note,
+                now,
+                now,
+            ),
+        )
+        await db.commit()
+        return int(cursor.lastrowid)
+
+
+async def resolve_auth_role_upgrade_request(
+    request_id: int,
+    status: str,
+    reviewed_by_dms_user_id: int,
+    reviewed_by_email: str,
+    review_note: str | None = None,
+) -> None:
+    """Mark a role-upgrade request as approved or rejected."""
+    now = _utcnow()
+    async with get_db() as db:
+        await db.execute(
+            """
+            UPDATE auth_role_upgrade_requests
+            SET status = ?,
+                reviewed_by_dms_user_id = ?,
+                reviewed_by_email = ?,
+                review_note = ?,
+                reviewed_at = ?,
+                updated_at = ?
+            WHERE id = ?
+            """,
+            (
+                status,
+                reviewed_by_dms_user_id,
+                reviewed_by_email,
+                review_note,
+                now,
+                now,
+                request_id,
+            ),
+        )
+        await db.commit()
 
 
 # ---------------------------------------------------------------------------

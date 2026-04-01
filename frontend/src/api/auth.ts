@@ -7,6 +7,8 @@ import type {
   AuthMeResponse,
   AuthRoleDefinition,
   AuthRoleKey,
+  AuthRoleUpgradeRequest,
+  AuthRoleUpgradeRequestStatus,
 } from '../lib/types'
 
 export interface LoginPayload {
@@ -32,6 +34,16 @@ export interface AuthAccessResponse {
 export interface AuthAuditLogsResponse {
   logs: AuthAuditLog[]
   total: number
+}
+
+export interface AuthRoleRequestsResponse {
+  requests: AuthRoleUpgradeRequest[]
+  total: number
+}
+
+export interface MyAuthRoleRequestsResponse {
+  requests: AuthRoleUpgradeRequest[]
+  available_roles: AuthRoleKey[]
 }
 
 export async function getCurrentUser(): Promise<AuthMeResponse | null> {
@@ -83,5 +95,45 @@ export async function grantAuthRole(payload: { email: string; role_key: AuthRole
 
 export async function revokeAuthRole(payload: { dms_user_id: number; role_key: AuthRoleKey }): Promise<{ status: string }> {
   const { data } = await apiClient.post<{ status: string }>('/auth/access/revoke', payload)
+  return data
+}
+
+export async function getAuthRoleRequests(
+  status: AuthRoleUpgradeRequestStatus | '' = 'pending',
+  limit = 50,
+  offset = 0,
+): Promise<AuthRoleRequestsResponse> {
+  const params: Record<string, string | number> = { limit, offset }
+  if (status) params.status = status
+  const { data } = await apiClient.get<AuthRoleRequestsResponse>('/auth/role-requests', { params })
+  return data
+}
+
+export async function getMyAuthRoleRequests(limit = 20): Promise<MyAuthRoleRequestsResponse> {
+  const { data } = await apiClient.get<MyAuthRoleRequestsResponse>('/auth/role-requests/me', { params: { limit } })
+  return data
+}
+
+export async function createAuthRoleRequest(payload: {
+  role_key: AuthRoleKey
+  request_note?: string
+}): Promise<{ status: string; request: AuthRoleUpgradeRequest }> {
+  const { data } = await apiClient.post<{ status: string; request: AuthRoleUpgradeRequest }>('/auth/role-requests', payload)
+  return data
+}
+
+export async function approveAuthRoleRequest(
+  requestId: number,
+  payload?: { review_note?: string },
+): Promise<{ status: string }> {
+  const { data } = await apiClient.post<{ status: string }>(`/auth/role-requests/${requestId}/approve`, payload ?? {})
+  return data
+}
+
+export async function rejectAuthRoleRequest(
+  requestId: number,
+  payload?: { review_note?: string },
+): Promise<{ status: string }> {
+  const { data } = await apiClient.post<{ status: string }>(`/auth/role-requests/${requestId}/reject`, payload ?? {})
   return data
 }

@@ -296,6 +296,13 @@ function CampaignCard({
             <span>{new Date(c.created_at).toLocaleDateString()}</span>
           </div>
 
+          <div className="mt-2 flex flex-wrap gap-x-4 gap-y-1 text-[11px] text-gray-500 dark:text-gray-400">
+            <span>Dibuat oleh {c.created_by_name || c.created_by_email || 'Unknown'}</span>
+            {c.started_by_name || c.started_by_email ? (
+              <span>Terakhir dijalankan oleh {c.started_by_name || c.started_by_email}</span>
+            ) : null}
+          </div>
+
           <div className="mt-2 flex flex-wrap gap-1.5">
             {Boolean(c.schedule_enabled) && (
               <SafetyBadge icon={CalendarClock} label="Scheduler on" tone="blue" />
