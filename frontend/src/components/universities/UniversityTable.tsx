@@ -26,6 +26,9 @@ interface UniversityTableProps {
   universities: University[]
   selected: Set<number>
   onSelectedChange: (selected: Set<number>) => void
+  canManageUniversities: boolean
+  canRunPipeline: boolean
+  canSelectUniversities: boolean
 }
 
 function RowAgentMenu({ uniId, status, onRunAgent, isPending, igDown }: {
@@ -96,7 +99,14 @@ function RowAgentMenu({ uniId, status, onRunAgent, isPending, igDown }: {
   )
 }
 
-export function UniversityTable({ universities, selected, onSelectedChange }: UniversityTableProps) {
+export function UniversityTable({
+  universities,
+  selected,
+  onSelectedChange,
+  canManageUniversities,
+  canRunPipeline,
+  canSelectUniversities,
+}: UniversityTableProps) {
   const navigate = useNavigate()
   const toggleMutation = useToggleEnabled()
   const bulkMutation = useBulkToggle()
@@ -119,6 +129,7 @@ export function UniversityTable({ universities, selected, onSelectedChange }: Un
   }, [someSelected])
 
   const toggleSelect = (id: number) => {
+    if (!canSelectUniversities) return
     const next = new Set(selected)
     if (next.has(id)) next.delete(id)
     else next.add(id)
@@ -126,6 +137,7 @@ export function UniversityTable({ universities, selected, onSelectedChange }: Un
   }
 
   const toggleAll = () => {
+    if (!canSelectUniversities) return
     const next = new Set(selected)
     if (allSelected) {
       // Remove only current page items
@@ -138,6 +150,7 @@ export function UniversityTable({ universities, selected, onSelectedChange }: Un
   }
 
   const handleBulk = (enabled: boolean) => {
+    if (!canManageUniversities) return
     bulkMutation.mutate({ ids: Array.from(selected), enabled }, {
       onSuccess: () => onSelectedChange(new Set()),
     })
@@ -155,6 +168,7 @@ export function UniversityTable({ universities, selected, onSelectedChange }: Un
   }
 
   const handleBulkAgent = (agentType: TargetedAgentType) => {
+    if (!canRunPipeline) return
     warnIfIgDown(agentType)
     agentMutation.mutate(
       { agentType, universityIds: Array.from(selected) },
@@ -163,6 +177,7 @@ export function UniversityTable({ universities, selected, onSelectedChange }: Un
   }
 
   const handleSingleAgent = (agentType: TargetedAgentType, uniId: number) => {
+    if (!canRunPipeline) return
     warnIfIgDown(agentType)
     agentMutation.mutate({ agentType, universityIds: [uniId] })
   }
@@ -180,56 +195,62 @@ export function UniversityTable({ universities, selected, onSelectedChange }: Un
 
   return (
     <div>
-      {selected.size > 0 && (
+      {canSelectUniversities && selected.size > 0 && (
         <div className="flex items-center gap-3 border-b border-gray-200 bg-indigo-50 px-4 py-2 dark:border-gray-700 dark:bg-indigo-950/30">
           <span className="text-sm font-medium text-indigo-700 dark:text-indigo-300">
             {selected.size} selected
           </span>
-          <button
-            onClick={() => handleBulk(true)}
-            disabled={bulkMutation.isPending}
-            className="rounded bg-emerald-600 px-3 py-1 text-xs font-medium text-white hover:bg-emerald-700 disabled:opacity-50"
-          >
-            Enable Selected
-          </button>
-          <button
-            onClick={() => handleBulk(false)}
-            disabled={bulkMutation.isPending}
-            className="rounded bg-red-600 px-3 py-1 text-xs font-medium text-white hover:bg-red-700 disabled:opacity-50"
-          >
-            Disable Selected
-          </button>
+          {canManageUniversities && (
+            <>
+              <button
+                onClick={() => handleBulk(true)}
+                disabled={bulkMutation.isPending}
+                className="rounded bg-emerald-600 px-3 py-1 text-xs font-medium text-white hover:bg-emerald-700 disabled:opacity-50"
+              >
+                Enable Selected
+              </button>
+              <button
+                onClick={() => handleBulk(false)}
+                disabled={bulkMutation.isPending}
+                className="rounded bg-red-600 px-3 py-1 text-xs font-medium text-white hover:bg-red-700 disabled:opacity-50"
+              >
+                Disable Selected
+              </button>
+            </>
+          )}
 
           {/* Run Agent dropdown */}
-          <div className="relative" ref={bulkAgentRef}>
-            <button
-              onClick={() => setBulkAgentOpen(!bulkAgentOpen)}
-              disabled={agentMutation.isPending}
-              className="inline-flex items-center gap-1 rounded bg-indigo-600 px-3 py-1 text-xs font-medium text-white hover:bg-indigo-700 disabled:opacity-50"
-            >
-              <Play className="h-3 w-3" />
-              Run Agent
-              <ChevronDown className="h-3 w-3" />
-            </button>
-            {bulkAgentOpen && (
-              <div className="absolute left-0 z-50 mt-1 w-52 rounded-lg border border-gray-200 bg-white py-1 shadow-lg dark:border-gray-600 dark:bg-gray-800">
-                {AGENT_OPTIONS.map(({ value, label, icon: Icon, description }) => (
-                  <button
-                    key={value}
-                    onClick={() => handleBulkAgent(value)}
-                    disabled={agentMutation.isPending}
-                    className="flex w-full items-center gap-2 px-3 py-2 text-left text-sm text-gray-700 hover:bg-gray-100 disabled:opacity-50 dark:text-gray-200 dark:hover:bg-gray-700"
-                  >
-                    <Icon className="h-4 w-4 text-gray-500 dark:text-gray-400" />
-                    <div>
-                      <div className="font-medium">{label}</div>
-                      <div className="text-xs text-gray-500 dark:text-gray-400">{description}</div>
-                    </div>
-                  </button>
-                ))}
-              </div>
-            )}
-          </div>
+          {canRunPipeline && (
+            <div className="relative" ref={bulkAgentRef}>
+              <button
+                onClick={() => setBulkAgentOpen(!bulkAgentOpen)}
+                disabled={agentMutation.isPending}
+                className="inline-flex items-center gap-1 rounded bg-indigo-600 px-3 py-1 text-xs font-medium text-white hover:bg-indigo-700 disabled:opacity-50"
+              >
+                <Play className="h-3 w-3" />
+                Run Agent
+                <ChevronDown className="h-3 w-3" />
+              </button>
+              {bulkAgentOpen && (
+                <div className="absolute left-0 z-50 mt-1 w-52 rounded-lg border border-gray-200 bg-white py-1 shadow-lg dark:border-gray-600 dark:bg-gray-800">
+                  {AGENT_OPTIONS.map(({ value, label, icon: Icon, description }) => (
+                    <button
+                      key={value}
+                      onClick={() => handleBulkAgent(value)}
+                      disabled={agentMutation.isPending}
+                      className="flex w-full items-center gap-2 px-3 py-2 text-left text-sm text-gray-700 hover:bg-gray-100 disabled:opacity-50 dark:text-gray-200 dark:hover:bg-gray-700"
+                    >
+                      <Icon className="h-4 w-4 text-gray-500 dark:text-gray-400" />
+                      <div>
+                        <div className="font-medium">{label}</div>
+                        <div className="text-xs text-gray-500 dark:text-gray-400">{description}</div>
+                      </div>
+                    </button>
+                  ))}
+                </div>
+              )}
+            </div>
+          )}
 
           <button
             onClick={() => onSelectedChange(new Set())}
@@ -242,15 +263,17 @@ export function UniversityTable({ universities, selected, onSelectedChange }: Un
       <Table>
         <TableHeader>
           <TableRow>
-            <TableHead className="w-10">
-              <input
-                ref={selectAllRef}
-                type="checkbox"
-                checked={allSelected}
-                onChange={toggleAll}
-                className="rounded border-gray-300 text-indigo-600 focus:ring-indigo-500"
-              />
-            </TableHead>
+            {canSelectUniversities && (
+              <TableHead className="w-10">
+                <input
+                  ref={selectAllRef}
+                  type="checkbox"
+                  checked={allSelected}
+                  onChange={toggleAll}
+                  className="rounded border-gray-300 text-indigo-600 focus:ring-indigo-500"
+                />
+              </TableHead>
+            )}
             <TableHead>Name</TableHead>
             <TableHead>Province</TableHead>
             <TableHead className="text-right">Mahasiswa</TableHead>
@@ -259,7 +282,7 @@ export function UniversityTable({ universities, selected, onSelectedChange }: Un
             <TableHead className="w-28 text-center">Contacts</TableHead>
             <TableHead className="w-24 text-center">Enabled</TableHead>
             <TableHead>Updated</TableHead>
-            <TableHead className="w-20 text-center">Actions</TableHead>
+            {canRunPipeline && <TableHead className="w-20 text-center">Actions</TableHead>}
           </TableRow>
         </TableHeader>
         <TableBody>
@@ -271,14 +294,16 @@ export function UniversityTable({ universities, selected, onSelectedChange }: Un
                 key={uni.id}
                 className={`cursor-pointer ${!isEnabled ? 'opacity-50' : ''}`}
               >
-                <TableCell onClick={(e) => e.stopPropagation()}>
-                  <input
-                    type="checkbox"
-                    checked={selected.has(uni.id)}
-                    onChange={() => toggleSelect(uni.id)}
-                    className="rounded border-gray-300 text-indigo-600 focus:ring-indigo-500"
-                  />
-                </TableCell>
+                {canSelectUniversities && (
+                  <TableCell onClick={(e) => e.stopPropagation()}>
+                    <input
+                      type="checkbox"
+                      checked={selected.has(uni.id)}
+                      onChange={() => toggleSelect(uni.id)}
+                      className="rounded border-gray-300 text-indigo-600 focus:ring-indigo-500"
+                    />
+                  </TableCell>
+                )}
                 <TableCell>
                   <button
                     className="text-left font-medium text-indigo-600 hover:text-indigo-800 dark:text-indigo-400 dark:hover:text-indigo-300"
@@ -336,33 +361,41 @@ export function UniversityTable({ universities, selected, onSelectedChange }: Un
                   )}
                 </TableCell>
                 <TableCell className="text-center" onClick={(e) => e.stopPropagation()}>
-                  <button
-                    onClick={() =>
-                      toggleMutation.mutate({ id: uni.id, enabled: !isEnabled })
-                    }
-                    disabled={toggleMutation.isPending}
-                    className={`relative inline-flex h-5 w-9 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:ring-offset-2 disabled:opacity-50 ${
-                      isEnabled ? 'bg-emerald-500' : 'bg-gray-300 dark:bg-gray-600'
-                    }`}
-                    title={isEnabled ? 'Click to disable' : 'Click to enable'}
-                  >
-                    <span
-                      className={`pointer-events-none inline-block h-4 w-4 transform rounded-full bg-white shadow ring-0 transition duration-200 ease-in-out ${
-                        isEnabled ? 'translate-x-4' : 'translate-x-0'
+                  {canManageUniversities ? (
+                    <button
+                      onClick={() =>
+                        toggleMutation.mutate({ id: uni.id, enabled: !isEnabled })
+                      }
+                      disabled={toggleMutation.isPending}
+                      className={`relative inline-flex h-5 w-9 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:ring-offset-2 disabled:opacity-50 ${
+                        isEnabled ? 'bg-emerald-500' : 'bg-gray-300 dark:bg-gray-600'
                       }`}
-                    />
-                  </button>
+                      title={isEnabled ? 'Click to disable' : 'Click to enable'}
+                    >
+                      <span
+                        className={`pointer-events-none inline-block h-4 w-4 transform rounded-full bg-white shadow ring-0 transition duration-200 ease-in-out ${
+                          isEnabled ? 'translate-x-4' : 'translate-x-0'
+                        }`}
+                      />
+                    </button>
+                  ) : (
+                    <span className={`text-xs font-medium ${isEnabled ? 'text-emerald-600 dark:text-emerald-400' : 'text-gray-400 dark:text-gray-500'}`}>
+                      {isEnabled ? 'Active' : 'Disabled'}
+                    </span>
+                  )}
                 </TableCell>
                 <TableCell>{formatDate(uni.updated_at || uni.created_at)}</TableCell>
-                <TableCell className="text-center" onClick={(e) => e.stopPropagation()}>
-                  <RowAgentMenu
-                    uniId={uni.id}
-                    status={uni.status}
-                    onRunAgent={handleSingleAgent}
-                    isPending={agentMutation.isPending}
-                    igDown={!igSessionOk}
-                  />
-                </TableCell>
+                {canRunPipeline && (
+                  <TableCell className="text-center" onClick={(e) => e.stopPropagation()}>
+                    <RowAgentMenu
+                      uniId={uni.id}
+                      status={uni.status}
+                      onRunAgent={handleSingleAgent}
+                      isPending={agentMutation.isPending}
+                      igDown={!igSessionOk}
+                    />
+                  </TableCell>
+                )}
               </TableRow>
             )
           })}

@@ -18,7 +18,7 @@ import { Spinner } from '../ui/Spinner'
 import { Button } from '../ui/Button'
 import { toast } from 'react-hot-toast'
 
-export function EmailSettingsPanel() {
+export function EmailSettingsPanel({ canManage }: { canManage: boolean }) {
   const [smtpStatus, setSmtpStatus] = useState<'idle' | 'testing' | 'ok' | 'error'>('idle')
   const [letterFormat, setLetterFormat] = useState('')
   const [letterNumber, setLetterNumber] = useState('')
@@ -90,6 +90,7 @@ export function EmailSettingsPanel() {
                 size="sm"
                 variant="secondary"
                 onClick={handleTestSmtp}
+                disabled={!canManage}
                 loading={testSmtpMutation.isPending}
               >
                 {smtpStatus === 'testing' ? (
@@ -136,6 +137,7 @@ export function EmailSettingsPanel() {
                       type="text"
                       value={letterFormat}
                       onChange={(e) => setLetterFormat(e.target.value)}
+                      disabled={!canManage}
                       placeholder="{{NUMBER}}/ASOSIASI/{{YEAR}}"
                       className="w-full rounded-lg border border-gray-200 bg-gray-50 px-3 py-2 text-sm font-mono text-gray-900 placeholder-gray-400 focus:border-indigo-500 focus:bg-white focus:outline-none focus:ring-1 focus:ring-indigo-500 dark:border-gray-700 dark:bg-gray-900 dark:text-gray-100 dark:placeholder-gray-500"
                     />
@@ -152,6 +154,7 @@ export function EmailSettingsPanel() {
                       type="number"
                       value={letterNumber}
                       onChange={(e) => setLetterNumber(e.target.value)}
+                      disabled={!canManage}
                       min={0}
                       className="w-32 rounded-lg border border-gray-200 bg-gray-50 px-3 py-2 text-sm text-gray-900 focus:border-indigo-500 focus:bg-white focus:outline-none focus:ring-1 focus:ring-indigo-500 dark:border-gray-700 dark:bg-gray-900 dark:text-gray-100"
                     />
@@ -160,6 +163,7 @@ export function EmailSettingsPanel() {
                   <Button
                     size="sm"
                     onClick={handleSaveLetter}
+                    disabled={!canManage}
                     loading={updateLetterMutation.isPending}
                   >
                     <Save className="h-3.5 w-3.5" />

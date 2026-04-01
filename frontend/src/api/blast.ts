@@ -29,6 +29,12 @@ export interface BlastCampaign {
   total_recipients: number
   sent_count: number
   failed_count: number
+  created_by_dms_user_id?: number | null
+  created_by_email?: string | null
+  created_by_name?: string | null
+  started_by_dms_user_id?: number | null
+  started_by_email?: string | null
+  started_by_name?: string | null
   created_at: string
   started_at: string | null
   completed_at: string | null

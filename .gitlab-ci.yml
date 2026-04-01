@@ -256,6 +256,30 @@ verify_deployment:
         fi
       fi
 
+    # Auth permission regression
+    - |
+      echo ""
+      echo "[verify] Auth permission regression..."
+      if ssh "$VPS_USER@$VPS_HOST" "cd $DEPLOY_DIR && docker compose -f docker-compose.prod.yml exec -T orchestrator python scripts/test_auth_permissions.py"; then
+        echo "  ✓ Auth permission regression passed"
+      else
+        echo "  ✗ Auth permission regression failed"
+        ssh "$VPS_USER@$VPS_HOST" "cd $DEPLOY_DIR && docker compose -f docker-compose.prod.yml logs --tail=20 orchestrator"
+        exit 1
+      fi
+
+    # Blast attribution regression
+    - |
+      echo ""
+      echo "[verify] Blast attribution regression..."
+      if ssh "$VPS_USER@$VPS_HOST" "cd $DEPLOY_DIR && docker compose -f docker-compose.prod.yml exec -T orchestrator python scripts/test_blast_attribution.py"; then
+        echo "  ✓ Blast attribution regression passed"
+      else
+        echo "  ✗ Blast attribution regression failed"
+        ssh "$VPS_USER@$VPS_HOST" "cd $DEPLOY_DIR && docker compose -f docker-compose.prod.yml logs --tail=20 orchestrator"
+        exit 1
+      fi
+
     # Frontend
     - |
       echo ""

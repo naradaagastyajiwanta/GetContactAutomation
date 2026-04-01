@@ -1,4 +1,13 @@
 export const queryKeys = {
+  auth: {
+    me: ['auth', 'me'] as const,
+    bootstrap: ['auth', 'bootstrap-status'] as const,
+    access: ['auth', 'access'] as const,
+    auditLogs: ['auth', 'audit-logs'] as const,
+    roleRequestsBase: ['auth', 'role-requests'] as const,
+    roleRequests: (status = 'pending') => ['auth', 'role-requests', status] as const,
+    myRoleRequests: ['auth', 'role-requests', 'me'] as const,
+  },
   dashboard: ['dashboard'] as const,
   health: ['health'] as const,
   control: ['control'] as const,

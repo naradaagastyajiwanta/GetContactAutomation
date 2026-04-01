@@ -212,7 +212,10 @@ async def create_campaign(name: str, template_message: str = "", device_id: str 
                           lunch_break_start: int = 12,
                           lunch_break_end: int = 13,
                           weekend_factor: float = 0.5,
-                          auto_resume_enabled: bool = True) -> dict:
+                          auto_resume_enabled: bool = True,
+                          created_by_dms_user_id: Optional[int] = None,
+                          created_by_email: Optional[str] = None,
+                          created_by_name: Optional[str] = None) -> dict:
     """Create a new blast campaign."""
     async with get_db() as db:
         cursor = await db.execute(
@@ -220,8 +223,8 @@ async def create_campaign(name: str, template_message: str = "", device_id: str 
                (name, template_message, device_id, delay_between_ms, human_delay_min_ms, human_delay_max_ms,
                 content_variation_enabled, schedule_enabled, schedule_timezone, active_hours_start, active_hours_end,
                 peak_hours_start, peak_hours_end, lunch_break_start, lunch_break_end, weekend_factor,
-                auto_resume_enabled)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                auto_resume_enabled, created_by_dms_user_id, created_by_email, created_by_name)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (
                 name,
                 template_message,
@@ -240,6 +243,9 @@ async def create_campaign(name: str, template_message: str = "", device_id: str 
                 lunch_break_end,
                 weekend_factor,
                 int(auto_resume_enabled),
+                created_by_dms_user_id,
+                created_by_email,
+                created_by_name,
             ),
         )
         await db.commit()
@@ -251,7 +257,8 @@ async def get_campaign(campaign_id: int) -> Optional[dict]:
     """Get a single campaign by ID."""
     async with get_db() as db:
         cursor = await db.execute(
-            "SELECT * FROM blast_campaigns WHERE id = ?", (campaign_id,)
+            "SELECT * FROM blast_campaigns WHERE id = ?",
+            (campaign_id,),
         )
         row = await cursor.fetchone()
         if not row:
@@ -259,10 +266,14 @@ async def get_campaign(campaign_id: int) -> Optional[dict]:
         return _normalize_campaign(dict(row))
 
 
-async def list_campaigns(status: Optional[str] = None, limit: int = 50, offset: int = 0) -> dict:
+async def list_campaigns(
+    status: Optional[str] = None,
+    limit: int = 50,
+    offset: int = 0,
+) -> dict:
     """List campaigns with optional status filter."""
     conditions = []
-    params = []
+    params: list[object] = []
 
     if status:
         conditions.append("status = ?")
@@ -697,7 +708,12 @@ async def restore_background_tasks() -> None:
             _schedule_auto_resume_task(campaign["id"], resume_at)
 
 
-async def start_campaign(campaign_id: int) -> dict:
+async def start_campaign(
+    campaign_id: int,
+    started_by_dms_user_id: Optional[int] = None,
+    started_by_email: Optional[str] = None,
+    started_by_name: Optional[str] = None,
+) -> dict:
     """Start or resume sending a blast campaign."""
     campaign = await get_campaign(campaign_id)
     if not campaign:
@@ -719,16 +735,25 @@ async def start_campaign(campaign_id: int) -> dict:
     # Update status
     async with get_db() as db:
         now = datetime.now(timezone.utc).isoformat()
-        if campaign["status"] == "draft":
-            await db.execute(
-                "UPDATE blast_campaigns SET status = 'sending', started_at = ?, auto_resume_at = NULL, paused_reason = NULL WHERE id = ?",
-                (now, campaign_id),
-            )
-        else:
-            await db.execute(
-                "UPDATE blast_campaigns SET status = 'sending', paused_at = NULL, auto_resume_at = NULL, paused_reason = NULL WHERE id = ?",
-                (campaign_id,),
-            )
+        await db.execute(
+            """UPDATE blast_campaigns
+               SET status = 'sending',
+                   started_at = ?,
+                   paused_at = NULL,
+                   auto_resume_at = NULL,
+                   paused_reason = NULL,
+                   started_by_dms_user_id = ?,
+                   started_by_email = ?,
+                   started_by_name = ?
+               WHERE id = ?""",
+            (
+                now,
+                started_by_dms_user_id,
+                started_by_email,
+                started_by_name,
+                campaign_id,
+            ),
+        )
         await db.commit()
 
     # Start background task

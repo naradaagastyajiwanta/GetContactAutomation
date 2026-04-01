@@ -92,7 +92,7 @@ function AuthRecoveryNotice({ device }: { device: WhatsAppDevice }) {
   )
 }
 
-export function DevicePanel() {
+export function DevicePanel({ canManage = true }: { canManage?: boolean }) {
   const { data: devicesData, isLoading, error } = useWhatsAppDevices()
   const connectMutation = useConnectDevice()
   const disconnectMutation = useDisconnectDevice()
@@ -143,12 +143,14 @@ export function DevicePanel() {
   }
 
   const handleConnectDevice = (deviceId: string) => {
+    if (!canManage) return
     connectMutation.mutate(deviceId)
     setSelectedDeviceId(deviceId)
     setShowQr(true)
   }
 
   const handleDisconnect = (deviceId: string) => {
+    if (!canManage) return
     setDisconnectingId(deviceId)
     disconnectMutation.mutate(deviceId, {
       onSettled: () => setDisconnectingId(null),
@@ -160,11 +162,13 @@ export function DevicePanel() {
   }
 
   const handleShowQr = (deviceId: string) => {
+    if (!canManage) return
     setSelectedDeviceId(deviceId)
     setShowQr(true)
   }
 
   const handleForceRecover = (deviceId: string) => {
+    if (!canManage) return
     setRecoveringId(deviceId)
     recoverMutation.mutate(deviceId, {
       onSuccess: () => {
@@ -214,6 +218,7 @@ export function DevicePanel() {
               <ConnectedDeviceCard
                 key={device.id}
                 device={device}
+                canManage={canManage}
                 onDisconnect={handleDisconnect}
                 onForceRecover={handleForceRecover}
                 isDisconnecting={disconnectingId === device.id}
@@ -244,13 +249,15 @@ export function DevicePanel() {
                   <span className="font-medium text-gray-900 dark:text-gray-100 text-sm">{device.name}</span>
                   <span className="text-xs text-amber-600 dark:text-amber-400 font-medium">Waiting for QR scan...</span>
                 </div>
-                <button
-                  onClick={() => handleShowQr(device.id)}
-                  className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold text-amber-700 dark:text-amber-300 bg-amber-100 dark:bg-amber-900/30 hover:bg-amber-200 dark:hover:bg-amber-900/50 rounded-lg transition-colors border border-amber-300 dark:border-amber-700"
-                >
-                  <QrCode className="w-3.5 h-3.5" />
-                  Show QR
-                </button>
+                {canManage && (
+                  <button
+                    onClick={() => handleShowQr(device.id)}
+                    className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold text-amber-700 dark:text-amber-300 bg-amber-100 dark:bg-amber-900/30 hover:bg-amber-200 dark:hover:bg-amber-900/50 rounded-lg transition-colors border border-amber-300 dark:border-amber-700"
+                  >
+                    <QrCode className="w-3.5 h-3.5" />
+                    Show QR
+                  </button>
+                )}
               </div>
             ))}
           </div>
@@ -293,7 +300,7 @@ export function DevicePanel() {
                   </div>
                 </div>
                 <div className="ml-4 flex shrink-0 items-center gap-2 self-center">
-                  {(device.authRecovery.recoveryRecommended || Boolean(device.authRecovery.lastIssue)) && (
+                  {canManage && (device.authRecovery.recoveryRecommended || Boolean(device.authRecovery.lastIssue)) && (
                     <button
                       onClick={() => handleForceRecover(device.id)}
                       disabled={recoveringId === device.id}
@@ -307,18 +314,22 @@ export function DevicePanel() {
                       Recover
                     </button>
                   )}
-                  <button
-                    onClick={() => handleConnectDevice(device.id)}
-                    disabled={connectMutation.isPending}
-                    className="flex items-center gap-1.5 px-4 py-1.5 text-xs font-semibold text-blue-600 dark:text-blue-400 bg-blue-50 dark:bg-blue-900/20 hover:bg-blue-100 dark:hover:bg-blue-900/40 border border-blue-200 dark:border-blue-800 rounded-lg transition-all disabled:opacity-50 disabled:cursor-not-allowed group-hover:shadow-sm"
-                  >
-                    {connectMutation.isPending ? (
-                      <Loader2 className="w-3.5 h-3.5 animate-spin" />
-                    ) : (
-                      <Link2 className="w-3.5 h-3.5" />
-                    )}
-                    Connect
-                  </button>
+                  {canManage ? (
+                    <button
+                      onClick={() => handleConnectDevice(device.id)}
+                      disabled={connectMutation.isPending}
+                      className="flex items-center gap-1.5 px-4 py-1.5 text-xs font-semibold text-blue-600 dark:text-blue-400 bg-blue-50 dark:bg-blue-900/20 hover:bg-blue-100 dark:hover:bg-blue-900/40 border border-blue-200 dark:border-blue-800 rounded-lg transition-all disabled:opacity-50 disabled:cursor-not-allowed group-hover:shadow-sm"
+                    >
+                      {connectMutation.isPending ? (
+                        <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                      ) : (
+                        <Link2 className="w-3.5 h-3.5" />
+                      )}
+                      Connect
+                    </button>
+                  ) : (
+                    <span className="text-xs text-gray-400 dark:text-gray-500">View only</span>
+                  )}
                 </div>
               </div>
             ))}
@@ -345,12 +356,14 @@ export function DevicePanel() {
 
 function ConnectedDeviceCard({
   device,
+  canManage,
   onDisconnect,
   onForceRecover,
   isDisconnecting,
   isRecovering,
 }: {
   device: WhatsAppDevice
+  canManage: boolean
   onDisconnect: (id: string) => void
   onForceRecover: (id: string) => void
   isDisconnecting: boolean
@@ -399,17 +412,19 @@ function ConnectedDeviceCard({
         </div>
       )}
 
-      <button
-        onClick={() => onForceRecover(device.id)}
-        disabled={isRecovering}
-        className="mb-2 w-full flex items-center justify-center gap-1.5 px-3 py-2 text-xs font-semibold text-amber-700 dark:text-amber-300 hover:text-amber-800 dark:hover:text-amber-200 bg-amber-50/80 dark:bg-amber-900/30 hover:bg-amber-100 dark:hover:bg-amber-900/40 border border-amber-200 dark:border-amber-800 rounded-lg transition-all disabled:opacity-50"
-      >
-        {isRecovering ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <RefreshCw className="w-3.5 h-3.5" />}
-        Force Recovery
-      </button>
+      {canManage && (
+        <button
+          onClick={() => onForceRecover(device.id)}
+          disabled={isRecovering}
+          className="mb-2 w-full flex items-center justify-center gap-1.5 px-3 py-2 text-xs font-semibold text-amber-700 dark:text-amber-300 hover:text-amber-800 dark:hover:text-amber-200 bg-amber-50/80 dark:bg-amber-900/30 hover:bg-amber-100 dark:hover:bg-amber-900/40 border border-amber-200 dark:border-amber-800 rounded-lg transition-all disabled:opacity-50"
+        >
+          {isRecovering ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <RefreshCw className="w-3.5 h-3.5" />}
+          Force Recovery
+        </button>
+      )}
 
       {/* Disconnect with confirmation */}
-      {!showConfirm ? (
+      {!canManage ? null : !showConfirm ? (
         <button
           onClick={() => setShowConfirm(true)}
           className="w-full flex items-center justify-center gap-1.5 px-3 py-2 text-xs font-semibold text-gray-500 dark:text-gray-400 hover:text-red-600 dark:hover:text-red-400 bg-white/60 dark:bg-gray-800/60 hover:bg-red-50 dark:hover:bg-red-900/20 border border-gray-200 dark:border-gray-700 hover:border-red-200 dark:hover:border-red-800 rounded-lg transition-all"

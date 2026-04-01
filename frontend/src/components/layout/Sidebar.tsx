@@ -22,6 +22,7 @@ import {
   type LucideIcon,
 } from 'lucide-react'
 import { cn } from '../../lib/utils'
+import { useAuth } from '../../context/AuthContext'
 
 // Re-export for MobileNav
 export { NAV_SECTIONS }
@@ -33,6 +34,7 @@ interface NavItem {
   to: string
   label: string
   icon: LucideIcon
+  permission?: string
 }
 
 interface NavSection {
@@ -50,8 +52,8 @@ const NAV_SECTIONS: NavSection[] = [
     label: 'Overview',
     icon: LayoutDashboard,
     items: [
-      { to: '/', label: 'Dashboard', icon: LayoutDashboard },
-      { to: '/pipeline', label: 'Pipeline', icon: GitBranch },
+      { to: '/', label: 'Dashboard', icon: LayoutDashboard, permission: 'dashboard.view' },
+      { to: '/pipeline', label: 'Pipeline', icon: GitBranch, permission: 'pipeline.view' },
     ],
   },
   {
@@ -59,11 +61,11 @@ const NAV_SECTIONS: NavSection[] = [
     label: 'Outreach',
     icon: GraduationCap,
     items: [
-      { to: '/universities', label: 'Universities', icon: GraduationCap },
-      { to: '/university-groups', label: 'Groups', icon: Folder },
-      { to: '/conversations', label: 'Conversations', icon: MessageSquare },
-      { to: '/audiensi', label: 'Audiensi', icon: Video },
-      { to: '/dms-schedules', label: 'Audiensi Schedules', icon: CalendarClock },
+      { to: '/universities', label: 'Universities', icon: GraduationCap, permission: 'universities.view' },
+      { to: '/university-groups', label: 'Groups', icon: Folder, permission: 'universities.view' },
+      { to: '/conversations', label: 'Conversations', icon: MessageSquare, permission: 'conversations.view' },
+      { to: '/audiensi', label: 'Audiensi', icon: Video, permission: 'audiensi.view' },
+      { to: '/dms-schedules', label: 'Audiensi Schedules', icon: CalendarClock, permission: 'audiensi.view' },
     ],
   },
   {
@@ -71,9 +73,9 @@ const NAV_SECTIONS: NavSection[] = [
     label: 'Broadcast',
     icon: Smartphone,
     items: [
-      { to: '/whatsapp', label: 'WhatsApp', icon: Smartphone },
-      { to: '/blast', label: 'WA Blast', icon: Megaphone },
-      { to: '/email-blast', label: 'Email Blast', icon: Mail },
+      { to: '/whatsapp', label: 'WhatsApp', icon: Smartphone, permission: 'whatsapp.view' },
+      { to: '/blast', label: 'WA Blast', icon: Megaphone, permission: 'blast.view' },
+      { to: '/email-blast', label: 'Email Blast', icon: Mail, permission: 'blast.view' },
     ],
   },
   {
@@ -81,9 +83,9 @@ const NAV_SECTIONS: NavSection[] = [
     label: 'AI & Data',
     icon: Lightbulb,
     items: [
-      { to: '/learning', label: 'Learning', icon: Lightbulb },
-      { to: '/knowledge', label: 'Knowledge Base', icon: BookOpen },
-      { to: '/crm', label: 'PIC Profiling', icon: UserSearch },
+      { to: '/learning', label: 'Learning', icon: Lightbulb, permission: 'learning.view' },
+      { to: '/knowledge', label: 'Knowledge Base', icon: BookOpen, permission: 'knowledge.view' },
+      { to: '/crm', label: 'PIC Profiling', icon: UserSearch, permission: 'crm.view' },
     ],
   },
   {
@@ -91,11 +93,20 @@ const NAV_SECTIONS: NavSection[] = [
     label: 'System',
     icon: ScrollText,
     items: [
-      { to: '/api-logs', label: 'API Logs', icon: ScrollText },
-      { to: '/logs', label: 'System Logs', icon: Terminal },
+      { to: '/api-logs', label: 'API Logs', icon: ScrollText, permission: 'settings.manage' },
+      { to: '/logs', label: 'System Logs', icon: Terminal, permission: 'settings.manage' },
     ],
   },
 ]
+
+export function getVisibleNavSections(hasPermission: (permission?: string) => boolean): NavSection[] {
+  return NAV_SECTIONS
+    .map((section) => ({
+      ...section,
+      items: section.items.filter((item) => hasPermission(item.permission)),
+    }))
+    .filter((section) => section.items.length > 0)
+}
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 
@@ -117,10 +128,12 @@ function getActiveSection(pathname: string): string | null {
 
 export function Sidebar() {
   const { pathname } = useLocation()
+  const { hasPermission } = useAuth()
+  const visibleSections = getVisibleNavSections((permission) => hasPermission(permission))
   const activeSection = getActiveSection(pathname)
 
   const [openSections, setOpenSections] = useState<Set<string>>(() => {
-    const all = new Set(NAV_SECTIONS.map((s) => s.id))
+    const all = new Set(visibleSections.map((s) => s.id))
     if (activeSection) all.delete(activeSection)
     return all
   })
@@ -159,7 +172,7 @@ export function Sidebar() {
 
       {/* Navigation */}
       <nav className="flex-1 space-y-3 overflow-y-auto px-3 py-4 scrollbar-thin">
-        {NAV_SECTIONS.map((section, idx) => {
+        {visibleSections.map((section, idx) => {
           const isOpen = openSections.has(section.id)
           const Icon = section.icon
 
@@ -220,18 +233,20 @@ export function Sidebar() {
 
       {/* Settings */}
       <div className="border-t border-gray-100 px-3 py-4 dark:border-gray-800/80">
-        <Link
-          to="/settings"
-          className={cn(
-            'flex items-center gap-2.5 rounded-lg px-2 py-2 text-[13px] font-medium transition-all duration-150',
-            isActivePath(pathname, '/settings')
-              ? 'bg-gray-900 text-white dark:bg-indigo-600 dark:text-white'
-              : 'text-gray-500 hover:bg-gray-50 hover:text-gray-900 dark:text-gray-400 dark:hover:bg-gray-800/60 dark:hover:text-white',
-          )}
-        >
-          <Settings className="h-4 w-4 shrink-0 opacity-70" />
-          Settings
-        </Link>
+        {hasPermission('settings.manage') && (
+          <Link
+            to="/settings"
+            className={cn(
+              'flex items-center gap-2.5 rounded-lg px-2 py-2 text-[13px] font-medium transition-all duration-150',
+              isActivePath(pathname, '/settings')
+                ? 'bg-gray-900 text-white dark:bg-indigo-600 dark:text-white'
+                : 'text-gray-500 hover:bg-gray-50 hover:text-gray-900 dark:text-gray-400 dark:hover:bg-gray-800/60 dark:hover:text-white',
+            )}
+          >
+            <Settings className="h-4 w-4 shrink-0 opacity-70" />
+            Settings
+          </Link>
+        )}
       </div>
 
       {/* Custom scrollbar styles injected via style tag */}

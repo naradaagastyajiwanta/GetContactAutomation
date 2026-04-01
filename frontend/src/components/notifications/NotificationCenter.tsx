@@ -1,8 +1,25 @@
-import { useState, useRef, useEffect } from 'react'
-import { Bell, CheckCheck, X, Wifi, WifiOff } from 'lucide-react'
+import { useState, useRef, useEffect, useMemo } from 'react'
+import { useQuery } from '@tanstack/react-query'
+import { useNavigate } from 'react-router-dom'
+import toast from 'react-hot-toast'
+import { Bell, CheckCheck, ShieldAlert, X, Wifi, WifiOff } from 'lucide-react'
+import { getAuthRoleRequests } from '../../api/auth'
+import { useAuth } from '../../context/AuthContext'
 import { useWebSocket } from '../../hooks/useWebSocket'
 import { cn } from '../../lib/utils'
+import { queryKeys } from '../../lib/queryKeys'
 import { formatDistanceToNow } from 'date-fns'
+
+type AdminRoleNotification = {
+  id: string
+  type: 'auth_role_request'
+  title: string
+  body: string
+  time: Date
+  href: string
+}
+
+type CombinedNotification = ReturnType<typeof useWebSocket>['notifications'][number] | AdminRoleNotification
 
 const ICON_MAP: Record<string, string> = {
   'agent_completed': '✅',
@@ -11,12 +28,65 @@ const ICON_MAP: Record<string, string> = {
   'quota_reached': '⛔',
   'conversation_changed': '💬',
   'university_updated': '🏛',
+  'auth_role_request': '🛡️',
 }
 
 export function NotificationCenter() {
+  const navigate = useNavigate()
+  const { hasPermission } = useAuth()
   const { connected, notifications, unread, markRead, markAllRead, clear } = useWebSocket()
   const [open, setOpen] = useState(false)
   const ref = useRef<HTMLDivElement>(null)
+  const previousPendingCount = useRef<number | null>(null)
+  const canManageSettings = hasPermission('settings.manage')
+
+  const roleRequestsQuery = useQuery({
+    queryKey: queryKeys.auth.roleRequests('pending'),
+    queryFn: () => getAuthRoleRequests('pending', 20, 0),
+    enabled: canManageSettings,
+    refetchInterval: canManageSettings ? 15000 : false,
+  })
+
+  const pendingRoleRequests = roleRequestsQuery.data?.requests ?? []
+  const pendingRoleNotifications = useMemo<AdminRoleNotification[]>(() => {
+    return pendingRoleRequests.map((request) => ({
+      id: `auth-role-request-${request.id}`,
+      type: 'auth_role_request',
+      title: `${request.requester_name} meminta role ${request.requested_role_key}`,
+      body: request.request_note
+        ? request.request_note
+        : `Saat ini ${request.requester_name} masih berperan sebagai ${request.current_role_key}.`,
+      time: new Date(request.created_at),
+      href: '/settings#settings-access',
+    }))
+  }, [pendingRoleRequests])
+
+  const combinedNotifications = useMemo<CombinedNotification[]>(() => {
+    return [...pendingRoleNotifications, ...notifications].sort(
+      (left, right) => new Date(right.time).getTime() - new Date(left.time).getTime(),
+    )
+  }, [pendingRoleNotifications, notifications])
+
+  const combinedUnread = unread + pendingRoleNotifications.length
+
+  useEffect(() => {
+    if (!canManageSettings) {
+      previousPendingCount.current = null
+      return
+    }
+    if (roleRequestsQuery.isLoading) {
+      return
+    }
+    const currentPendingCount = pendingRoleRequests.length
+    if (previousPendingCount.current !== null && currentPendingCount > previousPendingCount.current) {
+      const delta = currentPendingCount - previousPendingCount.current
+      toast(`Ada ${delta} request role baru menunggu approval admin.`, {
+        icon: '🛡️',
+        duration: 5000,
+      })
+    }
+    previousPendingCount.current = currentPendingCount
+  }, [canManageSettings, pendingRoleRequests.length, roleRequestsQuery.isLoading])
 
   // Close on outside click
   useEffect(() => {
@@ -39,9 +109,9 @@ export function NotificationCenter() {
         title={connected ? 'Notifications' : 'Notifications (offline)'}
       >
         <Bell className="h-5 w-5" />
-        {unread > 0 && (
+        {combinedUnread > 0 && (
           <span className="absolute -top-0.5 -right-0.5 flex h-4 w-4 items-center justify-center rounded-full bg-indigo-500 text-[9px] font-bold text-white">
-            {unread > 9 ? '9+' : unread}
+            {combinedUnread > 9 ? '9+' : combinedUnread}
           </span>
         )}
       </button>
@@ -53,9 +123,9 @@ export function NotificationCenter() {
           <div className="flex items-center justify-between border-b border-gray-100 px-4 py-3 dark:border-gray-700">
             <div className="flex items-center gap-2">
               <span className="text-sm font-semibold text-gray-900 dark:text-white">Notifications</span>
-              {unread > 0 && (
+              {combinedUnread > 0 && (
                 <span className="rounded-full bg-indigo-100 px-2 py-0.5 text-[10px] font-bold text-indigo-600 dark:bg-indigo-900/50 dark:text-indigo-300">
-                  {unread} new
+                  {combinedUnread} new
                 </span>
               )}
             </div>
@@ -90,31 +160,55 @@ export function NotificationCenter() {
 
           {/* List */}
           <div className="max-h-96 overflow-y-auto">
-            {notifications.length === 0 ? (
+            {combinedNotifications.length === 0 ? (
               <div className="flex flex-col items-center justify-center py-10 text-center">
                 <Bell className="h-8 w-8 text-gray-300 dark:text-gray-600" />
                 <p className="mt-2 text-sm text-gray-500 dark:text-gray-400">No notifications yet</p>
                 <p className="text-[10px] text-gray-400 dark:text-gray-500">Events will appear here as they happen</p>
               </div>
             ) : (
-              notifications.map((n) => (
+              combinedNotifications.map((n) => {
+                const isRoleRequest = n.type === 'auth_role_request'
+                const isUnread = isRoleRequest ? true : !n.read
+
+                return (
                 <div
                   key={n.id}
                   className={cn(
                     'group relative flex items-start gap-3 border-b border-gray-50 px-4 py-3 transition-colors dark:border-gray-800',
-                    !n.read && 'bg-indigo-50/50 dark:bg-indigo-950/10',
+                    isUnread && 'bg-indigo-50/50 dark:bg-indigo-950/10',
                     'hover:bg-gray-50 dark:hover:bg-gray-700/30'
                   )}
-                  onClick={() => markRead(n.id)}
+                  onClick={() => {
+                    if (isRoleRequest) {
+                      navigate((n as AdminRoleNotification).href)
+                      setOpen(false)
+                      return
+                    }
+                    markRead(n.id)
+                  }}
                 >
                   {/* Icon */}
-                  <div className="mt-0.5 flex h-7 w-7 shrink-0 items-center justify-center rounded-lg bg-gray-100 text-sm dark:bg-gray-700">
+                  <div className={cn(
+                    'mt-0.5 flex h-7 w-7 shrink-0 items-center justify-center rounded-lg text-sm',
+                    isRoleRequest
+                      ? 'bg-amber-100 text-amber-700 dark:bg-amber-900/30 dark:text-amber-200'
+                      : 'bg-gray-100 dark:bg-gray-700',
+                  )}>
                     {ICON_MAP[n.type] || '📌'}
                   </div>
 
                   {/* Content */}
                   <div className="min-w-0 flex-1">
-                    <p className="text-sm font-medium text-gray-900 dark:text-white">{n.title}</p>
+                    <div className="flex items-center gap-2">
+                      <p className="text-sm font-medium text-gray-900 dark:text-white">{n.title}</p>
+                      {isRoleRequest && (
+                        <span className="inline-flex items-center gap-1 rounded-full bg-amber-100 px-2 py-0.5 text-[10px] font-semibold text-amber-700 dark:bg-amber-900/40 dark:text-amber-200">
+                          <ShieldAlert className="h-3 w-3" />
+                          Admin
+                        </span>
+                      )}
+                    </div>
                     {n.body && (
                       <p className="mt-0.5 text-xs text-gray-500 dark:text-gray-400 line-clamp-2">{n.body}</p>
                     )}
@@ -125,16 +219,19 @@ export function NotificationCenter() {
 
                   {/* Unread dot + delete */}
                   <div className="flex flex-col items-center gap-2">
-                    {!n.read && <div className="h-2 w-2 rounded-full bg-indigo-500" />}
-                    <button
-                      onClick={(e) => { e.stopPropagation(); clear(n.id) }}
-                      className="opacity-0 group-hover:opacity-100"
-                    >
-                      <X className="h-3.5 w-3.5 text-gray-400 hover:text-gray-600" />
-                    </button>
+                    {isUnread && <div className="h-2 w-2 rounded-full bg-indigo-500" />}
+                    {!isRoleRequest && (
+                      <button
+                        onClick={(e) => { e.stopPropagation(); clear(n.id) }}
+                        className="opacity-0 group-hover:opacity-100"
+                      >
+                        <X className="h-3.5 w-3.5 text-gray-400 hover:text-gray-600" />
+                      </button>
+                    )}
                   </div>
                 </div>
-              ))
+                )
+              })
             )}
           </div>
         </div>

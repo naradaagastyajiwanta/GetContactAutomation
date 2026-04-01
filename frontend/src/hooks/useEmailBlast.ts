@@ -239,6 +239,24 @@ export function useAllSentEmailsPaginated(pageSize: number = 50, enabled: boolea
   return useInfiniteQuery({
     queryKey: ['email-blast-all-sent-paginated'],
     queryFn: async ({ pageParam = 0 }: { pageParam?: number }) => {
+      return getAllSentEmails(pageSize, pageParam ?? 0)
+    },
+    initialPageParam: 0,
+    getNextPageParam: (lastPage: { offset?: number; limit?: number; total?: number }) => {
+      const currentOffset = lastPage.offset ?? 0
+      const nextOffset = currentOffset + pageSize
+      if (nextOffset >= (lastPage.total || 0)) return undefined
+      return nextOffset
+    },
+    enabled,
+    staleTime: 30_000,
+  })
+}
+
+export function useSentFolderEmailsPaginated(pageSize: number = 50, enabled: boolean = true) {
+  return useInfiniteQuery({
+    queryKey: ['email-blast-sent-folder-paginated'],
+    queryFn: async ({ pageParam = 0 }: { pageParam?: number }) => {
       return getSentFolderEmails(pageSize, pageParam ?? 0)
     },
     initialPageParam: 0,

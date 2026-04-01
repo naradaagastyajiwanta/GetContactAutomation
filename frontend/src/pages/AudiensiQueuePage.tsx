@@ -13,6 +13,7 @@ import { Table, TableHeader, TableBody, TableRow, TableHead, TableCell } from '.
 import { AUDIENSI_STATES, AUDIENSI_STATE_COLORS, ITEMS_PER_PAGE } from '../lib/constants'
 import { formatRelative } from '../lib/utils'
 import { cn } from '../lib/utils'
+import { useAuth } from '../context/AuthContext'
 
 type Tab = 'pending' | 'all' | 'template'
 
@@ -22,6 +23,7 @@ const stateOptions = [
 ]
 
 export default function AudiensiQueuePage() {
+  const { hasPermission } = useAuth()
   const [tab, setTab] = useState<Tab>('pending')
   const [state, setState] = useState('')
   const [page, setPage] = useState(1)
@@ -42,6 +44,7 @@ export default function AudiensiQueuePage() {
   }
 
   const isLoading = tab === 'pending' ? queueLoading : tab === 'all' ? conversationsLoading : false
+  const canManageAudiensi = hasPermission('audiensi.manage')
 
   const totalPages = conversations
     ? Math.max(1, Math.ceil(conversations.length / ITEMS_PER_PAGE) + (conversations.length === ITEMS_PER_PAGE ? 1 : 0))
@@ -94,17 +97,19 @@ export default function AudiensiQueuePage() {
         >
           All Conversations
         </button>
-        <button
-          onClick={() => setTab('template')}
-          className={cn(
-            'rounded-lg px-4 py-2 text-sm font-medium transition-colors',
-            tab === 'template'
-              ? 'bg-indigo-600 text-white dark:bg-indigo-500'
-              : 'bg-gray-200 text-gray-700 hover:bg-gray-300 dark:bg-gray-700 dark:text-gray-300 dark:hover:bg-gray-600',
-          )}
-        >
-          Template Surat
-        </button>
+        {canManageAudiensi && (
+          <button
+            onClick={() => setTab('template')}
+            className={cn(
+              'rounded-lg px-4 py-2 text-sm font-medium transition-colors',
+              tab === 'template'
+                ? 'bg-indigo-600 text-white dark:bg-indigo-500'
+                : 'bg-gray-200 text-gray-700 hover:bg-gray-300 dark:bg-gray-700 dark:text-gray-300 dark:hover:bg-gray-600',
+            )}
+          >
+            Template Surat
+          </button>
+        )}
       </div>
 
       {/* Content */}

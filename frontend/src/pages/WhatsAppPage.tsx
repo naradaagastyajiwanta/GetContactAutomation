@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import {
   Smartphone,
@@ -18,6 +18,7 @@ import { useStartTestConversation } from '../hooks/useConversations'
 import { Button } from '../components/ui/Button'
 import { DevicePanel } from '../components/whatsapp/DevicePanel'
 import { BulkSendPanel } from '../components/whatsapp/BulkSendPanel'
+import { useAuth } from '../context/AuthContext'
 import { cn } from '../lib/utils'
 
 type TabId = 'devices' | 'quick-test' | 'bulk-send'
@@ -59,6 +60,7 @@ function TabButton({
 }
 
 export default function WhatsAppPage() {
+  const { hasPermission } = useAuth()
   const { data: statusData } = useWaStatus()
   const sendTest = useSendTestMessage()
   const logout = useWaLogout()
@@ -73,6 +75,13 @@ export default function WhatsAppPage() {
   const [testConvUniName, setTestConvUniName] = useState('')
   const [testConvConflict, setTestConvConflict] = useState<{ id: number; state: string } | null>(null)
   const [showLogoutConfirm, setShowLogoutConfirm] = useState(false)
+  const canManageWhatsApp = hasPermission('whatsapp.manage')
+
+  useEffect(() => {
+    if (!canManageWhatsApp && activeTab !== 'devices') {
+      setActiveTab('devices')
+    }
+  }, [activeTab, canManageWhatsApp])
 
   // Get connected devices count from status
   const connectedCount = (statusData as any)?.devices?.filter((d: any) => d.connectionState === 'connected').length || 0
@@ -159,16 +168,18 @@ export default function WhatsAppPage() {
                 {queuePending > 0 ? `${queuePending} queued` : `${queueSent} sent`}
               </div>
             )}
-            <Button
-              variant="ghost"
-              size="sm"
-              onClick={() => restart.mutate()}
-              loading={restart.isPending}
-              className="!p-2"
-              title="Restart WA service"
-            >
-              <RefreshCw className="w-4 h-4" />
-            </Button>
+            {canManageWhatsApp && (
+              <Button
+                variant="ghost"
+                size="sm"
+                onClick={() => restart.mutate()}
+                loading={restart.isPending}
+                className="!p-2"
+                title="Restart WA service"
+              >
+                <RefreshCw className="w-4 h-4" />
+              </Button>
+            )}
           </div>
         </div>
       </div>
@@ -183,20 +194,24 @@ export default function WhatsAppPage() {
           isActive={activeTab === 'devices'}
           onClick={() => setActiveTab('devices')}
         />
-        <TabButton
-          id="quick-test"
-          icon={Zap}
-          label="Quick Test"
-          isActive={activeTab === 'quick-test'}
-          onClick={() => setActiveTab('quick-test')}
-        />
-        <TabButton
-          id="bulk-send"
-          icon={Users}
-          label="Bulk Send"
-          isActive={activeTab === 'bulk-send'}
-          onClick={() => setActiveTab('bulk-send')}
-        />
+        {canManageWhatsApp && (
+          <TabButton
+            id="quick-test"
+            icon={Zap}
+            label="Quick Test"
+            isActive={activeTab === 'quick-test'}
+            onClick={() => setActiveTab('quick-test')}
+          />
+        )}
+        {canManageWhatsApp && (
+          <TabButton
+            id="bulk-send"
+            icon={Users}
+            label="Bulk Send"
+            isActive={activeTab === 'bulk-send'}
+            onClick={() => setActiveTab('bulk-send')}
+          />
+        )}
       </div>
 
       {/* ── Tab Content ────────────────────────────────────── */}
@@ -204,12 +219,12 @@ export default function WhatsAppPage() {
         {/* Devices Tab */}
         {activeTab === 'devices' && (
           <div className="p-5">
-            <DevicePanel />
+            <DevicePanel canManage={canManageWhatsApp} />
           </div>
         )}
 
         {/* Quick Test Tab */}
-        {activeTab === 'quick-test' && (
+        {activeTab === 'quick-test' && canManageWhatsApp && (
           <div className="p-5 space-y-5">
             {connectedCount === 0 && (
               <div className="flex items-center gap-3 p-3 rounded-lg bg-amber-50 dark:bg-amber-900/15 border border-amber-200 dark:border-amber-800">
@@ -358,7 +373,7 @@ export default function WhatsAppPage() {
         )}
 
         {/* Bulk Send Tab */}
-        {activeTab === 'bulk-send' && (
+        {activeTab === 'bulk-send' && canManageWhatsApp && (
           <div className="p-5">
             {connectedCount === 0 && (
               <div className="flex items-center gap-3 p-3 rounded-lg bg-amber-50 dark:bg-amber-900/15 border border-amber-200 dark:border-amber-800 mb-5">

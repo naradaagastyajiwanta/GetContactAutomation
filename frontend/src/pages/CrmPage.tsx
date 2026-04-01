@@ -21,6 +21,7 @@ import { Spinner } from '../components/ui/Spinner'
 import { EmptyState } from '../components/ui/EmptyState'
 import { Modal } from '../components/ui/Modal'
 import { formatDate } from '../lib/utils'
+import { useAuth } from '../context/AuthContext'
 
 const statusConfig: Record<string, { label: string; variant: string; icon: typeof Clock }> = {
   pending: {
@@ -320,6 +321,7 @@ function NewRequestModal({
 }
 
 export default function CrmPage() {
+  const { hasPermission } = useAuth()
   const [modalOpen, setModalOpen] = useState(false)
   const [statusFilter, setStatusFilter] = useState<string>('')
   const { data, isLoading } = useCrmRequests({
@@ -328,6 +330,7 @@ export default function CrmPage() {
   })
   const { data: stats } = useCrmStats()
   const runMutation = useRunCrmProfiling()
+  const canManageCrm = hasPermission('crm.manage')
 
   if (isLoading) {
     return (
@@ -347,10 +350,12 @@ export default function CrmPage() {
             OSINT intelligence gathering untuk PIC universitas
           </p>
         </div>
-        <Button onClick={() => setModalOpen(true)}>
-          <Plus className="h-4 w-4" />
-          New Request
-        </Button>
+        {canManageCrm && (
+          <Button onClick={() => setModalOpen(true)}>
+            <Plus className="h-4 w-4" />
+            New Request
+          </Button>
+        )}
       </div>
 
       {/* Stats cards */}
@@ -393,11 +398,11 @@ export default function CrmPage() {
           icon={UserSearch}
           title="No profiling requests"
           description="Create a new request to start gathering PIC intelligence"
-          action={
+          action={canManageCrm ? (
             <Button onClick={() => setModalOpen(true)}>
               <Plus className="h-4 w-4" /> New Request
             </Button>
-          }
+          ) : undefined}
         />
       ) : (
         <div className="space-y-3">
@@ -420,7 +425,7 @@ export default function CrmPage() {
                     {formatDate(req.created_at)}
                   </span>
                   <StatusBadge status={req.status} />
-                  {req.status === 'pending' && (
+                  {canManageCrm && req.status === 'pending' && (
                     <Button
                       size="sm"
                       variant="ghost"
@@ -441,7 +446,7 @@ export default function CrmPage() {
         </div>
       )}
 
-      <NewRequestModal isOpen={modalOpen} onClose={() => setModalOpen(false)} />
+      {canManageCrm && <NewRequestModal isOpen={modalOpen} onClose={() => setModalOpen(false)} />}
     </div>
   )
 }

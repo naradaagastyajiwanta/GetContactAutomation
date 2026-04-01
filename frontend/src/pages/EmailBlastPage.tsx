@@ -8,6 +8,7 @@ import { useNavigate, useParams } from 'react-router-dom'
 import {
   Inbox,
   Send,
+  Mail,
   FileText,
   Rocket,
   Pause,
@@ -26,15 +27,17 @@ import { Modal } from '../components/ui/Modal'
 import { EmailComposeBox } from '../components/emailBlast/EmailComposeBox'
 import { EmailInboxView } from '../components/emailBlast/EmailInboxView'
 import { EmailSentView } from '../components/emailBlast/EmailSentView'
+import { EmailImapSentView } from '../components/emailBlast/EmailImapSentView'
 import { EmailCampaignList } from '../components/emailBlast/EmailCampaignList'
 import { EmailCampaignDetail } from '../components/emailBlast/EmailCampaignDetail'
 import { EmailSettingsPanel } from '../components/emailBlast/EmailSettingsPanel'
 import { EmailLetterHistory } from '../components/emailBlast/EmailLetterHistory'
+import { useAuth } from '../context/AuthContext'
 import type { EmailBlastCampaign } from '../api/emailBlast'
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 
-type View = 'inbox' | 'sent' | 'campaigns' | 'settings' | 'letter-history' | 'campaign-detail'
+type View = 'inbox' | 'sent' | 'imap-sent' | 'campaigns' | 'settings' | 'letter-history' | 'campaign-detail'
 
 interface NavItem {
   id: View
@@ -67,6 +70,7 @@ function EmailLeftRail({
   sentCount,
   activeStatusFilter,
   quota,
+  canManage,
 }: {
   activeView: View
   onViewChange: (v: View, campaignId?: number, status?: string) => void
@@ -76,10 +80,12 @@ function EmailLeftRail({
   sentCount: number
   activeStatusFilter: string
   quota?: { sent_today: number; daily_limit: number; remaining: number; is_exhausted: boolean }
+  canManage: boolean
 }) {
   const navItems: NavItem[] = [
-    { id: 'inbox', label: 'Inbox', icon: Inbox, badge: inboxCount, section: 'messages' },
-    { id: 'sent', label: 'Sent', icon: Send, badge: sentCount, section: 'messages' },
+    { id: 'inbox' as const, label: 'Inbox', icon: Inbox, badge: inboxCount, section: 'messages' },
+    { id: 'sent' as const, label: 'Sent Aplikasi', icon: Send, badge: sentCount, section: 'messages' },
+    { id: 'imap-sent' as const, label: 'Sent IMAP', icon: Mail, section: 'messages' },
     { id: 'letter-history', label: 'Riwayat Surat', icon: History, section: 'messages' },
   ]
 
@@ -95,15 +101,17 @@ function EmailLeftRail({
   return (
     <aside className="flex w-[220px] shrink-0 flex-col bg-white dark:bg-[#111827] border-r border-gray-100 dark:border-gray-800/80">
       {/* New Campaign Button */}
-      <div className="p-3">
-        <button
-          onClick={() => onViewChange('campaign-detail', -1)}
-          className="flex w-full items-center justify-center gap-2 rounded-xl bg-indigo-600 px-4 py-2.5 text-sm font-semibold text-white shadow-sm transition-colors hover:bg-indigo-700 active:bg-indigo-800"
-        >
-          <Plus className="h-4 w-4" />
-          New Campaign
-        </button>
-      </div>
+      {canManage && (
+        <div className="p-3">
+          <button
+            onClick={() => onViewChange('campaign-detail', -1)}
+            className="flex w-full items-center justify-center gap-2 rounded-xl bg-indigo-600 px-4 py-2.5 text-sm font-semibold text-white shadow-sm transition-colors hover:bg-indigo-700 active:bg-indigo-800"
+          >
+            <Plus className="h-4 w-4" />
+            New Campaign
+          </button>
+        </div>
+      )}
 
       {/* Navigation */}
       <nav className="flex-1 space-y-0.5 overflow-y-auto px-3 pb-3">
@@ -202,18 +210,25 @@ function EmailLeftRail({
           </div>
           <div className="space-y-1.5">
             <div className="flex items-center justify-between text-[12px]">
-              <span className="text-gray-500 dark:text-gray-400">Sent</span>
+              <span className="text-gray-500 dark:text-gray-400" title="Jumlah email yang tercatat terkirim oleh aplikasi blast.">
+                Sent Aplikasi
+              </span>
               <span className="font-semibold text-gray-700 dark:text-gray-200">
                 {stats.totalSent.toLocaleString('id-ID')}
               </span>
             </div>
             <div className="flex items-center justify-between text-[12px]">
-              <span className="text-gray-500 dark:text-gray-400">Replies</span>
+              <span className="text-gray-500 dark:text-gray-400" title="Jumlah email balasan yang terdeteksi di inbox.">
+                Reply Inbox
+              </span>
               <span className="font-semibold text-gray-700 dark:text-gray-200">
                 {inboxCount > 0 ? inboxCount.toLocaleString('id-ID') : '—'}
               </span>
             </div>
           </div>
+          <p className="mt-2 text-[10px] leading-4 text-gray-400 dark:text-gray-500">
+            Sent IMAP tersedia sebagai mailbox view terpisah dan tidak dihitung di kartu ini.
+          </p>
 
           {/* Daily Quota */}
           {quota && (
@@ -273,20 +288,22 @@ function EmailLeftRail({
         </div>
 
         {/* Settings */}
-        <div className="mt-1">
-          <button
-            onClick={() => onViewChange('settings')}
-            className={cn(
-              'mb-0.5 flex w-full items-center gap-2.5 rounded-lg px-2 py-2 text-[13px] font-medium transition-all duration-150',
-              activeView === 'settings'
-                ? 'bg-indigo-600 text-white'
-                : 'text-gray-500 hover:bg-gray-50 hover:text-gray-900 dark:text-gray-400 dark:hover:bg-gray-800/60 dark:hover:text-white',
-            )}
-          >
-            <Settings className="h-4 w-4 shrink-0" />
-            Settings
-          </button>
-        </div>
+        {canManage && (
+          <div className="mt-1">
+            <button
+              onClick={() => onViewChange('settings')}
+              className={cn(
+                'mb-0.5 flex w-full items-center gap-2.5 rounded-lg px-2 py-2 text-[13px] font-medium transition-all duration-150',
+                activeView === 'settings'
+                  ? 'bg-indigo-600 text-white'
+                  : 'text-gray-500 hover:bg-gray-50 hover:text-gray-900 dark:text-gray-400 dark:hover:bg-gray-800/60 dark:hover:text-white',
+              )}
+            >
+              <Settings className="h-4 w-4 shrink-0" />
+              Settings
+            </button>
+          </div>
+        )}
       </nav>
     </aside>
   )
@@ -295,8 +312,10 @@ function EmailLeftRail({
 // ─── Main Page ────────────────────────────────────────────────────────────────
 
 export default function EmailBlastPage() {
+  const { hasPermission } = useAuth()
   const navigate = useNavigate()
   const params = useParams()
+  const canManageBlast = hasPermission('blast.manage')
 
   const campaignIdFromUrl = params.id ? parseInt(params.id) : undefined
 
@@ -305,6 +324,7 @@ export default function EmailBlastPage() {
     if (campaignIdFromUrl !== undefined) return 'campaign-detail'
     const path = window.location.pathname
     if (path.includes('/email-blast/inbox')) return 'inbox'
+    if (path.includes('/email-blast/imap-sent')) return 'imap-sent'
     if (path.includes('/email-blast/sent')) return 'sent'
     if (path.includes('/email-blast/settings')) return 'settings'
     if (path.includes('/email-blast/letter-history')) return 'letter-history'
@@ -317,6 +337,13 @@ export default function EmailBlastPage() {
   )
   const [showCompose, setShowCompose] = useState(false)
   const [statusFilter, setStatusFilter] = useState('')
+
+  useEffect(() => {
+    if (!canManageBlast && activeView === 'settings') {
+      setActiveView('campaigns')
+      navigate('/email-blast/campaigns')
+    }
+  }, [activeView, canManageBlast, navigate])
 
   // Sync state with URL when campaignIdFromUrl changes (navigating between campaigns)
   useEffect(() => {
@@ -345,6 +372,9 @@ export default function EmailBlastPage() {
   }
 
   function handleViewChange(view: View, campaignId?: number, status?: string) {
+    if (!canManageBlast && (view === 'settings' || campaignId === -1)) {
+      return
+    }
     setActiveView(view)
     if (status !== undefined) {
       setStatusFilter(status)
@@ -360,6 +390,7 @@ export default function EmailBlastPage() {
       setActiveCampaignId(undefined)
       if (view === 'campaigns') navigate('/email-blast/campaigns')
       else if (view === 'inbox') navigate('/email-blast/inbox')
+      else if (view === 'imap-sent') navigate('/email-blast/imap-sent')
       else if (view === 'sent') navigate('/email-blast/sent')
       else if (view === 'settings') navigate('/email-blast/settings')
       else if (view === 'letter-history') navigate('/email-blast/letter-history')
@@ -385,7 +416,7 @@ export default function EmailBlastPage() {
   // Content area
   function renderContent() {
     if (activeView === 'settings') {
-      return <EmailSettingsPanel />
+      return <EmailSettingsPanel canManage={canManageBlast} />
     }
 
     if (activeView === 'letter-history') {
@@ -396,6 +427,7 @@ export default function EmailBlastPage() {
       return (
         <EmailCampaignDetail
           campaignId={activeCampaignId}
+          canManage={canManageBlast}
           onClose={() => {
             setShowCompose(false)
             setActiveCampaignId(undefined)
@@ -415,6 +447,10 @@ export default function EmailBlastPage() {
       return <EmailSentView />
     }
 
+    if (activeView === 'imap-sent') {
+      return <EmailImapSentView />
+    }
+
     // Default: campaigns
     return (
       <EmailCampaignList
@@ -422,6 +458,7 @@ export default function EmailBlastPage() {
         campaignCounts={campaignCounts}
         onSelect={handleCampaignSelect}
         onNew={handleNewCampaign}
+        canManage={canManageBlast}
         statusFilter={statusFilter}
         onStatusChange={setStatusFilter}
       />
@@ -440,6 +477,7 @@ export default function EmailBlastPage() {
         sentCount={totalSent}
         activeStatusFilter={statusFilter}
         quota={quota}
+        canManage={canManageBlast}
       />
 
       {/* Content Area */}

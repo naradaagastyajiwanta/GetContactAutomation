@@ -431,6 +431,28 @@ sudo systemctl status getcontact-orchestrator
 sudo systemctl status getcontact-whatsapp
 ```
 
+### Post-Deploy Verification
+
+**Docker Deployment:**
+
+```bash
+cd /opt/getcontact-ai-agent
+docker compose -f docker-compose.prod.yml exec -T orchestrator python scripts/test_auth_permissions.py
+docker compose -f docker-compose.prod.yml exec -T orchestrator python scripts/test_blast_attribution.py
+curl -sf http://localhost:8000/health
+curl -sf http://localhost:3100/status
+```
+
+**Systemd Deployment:**
+
+```bash
+cd /opt/getcontact/app
+sudo -u getcontact venv/bin/python scripts/test_auth_permissions.py
+sudo -u getcontact venv/bin/python scripts/test_blast_attribution.py
+curl -sf http://localhost:8000/health
+curl -sf http://localhost:3100/status
+```
+
 ### Nginx Reverse Proxy
 
 **Configuration (`/etc/nginx/sites-available/getcontact`):**

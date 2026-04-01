@@ -29,6 +29,7 @@ import {
   usePauseCampaign,
   useCancelCampaign,
 } from '../hooks/useBlast'
+import { useAuth } from '../context/AuthContext'
 import type { BlastCampaign } from '../api/blast'
 
 const statusConfig: Record<
@@ -117,6 +118,7 @@ function formatRelativeCountdown(target: string | null, now: number): string | n
 }
 
 export default function BlastCampaignsPage() {
+  const { hasPermission } = useAuth()
   const navigate = useNavigate()
   const [showCreate, setShowCreate] = useState(false)
   const [newName, setNewName] = useState('')
@@ -133,6 +135,7 @@ export default function BlastCampaignsPage() {
   const startMutation = useStartCampaign()
   const pauseMutation = usePauseCampaign()
   const cancelMutation = useCancelCampaign()
+  const canManageBlast = hasPermission('blast.manage')
 
   const campaigns = data?.data || []
 
@@ -167,17 +170,19 @@ export default function BlastCampaignsPage() {
             </p>
           </div>
         </div>
-        <button
-          onClick={() => setShowCreate(true)}
-          className="flex items-center gap-1.5 px-4 py-2 bg-indigo-600 hover:bg-indigo-700 text-white text-sm font-semibold rounded-lg shadow-sm transition-colors"
-        >
-          <Plus className="w-4 h-4" />
-          New Campaign
-        </button>
+        {canManageBlast && (
+          <button
+            onClick={() => setShowCreate(true)}
+            className="flex items-center gap-1.5 px-4 py-2 bg-indigo-600 hover:bg-indigo-700 text-white text-sm font-semibold rounded-lg shadow-sm transition-colors"
+          >
+            <Plus className="w-4 h-4" />
+            New Campaign
+          </button>
+        )}
       </div>
 
       {/* Create Campaign Inline */}
-      {showCreate && (
+      {canManageBlast && showCreate && (
         <div className="mb-5 p-4 bg-white dark:bg-gray-800 rounded-xl border border-gray-200 dark:border-gray-700 shadow-sm">
           <h3 className="text-sm font-semibold text-gray-700 dark:text-gray-300 mb-3">Create New Campaign</h3>
           <div className="flex gap-2">
@@ -227,6 +232,7 @@ export default function BlastCampaignsPage() {
               key={c.id}
               campaign={c}
               now={now}
+              canManage={canManageBlast}
               onStart={() => startMutation.mutate(c.id)}
               onPause={() => pauseMutation.mutate(c.id)}
               onCancel={() => cancelMutation.mutate(c.id)}
@@ -244,6 +250,7 @@ export default function BlastCampaignsPage() {
 function CampaignCard({
   campaign: c,
   now,
+  canManage,
   onStart,
   onPause,
   onCancel,
@@ -251,6 +258,7 @@ function CampaignCard({
 }: {
   campaign: BlastCampaign
   now: number
+  canManage: boolean
   onStart: () => void
   onPause: () => void
   onCancel: () => void
@@ -286,6 +294,13 @@ function CampaignCard({
             {c.failed_count > 0 && <span className="text-red-500">{c.failed_count} failed</span>}
             <span>{c.device_id}</span>
             <span>{new Date(c.created_at).toLocaleDateString()}</span>
+          </div>
+
+          <div className="mt-2 flex flex-wrap gap-x-4 gap-y-1 text-[11px] text-gray-500 dark:text-gray-400">
+            <span>Dibuat oleh {c.created_by_name || c.created_by_email || 'Unknown'}</span>
+            {c.started_by_name || c.started_by_email ? (
+              <span>Terakhir dijalankan oleh {c.started_by_name || c.started_by_email}</span>
+            ) : null}
           </div>
 
           <div className="mt-2 flex flex-wrap gap-1.5">
@@ -325,54 +340,56 @@ function CampaignCard({
         </div>
 
         {/* Right: Actions */}
-        <div className="flex items-center gap-1 shrink-0" onClick={(e) => e.preventDefault()}>
-          {c.status === 'draft' && c.total_recipients > 0 && (
-            <button
-              onClick={onStart}
-              className="p-1.5 rounded-lg text-green-600 hover:bg-green-50 dark:hover:bg-green-900/30 transition-colors"
-              title="Start"
-            >
-              <Play className="w-4 h-4" />
-            </button>
-          )}
-          {c.status === 'paused' && (
-            <button
-              onClick={onStart}
-              className="p-1.5 rounded-lg text-green-600 hover:bg-green-50 dark:hover:bg-green-900/30 transition-colors"
-              title="Resume"
-            >
-              <Play className="w-4 h-4" />
-            </button>
-          )}
-          {c.status === 'sending' && (
-            <button
-              onClick={onPause}
-              className="p-1.5 rounded-lg text-amber-600 hover:bg-amber-50 dark:hover:bg-amber-900/30 transition-colors"
-              title="Pause"
-            >
-              <Pause className="w-4 h-4" />
-            </button>
-          )}
-          {(c.status === 'sending' || c.status === 'paused') && (
-            <button
-              onClick={onCancel}
-              className="p-1.5 rounded-lg text-red-500 hover:bg-red-50 dark:hover:bg-red-900/30 transition-colors"
-              title="Cancel"
-            >
-              <XCircle className="w-4 h-4" />
-            </button>
-          )}
-          {(c.status === 'draft' || c.status === 'completed' || c.status === 'cancelled') && (
-            <button
-              onClick={onDelete}
-              className="p-1.5 rounded-lg text-gray-400 hover:text-red-500 hover:bg-red-50 dark:hover:bg-red-900/30 transition-colors"
-              title="Delete"
-            >
-              <Trash2 className="w-4 h-4" />
-            </button>
-          )}
-          <ChevronRight className="w-4 h-4 text-gray-300 dark:text-gray-600 group-hover:text-indigo-400 transition-colors ml-1" />
-        </div>
+        {canManage && (
+          <div className="flex items-center gap-1 shrink-0" onClick={(e) => e.preventDefault()}>
+            {c.status === 'draft' && c.total_recipients > 0 && (
+              <button
+                onClick={onStart}
+                className="p-1.5 rounded-lg text-green-600 hover:bg-green-50 dark:hover:bg-green-900/30 transition-colors"
+                title="Start"
+              >
+                <Play className="w-4 h-4" />
+              </button>
+            )}
+            {c.status === 'paused' && (
+              <button
+                onClick={onStart}
+                className="p-1.5 rounded-lg text-green-600 hover:bg-green-50 dark:hover:bg-green-900/30 transition-colors"
+                title="Resume"
+              >
+                <Play className="w-4 h-4" />
+              </button>
+            )}
+            {c.status === 'sending' && (
+              <button
+                onClick={onPause}
+                className="p-1.5 rounded-lg text-amber-600 hover:bg-amber-50 dark:hover:bg-amber-900/30 transition-colors"
+                title="Pause"
+              >
+                <Pause className="w-4 h-4" />
+              </button>
+            )}
+            {(c.status === 'sending' || c.status === 'paused') && (
+              <button
+                onClick={onCancel}
+                className="p-1.5 rounded-lg text-red-500 hover:bg-red-50 dark:hover:bg-red-900/30 transition-colors"
+                title="Cancel"
+              >
+                <XCircle className="w-4 h-4" />
+              </button>
+            )}
+            {(c.status === 'draft' || c.status === 'completed' || c.status === 'cancelled') && (
+              <button
+                onClick={onDelete}
+                className="p-1.5 rounded-lg text-gray-400 hover:text-red-500 hover:bg-red-50 dark:hover:bg-red-900/30 transition-colors"
+                title="Delete"
+              >
+                <Trash2 className="w-4 h-4" />
+              </button>
+            )}
+            <ChevronRight className="w-4 h-4 text-gray-300 dark:text-gray-600 group-hover:text-indigo-400 transition-colors ml-1" />
+          </div>
+        )}
       </div>
     </Link>
   )

@@ -147,6 +147,67 @@ CREATE TABLE IF NOT EXISTS config (
 );
 """
 
+_DDL_AUTH = """
+CREATE TABLE IF NOT EXISTS auth_user_roles (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    dms_user_id INTEGER NOT NULL,
+    user_email TEXT NOT NULL,
+    user_name TEXT NOT NULL,
+    role_key TEXT NOT NULL,
+    is_active INTEGER DEFAULT 1,
+    granted_by_email TEXT,
+    created_at TEXT DEFAULT (datetime('now')),
+    updated_at TEXT DEFAULT (datetime('now')),
+    UNIQUE(dms_user_id, role_key)
+);
+
+CREATE TABLE IF NOT EXISTS auth_sessions (
+    session_hash TEXT PRIMARY KEY,
+    dms_user_id INTEGER NOT NULL,
+    user_email TEXT NOT NULL,
+    user_name TEXT NOT NULL,
+    dms_user_level TEXT,
+    expires_at TEXT NOT NULL,
+    created_at TEXT DEFAULT (datetime('now')),
+    last_seen_at TEXT DEFAULT (datetime('now')),
+    revoked_at TEXT,
+    user_agent TEXT,
+    ip_address TEXT
+);
+
+CREATE TABLE IF NOT EXISTS auth_audit_logs (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    action TEXT NOT NULL,
+    actor_dms_user_id INTEGER,
+    actor_email TEXT,
+    subject_dms_user_id INTEGER,
+    subject_email TEXT,
+    role_key TEXT,
+    success INTEGER DEFAULT 1,
+    detail TEXT,
+    ip_address TEXT,
+    user_agent TEXT,
+    created_at TEXT DEFAULT (datetime('now'))
+);
+
+CREATE TABLE IF NOT EXISTS auth_role_upgrade_requests (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    requester_dms_user_id INTEGER NOT NULL,
+    requester_email TEXT NOT NULL,
+    requester_name TEXT NOT NULL,
+    current_role_key TEXT NOT NULL,
+    requested_role_key TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'pending',
+    request_note TEXT,
+    reviewed_by_dms_user_id INTEGER,
+    reviewed_by_email TEXT,
+    review_note TEXT,
+    reviewed_at TEXT,
+    created_at TEXT DEFAULT (datetime('now')),
+    updated_at TEXT DEFAULT (datetime('now'))
+);
+"""
+
 _INDEXES_AGENT = """
 CREATE INDEX IF NOT EXISTS idx_conv_analyses_conv_id ON conversation_analyses(conversation_id);
 CREATE INDEX IF NOT EXISTS idx_conv_analyses_processed ON conversation_analyses(processed);
@@ -154,6 +215,21 @@ CREATE INDEX IF NOT EXISTS idx_lessons_situation ON lessons(situation_type);
 CREATE INDEX IF NOT EXISTS idx_lessons_active ON lessons(is_active);
 CREATE INDEX IF NOT EXISTS idx_strategy_metrics_conv ON strategy_metrics(conversation_id);
 CREATE INDEX IF NOT EXISTS idx_strategy_metrics_strategy ON strategy_metrics(strategy_used);
+"""
+
+_INDEXES_AUTH = """
+CREATE INDEX IF NOT EXISTS idx_auth_user_roles_user ON auth_user_roles(dms_user_id);
+CREATE INDEX IF NOT EXISTS idx_auth_user_roles_email ON auth_user_roles(user_email);
+CREATE INDEX IF NOT EXISTS idx_auth_user_roles_active ON auth_user_roles(is_active);
+CREATE INDEX IF NOT EXISTS idx_auth_sessions_user ON auth_sessions(dms_user_id);
+CREATE INDEX IF NOT EXISTS idx_auth_sessions_expiry ON auth_sessions(expires_at);
+CREATE INDEX IF NOT EXISTS idx_auth_audit_logs_action ON auth_audit_logs(action);
+CREATE INDEX IF NOT EXISTS idx_auth_audit_logs_actor_email ON auth_audit_logs(actor_email);
+CREATE INDEX IF NOT EXISTS idx_auth_audit_logs_subject_email ON auth_audit_logs(subject_email);
+CREATE INDEX IF NOT EXISTS idx_auth_audit_logs_created_at ON auth_audit_logs(created_at);
+CREATE INDEX IF NOT EXISTS idx_auth_role_upgrade_requests_requester ON auth_role_upgrade_requests(requester_dms_user_id);
+CREATE INDEX IF NOT EXISTS idx_auth_role_upgrade_requests_status ON auth_role_upgrade_requests(status);
+CREATE INDEX IF NOT EXISTS idx_auth_role_upgrade_requests_created_at ON auth_role_upgrade_requests(created_at);
 """
 
 _DDL_AUDIENSI = """
@@ -316,6 +392,12 @@ CREATE TABLE IF NOT EXISTS blast_campaigns (
     total_recipients INTEGER DEFAULT 0,
     sent_count INTEGER DEFAULT 0,
     failed_count INTEGER DEFAULT 0,
+    created_by_dms_user_id INTEGER,
+    created_by_email TEXT,
+    created_by_name TEXT,
+    started_by_dms_user_id INTEGER,
+    started_by_email TEXT,
+    started_by_name TEXT,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     started_at TIMESTAMP,
     completed_at TIMESTAMP,
@@ -341,6 +423,7 @@ CREATE TABLE IF NOT EXISTS blast_recipients (
 
 _INDEXES_BLAST = """
 CREATE INDEX IF NOT EXISTS idx_blast_campaigns_status ON blast_campaigns(status);
+CREATE INDEX IF NOT EXISTS idx_blast_campaigns_owner ON blast_campaigns(created_by_dms_user_id);
 CREATE INDEX IF NOT EXISTS idx_blast_campaigns_auto_resume ON blast_campaigns(auto_resume_at);
 CREATE INDEX IF NOT EXISTS idx_blast_recipients_campaign ON blast_recipients(campaign_id);
 CREATE INDEX IF NOT EXISTS idx_blast_recipients_status ON blast_recipients(status);
@@ -366,6 +449,12 @@ CREATE TABLE IF NOT EXISTS email_blast_campaigns (
     invalid_count INTEGER DEFAULT 0,
     attachment_filename TEXT,
     attachment_variables TEXT,
+    created_by_dms_user_id INTEGER,
+    created_by_email TEXT,
+    created_by_name TEXT,
+    started_by_dms_user_id INTEGER,
+    started_by_email TEXT,
+    started_by_name TEXT,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     started_at TIMESTAMP,
     completed_at TIMESTAMP,
@@ -386,10 +475,6 @@ CREATE TABLE IF NOT EXISTS email_blast_recipients (
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     UNIQUE(campaign_id, email)
 );
-
-CREATE INDEX IF NOT EXISTS idx_email_blast_campaigns_status ON email_blast_campaigns(status);
-CREATE INDEX IF NOT EXISTS idx_email_blast_recipients_campaign ON email_blast_recipients(campaign_id);
-CREATE INDEX IF NOT EXISTS idx_email_blast_recipients_status ON email_blast_recipients(status);
 
 -- Email Blast Daily Quota
 CREATE TABLE IF NOT EXISTS email_blast_daily_quota (
@@ -456,6 +541,13 @@ CREATE TABLE IF NOT EXISTS email_sent_cache (
 );
 
 CREATE INDEX IF NOT EXISTS idx_sent_cache_fetched ON email_sent_cache(fetched_at DESC);
+"""
+
+_INDEXES_EMAIL_BLAST = """
+CREATE INDEX IF NOT EXISTS idx_email_blast_campaigns_status ON email_blast_campaigns(status);
+CREATE INDEX IF NOT EXISTS idx_email_blast_campaigns_owner ON email_blast_campaigns(created_by_dms_user_id);
+CREATE INDEX IF NOT EXISTS idx_email_blast_recipients_campaign ON email_blast_recipients(campaign_id);
+CREATE INDEX IF NOT EXISTS idx_email_blast_recipients_status ON email_blast_recipients(status);
 """
 
 # ---------------------------------------------------------------------------
@@ -710,8 +802,10 @@ async def init_db() -> None:
         await db.executescript(_DDL)
         await db.executescript(_DDL_AGENT)
         await db.executescript(_DDL_CONFIG)
+        await db.executescript(_DDL_AUTH)
         await db.executescript(_INDEXES)
         await db.executescript(_INDEXES_AGENT)
+        await db.executescript(_INDEXES_AUTH)
         await db.executescript(_DDL_AUDIENSI)
         await db.executescript(_INDEXES_AUDIENSI)
         await db.executescript(_DDL_KNOWLEDGE)
@@ -983,6 +1077,50 @@ async def init_db() -> None:
         except Exception:
             pass  # Column already exists
 
+        # Migration: add ownership metadata to email blast campaigns
+        try:
+            await db.execute(
+                "ALTER TABLE email_blast_campaigns ADD COLUMN created_by_dms_user_id INTEGER"
+            )
+            await db.commit()
+        except Exception:
+            pass  # Column already exists
+        try:
+            await db.execute(
+                "ALTER TABLE email_blast_campaigns ADD COLUMN created_by_email TEXT"
+            )
+            await db.commit()
+        except Exception:
+            pass  # Column already exists
+        try:
+            await db.execute(
+                "ALTER TABLE email_blast_campaigns ADD COLUMN created_by_name TEXT"
+            )
+            await db.commit()
+        except Exception:
+            pass  # Column already exists
+        try:
+            await db.execute(
+                "ALTER TABLE email_blast_campaigns ADD COLUMN started_by_dms_user_id INTEGER"
+            )
+            await db.commit()
+        except Exception:
+            pass  # Column already exists
+        try:
+            await db.execute(
+                "ALTER TABLE email_blast_campaigns ADD COLUMN started_by_email TEXT"
+            )
+            await db.commit()
+        except Exception:
+            pass  # Column already exists
+        try:
+            await db.execute(
+                "ALTER TABLE email_blast_campaigns ADD COLUMN started_by_name TEXT"
+            )
+            await db.commit()
+        except Exception:
+            pass  # Column already exists
+
         # Migration: add embedding column to knowledge_items for semantic search
         try:
             await db.execute("ALTER TABLE knowledge_items ADD COLUMN embedding BLOB")
@@ -1090,7 +1228,52 @@ async def init_db() -> None:
         except Exception:
             pass  # Column already exists
 
+        # Migration: add ownership metadata to blast campaigns
+        try:
+            await db.execute(
+                "ALTER TABLE blast_campaigns ADD COLUMN created_by_dms_user_id INTEGER"
+            )
+            await db.commit()
+        except Exception:
+            pass  # Column already exists
+        try:
+            await db.execute(
+                "ALTER TABLE blast_campaigns ADD COLUMN created_by_email TEXT"
+            )
+            await db.commit()
+        except Exception:
+            pass  # Column already exists
+        try:
+            await db.execute(
+                "ALTER TABLE blast_campaigns ADD COLUMN created_by_name TEXT"
+            )
+            await db.commit()
+        except Exception:
+            pass  # Column already exists
+        try:
+            await db.execute(
+                "ALTER TABLE blast_campaigns ADD COLUMN started_by_dms_user_id INTEGER"
+            )
+            await db.commit()
+        except Exception:
+            pass  # Column already exists
+        try:
+            await db.execute(
+                "ALTER TABLE blast_campaigns ADD COLUMN started_by_email TEXT"
+            )
+            await db.commit()
+        except Exception:
+            pass  # Column already exists
+        try:
+            await db.execute(
+                "ALTER TABLE blast_campaigns ADD COLUMN started_by_name TEXT"
+            )
+            await db.commit()
+        except Exception:
+            pass  # Column already exists
+
         await db.executescript(_INDEXES_BLAST)
+        await db.executescript(_INDEXES_EMAIL_BLAST)
 
         # Migration: create contact_memory table for persistent per-contact notes
         await db.executescript("""
@@ -2933,6 +3116,464 @@ async def delete_config(key: str) -> None:
     """Delete a config key (resets to default)."""
     async with get_db() as db:
         await db.execute("DELETE FROM config WHERE key = ?", (key,))
+        await db.commit()
+
+
+# ---------------------------------------------------------------------------
+# Auth CRUD
+# ---------------------------------------------------------------------------
+
+
+async def count_active_auth_roles() -> int:
+    """Return the number of active auth role assignments."""
+    async with get_db() as db:
+        cursor = await db.execute(
+            "SELECT COUNT(*) AS total FROM auth_user_roles WHERE is_active = 1"
+        )
+        row = await cursor.fetchone()
+        return int(row["total"] if row else 0)
+
+
+async def count_active_auth_role_assignments(role_key: str) -> int:
+    """Return the number of active assignments for a specific local role."""
+    async with get_db() as db:
+        cursor = await db.execute(
+            """
+            SELECT COUNT(*) AS total
+            FROM auth_user_roles
+            WHERE is_active = 1 AND role_key = ?
+            """,
+            (role_key,),
+        )
+        row = await cursor.fetchone()
+        return int(row["total"] if row else 0)
+
+
+async def get_auth_role_keys_for_user(dms_user_id: int) -> list[str]:
+    """Return active local role keys assigned to a DMS user."""
+    async with get_db() as db:
+        cursor = await db.execute(
+            """
+            SELECT role_key
+            FROM auth_user_roles
+            WHERE dms_user_id = ? AND is_active = 1
+            ORDER BY role_key ASC
+            """,
+            (dms_user_id,),
+        )
+        rows = await cursor.fetchall()
+        return [str(row["role_key"]) for row in rows]
+
+
+async def list_auth_role_assignments() -> list[dict[str, Any]]:
+    """Return all active local auth role assignments."""
+    async with get_db() as db:
+        cursor = await db.execute(
+            """
+            SELECT id, dms_user_id, user_email, user_name, role_key,
+                   granted_by_email, created_at, updated_at
+            FROM auth_user_roles
+            WHERE is_active = 1
+            ORDER BY user_email ASC, role_key ASC
+            """
+        )
+        rows = await cursor.fetchall()
+        return _rows_to_dicts(rows)
+
+
+async def get_active_auth_role_assignment(dms_user_id: int, role_key: str) -> dict[str, Any] | None:
+    """Return one active role assignment for a user and role key."""
+    async with get_db() as db:
+        cursor = await db.execute(
+            """
+            SELECT id, dms_user_id, user_email, user_name, role_key,
+                   granted_by_email, created_at, updated_at
+            FROM auth_user_roles
+            WHERE dms_user_id = ? AND role_key = ? AND is_active = 1
+            LIMIT 1
+            """,
+            (dms_user_id, role_key),
+        )
+        row = await cursor.fetchone()
+        return _row_to_dict(row) if row else None
+
+
+async def upsert_auth_user_role(
+    dms_user_id: int,
+    user_email: str,
+    user_name: str,
+    role_key: str,
+    granted_by_email: str | None = None,
+) -> None:
+    """Create or reactivate a local role assignment for a DMS user."""
+    now = _utcnow()
+    async with get_db() as db:
+        await db.execute(
+            """
+            INSERT INTO auth_user_roles (
+                dms_user_id, user_email, user_name, role_key,
+                is_active, granted_by_email, created_at, updated_at
+            )
+            VALUES (?, ?, ?, ?, 1, ?, ?, ?)
+            ON CONFLICT(dms_user_id, role_key) DO UPDATE SET
+                user_email = excluded.user_email,
+                user_name = excluded.user_name,
+                is_active = 1,
+                granted_by_email = excluded.granted_by_email,
+                updated_at = excluded.updated_at
+            """,
+            (dms_user_id, user_email, user_name, role_key, granted_by_email, now, now),
+        )
+        await db.commit()
+
+
+async def deactivate_auth_user_role(dms_user_id: int, role_key: str) -> None:
+    """Deactivate a local role assignment."""
+    async with get_db() as db:
+        await db.execute(
+            """
+            UPDATE auth_user_roles
+            SET is_active = 0, updated_at = ?
+            WHERE dms_user_id = ? AND role_key = ?
+            """,
+            (_utcnow(), dms_user_id, role_key),
+        )
+        await db.commit()
+
+
+async def create_auth_session(
+    session_hash: str,
+    dms_user_id: int,
+    user_email: str,
+    user_name: str,
+    dms_user_level: str | None,
+    expires_at: str,
+    user_agent: str | None = None,
+    ip_address: str | None = None,
+) -> None:
+    """Persist a new authenticated browser session."""
+    now = _utcnow()
+    async with get_db() as db:
+        await db.execute(
+            """
+            INSERT INTO auth_sessions (
+                session_hash, dms_user_id, user_email, user_name, dms_user_level,
+                expires_at, created_at, last_seen_at, user_agent, ip_address
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                session_hash,
+                dms_user_id,
+                user_email,
+                user_name,
+                dms_user_level,
+                expires_at,
+                now,
+                now,
+                user_agent,
+                ip_address,
+            ),
+        )
+        await db.commit()
+
+
+async def get_auth_session(session_hash: str) -> dict[str, Any] | None:
+    """Return an auth session by hash."""
+    async with get_db() as db:
+        cursor = await db.execute(
+            """
+            SELECT session_hash, dms_user_id, user_email, user_name, dms_user_level,
+                   expires_at, created_at, last_seen_at, revoked_at, user_agent, ip_address
+            FROM auth_sessions
+            WHERE session_hash = ?
+            LIMIT 1
+            """,
+            (session_hash,),
+        )
+        row = await cursor.fetchone()
+        return _row_to_dict(row) if row else None
+
+
+async def touch_auth_session(session_hash: str) -> None:
+    """Update last-seen timestamp for an active session."""
+    async with get_db() as db:
+        await db.execute(
+            "UPDATE auth_sessions SET last_seen_at = ? WHERE session_hash = ?",
+            (_utcnow(), session_hash),
+        )
+        await db.commit()
+
+
+async def revoke_auth_session(session_hash: str) -> None:
+    """Revoke a single auth session."""
+    async with get_db() as db:
+        await db.execute(
+            "UPDATE auth_sessions SET revoked_at = ? WHERE session_hash = ?",
+            (_utcnow(), session_hash),
+        )
+        await db.commit()
+
+
+async def revoke_auth_sessions_for_user(dms_user_id: int) -> None:
+    """Revoke all sessions for a DMS user."""
+    async with get_db() as db:
+        await db.execute(
+            "UPDATE auth_sessions SET revoked_at = ? WHERE dms_user_id = ? AND revoked_at IS NULL",
+            (_utcnow(), dms_user_id),
+        )
+        await db.commit()
+
+
+async def create_auth_audit_log(
+    action: str,
+    actor_dms_user_id: int | None = None,
+    actor_email: str | None = None,
+    subject_dms_user_id: int | None = None,
+    subject_email: str | None = None,
+    role_key: str | None = None,
+    success: bool = True,
+    detail: str | None = None,
+    ip_address: str | None = None,
+    user_agent: str | None = None,
+) -> None:
+    """Persist an auth-related audit event."""
+    async with get_db() as db:
+        await db.execute(
+            """
+            INSERT INTO auth_audit_logs (
+                action, actor_dms_user_id, actor_email, subject_dms_user_id,
+                subject_email, role_key, success, detail, ip_address, user_agent, created_at
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                action,
+                actor_dms_user_id,
+                actor_email,
+                subject_dms_user_id,
+                subject_email,
+                role_key,
+                1 if success else 0,
+                detail,
+                ip_address,
+                user_agent,
+                _utcnow(),
+            ),
+        )
+        await db.commit()
+
+
+async def count_auth_audit_logs() -> int:
+    """Return total auth audit log rows."""
+    async with get_db() as db:
+        cursor = await db.execute("SELECT COUNT(*) AS total FROM auth_audit_logs")
+        row = await cursor.fetchone()
+        return int(row["total"] if row else 0)
+
+
+async def list_auth_audit_logs(limit: int = 50, offset: int = 0) -> list[dict[str, Any]]:
+    """Return auth audit logs ordered from newest to oldest."""
+    async with get_db() as db:
+        cursor = await db.execute(
+            """
+            SELECT id, action, actor_dms_user_id, actor_email, subject_dms_user_id,
+                   subject_email, role_key, success, detail, ip_address, user_agent, created_at
+            FROM auth_audit_logs
+            ORDER BY created_at DESC, id DESC
+            LIMIT ? OFFSET ?
+            """,
+            (limit, offset),
+        )
+        rows = await cursor.fetchall()
+        items = _rows_to_dicts(rows)
+        for item in items:
+            item["success"] = bool(item.get("success"))
+        return items
+
+
+async def get_auth_role_upgrade_request(request_id: int) -> dict[str, Any] | None:
+    """Return one role-upgrade request by id."""
+    async with get_db() as db:
+        cursor = await db.execute(
+            """
+            SELECT id, requester_dms_user_id, requester_email, requester_name,
+                   current_role_key, requested_role_key, status, request_note,
+                   reviewed_by_dms_user_id, reviewed_by_email, review_note,
+                   reviewed_at, created_at, updated_at
+            FROM auth_role_upgrade_requests
+            WHERE id = ?
+            LIMIT 1
+            """,
+            (request_id,),
+        )
+        row = await cursor.fetchone()
+        return _row_to_dict(row) if row else None
+
+
+async def get_pending_auth_role_upgrade_request_for_user(dms_user_id: int) -> dict[str, Any] | None:
+    """Return the latest pending role-upgrade request for a requester."""
+    async with get_db() as db:
+        cursor = await db.execute(
+            """
+            SELECT id, requester_dms_user_id, requester_email, requester_name,
+                   current_role_key, requested_role_key, status, request_note,
+                   reviewed_by_dms_user_id, reviewed_by_email, review_note,
+                   reviewed_at, created_at, updated_at
+            FROM auth_role_upgrade_requests
+            WHERE requester_dms_user_id = ? AND status = 'pending'
+            ORDER BY created_at DESC, id DESC
+            LIMIT 1
+            """,
+            (dms_user_id,),
+        )
+        row = await cursor.fetchone()
+        return _row_to_dict(row) if row else None
+
+
+async def count_auth_role_upgrade_requests(status: str | None = None) -> int:
+    """Return total role-upgrade requests, optionally filtered by status."""
+    async with get_db() as db:
+        if status:
+            cursor = await db.execute(
+                "SELECT COUNT(*) AS total FROM auth_role_upgrade_requests WHERE status = ?",
+                (status,),
+            )
+        else:
+            cursor = await db.execute(
+                "SELECT COUNT(*) AS total FROM auth_role_upgrade_requests"
+            )
+        row = await cursor.fetchone()
+        return int(row["total"] if row else 0)
+
+
+async def list_auth_role_upgrade_requests(
+    status: str | None = None,
+    limit: int = 100,
+    offset: int = 0,
+) -> list[dict[str, Any]]:
+    """Return role-upgrade requests ordered from newest to oldest."""
+    async with get_db() as db:
+        if status:
+            cursor = await db.execute(
+                """
+                SELECT id, requester_dms_user_id, requester_email, requester_name,
+                       current_role_key, requested_role_key, status, request_note,
+                       reviewed_by_dms_user_id, reviewed_by_email, review_note,
+                       reviewed_at, created_at, updated_at
+                FROM auth_role_upgrade_requests
+                WHERE status = ?
+                ORDER BY created_at DESC, id DESC
+                LIMIT ? OFFSET ?
+                """,
+                (status, limit, offset),
+            )
+        else:
+            cursor = await db.execute(
+                """
+                SELECT id, requester_dms_user_id, requester_email, requester_name,
+                       current_role_key, requested_role_key, status, request_note,
+                       reviewed_by_dms_user_id, reviewed_by_email, review_note,
+                       reviewed_at, created_at, updated_at
+                FROM auth_role_upgrade_requests
+                ORDER BY created_at DESC, id DESC
+                LIMIT ? OFFSET ?
+                """,
+                (limit, offset),
+            )
+        rows = await cursor.fetchall()
+        return _rows_to_dicts(rows)
+
+
+async def list_auth_role_upgrade_requests_for_user(
+    dms_user_id: int,
+    limit: int = 20,
+) -> list[dict[str, Any]]:
+    """Return recent role-upgrade requests created by a specific requester."""
+    async with get_db() as db:
+        cursor = await db.execute(
+            """
+            SELECT id, requester_dms_user_id, requester_email, requester_name,
+                   current_role_key, requested_role_key, status, request_note,
+                   reviewed_by_dms_user_id, reviewed_by_email, review_note,
+                   reviewed_at, created_at, updated_at
+            FROM auth_role_upgrade_requests
+            WHERE requester_dms_user_id = ?
+            ORDER BY created_at DESC, id DESC
+            LIMIT ?
+            """,
+            (dms_user_id, limit),
+        )
+        rows = await cursor.fetchall()
+        return _rows_to_dicts(rows)
+
+
+async def create_auth_role_upgrade_request(
+    requester_dms_user_id: int,
+    requester_email: str,
+    requester_name: str,
+    current_role_key: str,
+    requested_role_key: str,
+    request_note: str | None = None,
+) -> int:
+    """Create a new pending role-upgrade request and return its id."""
+    now = _utcnow()
+    async with get_db() as db:
+        cursor = await db.execute(
+            """
+            INSERT INTO auth_role_upgrade_requests (
+                requester_dms_user_id, requester_email, requester_name,
+                current_role_key, requested_role_key, status,
+                request_note, created_at, updated_at
+            )
+            VALUES (?, ?, ?, ?, ?, 'pending', ?, ?, ?)
+            """,
+            (
+                requester_dms_user_id,
+                requester_email,
+                requester_name,
+                current_role_key,
+                requested_role_key,
+                request_note,
+                now,
+                now,
+            ),
+        )
+        await db.commit()
+        return int(cursor.lastrowid)
+
+
+async def resolve_auth_role_upgrade_request(
+    request_id: int,
+    status: str,
+    reviewed_by_dms_user_id: int,
+    reviewed_by_email: str,
+    review_note: str | None = None,
+) -> None:
+    """Mark a role-upgrade request as approved or rejected."""
+    now = _utcnow()
+    async with get_db() as db:
+        await db.execute(
+            """
+            UPDATE auth_role_upgrade_requests
+            SET status = ?,
+                reviewed_by_dms_user_id = ?,
+                reviewed_by_email = ?,
+                review_note = ?,
+                reviewed_at = ?,
+                updated_at = ?
+            WHERE id = ?
+            """,
+            (
+                status,
+                reviewed_by_dms_user_id,
+                reviewed_by_email,
+                review_note,
+                now,
+                now,
+                request_id,
+            ),
+        )
         await db.commit()
 
 

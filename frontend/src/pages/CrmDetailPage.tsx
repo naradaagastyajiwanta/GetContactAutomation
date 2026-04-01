@@ -31,6 +31,7 @@ import { Card, CardHeader, CardTitle, CardContent } from '../components/ui/Card'
 import { Badge } from '../components/ui/Badge'
 import { Button } from '../components/ui/Button'
 import { Spinner } from '../components/ui/Spinner'
+import { useAuth } from '../context/AuthContext'
 
 function tryParseJson(val: string | null): unknown {
   if (!val) return null
@@ -455,10 +456,12 @@ function ProcessingState() {
 }
 
 export default function CrmDetailPage() {
+  const { hasPermission } = useAuth()
   const { id } = useParams<{ id: string }>()
   const requestId = Number(id)
   const { data, isLoading, error } = useCrmRequestDetail(requestId)
   const runMutation = useRunCrmProfiling()
+  const canManageCrm = hasPermission('crm.manage')
   const profileId = data?.profile?.id
   const { data: profileData } = useCrmProfileSources(profileId)
   const sourceMap = buildSourceUrlMap(profileData?.sources)
@@ -543,7 +546,7 @@ export default function CrmDetailPage() {
               <ConfidenceMeter value={profile.overall_confidence || 0} />
             </div>
           )}
-          {(request.status === 'pending' || request.status === 'failed') && (
+          {canManageCrm && (request.status === 'pending' || request.status === 'failed') && (
             <Button
               onClick={() => runMutation.mutate(requestId)}
               loading={runMutation.isPending}
@@ -552,7 +555,7 @@ export default function CrmDetailPage() {
               {request.status === 'failed' ? 'Retry' : 'Run'}
             </Button>
           )}
-          {request.status === 'completed' && (
+          {canManageCrm && request.status === 'completed' && (
             <Button
               variant="outline"
               onClick={() => {
@@ -602,10 +605,12 @@ export default function CrmDetailPage() {
           <p className="mb-4 text-sm text-gray-500 dark:text-gray-400">
             Klik &quot;Run&quot; untuk mulai mengumpulkan data OSINT
           </p>
-          <Button onClick={() => runMutation.mutate(requestId)} loading={runMutation.isPending}>
-            <Play className="h-4 w-4" />
-            Jalankan Profiling
-          </Button>
+          {canManageCrm && (
+            <Button onClick={() => runMutation.mutate(requestId)} loading={runMutation.isPending}>
+              <Play className="h-4 w-4" />
+              Jalankan Profiling
+            </Button>
+          )}
         </Card>
       )}
     </div>

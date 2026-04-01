@@ -4,6 +4,7 @@ import { Card } from '../components/ui/Card'
 import { Button } from '../components/ui/Button'
 import { Spinner } from '../components/ui/Spinner'
 import { EmptyState } from '../components/ui/EmptyState'
+import { useAuth } from '../context/AuthContext'
 import { useConfig, useUpdateConfig } from '../hooks/useConfig'
 import {
   useKnowledgeItems,
@@ -22,9 +23,11 @@ const TABS: { key: ChatbotType; label: string; configKey: string }[] = [
 ]
 
 function CustomInstructionsEditor({ configKey }: { configKey: string }) {
+  const { hasPermission } = useAuth()
   const { data: configData } = useConfig()
   const updateConfig = useUpdateConfig()
   const [localValue, setLocalValue] = useState<string | null>(null)
+  const canManageSettings = hasPermission('settings.manage')
 
   const setting = configData?.settings.find((s) => s.key === configKey)
   const currentValue = localValue ?? (setting?.value as string) ?? ''
@@ -43,7 +46,7 @@ function CustomInstructionsEditor({ configKey }: { configKey: string }) {
         <label className="text-sm font-medium text-gray-700 dark:text-gray-300">
           Custom Instructions
         </label>
-        {isDirty && (
+        {canManageSettings && isDirty && (
           <Button size="sm" onClick={handleSave} loading={updateConfig.isPending}>
             <Save className="h-3.5 w-3.5" />
             Save
@@ -54,12 +57,18 @@ function CustomInstructionsEditor({ configKey }: { configKey: string }) {
         value={currentValue}
         onChange={(e) => setLocalValue(e.target.value)}
         rows={4}
+        disabled={!canManageSettings}
         placeholder="Tambahkan instruksi khusus untuk chatbot ini... (contoh: 'Selalu sebutkan nama lengkap organisasi')"
         className="w-full rounded-md border border-gray-300 bg-white px-3 py-2 text-sm text-gray-900 placeholder-gray-400 focus:border-indigo-500 focus:outline-none focus:ring-1 focus:ring-indigo-500 dark:border-gray-600 dark:bg-gray-700 dark:text-gray-100 dark:placeholder-gray-500"
       />
       <p className="text-xs text-gray-500 dark:text-gray-400">
         Instruksi ini akan di-inject ke system prompt chatbot.
       </p>
+      {!canManageSettings && (
+        <p className="text-xs text-amber-600 dark:text-amber-300">
+          Mengubah custom instructions membutuhkan permission settings.manage.
+        </p>
+      )}
     </div>
   )
 }
@@ -67,9 +76,11 @@ function CustomInstructionsEditor({ configKey }: { configKey: string }) {
 function KnowledgeItemCard({
   item,
   onEdit,
+  canManage,
 }: {
   item: KnowledgeItem
   onEdit: () => void
+  canManage: boolean
 }) {
   const updateMutation = useUpdateKnowledgeItem()
   const deleteMutation = useDeleteKnowledgeItem()
@@ -136,7 +147,7 @@ function KnowledgeItemCard({
         <div className="flex shrink-0 items-center gap-1">
           <button
             onClick={handleToggle}
-            disabled={updateMutation.isPending}
+            disabled={updateMutation.isPending || !canManage}
             title={item.is_active ? 'Deactivate' : 'Activate'}
             className={`relative inline-flex h-5 w-9 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors ${
               item.is_active ? 'bg-green-500' : 'bg-gray-300 dark:bg-gray-600'
@@ -150,6 +161,7 @@ function KnowledgeItemCard({
           </button>
           <button
             onClick={onEdit}
+            disabled={!canManage}
             className="rounded p-1.5 text-gray-400 hover:bg-gray-100 hover:text-gray-600 dark:hover:bg-gray-700 dark:hover:text-gray-300"
             title="Edit"
           >
@@ -158,7 +170,7 @@ function KnowledgeItemCard({
           <button
             onClick={handleDelete}
             onBlur={() => setConfirmDelete(false)}
-            disabled={deleteMutation.isPending}
+            disabled={deleteMutation.isPending || !canManage}
             className={`rounded p-1.5 transition-colors ${
               confirmDelete
                 ? 'bg-red-100 text-red-600 dark:bg-red-900/30 dark:text-red-400'
@@ -273,13 +285,13 @@ function KnowledgeItemForm({
 
 const ACCEPTED_FILE_TYPES = '.txt,.md,.csv,.docx,.pdf'
 
-function FileUploadZone({ chatbotType }: { chatbotType: ChatbotType }) {
+function FileUploadZone({ chatbotType, canManage }: { chatbotType: ChatbotType; canManage: boolean }) {
   const uploadMutation = useUploadKnowledgeFile()
   const fileInputRef = useRef<HTMLInputElement>(null)
   const [dragOver, setDragOver] = useState(false)
 
   const handleFiles = (files: FileList | null) => {
-    if (!files) return
+    if (!canManage || !files) return
     for (let i = 0; i < files.length; i++) {
       uploadMutation.mutate({ file: files[i], chatbotType })
     }
@@ -288,19 +300,25 @@ function FileUploadZone({ chatbotType }: { chatbotType: ChatbotType }) {
   const handleDrop = (e: React.DragEvent) => {
     e.preventDefault()
     setDragOver(false)
+    if (!canManage) return
     handleFiles(e.dataTransfer.files)
   }
 
   return (
     <div
-      onDragOver={(e) => { e.preventDefault(); setDragOver(true) }}
+      onDragOver={(e) => {
+        e.preventDefault()
+        if (canManage) setDragOver(true)
+      }}
       onDragLeave={() => setDragOver(false)}
       onDrop={handleDrop}
-      onClick={() => fileInputRef.current?.click()}
-      className={`cursor-pointer rounded-lg border-2 border-dashed p-4 text-center transition-colors ${
+      onClick={() => canManage && fileInputRef.current?.click()}
+      className={`rounded-lg border-2 border-dashed p-4 text-center transition-colors ${
         dragOver
           ? 'border-indigo-400 bg-indigo-50 dark:border-indigo-500 dark:bg-indigo-950/20'
-          : 'border-gray-300 hover:border-gray-400 dark:border-gray-600 dark:hover:border-gray-500'
+          : canManage
+            ? 'cursor-pointer border-gray-300 hover:border-gray-400 dark:border-gray-600 dark:hover:border-gray-500'
+            : 'cursor-not-allowed border-gray-200 bg-gray-50 dark:border-gray-700 dark:bg-gray-800/50'
       }`}
     >
       <input
@@ -309,13 +327,16 @@ function FileUploadZone({ chatbotType }: { chatbotType: ChatbotType }) {
         accept={ACCEPTED_FILE_TYPES}
         multiple
         onChange={(e) => { handleFiles(e.target.files); e.target.value = '' }}
+        disabled={!canManage}
         className="hidden"
       />
       <Upload className={`mx-auto h-6 w-6 ${dragOver ? 'text-indigo-500' : 'text-gray-400'}`} />
       <p className="mt-1.5 text-sm text-gray-600 dark:text-gray-400">
         {uploadMutation.isPending
           ? 'Uploading...'
-          : 'Drag & drop file atau klik untuk upload'}
+          : canManage
+            ? 'Drag & drop file atau klik untuk upload'
+            : 'Upload file membutuhkan permission knowledge.manage'}
       </p>
       <p className="mt-0.5 text-xs text-gray-400 dark:text-gray-500">
         .txt, .md, .csv, .docx, .pdf (max 5MB)
@@ -325,9 +346,11 @@ function FileUploadZone({ chatbotType }: { chatbotType: ChatbotType }) {
 }
 
 function ChatbotKBSection({ chatbotType, configKey }: { chatbotType: ChatbotType; configKey: string }) {
+  const { hasPermission } = useAuth()
   const { data, isLoading } = useKnowledgeItems(chatbotType)
   const [showForm, setShowForm] = useState(false)
   const [editingItem, setEditingItem] = useState<KnowledgeItem | undefined>()
+  const canManageKnowledge = hasPermission('knowledge.manage')
 
   const items = data?.items ?? []
 
@@ -352,7 +375,7 @@ function ChatbotKBSection({ chatbotType, configKey }: { chatbotType: ChatbotType
           <label className="text-sm font-medium text-gray-700 dark:text-gray-300">
             Knowledge Items
           </label>
-          {!showForm && (
+          {canManageKnowledge && !showForm && (
             <Button size="sm" variant="secondary" onClick={() => { setEditingItem(undefined); setShowForm(true) }}>
               <Plus className="h-3.5 w-3.5" />
               Add Item
@@ -362,10 +385,10 @@ function ChatbotKBSection({ chatbotType, configKey }: { chatbotType: ChatbotType
 
         {/* File Upload Zone */}
         <div className="mb-3">
-          <FileUploadZone chatbotType={chatbotType} />
+          <FileUploadZone chatbotType={chatbotType} canManage={canManageKnowledge} />
         </div>
 
-        {showForm && (
+        {canManageKnowledge && showForm && (
           <div className="mb-3">
             <KnowledgeItemForm
               chatbotType={chatbotType}
@@ -391,6 +414,7 @@ function ChatbotKBSection({ chatbotType, configKey }: { chatbotType: ChatbotType
               <KnowledgeItemCard
                 key={item.id}
                 item={item}
+                canManage={canManageKnowledge}
                 onEdit={() => handleEdit(item)}
               />
             ))}

@@ -35,6 +35,7 @@ interface Props {
   campaignCounts: CampaignCounts
   onSelect: (campaign: EmailBlastCampaign) => void
   onNew: () => void
+  canManage: boolean
   statusFilter: string
   onStatusChange: (status: string) => void
 }
@@ -193,6 +194,12 @@ function CampaignRow({
           </span>
           <span>{formatDate(campaign.created_at)}</span>
         </div>
+        <div className="mt-1 flex flex-wrap gap-x-3 gap-y-1 text-[11px] text-gray-400">
+          <span>Dibuat oleh {campaign.created_by_name || campaign.created_by_email || 'Unknown'}</span>
+          {campaign.started_by_name || campaign.started_by_email ? (
+            <span>Terakhir dijalankan oleh {campaign.started_by_name || campaign.started_by_email}</span>
+          ) : null}
+        </div>
       </div>
 
       {/* Progress */}
@@ -216,6 +223,7 @@ export function EmailCampaignList({
   campaignCounts,
   onSelect,
   onNew,
+  canManage,
   statusFilter,
   onStatusChange,
 }: Props) {
@@ -262,10 +270,12 @@ export function EmailCampaignList({
             />
           </div>
 
-          <Button size="sm" onClick={onNew}>
-            <Plus className="h-3.5 w-3.5" />
-            New
-          </Button>
+          {canManage && (
+            <Button size="sm" onClick={onNew}>
+              <Plus className="h-3.5 w-3.5" />
+              New
+            </Button>
+          )}
         </div>
       </div>
 
@@ -311,7 +321,7 @@ export function EmailCampaignList({
                 : 'Create your first email campaign to get started.'
             }
             action={
-              !search ? (
+              !search && canManage ? (
                 <Button onClick={onNew}>
                   <Plus className="h-4 w-4" />
                   New Campaign

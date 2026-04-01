@@ -61,6 +61,7 @@ import type { AttachmentInfo } from '../../api/emailBlast'
 
 interface Props {
   campaignId?: number
+  canManage: boolean
   onClose: () => void
   onCompose?: () => void
 }
@@ -444,6 +445,7 @@ function ContentTab({
   campaign,
   attachment,
   campaignId,
+  canManage,
   onSave,
   isSaving,
   onPendingSavesChange,
@@ -451,6 +453,7 @@ function ContentTab({
   campaign: EmailBlastCampaign
   attachment: AttachmentInfo | undefined
   campaignId: number
+  canManage: boolean
   onSave: (data: { name: string; subject: string; template_message: string; delay_between_ms: number }) => void
   isSaving: boolean
   onPendingSavesChange?: (pending: boolean) => void
@@ -513,18 +516,20 @@ function ContentTab({
     }
   }, [attachment])
 
-  const isReadOnly = campaign.status === 'running' || campaign.status === 'completed' || campaign.status === 'cancelled'
+  const isReadOnly = !canManage || campaign.status === 'running' || campaign.status === 'completed' || campaign.status === 'cancelled'
   const customVars = attachment?.variables
     ? Object.keys(attachment.variables).filter((k) => !AUTO_PLACEHOLDERS.includes(k))
     : []
 
   function insertPlaceholder(p: string) {
+    if (isReadOnly) return
     const next = body + p
     setBody(next)
     triggerAutoSave()
   }
 
   function handleSave() {
+    if (isReadOnly) return
     // Cancel pending auto-save and save immediately
     if (autoSaveTimer) {
       clearTimeout(autoSaveTimer)
@@ -549,7 +554,7 @@ function ContentTab({
   }
 
   async function handleAttachmentUpload(file: File) {
-    if (!campaignId) return
+    if (!campaignId || isReadOnly) return
     try {
       await uploadMutation.mutateAsync({ campaignId, file, variables: varValues })
       toast.success('Attachment uploaded')
@@ -719,7 +724,7 @@ function ContentTab({
         </div>
 
         {/* Attachment Variable Form */}
-        {attachment?.filename && campaignId && (
+        {canManage && attachment?.filename && campaignId && (
           <AttachmentVarForm
             attachment={attachment}
             campaignId={campaignId}
@@ -745,7 +750,7 @@ function ContentTab({
       </div>
 
       {/* Actions */}
-      {!isReadOnly && (
+      {canManage && !isReadOnly && (
         <div className="flex items-center justify-between border-t border-gray-100 px-5 py-3 dark:border-gray-800">
           <div className="flex items-center gap-2">
             <Button variant="secondary" onClick={handleSave} loading={updateMutation.isPending}>
@@ -796,7 +801,15 @@ function ContentTab({
 
 // ─── Recipients Tab ───────────────────────────────────────────────────────────
 
-function RecipientsTab({ campaignId, campaign }: { campaignId: number; campaign: EmailBlastCampaign }) {
+function RecipientsTab({
+  campaignId,
+  campaign,
+  canManage,
+}: {
+  campaignId: number
+  campaign: EmailBlastCampaign
+  canManage: boolean
+}) {
   const [search, setSearch] = useState('')
   const [statusFilter, setStatusFilter] = useState<string>('')
   const [showAddModal, setShowAddModal] = useState(false)
@@ -805,7 +818,7 @@ function RecipientsTab({ campaignId, campaign }: { campaignId: number; campaign:
   const deleteMutation = useDeleteEmailRecipient()
 
   const recipients = data?.recipients ?? []
-  const isReadOnly = campaign.status === 'running' || campaign.status === 'completed' || campaign.status === 'cancelled'
+  const isReadOnly = !canManage || campaign.status === 'running' || campaign.status === 'completed' || campaign.status === 'cancelled'
 
   const filtered = search.trim()
     ? recipients.filter(
@@ -816,6 +829,7 @@ function RecipientsTab({ campaignId, campaign }: { campaignId: number; campaign:
     : recipients
 
   function handleDelete(recipientId: number) {
+    if (isReadOnly) return
     deleteMutation.mutate({ campaignId, recipientId })
   }
 
@@ -1197,6 +1211,8 @@ function SentTab({ campaignId, campaign }: { campaignId: number; campaign: Email
   const sentCount = emails.filter((e) => e.status === 'sent').length
   const failedCount = emails.filter((e) => e.status === 'failed').length
   const pendingCount = emails.filter((e) => e.status === 'pending').length
+  const creatorName = campaign.created_by_name || campaign.created_by_email || 'Unknown'
+  const operatorName = campaign.started_by_name || campaign.started_by_email
 
   return (
     <div className="flex h-full flex-col overflow-hidden">
@@ -1230,6 +1246,13 @@ function SentTab({ campaignId, campaign }: { campaignId: number; campaign: Email
         <span className="ml-auto text-xs text-gray-400">{emails.length} emails</span>
       </div>
 
+      <div className="border-b border-gray-100 bg-gray-50/80 px-4 py-2.5 text-[11px] text-gray-500 dark:border-gray-800 dark:bg-gray-900/40 dark:text-gray-400">
+        <div className="flex flex-wrap gap-x-4 gap-y-1">
+          <span>Dibuat oleh {creatorName}</span>
+          {operatorName ? <span>Terakhir dijalankan oleh {operatorName}</span> : null}
+        </div>
+      </div>
+
       <div className="flex-1 overflow-y-auto">
         {isLoading ? (
           <div className="flex h-48 items-center justify-center"><Spinner /></div>
@@ -1245,6 +1268,9 @@ function SentTab({ campaignId, campaign }: { campaignId: number; campaign: Email
                 <div className="min-w-0 flex-1">
                   <p className="truncate text-[13px] font-medium text-gray-900 dark:text-gray-100">{email.university_name || email.email}</p>
                   <p className="truncate text-[11px] text-gray-400">{email.subject}</p>
+                  {operatorName && (
+                    <p className="mt-0.5 truncate text-[11px] text-gray-400">Dijalankan oleh {operatorName}</p>
+                  )}
                 </div>
                 {email.error_message && <span className="max-w-[150px] truncate text-[10px] text-red-500">{email.error_message}</span>}
                 <span className="shrink-0 text-[11px] text-gray-400">{email.sent_at ? formatRelative(email.sent_at) : '—'}</span>
@@ -1302,7 +1328,7 @@ function CampaignInboxTab({ campaignId }: { campaignId: number }) {
 
 // ─── Main CampaignDetail ──────────────────────────────────────────────────────
 
-export function EmailCampaignDetail({ campaignId, onClose }: Props) {
+export function EmailCampaignDetail({ campaignId, canManage, onClose }: Props) {
   const [activeTab, setActiveTab] = useState<'content' | 'recipients' | 'sent' | 'inbox'>('content')
   const [showStartModal, setShowStartModal] = useState(false)
   const [isSaving, setIsSaving] = useState(false)
@@ -1389,7 +1415,7 @@ export function EmailCampaignDetail({ campaignId, onClose }: Props) {
   }
 
   if (!campaignId) {
-    return <CreateCampaignView onClose={onClose} />
+    return <CreateCampaignView canManage={canManage} onClose={onClose} />
   }
 
   if (isLoading) {
@@ -1428,6 +1454,12 @@ export function EmailCampaignDetail({ campaignId, onClose }: Props) {
             <span className="truncate text-sm font-semibold text-gray-900 dark:text-white">{campaign.name || 'Untitled'}</span>
             <span className={cn('shrink-0 rounded-full px-2 py-0.5 text-[10px] font-medium', cfg.bg)}>{cfg.label}</span>
           </div>
+          <div className="mt-1 flex flex-wrap gap-x-3 gap-y-1 text-[11px] text-gray-400">
+            <span>Dibuat oleh {campaign.created_by_name || campaign.created_by_email || 'Unknown'}</span>
+            {campaign.started_by_name || campaign.started_by_email ? (
+              <span>Terakhir dijalankan oleh {campaign.started_by_name || campaign.started_by_email}</span>
+            ) : null}
+          </div>
           {campaign.status === 'running' && (
             <div className="mt-1 flex items-center gap-2">
               <div className="h-1.5 w-48 overflow-hidden rounded-full bg-gray-100 dark:bg-gray-700">
@@ -1441,14 +1473,14 @@ export function EmailCampaignDetail({ campaignId, onClose }: Props) {
         {/* Actions */}
         <div className="flex shrink-0 items-center gap-2">
           {/* Retry Failed — show when completed/running with failures */}
-          {(campaign.status === 'completed' || campaign.status === 'running') && failedCount > 0 && (
+          {canManage && (campaign.status === 'completed' || campaign.status === 'running') && failedCount > 0 && (
             <Button size="sm" variant="secondary" onClick={handleRetryFailed} className="text-amber-600 hover:text-amber-700">
               <RotateCcw className="h-3.5 w-3.5" />
               Retry Failed ({failedCount})
             </Button>
           )}
 
-          {campaign.status === 'draft' && (
+          {canManage && campaign.status === 'draft' && (
             <>
               <Button size="sm" variant={hasPendingSaves || isSaving ? 'secondary' : 'success'} disabled={hasPendingSaves || isSaving} onClick={() => setShowStartModal(true)}>
                 <Rocket className="h-3.5 w-3.5" />
@@ -1459,7 +1491,7 @@ export function EmailCampaignDetail({ campaignId, onClose }: Props) {
               </Button>
             </>
           )}
-          {campaign.status === 'running' && (
+          {canManage && campaign.status === 'running' && (
             <>
               <Button size="sm" variant="secondary" onClick={handlePause} loading={pauseMutation.isPending}>
                 <Pause className="h-3.5 w-3.5" />
@@ -1471,7 +1503,7 @@ export function EmailCampaignDetail({ campaignId, onClose }: Props) {
               </Button>
             </>
           )}
-          {campaign.status === 'paused' && (
+          {canManage && campaign.status === 'paused' && (
             <>
               <Button
                 size="sm"
@@ -1520,12 +1552,13 @@ export function EmailCampaignDetail({ campaignId, onClose }: Props) {
             campaign={campaign}
             attachment={attachment}
             campaignId={campaignId}
+            canManage={canManage}
             onSave={handleSave}
             isSaving={isSaving}
             onPendingSavesChange={setHasPendingSaves}
           />
         )}
-        {activeTab === 'recipients' && <RecipientsTab campaignId={campaignId} campaign={campaign} />}
+        {activeTab === 'recipients' && <RecipientsTab campaignId={campaignId} campaign={campaign} canManage={canManage} />}
         {activeTab === 'sent' && <SentTab campaignId={campaignId} campaign={campaign} />}
         {activeTab === 'inbox' && <CampaignInboxTab campaignId={campaignId} />}
       </div>
@@ -1557,11 +1590,12 @@ export function EmailCampaignDetail({ campaignId, onClose }: Props) {
 
 // ─── Create Campaign View ────────────────────────────────────────────────────
 
-function CreateCampaignView({ onClose }: { onClose: () => void }) {
+function CreateCampaignView({ canManage, onClose }: { canManage: boolean; onClose: () => void }) {
   const [name, setName] = useState('')
   const createMutation = useCreateEmailCampaign()
 
   async function handleCreate() {
+    if (!canManage) return
     if (!name.trim()) return
     try {
       await createMutation.mutateAsync({ name: name.trim(), subject: '', template_message: '', delay_between_ms: 20_000 })
@@ -1591,6 +1625,7 @@ function CreateCampaignView({ onClose }: { onClose: () => void }) {
               onChange={(e) => setName(e.target.value)}
               placeholder="e.g., Undangan Audiensi Q2 2025"
               autoFocus
+              disabled={!canManage}
               onKeyDown={(e) => e.key === 'Enter' && handleCreate()}
               className="w-full rounded-lg border border-gray-200 bg-white px-3 py-2.5 text-sm text-gray-900 placeholder-gray-400 focus:border-indigo-500 focus:outline-none focus:ring-1 focus:ring-indigo-500 dark:border-gray-700 dark:bg-gray-800 dark:text-gray-100 dark:placeholder-gray-500"
             />
@@ -1603,7 +1638,7 @@ function CreateCampaignView({ onClose }: { onClose: () => void }) {
 
       <div className="flex items-center justify-end gap-2 border-t border-gray-100 px-5 py-3 dark:border-gray-800">
         <Button variant="secondary" onClick={onClose}>Cancel</Button>
-        <Button onClick={handleCreate} loading={createMutation.isPending} disabled={!name.trim()}>
+        <Button onClick={handleCreate} loading={createMutation.isPending} disabled={!canManage || !name.trim()}>
           <Rocket className="h-4 w-4" />
           Create
         </Button>
