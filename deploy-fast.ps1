@@ -1,7 +1,7 @@
 # =============================================================
 # Fast Deploy to VPS
 # Usage:
-#   .\deploy-fast.ps1                    # Deploy ALL (orchestrator + frontend)
+#   .\deploy-fast.ps1                    # Deploy ALL (orchestrator + frontend + whatsapp)
 #   .\deploy-fast.ps1 -Service orchestrator   # Orchestrator only (quick restart)
 #   .\deploy-fast.ps1 -Service frontend       # Frontend only (rebuild)
 #   .\deploy-fast.ps1 -Service whatsapp       # WhatsApp only (rebuild)
@@ -41,15 +41,19 @@ function Write-Info($msg) {
 # ---------------------------------------------------------------
 # Upload helpers
 # ---------------------------------------------------------------
-function Bash-Tar($projectDir, $archiveName, $tarArgs) {
-    $bashScript = "$env:TEMP\$archiveName.sh"
-    # Write bash script with UNIX line endings
-    $content = "cd ""$projectDir""`n" +
-               "tar -czf ""`$TMP/$archiveName.tar.gz"" $tarArgs"
-    $content | Out-File -FilePath $bashScript -Encoding ascii -NoNewline
-    bash $bashScript
-    Remove-Item $bashScript -ErrorAction SilentlyContinue
-    return "$env:TEMP\$archiveName.tar.gz"
+function Create-TarArchive($projectDir, $archiveName, $tarArgs) {
+    $archivePath = Join-Path $env:TEMP "$archiveName.tar.gz"
+    if (Test-Path $archivePath) {
+        Remove-Item $archivePath -Force
+    }
+
+    $tarParams = @("-czf", $archivePath, "-C", $projectDir) + $tarArgs
+    & tar.exe @tarParams
+    if ($LASTEXITCODE -ne 0) {
+        throw "tar.exe failed while creating $archiveName.tar.gz"
+    }
+
+    return $archivePath
 }
 
 function Upload-Orchestrator {
@@ -60,8 +64,8 @@ function Upload-Orchestrator {
             scp $localPath "${VPS}:${RemoteDir}/${f}" 2>$null
         }
     }
-    $projectDir = ($PSScriptRoot -replace '\\','/' ) -replace '([A-Za-z]):','/$1'
-    $tmpTar = Bash-Tar $projectDir "orchestrator_deploy" "--exclude='__pycache__' --exclude='*.pyc' orchestrator scripts"
+    $projectDir = $PSScriptRoot
+    $tmpTar = Create-TarArchive $projectDir "orchestrator_deploy" @("--exclude=__pycache__", "--exclude=*.pyc", "orchestrator", "scripts")
     $tarSize = [math]::Round((Get-Item $tmpTar).Length / 1KB, 1)
     Write-Info "Uploading orchestrator archive ($tarSize KB)..."
     scp $tmpTar "${VPS}:${RemoteDir}/orchestrator_deploy.tar.gz"
@@ -76,8 +80,8 @@ function Upload-Frontend {
         $localPath = Join-Path $PSScriptRoot $f
         if (Test-Path $localPath) { scp $localPath "${VPS}:${RemoteDir}/${f}" 2>$null }
     }
-    $projectDir = ($PSScriptRoot -replace '\\','/' ) -replace '([A-Za-z]):','/$1'
-    $tmpTar = Bash-Tar $projectDir "frontend_deploy" "--exclude='node_modules' --exclude='dist' frontend nginx"
+    $projectDir = $PSScriptRoot
+    $tmpTar = Create-TarArchive $projectDir "frontend_deploy" @("--exclude=node_modules", "--exclude=dist", "frontend", "nginx")
     $tarSize = [math]::Round((Get-Item $tmpTar).Length / 1KB, 1)
     Write-Info "Uploading frontend archive ($tarSize KB)..."
     scp $tmpTar "${VPS}:${RemoteDir}/frontend_deploy.tar.gz"
@@ -115,8 +119,8 @@ function Upload-Whatsapp {
         $localPath = Join-Path $PSScriptRoot $f
         if (Test-Path $localPath) { scp $localPath "${VPS}:${RemoteDir}/${f}" 2>$null }
     }
-    $projectDir = ($PSScriptRoot -replace '\\','/' ) -replace '([A-Za-z]):','/$1'
-    $tmpTar = Bash-Tar $projectDir "whatsapp_deploy" "--exclude='node_modules' --exclude='dist' --exclude='auth_store' whatsapp-service"
+    $projectDir = $PSScriptRoot
+    $tmpTar = Create-TarArchive $projectDir "whatsapp_deploy" @("--exclude=node_modules", "--exclude=dist", "--exclude=data", "--exclude=auth_store", "--exclude=auth_store_backup", "--exclude=auth_store_device_*", "whatsapp-service")
     $tarSize = [math]::Round((Get-Item $tmpTar).Length / 1KB, 1)
     Write-Info "Uploading whatsapp archive ($tarSize KB)..."
     scp $tmpTar "${VPS}:${RemoteDir}/whatsapp_deploy.tar.gz"
@@ -199,7 +203,7 @@ else {
     # Determine which services to deploy
     $services = @()
     switch ($Service) {
-        "all"          { $services = @("orchestrator", "frontend") }
+        "all"          { $services = @("orchestrator", "frontend", "whatsapp") }
         default        { $services = @($Service) }
     }
 
@@ -260,15 +264,19 @@ Write-Host "=============================================" -ForegroundColor Cyan
 # Quick health check
 Write-Host "`n  Checking health..." -ForegroundColor Gray
 Start-Sleep -Seconds 3
-$health = ssh $VPS "curl -s http://localhost:3200/api/health 2>/dev/null | head -c 200"
-if ($health -match '"status"') {
-    Write-Ok "API healthy: $health"
+$orchestratorHealth = ssh $VPS "curl -s http://localhost:8000/health 2>/dev/null | head -c 200"
+$whatsappHealth = ssh $VPS "curl -s http://localhost:3110/status 2>/dev/null | head -c 200"
+if ($orchestratorHealth -match '"status"' -and $whatsappHealth -match '"devices"') {
+    Write-Ok "Orchestrator healthy: $orchestratorHealth"
+    Write-Ok "WhatsApp healthy: $whatsappHealth"
 } else {
     Write-Host "  Waiting for startup..." -ForegroundColor DarkGray
     Start-Sleep -Seconds 5
-    $health = ssh $VPS "curl -s http://localhost:3200/api/health 2>/dev/null | head -c 200"
-    if ($health -match '"status"') {
-        Write-Ok "API healthy: $health"
+    $orchestratorHealth = ssh $VPS "curl -s http://localhost:8000/health 2>/dev/null | head -c 200"
+    $whatsappHealth = ssh $VPS "curl -s http://localhost:3110/status 2>/dev/null | head -c 200"
+    if ($orchestratorHealth -match '"status"' -and $whatsappHealth -match '"devices"') {
+        Write-Ok "Orchestrator healthy: $orchestratorHealth"
+        Write-Ok "WhatsApp healthy: $whatsappHealth"
     } else {
         Write-Host "  WARNING: Health check failed. Check logs:" -ForegroundColor Red
         Write-Host "  ssh $VPS `"cd $RemoteDir && docker compose -f docker-compose.yml logs --tail=20 orchestrator frontend whatsapp`"" -ForegroundColor White

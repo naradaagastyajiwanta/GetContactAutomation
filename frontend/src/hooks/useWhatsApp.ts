@@ -10,6 +10,7 @@ import {
   getDeviceQR,
   connectDevice,
   disconnectDevice,
+  forceRecoverDevice,
   bulkSendWhatsApp,
   bulkSendDocumentWhatsApp,
 } from '../api/whatsapp'
@@ -126,6 +127,23 @@ export function useDisconnectDevice() {
     },
     onError: (error, deviceId) => {
       toast.error(`Failed to disconnect device ${deviceId}`)
+      console.error(error)
+    },
+  })
+}
+
+export function useForceRecoverDevice() {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: (deviceId: string) => forceRecoverDevice(deviceId),
+    onSuccess: (_, deviceId) => {
+      toast.success(`Force recovery started for ${deviceId}`)
+      queryClient.invalidateQueries({ queryKey: queryKeys.whatsapp.all })
+      queryClient.invalidateQueries({ queryKey: queryKeys.whatsapp.device(deviceId) })
+      queryClient.invalidateQueries({ queryKey: queryKeys.whatsapp.deviceQr(deviceId) })
+    },
+    onError: (error, deviceId) => {
+      toast.error(`Failed to start force recovery for ${deviceId}`)
       console.error(error)
     },
   })

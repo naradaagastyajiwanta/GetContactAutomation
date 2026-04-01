@@ -1743,6 +1743,15 @@ async def wa_disconnect_device(device_id: str):
         return response.json()
 
 
+@app.post("/wa/devices/{device_id}/recover")
+async def wa_recover_device(device_id: str):
+    """Proxy to WhatsApp service to force a clean auth recovery for a device."""
+    from orchestrator.config import WA_SERVICE_URL
+    async with httpx.AsyncClient() as client:
+        response = await client.post(f"{WA_SERVICE_URL}/devices/{device_id}/recover")
+        return response.json()
+
+
 @app.get("/wa/devices/{device_id}/antiban")
 async def wa_get_device_antiban(device_id: str):
     """Proxy to WhatsApp service to get anti-ban status for a device."""

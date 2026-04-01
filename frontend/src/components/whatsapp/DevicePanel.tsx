@@ -26,18 +26,82 @@ import {
   Smartphone,
   X,
 } from 'lucide-react'
-import { useWhatsAppDevices, useConnectDevice, useDisconnectDevice, useDeviceQR } from '../../hooks/useWhatsApp'
-import type { WhatsAppDevice, DeviceConnectionState } from '../../types/waDevices'
+import {
+  useWhatsAppDevices,
+  useConnectDevice,
+  useDisconnectDevice,
+  useDeviceQR,
+  useForceRecoverDevice,
+} from '../../hooks/useWhatsApp'
+import type { WhatsAppDevice } from '../../types/waDevices'
 import { cn } from '../../lib/utils'
+
+function formatRelativeTime(timestamp: number | null): string | null {
+  if (!timestamp) {
+    return null
+  }
+
+  const diffMs = Date.now() - timestamp
+  const diffMinutes = Math.max(1, Math.round(diffMs / 60000))
+
+  if (diffMinutes < 60) {
+    return `${diffMinutes}m ago`
+  }
+
+  const diffHours = Math.round(diffMinutes / 60)
+  if (diffHours < 24) {
+    return `${diffHours}h ago`
+  }
+
+  const diffDays = Math.round(diffHours / 24)
+  return `${diffDays}d ago`
+}
+
+function AuthRecoveryNotice({ device }: { device: WhatsAppDevice }) {
+  const { authRecovery } = device
+  const hasIssue = Boolean(authRecovery.lastIssue)
+  const hasRecoveryHistory = authRecovery.authResetCount > 0 || Boolean(authRecovery.lastRecoveryAt)
+
+  if (!hasIssue && !hasRecoveryHistory) {
+    return null
+  }
+
+  const lastIssueAt = formatRelativeTime(authRecovery.lastIssueAt)
+  const lastRecoveryAt = formatRelativeTime(authRecovery.lastRecoveryAt)
+  const toneClass = authRecovery.recoveryRecommended
+    ? 'border-amber-200 bg-amber-50 text-amber-800 dark:border-amber-800 dark:bg-amber-900/20 dark:text-amber-200'
+    : 'border-sky-200 bg-sky-50 text-sky-800 dark:border-sky-800 dark:bg-sky-900/20 dark:text-sky-200'
+
+  return (
+    <div className={cn('rounded-lg border px-3 py-2 text-xs', toneClass)}>
+      <div className="flex items-start gap-2">
+        <AlertCircle className="mt-0.5 h-3.5 w-3.5 shrink-0" />
+        <div className="min-w-0 space-y-1">
+          <p className="font-semibold">
+            {authRecovery.recoveryRecommended ? 'Auth issue needs attention' : 'Recent auth recovery activity'}
+          </p>
+          {authRecovery.lastIssue && <p className="leading-4">{authRecovery.lastIssue}</p>}
+          <p className="text-[11px] opacity-80">
+            {authRecovery.authResetCount > 0 ? `${authRecovery.authResetCount} recovery resets` : 'No recovery resets yet'}
+            {lastRecoveryAt ? ` • last recovery ${lastRecoveryAt}` : ''}
+            {lastIssueAt ? ` • last issue ${lastIssueAt}` : ''}
+          </p>
+        </div>
+      </div>
+    </div>
+  )
+}
 
 export function DevicePanel() {
   const { data: devicesData, isLoading, error } = useWhatsAppDevices()
   const connectMutation = useConnectDevice()
   const disconnectMutation = useDisconnectDevice()
+  const recoverMutation = useForceRecoverDevice()
 
   const [selectedDeviceId, setSelectedDeviceId] = useState<string | null>(null)
   const [showQr, setShowQr] = useState(false)
   const [disconnectingId, setDisconnectingId] = useState<string | null>(null)
+  const [recoveringId, setRecoveringId] = useState<string | null>(null)
 
   const selectedDevice = devicesData?.devices.find((d) => d.id === selectedDeviceId)
   const { data: qrData } = useDeviceQR(selectedDeviceId || '')
@@ -100,6 +164,17 @@ export function DevicePanel() {
     setShowQr(true)
   }
 
+  const handleForceRecover = (deviceId: string) => {
+    setRecoveringId(deviceId)
+    recoverMutation.mutate(deviceId, {
+      onSuccess: () => {
+        setSelectedDeviceId(deviceId)
+        setShowQr(true)
+      },
+      onSettled: () => setRecoveringId(null),
+    })
+  }
+
   if (isLoading) {
     return (
       <div className="flex flex-col items-center justify-center py-16">
@@ -140,7 +215,9 @@ export function DevicePanel() {
                 key={device.id}
                 device={device}
                 onDisconnect={handleDisconnect}
+                onForceRecover={handleForceRecover}
                 isDisconnecting={disconnectingId === device.id}
+                isRecovering={recoveringId === device.id}
               />
             ))}
           </div>
@@ -200,32 +277,49 @@ export function DevicePanel() {
                     : 'border-gray-200 dark:border-gray-700 bg-gray-50/50 dark:bg-gray-800/50 hover:border-blue-300 dark:hover:border-blue-700 hover:bg-blue-50/30 dark:hover:bg-blue-900/10'
                 )}
               >
-                <div className="flex items-center gap-3">
+                <div className="flex min-w-0 items-start gap-3">
                   <div
                     className={cn(
                       'w-2.5 h-2.5 rounded-full',
                       device.connectionState === 'error' ? 'bg-red-400' : 'bg-gray-300 dark:bg-gray-600'
                     )}
                   />
-                  <div>
+                  <div className="min-w-0 flex-1 space-y-2">
                     <span className="font-medium text-gray-900 dark:text-gray-100 text-sm">{device.name}</span>
                     {device.lastError && (
                       <p className="text-xs text-red-500 dark:text-red-400 mt-0.5 max-w-md truncate">{device.lastError}</p>
                     )}
+                    <AuthRecoveryNotice device={device} />
                   </div>
                 </div>
-                <button
-                  onClick={() => handleConnectDevice(device.id)}
-                  disabled={connectMutation.isPending}
-                  className="flex items-center gap-1.5 px-4 py-1.5 text-xs font-semibold text-blue-600 dark:text-blue-400 bg-blue-50 dark:bg-blue-900/20 hover:bg-blue-100 dark:hover:bg-blue-900/40 border border-blue-200 dark:border-blue-800 rounded-lg transition-all disabled:opacity-50 disabled:cursor-not-allowed group-hover:shadow-sm"
-                >
-                  {connectMutation.isPending ? (
-                    <Loader2 className="w-3.5 h-3.5 animate-spin" />
-                  ) : (
-                    <Link2 className="w-3.5 h-3.5" />
+                <div className="ml-4 flex shrink-0 items-center gap-2 self-center">
+                  {(device.authRecovery.recoveryRecommended || Boolean(device.authRecovery.lastIssue)) && (
+                    <button
+                      onClick={() => handleForceRecover(device.id)}
+                      disabled={recoveringId === device.id}
+                      className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold text-amber-700 dark:text-amber-300 bg-amber-50 dark:bg-amber-900/20 hover:bg-amber-100 dark:hover:bg-amber-900/40 border border-amber-200 dark:border-amber-800 rounded-lg transition-all disabled:opacity-50 disabled:cursor-not-allowed"
+                    >
+                      {recoveringId === device.id ? (
+                        <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                      ) : (
+                        <RefreshCw className="w-3.5 h-3.5" />
+                      )}
+                      Recover
+                    </button>
                   )}
-                  Connect
-                </button>
+                  <button
+                    onClick={() => handleConnectDevice(device.id)}
+                    disabled={connectMutation.isPending}
+                    className="flex items-center gap-1.5 px-4 py-1.5 text-xs font-semibold text-blue-600 dark:text-blue-400 bg-blue-50 dark:bg-blue-900/20 hover:bg-blue-100 dark:hover:bg-blue-900/40 border border-blue-200 dark:border-blue-800 rounded-lg transition-all disabled:opacity-50 disabled:cursor-not-allowed group-hover:shadow-sm"
+                  >
+                    {connectMutation.isPending ? (
+                      <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                    ) : (
+                      <Link2 className="w-3.5 h-3.5" />
+                    )}
+                    Connect
+                  </button>
+                </div>
               </div>
             ))}
           </div>
@@ -252,11 +346,15 @@ export function DevicePanel() {
 function ConnectedDeviceCard({
   device,
   onDisconnect,
+  onForceRecover,
   isDisconnecting,
+  isRecovering,
 }: {
   device: WhatsAppDevice
   onDisconnect: (id: string) => void
+  onForceRecover: (id: string) => void
   isDisconnecting: boolean
+  isRecovering: boolean
 }) {
   const [showConfirm, setShowConfirm] = useState(false)
 
@@ -294,6 +392,21 @@ function ConnectedDeviceCard({
           <span className="text-red-500/70 dark:text-red-400/70">failed</span>
         </div>
       </div>
+
+      {(device.authRecovery.lastIssue || device.authRecovery.authResetCount > 0 || device.authRecovery.lastRecoveryAt) && (
+        <div className="mb-3">
+          <AuthRecoveryNotice device={device} />
+        </div>
+      )}
+
+      <button
+        onClick={() => onForceRecover(device.id)}
+        disabled={isRecovering}
+        className="mb-2 w-full flex items-center justify-center gap-1.5 px-3 py-2 text-xs font-semibold text-amber-700 dark:text-amber-300 hover:text-amber-800 dark:hover:text-amber-200 bg-amber-50/80 dark:bg-amber-900/30 hover:bg-amber-100 dark:hover:bg-amber-900/40 border border-amber-200 dark:border-amber-800 rounded-lg transition-all disabled:opacity-50"
+      >
+        {isRecovering ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <RefreshCw className="w-3.5 h-3.5" />}
+        Force Recovery
+      </button>
 
       {/* Disconnect with confirmation */}
       {!showConfirm ? (

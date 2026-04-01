@@ -1,0 +1,20 @@
+# Example recipients for scripts/stress_test_blast.py
+# Format:
+#   PHONE|CONTACT_NAME|UNIVERSITY_NAME
+# Notes:
+# - Use only numbers you control for testing.
+# - Replace every placeholder below with real test recipients.
+# - For ramp mode 20,50,100 you need at least 100 unique rows.
+
+6289503156128|Tester 01|Internal QA
+6289674001702|Tester 02|Internal QA
+6281383613557|Tester 03|Internal QA
+6282353705937|Tester 04|Internal QA
+6282362302511|Tester 05|Internal QA
+6289674002077|Tester 06|Internal QA
+62895324803217|Tester 07|Internal QA
+628118046226|Tester 08|Internal QA
+6287761882915|Tester 09|Internal QA
+6283169824750|Tester 10|Internal QA
+6281919707099|Tester 11|Internal QA
+6287811152506|Tester 12|Internal QA

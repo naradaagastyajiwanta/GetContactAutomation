@@ -31,7 +31,6 @@ import {
   DeviceConnectionState,
   type MessagePayload,
   type DocumentPayload,
-  type SendMessageResult,
 } from './deviceManager';
 import { AntiBanManager, type AntiBanStatus } from './antiBan';
 
@@ -86,7 +85,7 @@ const deviceManager = new DeviceManager(logger, {
   onQR: handleDeviceQR,
   onError: handleDeviceError,
   onCredentialsUpdated: handleDeviceCredentialsUpdated,
-});
+}, antiBanManager);
 
 let webhookUrl: string | null = null;
 
@@ -171,7 +170,7 @@ function handleDeviceConnectionUpdate(deviceId: string, state: Partial<Connectio
     const device = deviceManager.getDevice(deviceId);
     if (device) {
       logger.info({ deviceId, phoneNumber: device.phoneNumber }, 'Device connected');
-      antiBanManager.recordReconnect(deviceId);
+      deviceManager.recordReconnect(deviceId);
       // Update device in database
       const messageQueue = getMessageQueue();
       if (device.phoneNumber) {
@@ -179,7 +178,7 @@ function handleDeviceConnectionUpdate(deviceId: string, state: Partial<Connectio
       }
     }
   } else if (connection === 'close') {
-    antiBanManager.recordDisconnect(
+    deviceManager.recordDisconnect(
       deviceId,
       (lastDisconnect?.error as Boom)?.output?.statusCode ?? 'unknown',
     );
@@ -187,7 +186,7 @@ function handleDeviceConnectionUpdate(deviceId: string, state: Partial<Connectio
   }
 
   if (reachoutTimeLock) {
-    antiBanManager.updateTimelock(deviceId, reachoutTimeLock);
+    deviceManager.updateTimelock(deviceId, reachoutTimeLock);
   }
 }
 
@@ -200,7 +199,7 @@ async function handleDeviceMessage(deviceId: string, msg: WAMessage): Promise<vo
   const device = deviceManager.getDevice(deviceId);
   const remoteJid = msg.key.remoteJid;
   if (!remoteJid) return;
-  antiBanManager.registerKnownChat(deviceId, remoteJid);
+  deviceManager.registerKnownChat(deviceId, remoteJid);
 
   // Only process messages from others (not from me)
   if (msg.key.fromMe) return;
@@ -872,46 +871,36 @@ async function performProtectedTextSend(
   deviceId: string,
   payload: MessagePayload,
 ): Promise<ProtectedSendResult> {
-  const jid = normalizePhone(payload.to);
-  const decision = antiBanManager.beforeSend(deviceId, jid, payload.message);
-
-  if (!decision.allowed) {
-    logger.warn({ deviceId, to: payload.to, reason: decision.reason }, 'Anti-ban blocked text send');
-    return {
-      success: false,
-      blocked: true,
-      retryAfterMs: decision.resumeAfterMs,
-      error: decision.reason,
-      deviceId,
-      antiBanStatus: antiBanManager.getStatus(deviceId),
-    };
-  }
-
-  if (decision.delayMs > 0) {
-    await sleep(decision.delayMs);
-  }
-
   const result = await deviceManager.sendMessage(deviceId, payload);
   if (result.success) {
-    antiBanManager.afterSend(deviceId, jid, payload.message);
     metrics.recordMessageSent();
     return {
       success: true,
       blocked: false,
       messageId: result.messageId,
       deviceId,
-      antiBanStatus: antiBanManager.getStatus(deviceId),
+      antiBanStatus: result.antiBanStatus || deviceManager.getAntiBanStatus(deviceId),
     };
   }
 
-  antiBanManager.afterSendFailed(deviceId, jid, result.error || 'Failed to send message');
+  if (result.blocked) {
+    return {
+      success: false,
+      blocked: true,
+      retryAfterMs: result.retryAfterMs,
+      error: result.error,
+      deviceId,
+      antiBanStatus: result.antiBanStatus || deviceManager.getAntiBanStatus(deviceId),
+    };
+  }
+
   metrics.recordMessageFailed(result.error || 'send_failed');
   return {
     success: false,
     blocked: false,
     error: result.error || 'Failed to send message',
     deviceId,
-    antiBanStatus: antiBanManager.getStatus(deviceId),
+    antiBanStatus: result.antiBanStatus || deviceManager.getAntiBanStatus(deviceId),
   };
 }
 
@@ -919,47 +908,36 @@ async function performProtectedDocumentSend(
   deviceId: string,
   payload: DocumentPayload,
 ): Promise<ProtectedSendResult> {
-  const jid = normalizePhone(payload.to);
-  const auditText = `${payload.fileName} ${payload.caption || ''}`.trim() || payload.fileName;
-  const decision = antiBanManager.beforeSend(deviceId, jid, auditText);
-
-  if (!decision.allowed) {
-    logger.warn({ deviceId, to: payload.to, reason: decision.reason }, 'Anti-ban blocked document send');
-    return {
-      success: false,
-      blocked: true,
-      retryAfterMs: decision.resumeAfterMs,
-      error: decision.reason,
-      deviceId,
-      antiBanStatus: antiBanManager.getStatus(deviceId),
-    };
-  }
-
-  if (decision.delayMs > 0) {
-    await sleep(decision.delayMs);
-  }
-
   const result = await deviceManager.sendDocument(deviceId, payload);
   if (result.success) {
-    antiBanManager.afterSend(deviceId, jid, auditText);
     metrics.recordMessageSent();
     return {
       success: true,
       blocked: false,
       messageId: result.messageId,
       deviceId,
-      antiBanStatus: antiBanManager.getStatus(deviceId),
+      antiBanStatus: result.antiBanStatus || deviceManager.getAntiBanStatus(deviceId),
     };
   }
 
-  antiBanManager.afterSendFailed(deviceId, jid, result.error || 'Failed to send document');
+  if (result.blocked) {
+    return {
+      success: false,
+      blocked: true,
+      retryAfterMs: result.retryAfterMs,
+      error: result.error,
+      deviceId,
+      antiBanStatus: result.antiBanStatus || deviceManager.getAntiBanStatus(deviceId),
+    };
+  }
+
   metrics.recordMessageFailed(result.error || 'document_send_failed');
   return {
     success: false,
     blocked: false,
     error: result.error || 'Failed to send document',
     deviceId,
-    antiBanStatus: antiBanManager.getStatus(deviceId),
+    antiBanStatus: result.antiBanStatus || deviceManager.getAntiBanStatus(deviceId),
   };
 }
 
@@ -1057,7 +1035,7 @@ async function processMessageQueue(): Promise<void> {
 
     // Process pending messages for each connected device
     for (const deviceId of connectedDeviceIds) {
-      const antiBanStatus = antiBanManager.getStatus(deviceId);
+      const antiBanStatus = deviceManager.getAntiBanStatus(deviceId);
       if (antiBanStatus.pausedManually) {
         logger.info({ deviceId }, 'Skipping queue processing because anti-ban is paused manually');
         continue;
@@ -1308,7 +1286,7 @@ app.get('/qr', async (req: Request, res: Response) => {
 app.get('/status', (_req: Request, res: Response) => {
   const allDevices = deviceManager.getAllDevicesStatus();
   const queueStats = messageQueue.getStats();
-  const antiBanStatuses = antiBanManager.getAllStatuses(allDevices.map((device) => device.id));
+  const antiBanStatuses = deviceManager.getAllAntiBanStatuses(allDevices.map((device) => device.id));
 
   res.json({
     devices: allDevices,
@@ -1439,6 +1417,21 @@ app.post('/devices/:id/disconnect', async (req: Request, res: Response) => {
   }
 });
 
+// POST /devices/:id/recover — force a clean auth recovery for a specific device
+app.post('/devices/:id/recover', async (req: Request, res: Response) => {
+  const { id } = req.params;
+  const deviceId = Array.isArray(id) ? id[0] : id;
+
+  try {
+    await deviceManager.forceRecoverDevice(deviceId);
+    res.json({ success: true, message: `Force recovery started for device ${deviceId}. Scan the new QR code.` });
+  } catch (err) {
+    const error = err instanceof Error ? err.message : String(err);
+    logger.error({ err, deviceId }, 'Failed to force recover device');
+    res.status(500).json({ success: false, error });
+  }
+});
+
 // GET /devices/:id/qr — get QR code for a specific device
 app.get('/devices/:id/qr', async (req: Request, res: Response) => {
   const { id } = req.params;
@@ -1464,9 +1457,9 @@ app.get('/devices/:id/qr', async (req: Request, res: Response) => {
 app.get('/devices/:id/status', async (req: Request, res: Response) => {
   const { id } = req.params;
   const deviceId = Array.isArray(id) ? id[0] : id;
-  const device = deviceManager.getDevice(deviceId);
+  const deviceStatus = deviceManager.getDeviceStatusSummary(deviceId);
 
-  if (!device) {
+  if (!deviceStatus) {
     res.status(404).json({ success: false, error: `Device ${deviceId} not found` });
     return;
   }
@@ -1474,13 +1467,7 @@ app.get('/devices/:id/status', async (req: Request, res: Response) => {
   const queueStats = messageQueue.getDeviceStats(deviceId);
 
   res.json({
-    id: device.id,
-    name: device.name,
-    phoneNumber: device.phoneNumber,
-    connectionState: device.connectionState,
-    isConnecting: device.isConnecting,
-    metrics: device.metrics,
-    lastError: device.lastError,
+    ...deviceStatus,
     antiBan: antiBanManager.getStatus(deviceId),
     queueStats,
   });
@@ -1496,7 +1483,7 @@ app.get('/devices/:id/antiban', async (req: Request, res: Response) => {
     return;
   }
 
-  res.json({ success: true, deviceId, antiBan: antiBanManager.getStatus(deviceId) });
+  res.json({ success: true, deviceId, antiBan: deviceManager.getAntiBanStatus(deviceId) });
 });
 
 app.post('/devices/:id/antiban/pause', async (req: Request, res: Response) => {
@@ -1509,8 +1496,7 @@ app.post('/devices/:id/antiban/pause', async (req: Request, res: Response) => {
     return;
   }
 
-  antiBanManager.pause(deviceId);
-  res.json({ success: true, deviceId, antiBan: antiBanManager.getStatus(deviceId) });
+  res.json({ success: true, deviceId, antiBan: deviceManager.pauseAntiBan(deviceId) });
 });
 
 app.post('/devices/:id/antiban/resume', async (req: Request, res: Response) => {
@@ -1523,8 +1509,7 @@ app.post('/devices/:id/antiban/resume', async (req: Request, res: Response) => {
     return;
   }
 
-  antiBanManager.resume(deviceId);
-  res.json({ success: true, deviceId, antiBan: antiBanManager.getStatus(deviceId) });
+  res.json({ success: true, deviceId, antiBan: deviceManager.resumeAntiBan(deviceId) });
 });
 
 app.post('/devices/:id/antiban/reset', async (req: Request, res: Response) => {
@@ -1537,8 +1522,7 @@ app.post('/devices/:id/antiban/reset', async (req: Request, res: Response) => {
     return;
   }
 
-  antiBanManager.reset(deviceId);
-  res.json({ success: true, deviceId, antiBan: antiBanManager.getStatus(deviceId) });
+  res.json({ success: true, deviceId, antiBan: deviceManager.resetAntiBan(deviceId) });
 });
 
 // GET /devices/:id/messages — get messages for a specific device

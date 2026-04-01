@@ -24,6 +24,10 @@ import QRCode from 'qrcode';
 import * as fs from 'fs';
 import * as path from 'path';
 import Long from 'long';
+import {
+  AntiBanManager,
+  type AntiBanStatus,
+} from './antiBan';
 
 // Device connection state enum
 export enum DeviceConnectionState {
@@ -40,12 +44,41 @@ export interface DeviceMetrics {
   lastMessageAt: number | null;
 }
 
+export interface DeviceAuthRecoveryStatus {
+  authResetCount: number;
+  authCloseAfterCredsCount: number;
+  lastCredsUpdateAt: number | null;
+  lastIssue: string | null;
+  lastIssueAt: number | null;
+  lastRecoveryAt: number | null;
+  lastRecoveryReason: string | null;
+  recoveryRecommended: boolean;
+}
+
+export interface DeviceStatusSummary {
+  id: string;
+  name: string;
+  phoneNumber: string | null;
+  connectionState: DeviceConnectionState;
+  isConnecting: boolean;
+  metrics: DeviceMetrics;
+  lastError: string | null;
+  authRecovery: DeviceAuthRecoveryStatus;
+}
+
 // Device state interface
 export interface DeviceState {
   id: string;
   name: string;
   phoneNumber: string | null;
   authStorePath: string;
+  activeSocketId: string | null;
+  lastCredsUpdateAt: number | null;
+  authCloseAfterCredsCount: number;
+  lastAuthIssue: string | null;
+  lastAuthIssueAt: number | null;
+  lastRecoveryAt: number | null;
+  lastRecoveryReason: string | null;
   connectionState: DeviceConnectionState;
   sock: WASocket | null;
   latestQr: string | null;
@@ -82,6 +115,9 @@ export interface SendMessageResult {
   messageId: string;
   deviceId: string;
   error?: string;
+  blocked?: boolean;
+  retryAfterMs?: number;
+  antiBanStatus?: AntiBanStatus;
 }
 
 // Event callbacks type
@@ -101,13 +137,83 @@ export class DeviceManager {
   private logger: Logger;
   private eventCallbacks: DeviceEventCallbacks;
   private reconnectTimers: Map<string, ReturnType<typeof setTimeout>>;
+  private authSaveQueues: Map<string, Promise<void>>;
   private maxReconnectAttempts: number = 15;
+  private antiBanManager: AntiBanManager | null;
 
-  constructor(logger?: Logger, callbacks?: DeviceEventCallbacks) {
+  constructor(logger?: Logger, callbacks?: DeviceEventCallbacks, antiBanManager?: AntiBanManager) {
     this.devices = new Map();
     this.logger = logger || pino({ level: 'info' });
     this.eventCallbacks = callbacks || {};
     this.reconnectTimers = new Map();
+    this.authSaveQueues = new Map();
+    this.antiBanManager = antiBanManager || null;
+  }
+
+  setAntiBanManager(antiBanManager: AntiBanManager): void {
+    this.antiBanManager = antiBanManager;
+  }
+
+  getAntiBanStatus(deviceId: string): AntiBanStatus {
+    if (!this.antiBanManager) {
+      throw new Error('Anti-ban manager not configured');
+    }
+    return this.antiBanManager.getStatus(deviceId);
+  }
+
+  getAllAntiBanStatuses(deviceIds?: string[]): Record<string, AntiBanStatus> {
+    if (!this.antiBanManager) {
+      throw new Error('Anti-ban manager not configured');
+    }
+    const ids = deviceIds || this.getAllDevices().map((device) => device.id);
+    return this.antiBanManager.getAllStatuses(ids);
+  }
+
+  pauseAntiBan(deviceId: string): AntiBanStatus {
+    if (!this.antiBanManager) {
+      throw new Error('Anti-ban manager not configured');
+    }
+    this.antiBanManager.pause(deviceId);
+    return this.antiBanManager.getStatus(deviceId);
+  }
+
+  resumeAntiBan(deviceId: string): AntiBanStatus {
+    if (!this.antiBanManager) {
+      throw new Error('Anti-ban manager not configured');
+    }
+    this.antiBanManager.resume(deviceId);
+    return this.antiBanManager.getStatus(deviceId);
+  }
+
+  resetAntiBan(deviceId: string): AntiBanStatus {
+    if (!this.antiBanManager) {
+      throw new Error('Anti-ban manager not configured');
+    }
+    this.antiBanManager.reset(deviceId);
+    return this.antiBanManager.getStatus(deviceId);
+  }
+
+  recordReconnect(deviceId: string): void {
+    this.antiBanManager?.recordReconnect(deviceId);
+  }
+
+  recordDisconnect(deviceId: string, reason: string | number): void {
+    this.antiBanManager?.recordDisconnect(deviceId, reason);
+  }
+
+  registerKnownChat(deviceId: string, recipient: string): void {
+    this.antiBanManager?.registerKnownChat(deviceId, recipient);
+  }
+
+  updateTimelock(
+    deviceId: string,
+    update: {
+      isActive?: boolean;
+      timeEnforcementEnds?: Date;
+      enforcementType?: string;
+    },
+  ): void {
+    this.antiBanManager?.updateTimelock(deviceId, update);
   }
 
   /**
@@ -129,6 +235,13 @@ export class DeviceManager {
       name,
       phoneNumber: null,
       authStorePath,
+      activeSocketId: null,
+      lastCredsUpdateAt: null,
+      authCloseAfterCredsCount: 0,
+      lastAuthIssue: null,
+      lastAuthIssueAt: null,
+      lastRecoveryAt: null,
+      lastRecoveryReason: null,
       connectionState: DeviceConnectionState.DISCONNECTED,
       sock: null,
       latestQr: null,
@@ -166,24 +279,13 @@ export class DeviceManager {
   /**
    * Get all devices with their status (for API responses)
    */
-  getAllDevicesStatus(): Array<{
-    id: string;
-    name: string;
-    phoneNumber: string | null;
-    connectionState: DeviceConnectionState;
-    isConnecting: boolean;
-    metrics: DeviceMetrics;
-    lastError: string | null;
-  }> {
-    return this.getAllDevices().map((device) => ({
-      id: device.id,
-      name: device.name,
-      phoneNumber: device.phoneNumber,
-      connectionState: device.connectionState,
-      isConnecting: device.isConnecting,
-      metrics: device.metrics,
-      lastError: device.lastError,
-    }));
+  getAllDevicesStatus(): DeviceStatusSummary[] {
+    return this.getAllDevices().map((device) => this._buildDeviceStatusSummary(device));
+  }
+
+  getDeviceStatusSummary(id: string): DeviceStatusSummary | undefined {
+    const device = this.devices.get(id);
+    return device ? this._buildDeviceStatusSummary(device) : undefined;
   }
 
   /**
@@ -292,6 +394,7 @@ export class DeviceManager {
   private async _connectDeviceInternal(device: DeviceState): Promise<void> {
     const { logger } = this;
     const baileysLogger = pino({ level: 'silent' });
+    const socketId = `${device.id}_${Date.now()}_${Math.random().toString(36).slice(2, 10)}`;
 
     // Clear any existing reconnect timer
     const existingTimer = this.reconnectTimers.get(device.id);
@@ -299,6 +402,8 @@ export class DeviceManager {
       clearTimeout(existingTimer);
       this.reconnectTimers.delete(device.id);
     }
+
+    device.activeSocketId = socketId;
 
     // Fetch Baileys version
     const { version } = await fetchLatestBaileysVersion();
@@ -326,6 +431,11 @@ export class DeviceManager {
     sock.ev.on(
       'connection.update',
       async (update: Partial<ConnectionState>) => {
+        if (device.activeSocketId !== socketId) {
+          logger.debug({ deviceId: device.id, socketId }, 'Ignoring connection update from stale socket');
+          return;
+        }
+
         const { connection, lastDisconnect, qr } = update;
 
         // Handle QR code
@@ -340,14 +450,19 @@ export class DeviceManager {
 
         // Handle connection state changes
         if (connection === 'close') {
+          device.activeSocketId = null;
           device.isConnecting = false;
-          const shouldReconnect =
-            (lastDisconnect?.error as Boom)?.output?.statusCode !== DisconnectReason.loggedOut;
+          const statusCode = (lastDisconnect?.error as Boom)?.output?.statusCode;
+          const shouldReconnect = statusCode !== DisconnectReason.loggedOut;
+
+          if (statusCode === 515 && this._isRecentCredsUpdate(device)) {
+            device.authCloseAfterCredsCount++;
+          }
 
           logger.info({
             deviceId: device.id,
             shouldReconnect,
-            statusCode: (lastDisconnect?.error as Boom)?.output?.statusCode,
+            statusCode,
           }, 'Connection closed');
 
           if (device.userDisconnected) {
@@ -355,21 +470,58 @@ export class DeviceManager {
             logger.info({ deviceId: device.id }, 'User-initiated disconnect, not reconnecting');
             device.connectionState = DeviceConnectionState.DISCONNECTED;
 
+          } else if (statusCode === 515 && device.authCloseAfterCredsCount >= 2) {
+            this._recordAuthIssue(
+              device,
+              'Repeated auth close detected right after credentials update',
+            );
+            this._recordRecovery(
+              device,
+              'Automatic auth recovery after repeated auth close right after credentials update',
+            );
+            device.authResetCount++;
+            logger.warn({
+              deviceId: device.id,
+              authCloseAfterCredsCount: device.authCloseAfterCredsCount,
+            }, 'Repeated auth close after credentials update; resetting auth store for a clean reconnect');
+            device.connectionState = DeviceConnectionState.DISCONNECTED;
+            device.phoneNumber = null;
+            device.sock = null;
+            device.lastError = 'Auth persistence looked inconsistent after QR scan; auth store reset for a clean reconnect';
+            device.lastCredsUpdateAt = null;
+            this._clearAuthStore(device);
+
+            if (device.reconnectAttempt < this.maxReconnectAttempts) {
+              device.isConnecting = true;
+              device.connectionState = DeviceConnectionState.CONNECTING;
+              this._connectDeviceInternal(device).catch((err) => {
+                logger.error({ err, deviceId: device.id }, 'Retry after auth recovery reset failed');
+                device.connectionState = DeviceConnectionState.ERROR;
+                device.lastError = err instanceof Error ? err.message : String(err);
+                device.isConnecting = false;
+              });
+            }
+
           } else if (!shouldReconnect) {
             // 401 loggedOut — stale/invalid auth. Clear auth store and retry
             // so Baileys generates a fresh QR code.
+            this._recordAuthIssue(
+              device,
+              'WhatsApp rejected the stored auth session; requesting a fresh QR',
+            );
+            this._recordRecovery(
+              device,
+              'Automatic auth recovery after WhatsApp rejected the stored session',
+            );
+            device.authResetCount++;
             logger.info({ deviceId: device.id }, 'Auth rejected (loggedOut). Clearing auth store and retrying for fresh QR...');
             device.connectionState = DeviceConnectionState.DISCONNECTED;
             device.phoneNumber = null;
             device.sock = null;
+            device.lastCredsUpdateAt = null;
 
             // Clear stale auth files
-            if (fs.existsSync(device.authStorePath)) {
-              const entries = fs.readdirSync(device.authStorePath);
-              for (const entry of entries) {
-                fs.rmSync(path.join(device.authStorePath, entry), { recursive: true, force: true });
-              }
-            }
+            this._clearAuthStore(device);
 
             // Retry connection — with empty auth, Baileys will generate QR
             if (device.reconnectAttempt < this.maxReconnectAttempts) {
@@ -402,16 +554,15 @@ export class DeviceManager {
           device.isConnecting = false;
           device.reconnectAttempt = 0;
           device.hasEverConnected = true;
+          device.lastError = null;
+          device.authCloseAfterCredsCount = 0;
 
           // Get phone number from creds
           if (sock.user) {
             const phoneNumber = sock.user.id.split(':')[0];
+            this._resolveDuplicatePhoneOwnership(device, phoneNumber);
             device.phoneNumber = phoneNumber;
             logger.info({ deviceId: device.id, phoneNumber }, 'Device connected');
-          }
-
-          if (this.eventCallbacks.onConnectionUpdate) {
-            this.eventCallbacks.onConnectionUpdate(device.id, update);
           }
         }
 
@@ -421,15 +572,17 @@ export class DeviceManager {
       }
     );
 
-    sock.ev.on('creds.update', saveCreds);
-
     sock.ev.on('creds.update', () => {
-      if (this.eventCallbacks.onCredentialsUpdated) {
-        this.eventCallbacks.onCredentialsUpdated(device.id);
-      }
+      device.lastCredsUpdateAt = Date.now();
+      this._queueCredsSave(device, socketId, saveCreds);
     });
 
     sock.ev.on('messages.upsert', async ({ messages, type }) => {
+      if (device.activeSocketId !== socketId) {
+        logger.debug({ deviceId: device.id, socketId }, 'Ignoring messages from stale socket');
+        return;
+      }
+
       if (type === 'notify') {
         for (const msg of messages) {
           if (this.eventCallbacks.onMessage) {
@@ -440,6 +593,90 @@ export class DeviceManager {
     });
 
     logger.info({ deviceId: device.id }, 'Socket event handlers registered');
+  }
+
+  private _clearAuthStore(device: DeviceState): void {
+    if (!fs.existsSync(device.authStorePath)) {
+      fs.mkdirSync(device.authStorePath, { recursive: true });
+      return;
+    }
+
+    const entries = fs.readdirSync(device.authStorePath);
+    for (const entry of entries) {
+      fs.rmSync(path.join(device.authStorePath, entry), { recursive: true, force: true });
+    }
+  }
+
+  private _isRecentCredsUpdate(device: DeviceState, windowMs = 15000): boolean {
+    return device.lastCredsUpdateAt !== null && (Date.now() - device.lastCredsUpdateAt) <= windowMs;
+  }
+
+  private _recordAuthIssue(device: DeviceState, issue: string): void {
+    device.lastAuthIssue = issue;
+    device.lastAuthIssueAt = Date.now();
+  }
+
+  private _recordRecovery(device: DeviceState, reason: string): void {
+    device.lastRecoveryAt = Date.now();
+    device.lastRecoveryReason = reason;
+  }
+
+  private _buildDeviceStatusSummary(device: DeviceState): DeviceStatusSummary {
+    return {
+      id: device.id,
+      name: device.name,
+      phoneNumber: device.phoneNumber,
+      connectionState: device.connectionState,
+      isConnecting: device.isConnecting,
+      metrics: device.metrics,
+      lastError: device.lastError,
+      authRecovery: {
+        authResetCount: device.authResetCount,
+        authCloseAfterCredsCount: device.authCloseAfterCredsCount,
+        lastCredsUpdateAt: device.lastCredsUpdateAt,
+        lastIssue: device.lastAuthIssue,
+        lastIssueAt: device.lastAuthIssueAt,
+        lastRecoveryAt: device.lastRecoveryAt,
+        lastRecoveryReason: device.lastRecoveryReason,
+        recoveryRecommended:
+          device.connectionState !== DeviceConnectionState.CONNECTED
+          && (device.lastAuthIssue !== null || device.authResetCount > 0 || device.authCloseAfterCredsCount > 0),
+      },
+    };
+  }
+
+  private _resolveDuplicatePhoneOwnership(device: DeviceState, phoneNumber: string): void {
+    for (const otherDevice of this.devices.values()) {
+      if (otherDevice.id === device.id || otherDevice.phoneNumber !== phoneNumber) {
+        continue;
+      }
+
+      this.logger.warn({
+        deviceId: device.id,
+        conflictingDeviceId: otherDevice.id,
+        phoneNumber,
+      }, 'Duplicate phone number detected across device slots; disconnecting the stale slot');
+
+      otherDevice.lastError = `Phone number ${phoneNumber} is now owned by ${device.id}`;
+      this._recordAuthIssue(otherDevice, otherDevice.lastError);
+      otherDevice.phoneNumber = null;
+      otherDevice.latestQr = null;
+      otherDevice.connectionState = DeviceConnectionState.DISCONNECTED;
+      otherDevice.isConnecting = false;
+      otherDevice.activeSocketId = null;
+      otherDevice.userDisconnected = true;
+
+      if (otherDevice.sock) {
+        otherDevice.sock.end(undefined);
+        otherDevice.sock = null;
+      }
+
+      const timer = this.reconnectTimers.get(otherDevice.id);
+      if (timer) {
+        clearTimeout(timer);
+        this.reconnectTimers.delete(otherDevice.id);
+      }
+    }
   }
 
   /**
@@ -474,6 +711,135 @@ export class DeviceManager {
     return Math.round(jitter);
   }
 
+  private _sleep(ms: number): Promise<void> {
+    return new Promise((resolve) => setTimeout(resolve, ms));
+  }
+
+  private _queueCredsSave(
+    device: DeviceState,
+    socketId: string,
+    saveCreds: () => Promise<void>,
+  ): void {
+    const existingQueue = this.authSaveQueues.get(device.id) || Promise.resolve();
+    const queuedSave = existingQueue
+      .catch(() => undefined)
+      .then(async () => {
+        if (device.activeSocketId !== socketId) {
+          return;
+        }
+
+        await this._saveCredsWithRetry(device, socketId, saveCreds);
+      })
+      .catch((err) => {
+        const error = err instanceof Error ? err : new Error(String(err));
+        if (device.activeSocketId === socketId) {
+          device.lastError = `Failed to save auth credentials: ${error.message}`;
+          this._recordAuthIssue(device, device.lastError);
+        }
+        this.logger.error({ err: error, deviceId: device.id, authStorePath: device.authStorePath }, 'Failed to persist auth credentials');
+      });
+
+    this.authSaveQueues.set(device.id, queuedSave);
+
+    void queuedSave.finally(() => {
+      if (this.authSaveQueues.get(device.id) === queuedSave) {
+        this.authSaveQueues.delete(device.id);
+      }
+    });
+  }
+
+  private async _saveCredsWithRetry(
+    device: DeviceState,
+    socketId: string,
+    saveCreds: () => Promise<void>,
+  ): Promise<void> {
+    for (let attempt = 1; attempt <= 2; attempt++) {
+      if (device.activeSocketId !== socketId) {
+        return;
+      }
+
+      try {
+        fs.mkdirSync(device.authStorePath, { recursive: true });
+        await saveCreds();
+
+        if (this.eventCallbacks.onCredentialsUpdated) {
+          this.eventCallbacks.onCredentialsUpdated(device.id);
+        }
+        return;
+      } catch (err) {
+        const fsError = err as NodeJS.ErrnoException;
+        const isMissingPath = fsError?.code === 'ENOENT';
+
+        if (!isMissingPath || attempt === 2) {
+          throw err;
+        }
+
+        this.logger.warn({
+          deviceId: device.id,
+          authStorePath: device.authStorePath,
+        }, 'Auth store path missing during creds save, recreating directory and retrying');
+        fs.mkdirSync(device.authStorePath, { recursive: true });
+        await this._sleep(100);
+      }
+    }
+  }
+
+  private _estimateTypingDelayMs(text: string, jid: string): number {
+    const normalized = text.trim();
+    if (!normalized) {
+      return jid.endsWith('@g.us') ? 2200 : 2600;
+    }
+
+    const words = normalized.split(/\s+/).filter(Boolean).length;
+    const chars = normalized.length;
+    const charDelay = chars * 35;
+    const wordDelay = words * 140;
+    const baseDelay = Math.round((charDelay * 0.6) + (wordDelay * 0.4));
+    const groupPenalty = jid.endsWith('@g.us') ? -250 : 350;
+    const jitter = Math.round((Math.random() * 500) - 250);
+    return Math.max(2400, Math.min(9000, baseDelay + groupPenalty + jitter));
+  }
+
+  private async _simulatePresenceBeforeSend(
+    sock: WASocket,
+    jid: string,
+    previewText: string,
+  ): Promise<void> {
+    const delayMs = this._estimateTypingDelayMs(previewText, jid);
+
+    try {
+      await sock.sendPresenceUpdate('available');
+      await this._sleep(250 + Math.round(Math.random() * 350));
+      await sock.sendPresenceUpdate('composing', jid);
+      await this._sleep(delayMs);
+    } catch (err) {
+      this.logger.debug({ err, jid }, 'Failed to simulate composing presence');
+    }
+  }
+
+  private async _finalizePresenceAfterSend(sock: WASocket, jid: string): Promise<void> {
+    try {
+      await sock.sendPresenceUpdate('paused', jid);
+      await this._sleep(400 + Math.round(Math.random() * 400));
+      await sock.sendPresenceUpdate('unavailable');
+    } catch (err) {
+      this.logger.debug({ err, jid }, 'Failed to finalize presence after send');
+    }
+  }
+
+  private _buildSendResult(
+    deviceId: string,
+    overrides: Partial<SendMessageResult>,
+  ): SendMessageResult {
+    return {
+      success: false,
+      messageId: '',
+      deviceId,
+      antiBanStatus: this.antiBanManager ? this.antiBanManager.getStatus(deviceId) : undefined,
+      ...overrides,
+    };
+  }
+
   /**
    * Disconnect a specific device
    */
@@ -492,6 +858,8 @@ export class DeviceManager {
 
     // Mark as user-initiated disconnect to prevent auto-reconnect
     device.userDisconnected = true;
+    device.activeSocketId = null;
+    device.lastCredsUpdateAt = null;
 
     // Close socket gracefully
     if (device.sock) {
@@ -499,22 +867,24 @@ export class DeviceManager {
       device.sock = null;
     }
 
-    // Clear auth store so next connect requires fresh QR scan
-    if (fs.existsSync(device.authStorePath)) {
-      const entries = fs.readdirSync(device.authStorePath);
-      for (const entry of entries) {
-        fs.rmSync(path.join(device.authStorePath, entry), { recursive: true, force: true });
-      }
-      this.logger.info({ deviceId: id, cleared: entries.length }, 'Auth store cleared on disconnect');
-    }
-
     device.connectionState = DeviceConnectionState.DISCONNECTED;
     device.isConnecting = false;
     device.latestQr = null;
-    device.phoneNumber = '';
     device.reconnectAttempt = 0;
+    device.authCloseAfterCredsCount = 0;
 
-    this.logger.info({ deviceId: id }, 'Device disconnected (session removed)');
+    this.logger.info({ deviceId: id }, 'Device disconnected');
+  }
+
+  async forceRecoverDevice(id: string): Promise<void> {
+    const device = this.devices.get(id);
+    if (!device) {
+      throw new Error(`Device ${id} not found`);
+    }
+
+    this._recordRecovery(device, 'Manual force recovery requested from dashboard');
+    await this.resetDeviceAuth(id);
+    await this.connectDevice(id, true);
   }
 
   /**
@@ -523,25 +893,31 @@ export class DeviceManager {
   async sendMessage(deviceId: string, payload: MessagePayload): Promise<SendMessageResult> {
     const device = this.devices.get(deviceId);
     if (!device) {
-      return {
-        success: false,
-        messageId: '',
-        deviceId,
-        error: `Device ${deviceId} not found`,
-      };
+      return this._buildSendResult(deviceId, { error: `Device ${deviceId} not found` });
     }
 
     if (device.connectionState !== DeviceConnectionState.CONNECTED || !device.sock) {
-      return {
-        success: false,
-        messageId: '',
-        deviceId,
-        error: `Device ${deviceId} not connected`,
-      };
+      return this._buildSendResult(deviceId, { error: `Device ${deviceId} not connected` });
     }
 
     try {
       const jid = this._normalizePhone(payload.to);
+      if (this.antiBanManager) {
+        const decision = this.antiBanManager.beforeSend(deviceId, jid, payload.message);
+        if (!decision.allowed) {
+          this.logger.warn({ deviceId, to: payload.to, reason: decision.reason }, 'Anti-ban blocked text send');
+          return this._buildSendResult(deviceId, {
+            blocked: true,
+            retryAfterMs: decision.resumeAfterMs,
+            error: decision.reason || 'Blocked by anti-ban policy',
+          });
+        }
+        if (decision.delayMs > 0) {
+          await this._sleep(decision.delayMs);
+        }
+      }
+
+      await this._simulatePresenceBeforeSend(device.sock, jid, payload.message);
 
       // Generate message ID
       const messageId = `${device.id}_${Date.now()}_${Math.random().toString(36).substring(7)}`;
@@ -571,7 +947,9 @@ export class DeviceManager {
         };
       }
 
-      await device.sock!.relayMessage(jid, message.message!, {});
+        await device.sock!.relayMessage(jid, message.message!, {});
+        await this._finalizePresenceAfterSend(device.sock, jid);
+        this.antiBanManager?.afterSend(deviceId, jid, payload.message);
 
       device.metrics.messagesSent++;
       device.metrics.lastMessageAt = Date.now();
@@ -582,22 +960,19 @@ export class DeviceManager {
         to: payload.to,
       }, 'Message sent');
 
-      return {
+      return this._buildSendResult(deviceId, {
         success: true,
         messageId,
         deviceId,
-      };
+      });
     } catch (err) {
       device.metrics.messagesFailed++;
       const errorMsg = err instanceof Error ? err.message : String(err);
+      const jid = this._normalizePhone(payload.to);
+      this.antiBanManager?.afterSendFailed(deviceId, jid, errorMsg);
       this.logger.error({ err, deviceId, to: payload.to }, 'Failed to send message');
 
-      return {
-        success: false,
-        messageId: '',
-        deviceId,
-        error: errorMsg,
-      };
+      return this._buildSendResult(deviceId, { error: errorMsg });
     }
   }
 
@@ -607,25 +982,31 @@ export class DeviceManager {
   async sendDocument(deviceId: string, payload: DocumentPayload): Promise<SendMessageResult> {
     const device = this.devices.get(deviceId);
     if (!device) {
-      return {
-        success: false,
-        messageId: '',
-        deviceId,
-        error: `Device ${deviceId} not found`,
-      };
+      return this._buildSendResult(deviceId, { error: `Device ${deviceId} not found` });
     }
 
     if (device.connectionState !== DeviceConnectionState.CONNECTED || !device.sock) {
-      return {
-        success: false,
-        messageId: '',
-        deviceId,
-        error: `Device ${deviceId} not connected`,
-      };
+      return this._buildSendResult(deviceId, { error: `Device ${deviceId} not connected` });
     }
 
     try {
       const jid = this._normalizePhone(payload.to);
+      const previewText = `${payload.caption || ''} ${payload.fileName}`.trim();
+      if (this.antiBanManager) {
+        const decision = this.antiBanManager.beforeSend(deviceId, jid, previewText);
+        if (!decision.allowed) {
+          this.logger.warn({ deviceId, to: payload.to, reason: decision.reason }, 'Anti-ban blocked document send');
+          return this._buildSendResult(deviceId, {
+            blocked: true,
+            retryAfterMs: decision.resumeAfterMs,
+            error: decision.reason || 'Blocked by anti-ban policy',
+          });
+        }
+        if (decision.delayMs > 0) {
+          await this._sleep(decision.delayMs);
+        }
+      }
+      await this._simulatePresenceBeforeSend(device.sock, jid, previewText);
       const messageId = `${device.id}_doc_${Date.now()}_${Math.random().toString(36).substring(7)}`;
 
       const documentMessage = {
@@ -637,7 +1018,9 @@ export class DeviceManager {
         caption: payload.caption || '',
       } as any;
 
-      await device.sock!.sendMessage(jid, documentMessage);
+        await device.sock!.sendMessage(jid, documentMessage);
+        await this._finalizePresenceAfterSend(device.sock, jid);
+        this.antiBanManager?.afterSend(deviceId, jid, previewText);
 
       device.metrics.messagesSent++;
       device.metrics.lastMessageAt = Date.now();
@@ -649,22 +1032,19 @@ export class DeviceManager {
         fileName: payload.fileName,
       }, 'Document sent');
 
-      return {
+      return this._buildSendResult(deviceId, {
         success: true,
         messageId,
         deviceId,
-      };
+      });
     } catch (err) {
       device.metrics.messagesFailed++;
       const errorMsg = err instanceof Error ? err.message : String(err);
+      const jid = this._normalizePhone(payload.to);
+      this.antiBanManager?.afterSendFailed(deviceId, jid, errorMsg);
       this.logger.error({ err, deviceId, to: payload.to }, 'Failed to send document');
 
-      return {
-        success: false,
-        messageId: '',
-        deviceId,
-        error: errorMsg,
-      };
+      return this._buildSendResult(deviceId, { error: errorMsg });
     }
   }
 
@@ -697,6 +1077,10 @@ export class DeviceManager {
     device.reconnectAttempt = 0;
     device.authResetCount++;
     device.hasEverConnected = false;
+    device.userDisconnected = false;
+    device.activeSocketId = null;
+    device.lastCredsUpdateAt = null;
+    device.authCloseAfterCredsCount = 0;
 
     this.logger.info({ deviceId: id }, 'Auth reset complete');
   }

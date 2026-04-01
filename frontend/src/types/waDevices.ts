@@ -10,6 +10,17 @@ export interface DeviceMetrics {
   lastMessageAt: number | null;
 }
 
+export interface DeviceAuthRecoveryStatus {
+  authResetCount: number;
+  authCloseAfterCredsCount: number;
+  lastCredsUpdateAt: number | null;
+  lastIssue: string | null;
+  lastIssueAt: number | null;
+  lastRecoveryAt: number | null;
+  lastRecoveryReason: string | null;
+  recoveryRecommended: boolean;
+}
+
 export type DeviceConnectionState =
   | 'disconnected'
   | 'connecting'
@@ -24,6 +35,7 @@ export interface WhatsAppDevice {
   isConnecting: boolean;
   metrics: DeviceMetrics;
   lastError: string | null;
+  authRecovery: DeviceAuthRecoveryStatus;
 }
 
 export interface DeviceStatusResponse {

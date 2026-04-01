@@ -1,4 +1,5 @@
 import { apiClient } from './client'
+import type { DeviceQRResponse, DeviceStatusResponse, WhatsAppDevice } from '../types/waDevices'
 
 export interface WaQrResponse {
   qr: string | null
@@ -8,10 +9,15 @@ export interface WaQrResponse {
 }
 
 export interface WaStatusResponse {
-  connected: boolean
-  phoneNumber: string | null
-  reconnectAttempt: number
-  maxReconnectAttempts: number
+  connected?: boolean
+  phoneNumber?: string | null
+  reconnectAttempt?: number
+  maxReconnectAttempts?: number
+  devices?: WhatsAppDevice[]
+  antiBan?: Record<string, unknown>
+  queue?: Record<string, unknown>
+  processorActive?: boolean
+  error?: string
 }
 
 export async function getWaQr(): Promise<WaQrResponse> {
@@ -37,41 +43,6 @@ export async function waLogout() {
 export async function waRestart() {
   const { data } = await apiClient.post('/wa/restart')
   return data as { success: boolean; message?: string; error?: string }
-}
-
-// ---------------------------------------------------------------------------
-// Multi-Device Support
-// ---------------------------------------------------------------------------
-
-export interface DeviceMetrics {
-  messagesSent: number
-  messagesFailed: number
-  lastMessageAt: number | null
-}
-
-export type DeviceConnectionState = 'disconnected' | 'connecting' | 'connected' | 'error'
-
-export interface WhatsAppDevice {
-  id: string
-  name: string
-  phoneNumber: string | null
-  connectionState: DeviceConnectionState
-  isConnecting: boolean
-  metrics: DeviceMetrics
-  lastError: string | null
-}
-
-export interface DeviceStatusResponse {
-  devices: WhatsAppDevice[]
-}
-
-export interface DeviceQRResponse {
-  deviceId: string
-  name: string
-  qr: string | null
-  connected: boolean
-  phoneNumber: string | null
-  isConnecting: boolean
 }
 
 export interface BulkSendPayload {
@@ -127,11 +98,18 @@ export async function disconnectDevice(deviceId: string): Promise<{ success: boo
   return data
 }
 
+export async function forceRecoverDevice(deviceId: string): Promise<{ success: boolean; message: string }> {
+  const { data } = await apiClient.post<{ success: boolean; message: string }>(`/wa/devices/${deviceId}/recover`)
+  return data
+}
+
 /**
  * Get status of a specific device
  */
-export async function getDeviceStatus(deviceId: string): Promise<WhatsAppDevice & { queueStats?: any }> {
-  const { data } = await apiClient.get<WhatsAppDevice & { queueStats?: any }>(`/wa/devices/${deviceId}/status`)
+export async function getDeviceStatus(
+  deviceId: string
+): Promise<WhatsAppDevice & { queueStats?: any; antiBan?: any }> {
+  const { data } = await apiClient.get<WhatsAppDevice & { queueStats?: any; antiBan?: any }>(`/wa/devices/${deviceId}/status`)
   return data
 }
 

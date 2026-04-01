@@ -3,40 +3,92 @@
   "devices": {
     "device_1": {
       "knownChats": [
-        "6281717171037@s.whatsapp.net"
+        "6289503156128@s.whatsapp.net",
+        "6289674001702@s.whatsapp.net",
+        "6281383613557@s.whatsapp.net",
+        "6282353705937@s.whatsapp.net",
+        "6282362302511@s.whatsapp.net",
+        "6289674002077@s.whatsapp.net",
+        "62895324803217@s.whatsapp.net",
+        "628118046226@s.whatsapp.net",
+        "6287761882915@s.whatsapp.net",
+        "6283169824750@s.whatsapp.net",
+        "6281919707099@s.whatsapp.net",
+        "6287811152506@s.whatsapp.net"
       ],
       "sendEvents": [
         {
-          "at": 1774964206296,
-          "jid": "6281717171037@s.whatsapp.net",
-          "contentHash": "8cc7bdd6419b7be477fd42b4e58307c08752136c"
+          "at": 1774967673197,
+          "jid": "6289503156128@s.whatsapp.net",
+          "contentHash": "3aaf1bed58363440a37f26b24c1745a9403b0165"
         },
         {
-          "at": 1774964255858,
-          "jid": "6281717171037@s.whatsapp.net",
-          "contentHash": "f179bead2e9a2afb5226df1cbbcc04aa7a65c2a4"
+          "at": 1774967690533,
+          "jid": "6289674001702@s.whatsapp.net",
+          "contentHash": "fc1deb6b4450361315cdfdc29c7879e0a39ceef6"
         },
         {
-          "at": 1774964300573,
-          "jid": "6281717171037@s.whatsapp.net",
-          "contentHash": "5a7287dbffc7f59e3d5793d882cc60c9ae6cf1b6"
+          "at": 1774967707136,
+          "jid": "6281383613557@s.whatsapp.net",
+          "contentHash": "7266fe246cf63d52ad8f2d2c9ca66eb2a88bada4"
+        },
+        {
+          "at": 1774967725406,
+          "jid": "6282353705937@s.whatsapp.net",
+          "contentHash": "9fd2b5e1ae90f9a96327b9daaa18ab5b5d872780"
+        },
+        {
+          "at": 1774967743784,
+          "jid": "6282362302511@s.whatsapp.net",
+          "contentHash": "be17195431342d6d8cc6db8e6663dbf33fffd4a1"
+        },
+        {
+          "at": 1774967762292,
+          "jid": "6289674002077@s.whatsapp.net",
+          "contentHash": "abbe0fb8db78023d61c50635b4bf9b8653dc1e90"
+        },
+        {
+          "at": 1774967779283,
+          "jid": "62895324803217@s.whatsapp.net",
+          "contentHash": "358aebc4e126fcac1773ce5fdd4e06d5c5ecbc23"
+        },
+        {
+          "at": 1774967798950,
+          "jid": "628118046226@s.whatsapp.net",
+          "contentHash": "a65a92b3a75341ac94650dadafcc21263f9dbb26"
+        },
+        {
+          "at": 1774967817150,
+          "jid": "6287761882915@s.whatsapp.net",
+          "contentHash": "e2cbc900dc4c0e7f6d365c8b6bdb04ee791ac8ed"
+        },
+        {
+          "at": 1774967835867,
+          "jid": "6283169824750@s.whatsapp.net",
+          "contentHash": "5322b70fc3ee527f7b27d58c14a47dd05a520bca"
+        },
+        {
+          "at": 1774967856650,
+          "jid": "6281919707099@s.whatsapp.net",
+          "contentHash": "0b374e4d340d9df8e33ace4feaa0a133d1dd2ff4"
+        },
+        {
+          "at": 1774967875585,
+          "jid": "6287811152506@s.whatsapp.net",
+          "contentHash": "84cbe1f5803a44a8d7527a5fcdf46b47eae1d3cd"
+        },
+        {
+          "at": 1774968160528,
+          "jid": "6287811152506@s.whatsapp.net",
+          "contentHash": "47fb58ca3459ba7ba37652989d31d57cbc6b5456"
         }
       ],
       "failedEvents": [],
-      "disconnectEvents": [
-        {
-          "at": 1774963997617,
-          "reason": "428"
-        },
-        {
-          "at": 1774964073807,
-          "reason": "515"
-        }
-      ],
+      "disconnectEvents": [],
       "warmUp": {
-        "startedAt": 1774962440543,
+        "startedAt": 1774967660799,
         "dailyCounts": {
-          "2026-03-31": 3
+          "2026-03-31": 13
         }
       },
       "timelock": {
@@ -46,7 +98,7 @@
       },
       "pausedManually": false,
       "nextAllowedAt": null,
-      "lastSentAt": 1774964300573
+      "lastSentAt": 1774968160528
     },
     "device_2": {
       "knownChats": [],
