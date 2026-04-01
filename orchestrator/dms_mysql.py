@@ -314,6 +314,39 @@ async def _get_lsp_schedule_by_id(schedule_id: int) -> dict | None:
         return result
 
 
+# ---------------------------------------------------------------------------
+# READ: Auth / Karyawan login source
+# ---------------------------------------------------------------------------
+
+
+async def get_active_karyawan_by_email(email: str) -> dict[str, Any] | None:
+    """Return an active karyawan record eligible for dashboard login."""
+    normalized = (email or "").strip().lower()
+    if not normalized:
+        return None
+
+    async with get_dms_cursor() as cursor:
+        await cursor.execute(
+            """
+            SELECT
+                id_karywan AS dms_user_id,
+                user_name,
+                user_email,
+                user_password,
+                user_level,
+                statuskerja,
+                last_login
+            FROM karyawan
+            WHERE LOWER(TRIM(user_email)) = %s
+              AND statuskerja = 1
+            LIMIT 1
+            """,
+            (normalized,),
+        )
+        row = await cursor.fetchone()
+        return _serialize_row(row) if row else None
+
+
 async def get_today_audiensi_schedules() -> list[dict]:
     """Get audiensi schedules for today from both sources."""
     async with get_dms_cursor() as cursor:

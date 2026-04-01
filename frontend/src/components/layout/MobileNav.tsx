@@ -1,7 +1,8 @@
 import { Link, useLocation } from 'react-router-dom'
 import { Bot, X, Settings, type LucideIcon } from 'lucide-react'
 import { cn } from '../../lib/utils'
-import { NAV_SECTIONS } from './Sidebar'
+import { NAV_SECTIONS, getVisibleNavSections } from './Sidebar'
+import { useAuth } from '../../context/AuthContext'
 
 interface MobileNavProps {
   isOpen: boolean
@@ -15,6 +16,8 @@ function isActivePath(pathname: string, to: string): boolean {
 
 export function MobileNav({ isOpen, onClose }: MobileNavProps) {
   const { pathname } = useLocation()
+  const { hasPermission } = useAuth()
+  const visibleSections = getVisibleNavSections((permission) => hasPermission(permission))
 
   const activeSection = NAV_SECTIONS.find((section) =>
     section.items.some((item) => isActivePath(pathname, item.to)),
@@ -52,7 +55,7 @@ export function MobileNav({ isOpen, onClose }: MobileNavProps) {
 
         {/* Nav */}
         <nav className="flex-1 space-y-3 overflow-y-auto px-3 py-4 scrollbar-thin">
-          {NAV_SECTIONS.map((section, idx) => {
+          {visibleSections.map((section, idx) => {
             const Icon: LucideIcon = section.icon
 
             return (
@@ -97,19 +100,21 @@ export function MobileNav({ isOpen, onClose }: MobileNavProps) {
 
         {/* Settings */}
         <div className="border-t border-gray-100 px-3 py-4 dark:border-gray-800/80">
-          <Link
-            to="/settings"
-            onClick={onClose}
-            className={cn(
-              'flex items-center gap-2.5 rounded-lg px-2 py-2 text-[13px] font-medium transition-all duration-150',
-              isActivePath(pathname, '/settings')
-                ? 'bg-gray-900 text-white dark:bg-indigo-600 dark:text-white'
-                : 'text-gray-500 hover:bg-gray-50 hover:text-gray-900 dark:text-gray-400 dark:hover:bg-gray-800/60 dark:hover:text-white',
-            )}
-          >
-            <Settings className="h-4 w-4 shrink-0 opacity-70" />
-            Settings
-          </Link>
+          {hasPermission('settings.manage') && (
+            <Link
+              to="/settings"
+              onClick={onClose}
+              className={cn(
+                'flex items-center gap-2.5 rounded-lg px-2 py-2 text-[13px] font-medium transition-all duration-150',
+                isActivePath(pathname, '/settings')
+                  ? 'bg-gray-900 text-white dark:bg-indigo-600 dark:text-white'
+                  : 'text-gray-500 hover:bg-gray-50 hover:text-gray-900 dark:text-gray-400 dark:hover:bg-gray-800/60 dark:hover:text-white',
+              )}
+            >
+              <Settings className="h-4 w-4 shrink-0 opacity-70" />
+              Settings
+            </Link>
+          )}
         </div>
 
         <style>{`

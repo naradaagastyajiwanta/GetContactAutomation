@@ -21,6 +21,43 @@ export interface University {
   bem_discovery_attempts?: number | null
 }
 
+export type AuthRoleKey = 'admin' | 'operator' | 'viewer'
+
+export interface AuthUser {
+  dms_user_id: number
+  name: string
+  email: string
+  dms_user_level: string
+  dms_user_levels: string[]
+  roles: AuthRoleKey[]
+  permissions: string[]
+}
+
+export interface AuthMeResponse {
+  user: AuthUser
+}
+
+export interface AuthBootstrapStatus {
+  required: boolean
+}
+
+export interface AuthRoleDefinition {
+  key: AuthRoleKey
+  label: string
+  permissions: string[]
+}
+
+export interface AuthAccessAssignment {
+  id: number
+  dms_user_id: number
+  user_email: string
+  user_name: string
+  role_key: AuthRoleKey
+  granted_by_email: string | null
+  created_at: string
+  updated_at: string
+}
+
 export type UniversityStatus =
   | 'pending'
   | 'ig_found'

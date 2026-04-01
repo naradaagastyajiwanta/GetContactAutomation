@@ -18,7 +18,7 @@ from typing import Any, Optional
 _pw_executor = ThreadPoolExecutor(max_workers=2, thread_name_prefix="pw-login")
 
 import httpx
-from fastapi import FastAPI, BackgroundTasks, UploadFile, File as FastAPIFile, Form, Query, WebSocket, WebSocketDisconnect, Request, HTTPException
+from fastapi import FastAPI, BackgroundTasks, UploadFile, File as FastAPIFile, Form, Query, WebSocket, WebSocketDisconnect, Request, Response, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel
@@ -74,6 +74,11 @@ from orchestrator.db import (
     cleanup_old_pipeline_logs,
     get_email_blast_quota_info,
     get_db,
+    count_active_auth_role_assignments,
+    list_auth_role_assignments,
+    upsert_auth_user_role,
+    deactivate_auth_user_role,
+    revoke_auth_sessions_for_user,
 )
 from orchestrator.config_registry import (
     CONFIG_DEFINITIONS,
@@ -99,6 +104,20 @@ from orchestrator.agents.ig_phone_extractor import run_phone_extraction_batch, r
 from orchestrator.agents.bem_finder import run_bem_discovery_batch, run_bem_discovery_for_universities
 from orchestrator.agents.rector_finder import run_rector_finder_batch
 from orchestrator.config import PROVINCES
+from orchestrator.auth import (
+    can_bootstrap_auth,
+    clear_auth_cookie,
+    create_session_for_user,
+    get_request_user,
+    get_user_from_session_token,
+    get_websocket_user,
+    normalize_role_key,
+    require_permission,
+    revoke_session_token,
+    role_definitions_payload,
+    validate_login_credentials,
+)
+from orchestrator.dms_mysql import get_active_karyawan_by_email
 
 learning_system = LearningSystem()
 
@@ -273,6 +292,172 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+_PUBLIC_AUTH_PATHS = {
+    "/auth/bootstrap-status",
+    "/auth/login",
+    "/auth/logout",
+    "/auth/me",
+    "/auth/setup",
+    "/health",
+    "/openapi.json",
+    "/redoc",
+    "/webhook/incoming",
+}
+_PUBLIC_AUTH_PREFIXES = (
+    "/docs",
+)
+
+
+def _normalize_request_path(path: str) -> str:
+    if path == "/":
+        return path
+    return path.rstrip("/")
+
+
+def _is_public_path(path: str) -> bool:
+    normalized = _normalize_request_path(path)
+    if normalized in _PUBLIC_AUTH_PATHS:
+        return True
+    return any(normalized.startswith(prefix) for prefix in _PUBLIC_AUTH_PREFIXES)
+
+
+@app.middleware("http")
+async def auth_http_middleware(request: Request, call_next):
+    request.state.current_user = None
+
+    if request.method == "OPTIONS" or _is_public_path(request.url.path):
+        return await call_next(request)
+
+    session_token = request.cookies.get(str(cfg.get("AUTH_COOKIE_NAME", "dms_marketing_session")))
+    user = await get_user_from_session_token(session_token)
+    if not user:
+        return JSONResponse(status_code=401, content={"detail": "Authentication required"})
+
+    request.state.current_user = user
+    return await call_next(request)
+
+
+class AuthLoginPayload(BaseModel):
+    email: str
+    password: str
+
+
+class AuthSetupPayload(AuthLoginPayload):
+    role_key: str = "admin"
+
+
+class AuthGrantRolePayload(BaseModel):
+    email: str
+    role_key: str
+
+
+class AuthRevokeRolePayload(BaseModel):
+    dms_user_id: int
+    role_key: str
+
+
+@app.get("/auth/bootstrap-status")
+async def auth_bootstrap_status():
+    """Return whether local auth bootstrap is still required."""
+    return {"required": await can_bootstrap_auth()}
+
+
+@app.post("/auth/setup")
+async def auth_setup(payload: AuthSetupPayload, request: Request, response: Response):
+    """Bootstrap the first local dashboard admin using a valid DMS karyawan account."""
+    if not await can_bootstrap_auth():
+        return JSONResponse(status_code=409, content={"detail": "Auth bootstrap has already been completed"})
+
+    dms_user = await validate_login_credentials(payload.email, payload.password)
+    role_key = normalize_role_key(payload.role_key)
+    await upsert_auth_user_role(
+        dms_user_id=int(dms_user["dms_user_id"]),
+        user_email=str(dms_user.get("user_email") or ""),
+        user_name=str(dms_user.get("user_name") or "Unknown User"),
+        role_key=role_key,
+        granted_by_email=str(dms_user.get("user_email") or ""),
+    )
+    user = await create_session_for_user(response, dms_user, request)
+    return {"status": "ok", "bootstrap_completed": True, "user": user}
+
+
+@app.post("/auth/login")
+async def auth_login(payload: AuthLoginPayload, request: Request, response: Response):
+    """Authenticate using DMS karyawan credentials and create a local dashboard session."""
+    dms_user = await validate_login_credentials(payload.email, payload.password)
+    user = await create_session_for_user(response, dms_user, request)
+    return {"status": "ok", "user": user}
+
+
+@app.post("/auth/logout")
+async def auth_logout(request: Request, response: Response):
+    """Revoke the current dashboard session."""
+    session_token = request.cookies.get(str(cfg.get("AUTH_COOKIE_NAME", "dms_marketing_session")))
+    await revoke_session_token(session_token)
+    clear_auth_cookie(response)
+    return {"status": "ok"}
+
+
+@app.get("/auth/me")
+async def auth_me(request: Request):
+    """Return the current authenticated user from the session cookie."""
+    session_token = request.cookies.get(str(cfg.get("AUTH_COOKIE_NAME", "dms_marketing_session")))
+    user = await get_user_from_session_token(session_token)
+    if not user:
+        return JSONResponse(status_code=401, content={"detail": "Not authenticated"})
+    return {"user": user}
+
+
+@app.get("/auth/roles")
+async def auth_roles(request: Request):
+    """Return supported local role definitions."""
+    await require_permission(request, "settings.manage")
+    return {"roles": role_definitions_payload()}
+
+
+@app.get("/auth/access")
+async def auth_access_list(request: Request):
+    """Return current local access assignments."""
+    await require_permission(request, "settings.manage")
+    return {
+        "assignments": await list_auth_role_assignments(),
+        "roles": role_definitions_payload(),
+    }
+
+
+@app.post("/auth/access/grant")
+async def auth_access_grant(payload: AuthGrantRolePayload, request: Request):
+    """Grant a local dashboard role to an active DMS karyawan user."""
+    current_user = await require_permission(request, "settings.manage")
+    role_key = normalize_role_key(payload.role_key)
+    dms_user = await get_active_karyawan_by_email(payload.email)
+    if not dms_user:
+        return JSONResponse(status_code=404, content={"detail": "Active DMS user not found for this email"})
+
+    await upsert_auth_user_role(
+        dms_user_id=int(dms_user["dms_user_id"]),
+        user_email=str(dms_user.get("user_email") or ""),
+        user_name=str(dms_user.get("user_name") or "Unknown User"),
+        role_key=role_key,
+        granted_by_email=str(current_user.get("email") or ""),
+    )
+    return {"status": "ok"}
+
+
+@app.post("/auth/access/revoke")
+async def auth_access_revoke(payload: AuthRevokeRolePayload, request: Request):
+    """Revoke a local dashboard role and invalidate active sessions for that user."""
+    await require_permission(request, "settings.manage")
+    role_key = normalize_role_key(payload.role_key)
+    if role_key == "admin":
+        admin_count = await count_active_auth_role_assignments("admin")
+        if admin_count <= 1:
+            return JSONResponse(status_code=409, content={"detail": "At least one admin must remain active"})
+
+    await deactivate_auth_user_role(payload.dms_user_id, role_key)
+    await revoke_auth_sessions_for_user(payload.dms_user_id)
+    return {"status": "ok"}
+
 
 async def register_webhook():
     """Register our webhook URL with the WhatsApp service."""
@@ -336,6 +521,12 @@ async def handle_incoming_message(payload: dict, background_tasks: BackgroundTas
 @app.websocket("/ws")
 async def websocket_endpoint(websocket: WebSocket):
     """WebSocket endpoint for real-time updates to the frontend."""
+    user = await get_websocket_user(websocket)
+    if not user:
+        await websocket.close(code=4401, reason="Unauthorized")
+        return
+
+    websocket.state.current_user = user
     await ws_manager.connect(websocket)
     try:
         while True:

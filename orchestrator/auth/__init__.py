@@ -1,0 +1,33 @@
+from orchestrator.auth.service import (
+    ROLE_DEFINITIONS,
+    build_app_user,
+    can_bootstrap_auth,
+    clear_auth_cookie,
+    create_session_for_user,
+    get_request_user,
+    get_user_from_session_token,
+    get_websocket_user,
+    has_permission,
+    normalize_role_key,
+    require_permission,
+    revoke_session_token,
+    role_definitions_payload,
+    validate_login_credentials,
+)
+
+__all__ = [
+    "ROLE_DEFINITIONS",
+    "build_app_user",
+    "can_bootstrap_auth",
+    "clear_auth_cookie",
+    "create_session_for_user",
+    "get_request_user",
+    "get_user_from_session_token",
+    "get_websocket_user",
+    "has_permission",
+    "normalize_role_key",
+    "require_permission",
+    "revoke_session_token",
+    "role_definitions_payload",
+    "validate_login_credentials",
+]

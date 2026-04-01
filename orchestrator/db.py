@@ -147,6 +147,35 @@ CREATE TABLE IF NOT EXISTS config (
 );
 """
 
+_DDL_AUTH = """
+CREATE TABLE IF NOT EXISTS auth_user_roles (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    dms_user_id INTEGER NOT NULL,
+    user_email TEXT NOT NULL,
+    user_name TEXT NOT NULL,
+    role_key TEXT NOT NULL,
+    is_active INTEGER DEFAULT 1,
+    granted_by_email TEXT,
+    created_at TEXT DEFAULT (datetime('now')),
+    updated_at TEXT DEFAULT (datetime('now')),
+    UNIQUE(dms_user_id, role_key)
+);
+
+CREATE TABLE IF NOT EXISTS auth_sessions (
+    session_hash TEXT PRIMARY KEY,
+    dms_user_id INTEGER NOT NULL,
+    user_email TEXT NOT NULL,
+    user_name TEXT NOT NULL,
+    dms_user_level TEXT,
+    expires_at TEXT NOT NULL,
+    created_at TEXT DEFAULT (datetime('now')),
+    last_seen_at TEXT DEFAULT (datetime('now')),
+    revoked_at TEXT,
+    user_agent TEXT,
+    ip_address TEXT
+);
+"""
+
 _INDEXES_AGENT = """
 CREATE INDEX IF NOT EXISTS idx_conv_analyses_conv_id ON conversation_analyses(conversation_id);
 CREATE INDEX IF NOT EXISTS idx_conv_analyses_processed ON conversation_analyses(processed);
@@ -154,6 +183,14 @@ CREATE INDEX IF NOT EXISTS idx_lessons_situation ON lessons(situation_type);
 CREATE INDEX IF NOT EXISTS idx_lessons_active ON lessons(is_active);
 CREATE INDEX IF NOT EXISTS idx_strategy_metrics_conv ON strategy_metrics(conversation_id);
 CREATE INDEX IF NOT EXISTS idx_strategy_metrics_strategy ON strategy_metrics(strategy_used);
+"""
+
+_INDEXES_AUTH = """
+CREATE INDEX IF NOT EXISTS idx_auth_user_roles_user ON auth_user_roles(dms_user_id);
+CREATE INDEX IF NOT EXISTS idx_auth_user_roles_email ON auth_user_roles(user_email);
+CREATE INDEX IF NOT EXISTS idx_auth_user_roles_active ON auth_user_roles(is_active);
+CREATE INDEX IF NOT EXISTS idx_auth_sessions_user ON auth_sessions(dms_user_id);
+CREATE INDEX IF NOT EXISTS idx_auth_sessions_expiry ON auth_sessions(expires_at);
 """
 
 _DDL_AUDIENSI = """
@@ -710,8 +747,10 @@ async def init_db() -> None:
         await db.executescript(_DDL)
         await db.executescript(_DDL_AGENT)
         await db.executescript(_DDL_CONFIG)
+        await db.executescript(_DDL_AUTH)
         await db.executescript(_INDEXES)
         await db.executescript(_INDEXES_AGENT)
+        await db.executescript(_INDEXES_AUTH)
         await db.executescript(_DDL_AUDIENSI)
         await db.executescript(_INDEXES_AUDIENSI)
         await db.executescript(_DDL_KNOWLEDGE)
@@ -2933,6 +2972,195 @@ async def delete_config(key: str) -> None:
     """Delete a config key (resets to default)."""
     async with get_db() as db:
         await db.execute("DELETE FROM config WHERE key = ?", (key,))
+        await db.commit()
+
+
+# ---------------------------------------------------------------------------
+# Auth CRUD
+# ---------------------------------------------------------------------------
+
+
+async def count_active_auth_roles() -> int:
+    """Return the number of active auth role assignments."""
+    async with get_db() as db:
+        cursor = await db.execute(
+            "SELECT COUNT(*) AS total FROM auth_user_roles WHERE is_active = 1"
+        )
+        row = await cursor.fetchone()
+        return int(row["total"] if row else 0)
+
+
+async def count_active_auth_role_assignments(role_key: str) -> int:
+    """Return the number of active assignments for a specific local role."""
+    async with get_db() as db:
+        cursor = await db.execute(
+            """
+            SELECT COUNT(*) AS total
+            FROM auth_user_roles
+            WHERE is_active = 1 AND role_key = ?
+            """,
+            (role_key,),
+        )
+        row = await cursor.fetchone()
+        return int(row["total"] if row else 0)
+
+
+async def get_auth_role_keys_for_user(dms_user_id: int) -> list[str]:
+    """Return active local role keys assigned to a DMS user."""
+    async with get_db() as db:
+        cursor = await db.execute(
+            """
+            SELECT role_key
+            FROM auth_user_roles
+            WHERE dms_user_id = ? AND is_active = 1
+            ORDER BY role_key ASC
+            """,
+            (dms_user_id,),
+        )
+        rows = await cursor.fetchall()
+        return [str(row["role_key"]) for row in rows]
+
+
+async def list_auth_role_assignments() -> list[dict[str, Any]]:
+    """Return all active local auth role assignments."""
+    async with get_db() as db:
+        cursor = await db.execute(
+            """
+            SELECT id, dms_user_id, user_email, user_name, role_key,
+                   granted_by_email, created_at, updated_at
+            FROM auth_user_roles
+            WHERE is_active = 1
+            ORDER BY user_email ASC, role_key ASC
+            """
+        )
+        rows = await cursor.fetchall()
+        return _rows_to_dicts(rows)
+
+
+async def upsert_auth_user_role(
+    dms_user_id: int,
+    user_email: str,
+    user_name: str,
+    role_key: str,
+    granted_by_email: str | None = None,
+) -> None:
+    """Create or reactivate a local role assignment for a DMS user."""
+    now = _utcnow()
+    async with get_db() as db:
+        await db.execute(
+            """
+            INSERT INTO auth_user_roles (
+                dms_user_id, user_email, user_name, role_key,
+                is_active, granted_by_email, created_at, updated_at
+            )
+            VALUES (?, ?, ?, ?, 1, ?, ?, ?)
+            ON CONFLICT(dms_user_id, role_key) DO UPDATE SET
+                user_email = excluded.user_email,
+                user_name = excluded.user_name,
+                is_active = 1,
+                granted_by_email = excluded.granted_by_email,
+                updated_at = excluded.updated_at
+            """,
+            (dms_user_id, user_email, user_name, role_key, granted_by_email, now, now),
+        )
+        await db.commit()
+
+
+async def deactivate_auth_user_role(dms_user_id: int, role_key: str) -> None:
+    """Deactivate a local role assignment."""
+    async with get_db() as db:
+        await db.execute(
+            """
+            UPDATE auth_user_roles
+            SET is_active = 0, updated_at = ?
+            WHERE dms_user_id = ? AND role_key = ?
+            """,
+            (_utcnow(), dms_user_id, role_key),
+        )
+        await db.commit()
+
+
+async def create_auth_session(
+    session_hash: str,
+    dms_user_id: int,
+    user_email: str,
+    user_name: str,
+    dms_user_level: str | None,
+    expires_at: str,
+    user_agent: str | None = None,
+    ip_address: str | None = None,
+) -> None:
+    """Persist a new authenticated browser session."""
+    now = _utcnow()
+    async with get_db() as db:
+        await db.execute(
+            """
+            INSERT INTO auth_sessions (
+                session_hash, dms_user_id, user_email, user_name, dms_user_level,
+                expires_at, created_at, last_seen_at, user_agent, ip_address
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                session_hash,
+                dms_user_id,
+                user_email,
+                user_name,
+                dms_user_level,
+                expires_at,
+                now,
+                now,
+                user_agent,
+                ip_address,
+            ),
+        )
+        await db.commit()
+
+
+async def get_auth_session(session_hash: str) -> dict[str, Any] | None:
+    """Return an auth session by hash."""
+    async with get_db() as db:
+        cursor = await db.execute(
+            """
+            SELECT session_hash, dms_user_id, user_email, user_name, dms_user_level,
+                   expires_at, created_at, last_seen_at, revoked_at, user_agent, ip_address
+            FROM auth_sessions
+            WHERE session_hash = ?
+            LIMIT 1
+            """,
+            (session_hash,),
+        )
+        row = await cursor.fetchone()
+        return _row_to_dict(row) if row else None
+
+
+async def touch_auth_session(session_hash: str) -> None:
+    """Update last-seen timestamp for an active session."""
+    async with get_db() as db:
+        await db.execute(
+            "UPDATE auth_sessions SET last_seen_at = ? WHERE session_hash = ?",
+            (_utcnow(), session_hash),
+        )
+        await db.commit()
+
+
+async def revoke_auth_session(session_hash: str) -> None:
+    """Revoke a single auth session."""
+    async with get_db() as db:
+        await db.execute(
+            "UPDATE auth_sessions SET revoked_at = ? WHERE session_hash = ?",
+            (_utcnow(), session_hash),
+        )
+        await db.commit()
+
+
+async def revoke_auth_sessions_for_user(dms_user_id: int) -> None:
+    """Revoke all sessions for a DMS user."""
+    async with get_db() as db:
+        await db.execute(
+            "UPDATE auth_sessions SET revoked_at = ? WHERE dms_user_id = ? AND revoked_at IS NULL",
+            (_utcnow(), dms_user_id),
+        )
         await db.commit()
 
 

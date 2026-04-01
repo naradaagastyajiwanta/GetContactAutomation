@@ -1,8 +1,12 @@
 import { useContext } from 'react'
-import { useLocation } from 'react-router-dom'
-import { Menu, Moon, Sun } from 'lucide-react'
+import { useLocation, useNavigate } from 'react-router-dom'
+import { useMutation, useQueryClient } from '@tanstack/react-query'
+import { LogOut, Menu, Moon, Sun } from 'lucide-react'
 import { ThemeContext } from '../../context/ThemeContext'
 import { NotificationCenter } from '../notifications/NotificationCenter'
+import { useAuth } from '../../context/AuthContext'
+import { logout } from '../../api/auth'
+import { queryKeys } from '../../lib/queryKeys'
 
 const pageTitles: Record<string, string> = {
   '/': 'Dashboard',
@@ -26,6 +30,16 @@ interface TopBarProps {
 export function TopBar({ onMenuClick }: TopBarProps) {
   const { pathname } = useLocation()
   const { theme, toggleTheme } = useContext(ThemeContext)
+  const { user } = useAuth()
+  const navigate = useNavigate()
+  const queryClient = useQueryClient()
+  const logoutMutation = useMutation({
+    mutationFn: logout,
+    onSuccess: async () => {
+      await queryClient.invalidateQueries({ queryKey: queryKeys.auth.me })
+      navigate('/login', { replace: true })
+    },
+  })
 
   return (
     <header className="flex h-16 items-center justify-between border-b border-gray-200 bg-white px-4 dark:border-gray-700 dark:bg-gray-900 lg:px-6">
@@ -42,12 +56,27 @@ export function TopBar({ onMenuClick }: TopBarProps) {
       </div>
 
       <div className="flex items-center gap-2">
+        {user && (
+          <div className="hidden items-center rounded-lg border border-gray-200 px-3 py-1.5 text-right dark:border-gray-700 md:flex">
+            <div>
+              <p className="text-sm font-medium text-gray-900 dark:text-gray-100">{user.name}</p>
+              <p className="text-xs text-gray-500 dark:text-gray-400">{user.email}</p>
+            </div>
+          </div>
+        )}
         <NotificationCenter />
         <button
           onClick={toggleTheme}
           className="flex h-9 w-9 items-center justify-center rounded-lg text-gray-500 hover:bg-gray-100 dark:text-gray-400 dark:hover:bg-gray-800"
         >
           {theme === 'dark' ? <Sun className="h-5 w-5" /> : <Moon className="h-5 w-5" />}
+        </button>
+        <button
+          onClick={() => logoutMutation.mutate()}
+          className="flex h-9 w-9 items-center justify-center rounded-lg text-gray-500 hover:bg-gray-100 dark:text-gray-400 dark:hover:bg-gray-800"
+          title="Logout"
+        >
+          <LogOut className="h-5 w-5" />
         </button>
       </div>
     </header>

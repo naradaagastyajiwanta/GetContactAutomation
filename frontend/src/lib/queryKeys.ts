@@ -1,4 +1,9 @@
 export const queryKeys = {
+  auth: {
+    me: ['auth', 'me'] as const,
+    bootstrap: ['auth', 'bootstrap-status'] as const,
+    access: ['auth', 'access'] as const,
+  },
   dashboard: ['dashboard'] as const,
   health: ['health'] as const,
   control: ['control'] as const,
