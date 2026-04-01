@@ -1,78 +1,123 @@
-# Plan: Marketing Get Contact Automation
+# Plan: Marketing - Get Contact Automation
 
-## Overview
+**Date:** 2026-04-01
+**Status:** Proposed MVP Plan
+**Feature Order Name:** Marketing - Get Contac Automation
+**Station:** Searching Data
 
-Bangun modul marketing baru yang terpisah dari domain universitas untuk mendukung flow:
+## Brief Translation
 
-1. pilih tipe client
-2. upload daftar client
-3. jalankan get contact automation
-4. review hasil
-5. edit hasil
-6. handoff ke WA Blast dan Email Blast
+### Before
 
-Before:
+- Sistem masih berpusat pada domain universitas.
+- Import list masih diarahkan ke data universitas.
+- Belum ada modul marketing untuk organisasi umum seperti lembaga negara, kementrian, BUMN, asosiasi, LPK, LKP, atau perusahaan swasta besar.
+- Belum ada flow review hasil scraping yang khusus untuk tim marketing sebelum data diteruskan ke blast.
 
-- sistem masih university-centric
-- import hanya ke `universities`
-- belum ada review-handoff khusus marketing
+### After
 
-After:
+- Marketing dapat membuat group pencarian baru secara dinamis.
+- Marketing wajib memilih tipe client saat membuat group.
+- Marketing dapat upload file Excel atau CSV berisi daftar client yang akan dicari.
+- Sistem menjalankan get contact automation berdasarkan list yang di-upload.
+- Sistem mencari website, Instagram, email, dan nomor telepon kandidat WA.
+- Hasil scraping dapat dilihat, diedit, direview, lalu dipilih untuk masuk ke data siap di blast.
+- Hasil approved dapat diteruskan ke WA Blast, Email Blast, atau keduanya.
 
-- marketing bisa mengelola group client dinamis
-- marketing bisa mencari email dan nomor WA secara otomatis
-- marketing bisa melihat detail hasil dan mengedit hasil
-- marketing bisa memasukkan hasil approved ke data siap di-blast
+## Objectives
 
-## Summary
+1. Menyediakan modul marketing yang terpisah dari domain universitas.
+2. Mendukung input list client secara dinamis melalui upload file.
+3. Menyediakan dropdown tipe client sesuai brief.
+4. Menjalankan proses scraping berbasis website, Instagram, lalu web search.
+5. Menyimpan seluruh kandidat hasil scraping agar bisa direview dan diedit.
+6. Menyediakan jalur handoff ke WA Blast dan Email Blast tanpa merusak contract existing.
 
-- Total Tasks: 20
-- Database: 5 tasks
-- Backend: 8 tasks
-- Frontend: 5 tasks
-- Integration: 2 tasks
-- Estimated Time: 4-6 working days for MVP
+## Locked Decisions
 
-## Product Decisions
+1. Modul ini dibangun sebagai domain baru dan tidak digabung ke tabel `universities`.
+2. Upload MVP mendukung `name` sebagai field wajib dan `website` sebagai field opsional.
+3. Sumber pencarian MVP mengikuti urutan: website -> Instagram -> web search.
+4. Semua kandidat hasil scraping harus bisa dilihat dan diedit, bukan hanya kontak final.
+5. Hasil approved harus muncul di staging "ready to blast" dan juga bisa ditambahkan ke campaign existing.
+6. Tipe client menggunakan fixed options pada backend dan frontend, bukan master table lookup terpisah.
+7. Nama group tidak unique; pembeda operasional menggunakan timestamp.
 
-- Modul dipisah total dari universitas.
-- Edit hasil dilakukan di halaman detail client.
-- Handoff mencakup WA Blast dan Email Blast.
-- Format upload minimal: nama client, website opsional.
-- Dropdown tipe client:
-  - `Lembaga Negara`
-  - `Kementrian`
-  - `BUMN`
-  - `Perusahaan Swasta Besar`
-  - `Asosiasi`
-  - `LPK`
-  - `LKP`
-- Group name tidak unique; pembeda operasional memakai timestamp.
+## Client Type Options
 
-## Expected Workflow
+Dropdown tipe client pada MVP:
 
-1. Marketing membuat group baru.
-2. Marketing memilih tipe client.
-3. Marketing upload file Excel/CSV berisi list client.
-4. Sistem mem-parsing file dan menampilkan preview import.
-5. Sistem menyimpan item client ke group marketing.
-6. Marketing menjalankan search automation.
-7. Sistem mencari website, Instagram, email, dan nomor telepon.
-8. Sistem memisahkan hasil email, kandidat WA, dan nomor non-WA.
-9. Marketing membuka detail group dan detail client.
-10. Marketing mengedit hasil kontak bila perlu.
-11. Marketing me-review dan approve hasil.
-12. Sistem mendorong hasil approved ke WA Blast, Email Blast, atau keduanya.
+- `Lembaga Negara`
+- `Kementrian`
+- `BUMN`
+- `Perusahaan Swasta Besar`
+- `Asosiasi`
+- `LPK`
+- `LKP`
+
+## Expected User Workflow
+
+1. Marketing membuka modul Marketing Get Contact Automation.
+2. Marketing membuat group baru.
+3. Marketing memilih satu tipe client pada group tersebut.
+4. Marketing upload file `.xlsx` atau `.csv` yang berisi daftar client.
+5. Sistem menampilkan preview import: valid rows, invalid rows, dan duplicate rows.
+6. Marketing melakukan commit import.
+7. Sistem menyimpan semua client ke group yang dipilih.
+8. Marketing menekan tombol `Run Search` untuk group tersebut.
+9. Sistem memproses setiap client dengan urutan website -> Instagram -> web search.
+10. Sistem menyimpan semua kandidat email, nomor telepon, website, dan akun Instagram yang ditemukan.
+11. Marketing membuka detail group lalu memilih salah satu client.
+12. Marketing melihat seluruh kandidat hasil scraping, termasuk source URL dan confidence.
+13. Marketing mengedit data yang perlu disesuaikan.
+14. Marketing menandai hasil sebagai reviewed, rejected, approved to WA, approved to Email, atau approved to both.
+15. Sistem menempatkan hasil approved ke staging `ready to blast`.
+16. Marketing memilih data approved lalu mengirimkannya ke campaign WA, Email, atau keduanya.
 
 ## Success Criteria Mapping
 
-1. User dapat memilih group tanpa bergantung lagi pada domain universitas.
+### Business Criteria
+
+1. User dapat memilih group tanpa bergantung pada domain universitas.
 2. User dapat upload Excel list group untuk diproses scraping.
-3. Sistem menghasilkan email dan nomor WA, dengan email tetap dianggap penting.
-4. Saat user memilih tipe client, dropdown menampilkan daftar tipe yang sudah ditentukan.
-5. Saat user klik list/group, detail kontak dari list yang dipilih tampil.
+3. Sistem menghasilkan email dan nomor WA candidate, dengan email tetap dianggap penting.
+4. Saat user memilih tipe client, dropdown menampilkan daftar tipe client yang sudah ditentukan.
+5. Saat user klik list yang dipilih, detail kontak dari list tersebut tampil.
 6. Setiap group yang dibuat memiliki timestamp, sehingga nama group yang sama tetap aman.
-7. Sistem berhasil menyimpan hasil scraping yang bisa direview dan diedit.
+7. Sistem berhasil mendapatkan kontak hasil scraping yang bisa direview, diedit, dan diteruskan ke blast.
+
+### Technical Translation
+
+1. `client_type` harus menjadi field wajib saat create group.
+2. Import file harus mendukung `.csv` dan `.xlsx` dengan header fleksibel.
+3. Search pipeline harus mampu menyimpan banyak kandidat hasil untuk satu client.
+4. Nomor `021` tidak boleh diklasifikasikan sebagai `wa_phone`.
+5. Email harus tetap disimpan walaupun tidak ditemukan WA candidate.
+6. Handoff ke WA Blast harus menggunakan payload generic dan tidak bergantung pada `university_id`.
+7. Handoff ke Email Blast harus mendukung recipient source baru dari domain marketing.
+
+## Scope
+
+### Included in MVP
+
+- Modul group marketing baru.
+- Dropdown tipe client.
+- Upload list client.
+- Preview import sebelum commit.
+- Search automation per group.
+- Penyimpanan semua kandidat hasil scraping.
+- Detail client untuk review dan edit.
+- Staging ready to blast.
+- Handoff ke WA Blast dan Email Blast.
+- Status summary dan progress dasar.
+
+### Excluded from MVP
+
+- Multi-user approval workflow.
+- Scheduler otomatis harian khusus modul marketing.
+- Generic universal entity graph lintas semua domain repo.
+- Integrasi CRM enrichment non-kontak.
+- Ranking AI yang terlalu kompleks untuk prioritas blast.
 
 ## Architecture Direction
 
@@ -80,655 +125,461 @@ After:
 
 Codebase saat ini masih sangat terikat ke domain universitas:
 
-- schema utama berpusat pada `universities`
-- OSINT flow banyak memakai `university_id`
-- import existing hanya mengisi `universities`
-- grouping existing adalah `university_groups`
+- Schema utama berpusat pada `universities`.
+- Grouping existing menggunakan `university_groups`.
+- Import existing menulis ke `universities`.
+- Flow hasil kontak dan blast banyak bergantung pada `university_id`.
+
+Karena feature baru menargetkan organisasi umum, modul baru harus dipisah agar:
+
+- tidak mencampur semantik data universitas dengan organisasi non-universitas,
+- tidak memaksa query existing untuk menerima entity yang bentuk datanya berbeda,
+- lebih mudah dikembangkan untuk kategori client lain di masa depan.
+
+### Infrastructure To Reuse
+
+Komponen existing yang direkomendasikan untuk reuse:
+
+- parser import file dari endpoint universitas di `orchestrator/main.py`,
+- pola CRUD group dari `orchestrator/university_groups.py`,
+- util fetch dan search dari `orchestrator/osint/tools.py`,
+- pola recipient handoff dari `orchestrator/blast_service.py`,
+- engine email campaign dari `orchestrator/email_blast.py`,
+- pola page list-detail dari `frontend/src/pages/UniversityGroupsPage.tsx`,
+- pola review hasil dari `frontend/src/components/universities/ContactsPanel.tsx`,
+- pola add-to-blast dari `frontend/src/components/blast/AddToBlastModal.tsx`.
+
+## Proposed File Map
+
+### Backend
+
+- `orchestrator/db.py`
+- `orchestrator/marketing/__init__.py`
+- `orchestrator/marketing/constants.py`
+- `orchestrator/marketing/groups.py`
+- `orchestrator/marketing/importer.py`
+- `orchestrator/marketing/search.py`
+- `orchestrator/marketing/handoff.py`
+- `orchestrator/marketing/serializers.py`
+- `orchestrator/main.py`
+
+### Frontend
+
+- `frontend/src/lib/types.ts`
+- `frontend/src/lib/queryKeys.ts`
+- `frontend/src/api/marketing.ts`
+- `frontend/src/hooks/useMarketing.ts`
+- `frontend/src/pages/MarketingGetContactPage.tsx`
+- `frontend/src/pages/MarketingClientDetailPage.tsx`
+- `frontend/src/components/marketing/MarketingGroupCard.tsx`
+- `frontend/src/components/marketing/MarketingCreateGroupModal.tsx`
+- `frontend/src/components/marketing/MarketingImportModal.tsx`
+- `frontend/src/components/marketing/MarketingGroupDetail.tsx`
+- `frontend/src/components/marketing/MarketingClientResultsTable.tsx`
+- `frontend/src/components/marketing/MarketingReadyToBlastPanel.tsx`
+- `frontend/src/components/marketing/MarketingHandoffModal.tsx`
+
+## Proposed Data Model
+
+### Table: `marketing_groups`
+
+Purpose:
+Header batch kerja marketing.
+
+Minimum fields:
+
+- `id`
+- `name`
+- `client_type`
+- `status`
+- `imported_file_name`
+- `source_kind`
+- `items_count`
+- `results_count`
+- `approved_results_count`
+- `created_at`
+- `updated_at`
+
+Recommended statuses:
+
+- `draft`
+- `imported`
+- `searching`
+- `reviewing`
+- `ready`
+- `completed`
+
+### Table: `marketing_clients`
+
+Purpose:
+List client yang berada di dalam satu group.
+
+Minimum fields:
+
+- `id`
+- `group_id`
+- `client_name`
+- `client_type`
+- `website_input`
+- `website_normalized`
+- `instagram_handle`
+- `search_status`
+- `search_started_at`
+- `search_completed_at`
+- `last_error`
+- `created_at`
+- `updated_at`
 
-Karena kebutuhan baru menargetkan organisasi umum seperti kementrian, BUMN, asosiasi, LPK, dan perusahaan, modul baru perlu dipisah agar tidak mencampur domain dan tidak memaksa schema lama dipakai di luar konteksnya.
+Recommended search statuses:
 
-### Reusable Existing Infrastructure
+- `pending`
+- `running`
+- `completed`
+- `failed`
 
-Tetap reuse komponen yang sudah matang:
+### Table: `marketing_contact_results`
 
-- pola import file dari endpoint universitas
-- pola group management dari `university_groups.py`
-- util ekstraksi email dan telepon dari `orchestrator/osint/tools.py`
-- pola recipient handoff dari `blast_service.py`
-- pola email recipient handoff dari `email_blast.py`
-- pola UI list-detail dari `UniversityGroupsPage`
-- pola review action dari `BlastCampaignDetailPage`
+Purpose:
+Menyimpan semua kandidat hasil scraping untuk satu client.
 
-## Database Tasks
+Minimum fields:
 
-### TASK-DB-001: Create Marketing Groups Table
+- `id`
+- `marketing_client_id`
+- `contact_type`
+- `contact_value`
+- `contact_name`
+- `contact_role`
+- `source`
+- `source_url`
+- `confidence`
+- `is_primary`
+- `review_state`
+- `edited_manually`
+- `manual_note`
+- `created_at`
+- `updated_at`
 
-**File:** `orchestrator/db.py`
+Recommended contact types:
 
-**Description:**
-
-- Tambahkan tabel group marketing sebagai header batch kerja marketing.
-- Field minimal:
-  - `id`
-  - `name`
-  - `client_type`
-  - `status`
-  - `imported_file_name`
-  - `source_kind`
-  - `created_at`
-  - `updated_at`
-- Status group minimal:
-  - `draft`
-  - `imported`
-  - `searching`
-  - `reviewing`
-  - `ready`
-
-**Acceptance Criteria:**
-
-- Group tidak bergantung pada `universities`.
-- Group dengan nama yang sama tetap valid.
-- Timestamp tersimpan otomatis.
-
-**Dependencies:** None
+- `email`
+- `wa_phone`
+- `other_phone`
+- `website`
+- `instagram`
 
-**Estimated:** 15-25 min
+Recommended review states:
 
-**Notes:**
+- `new`
+- `reviewed`
+- `approved_for_blast`
+- `rejected`
 
-- Nama group tidak perlu unique.
-- Timestamp akan dipakai untuk membedakan display saat nama sama.
+### Table: `marketing_contact_handoffs`
 
----
+Purpose:
+Audit trail untuk hasil approved yang dikirim ke channel blast.
 
-### TASK-DB-002: Create Marketing Client Items Table
+Minimum fields:
 
-**File:** `orchestrator/db.py`
+- `id`
+- `contact_result_id`
+- `channel`
+- `handoff_status`
+- `target_campaign_id`
+- `payload_snapshot`
+- `approved_at`
+- `created_at`
 
-**Description:**
+Recommended channels:
 
-- Tambahkan tabel item client per group.
-- Field minimal:
-  - `group_id`
-  - `client_name`
-  - `client_type`
-  - `website_input`
-  - `website_normalized`
-  - `instagram_handle`
-  - `search_status`
-  - `search_started_at`
-  - `search_completed_at`
-  - `last_error`
-  - `created_at`
-  - `updated_at`
-- Search status minimal:
-  - `pending`
-  - `running`
-  - `completed`
-  - `failed`
+- `wa`
+- `email`
 
-**Acceptance Criteria:**
+## Query And Dedup Rules
 
-- Satu group dapat memiliki banyak client.
-- `client_type` tersimpan di item agar aman jika group berubah metadata.
-- Website input dan hasil normalisasi tersimpan terpisah.
+1. Dedup import minimal pada level `(group_id, normalized client_name, normalized website)`.
+2. Dedup contact results minimal pada level `(marketing_client_id, contact_type, normalized contact_value)`.
+3. Email disimpan dalam lowercase normalized form.
+4. Nomor telepon dinormalisasi ke bentuk yang konsisten untuk Indonesia.
+5. `021` dan landline tidak masuk `wa_phone`; tetap dapat disimpan sebagai `other_phone` bila relevan.
 
-**Dependencies:** `TASK-DB-001`
+## Search Pipeline Design
 
-**Estimated:** 20-30 min
+### Stage 1: Website Input Or Discovery
 
-**Notes:**
+1. Jika file upload sudah memiliki website, gunakan website tersebut lebih dulu.
+2. Jika website tidak ada, lakukan pencarian web untuk mencari website resmi.
+3. Fetch halaman website utama dan halaman yang berpotensi berisi kontak.
 
-- Pertimbangkan dedup di level `(group_id, normalized client_name, normalized website)`.
+Target extraction:
 
----
+- email,
+- nomor telepon,
+- link ke halaman kontak,
+- social links,
+- akun Instagram,
+- halaman profil perusahaan atau organisasi.
 
-### TASK-DB-003: Create Marketing Contact Results Table
+### Stage 2: Instagram Discovery
 
-**File:** `orchestrator/db.py`
+1. Gunakan link Instagram dari website jika tersedia.
+2. Jika tidak ada, cari kandidat Instagram lewat web search.
+3. Simpan akun Instagram yang berhasil ditemukan sebagai hasil candidate.
 
-**Description:**
+Target extraction:
 
-- Tambahkan tabel hasil kontak scraping untuk setiap item client.
-- Field minimal:
-  - `marketing_client_id`
-  - `contact_type`
-  - `contact_value`
-  - `contact_name`
-  - `contact_role`
-  - `source`
-  - `source_url`
-  - `confidence`
-  - `is_primary`
-  - `review_state`
-  - `edited_manually`
-  - `created_at`
-  - `updated_at`
-- Contact type minimal:
-  - `email`
-  - `wa_phone`
-  - `other_phone`
-  - `website`
-  - `instagram`
-- Review state minimal:
-  - `new`
-  - `reviewed`
-  - `approved_for_blast`
-  - `rejected`
+- handle Instagram,
+- bio yang mengandung email,
+- bio yang mengandung nomor telepon,
+- petunjuk ke contact page atau WhatsApp link.
 
-**Acceptance Criteria:**
+### Stage 3: Web Search Fallback
 
-- Email dan WA bisa sama-sama tersimpan untuk satu client.
-- Nomor non-WA bisa dibedakan dari kandidat WA.
-- Hasil edit manual bisa dilacak.
+1. Jalankan web search menggunakan nama client.
+2. Prioritaskan hasil yang mengarah ke domain resmi, profil organisasi, dan contact page.
+3. Simpan source URL dan confidence.
 
-**Dependencies:** `TASK-DB-002`
+### Stage 4: Classification
 
-**Estimated:** 25-35 min
+1. Classify email sebagai `email`.
+2. Classify mobile candidate sebagai `wa_phone`.
+3. Classify landline atau non-mobile sebagai `other_phone`.
+4. Simpan website dan Instagram sebagai candidate non-contact untuk membantu review.
 
-**Notes:**
+## Review And Ready-To-Blast Design
 
-- Dedup yang direkomendasikan: `(marketing_client_id, contact_type, normalized contact_value)`.
+### Review Rules
 
----
+1. Semua kandidat hasil harus terlihat di detail client.
+2. Marketing dapat mengedit nilai hasil, nama kontak, dan catatan manual.
+3. Setiap edit mengubah `edited_manually = 1`.
+4. User dapat memilih salah satu hasil sebagai primary.
+5. User dapat menandai hasil sebagai `reviewed`, `rejected`, atau `approved_for_blast`.
 
-### TASK-DB-004: Create Marketing Handoff Audit Table
+### Ready-To-Blast Rules
 
-**File:** `orchestrator/db.py`
+1. Data siap di blast berasal dari hasil dengan `review_state = approved_for_blast`.
+2. Ready-to-blast ditampilkan di level group dan dapat difilter per channel.
+3. Handoff ke WA dan email ditrigger dari data approved, bukan dari hasil mentah.
 
-**Description:**
+## Handoff Design
 
-- Tambahkan tabel audit untuk hasil kontak yang disetujui menuju channel blast.
-- Field minimal:
-  - `contact_result_id`
-  - `channel`
-  - `handoff_status`
-  - `target_campaign_id`
-  - `payload_snapshot`
-  - `approved_at`
-  - `created_at`
-- Channel minimal:
-  - `wa`
-  - `email`
+### WA Blast
 
-**Acceptance Criteria:**
+Reuse yang direkomendasikan:
 
-- Satu hasil kontak bisa diarahkan ke satu atau dua channel.
-- Snapshot payload tersimpan sebagai jejak review final.
-- Handoff dapat ditrace ke campaign target jika campaign dibuat.
+- endpoint recipient payload generic di `orchestrator/main.py`,
+- bulk insert recipient di `orchestrator/blast_service.py`,
+- modal existing di `frontend/src/components/blast/AddToBlastModal.tsx` sebagai referensi UX.
 
-**Dependencies:** `TASK-DB-003`
+WA payload yang diperlukan:
 
-**Estimated:** 15-25 min
+- `phone_number`
+- `contact_name`
+- `source marketing metadata`
+- `optional label/group info`
 
-**Notes:**
+### Email Blast
 
-- `payload_snapshot` sebaiknya JSON string.
+Gap existing:
 
----
+- flow current masih mengasumsikan source recipient dari universitas,
+- belum ada jalur add recipient by generic marketing contacts.
 
-### TASK-DB-005: Add Indexes And Idempotent Migration Guards
+Perubahan yang direkomendasikan:
 
-**File:** `orchestrator/db.py`
+1. tambahkan service bulk recipient baru untuk email blast,
+2. tambahkan endpoint marketing handoff ke email campaign,
+3. gunakan payload email generic tanpa `university_id` sebagai syarat wajib.
 
-**Description:**
+## API Surface Recommendation
 
-- Tambahkan index untuk:
-  - `group_id`
-  - `client_type`
-  - `search_status`
-  - `review_state`
-  - `marketing_client_id`
-  - `channel`
-- Pastikan migration baru aman untuk database existing.
-- Ikuti pola gotcha migration blast yang sudah ada.
+### Group APIs
 
-**Acceptance Criteria:**
+- `GET /marketing/groups`
+- `POST /marketing/groups`
+- `GET /marketing/groups/{group_id}`
+- `PATCH /marketing/groups/{group_id}`
+- `DELETE /marketing/groups/{group_id}`
 
-- Startup backend pada DB lama tidak gagal.
-- Index dibuat setelah kolom dan tabel tersedia.
-- Tidak ada duplicate migration side effect.
+### Import APIs
 
-**Dependencies:** `TASK-DB-001`, `TASK-DB-002`, `TASK-DB-003`, `TASK-DB-004`
+- `POST /marketing/groups/{group_id}/import/preview`
+- `POST /marketing/groups/{group_id}/import/commit`
 
-**Estimated:** 20-30 min
+### Search APIs
 
-**Notes:**
+- `POST /marketing/groups/{group_id}/run-search`
+- `POST /marketing/groups/{group_id}/retry-search`
+- `GET /marketing/groups/{group_id}/clients`
+- `GET /marketing/clients/{client_id}`
 
-- Referensi gotcha: migration blast harus menjaga urutan alter dan index.
+### Result Review APIs
 
----
+- `GET /marketing/clients/{client_id}/results`
+- `PATCH /marketing/results/{result_id}`
+- `POST /marketing/results/{result_id}/review`
+- `POST /marketing/results/{result_id}/approve`
+- `POST /marketing/results/{result_id}/reject`
+- `POST /marketing/results/bulk-approve`
 
-## Backend Tasks
+### Ready-To-Blast And Handoff APIs
 
-### TASK-BE-001: Create Marketing Groups Service Layer
+- `GET /marketing/groups/{group_id}/ready-to-blast`
+- `POST /marketing/handoff/wa`
+- `POST /marketing/handoff/email`
+- `POST /marketing/handoff/both`
+- `GET /marketing/handoffs`
 
-**File:** `orchestrator/marketing_groups.py`
+## Frontend UX Recommendation
 
-**Description:**
+### Main Page
 
-- Buat service CRUD group marketing mengikuti pola `university_groups.py`.
-- Support:
-  - create
-  - list
-  - detail
-  - update metadata
-  - delete
-- Tambahkan summary count untuk jumlah item client dan jumlah hasil kontak.
+Layout recommendation:
 
-**Acceptance Criteria:**
+- kiri: daftar group,
+- kanan: summary group dan tabel client dalam group,
+- panel kanan harus tetap usable untuk empty state, loading state, dan running state.
 
-- Group list bisa dipakai oleh halaman utama feature.
-- Group detail mengembalikan metadata dan ringkasan progres.
-- Service tidak menyentuh domain universitas.
+### Group Card
 
-**Dependencies:** `TASK-DB-001`, `TASK-DB-002`, `TASK-DB-003`
+Setiap group card sebaiknya menampilkan:
 
-**Estimated:** 30-45 min
+- `group name`
+- `client type`
+- `created_at` atau timestamp label
+- `items count`
+- `approved results count`
+- status badge
 
----
+### Group Detail
 
-### TASK-BE-002: Build Import Preview Parser For Marketing Clients
+Tabel client minimal menampilkan:
 
-**File:** `orchestrator/main.py` dan helper import baru bila diperlukan
+- client name
+- website
+- search status
+- email count
+- WA count
+- updated time
+- action: open detail
 
-**Description:**
+### Client Detail Page
 
-- Tambahkan parser preview `.csv` dan `.xlsx` khusus marketing.
-- Header fleksibel minimal:
-  - `client_name`
-  - `website`
-  - `client_type`
-- Jika `client_type` tidak ada di file, gunakan nilai default dari request.
-- Kembalikan row valid, row invalid, dan normalized values.
+Harus menampilkan:
 
-**Acceptance Criteria:**
+- metadata client,
+- website normalized,
+- Instagram handle,
+- daftar source yang dipakai,
+- semua hasil kontak,
+- source URL,
+- confidence,
+- form edit,
+- action review dan approve.
 
-- File dengan `client_name` saja tetap valid.
-- File dengan `client_name + website` tersupport.
-- Preview tidak menulis ke DB.
+## Delivery Phases
 
-**Dependencies:** `TASK-BE-001`
+### Phase 1: Foundation
 
-**Estimated:** 35-50 min
+- schema domain marketing,
+- constants tipe client dan statuses,
+- base service layer,
+- base API list and detail.
 
-**Notes:**
+### Phase 2: Import
 
-- Reuse parsing pattern dari `/universities/import`.
+- create group,
+- import preview,
+- import commit,
+- dedup import,
+- group summary update.
 
----
+### Phase 3: Search Engine
 
-### TASK-BE-003: Create Marketing Import Commit Endpoint
+- website discovery,
+- website extraction,
+- Instagram discovery,
+- web search fallback,
+- result persistence,
+- status update and retry.
 
-**File:** `orchestrator/main.py`
+### Phase 4: Review UI
 
-**Description:**
+- routes and navigation,
+- group page,
+- import modal,
+- group detail table,
+- client detail review page,
+- ready-to-blast panel.
 
-- Tambahkan endpoint commit import setelah preview.
-- Endpoint membuat group jika belum ada, lalu menyimpan item client ke tabel marketing.
-- Return:
-  - imported count
-  - skipped count
-  - invalid count
-  - group detail singkat
+### Phase 5: Handoff
 
-**Acceptance Criteria:**
+- WA handoff,
+- email handoff,
+- payload audit,
+- ready-to-blast actions.
 
-- Imported rows masuk ke group yang benar.
-- Duplicate dalam satu group ditangani konsisten.
-- Nama group yang sama tetap boleh dipakai untuk batch baru.
+### Phase 6: QA And Hardening
 
-**Dependencies:** `TASK-BE-002`
+- import validation,
+- classification validation,
+- end-to-end smoke test,
+- handoff verification,
+- retry and progress behavior.
 
-**Estimated:** 30-45 min
+## Risks And Mitigations
 
----
+### Risk 1: Domain Coupling
 
-### TASK-BE-004: Build Generic Marketing Search Pipeline
+Risk:
+Jika modul ini dipaksa reuse langsung tabel `universities`, codebase akan makin sulit dipelihara.
 
-**File:** `orchestrator/marketing_search.py`
+Mitigation:
+Bangun domain `marketing` terpisah dan reuse hanya level util, UI pattern, dan blast engine.
 
-**Description:**
+### Risk 2: Noisy Search Results
 
-- Buat pipeline pencarian untuk client generic.
-- Urutan sumber:
-  - website input atau website discovered
-  - Instagram discovery
-  - web search enrichment
-- Reuse util `extract_emails` dan `extract_phones_from_text` dari `orchestrator/osint/tools.py`.
-- Simpan source URL dan confidence dasar.
+Risk:
+Entity generic lebih noisy dibanding universitas, terutama untuk Instagram dan web search.
 
-**Acceptance Criteria:**
+Mitigation:
+Simpan semua candidate beserta source URL dan confidence, lalu wajibkan review manual sebelum handoff.
 
-- Sistem bisa menemukan email dari halaman website bila tersedia.
-- Sistem bisa menemukan kandidat nomor telepon dari halaman web.
-- Sistem bisa menemukan jejak Instagram bila ada.
+### Risk 3: Email Blast Source Limitation
 
-**Dependencies:** `TASK-BE-003`
+Risk:
+Email blast current flow masih university-centric.
 
-**Estimated:** 45-75 min
+Mitigation:
+Tambahkan jalur recipient bulk generic sejak awal implementasi backend, jangan ditunda ke tahap terakhir.
 
-**Notes:**
+### Risk 4: Import Mapping Error
 
-- Untuk MVP, fokus ke website, search, dan Instagram discovery dulu.
+Risk:
+Marketing dapat upload file dengan header yang berubah-ubah.
 
----
+Mitigation:
+Sediakan preview import dan flexible header detection sebelum commit.
 
-### TASK-BE-005: Add WA vs Non-WA Classification Helper
+## Acceptance Checklist
 
-**File:** `orchestrator/marketing_search.py` atau helper shared baru
-
-**Description:**
-
-- Tambahkan helper klasifikasi nomor.
-- Mobile Indonesia masuk `wa_phone`.
-- Landline seperti `021` masuk `other_phone`.
-- Email tetap prioritas tersimpan walau tidak ada WA.
-
-**Acceptance Criteria:**
-
-- Nomor `021` tidak pernah diberi type `wa_phone`.
-- Nomor `08` dan `628` diprioritaskan sebagai WA candidate.
-- Hasil klasifikasi konsisten untuk edit dan handoff.
-
-**Dependencies:** `TASK-BE-004`
-
-**Estimated:** 20-30 min
-
----
-
-### TASK-BE-006: Persist Search Results And Review State
-
-**File:** `orchestrator/marketing_search.py` dan `orchestrator/db.py`
-
-**Description:**
-
-- Simpan hasil pencarian ke marketing contact results.
-- Lakukan dedup per client.
-- Set `review_state = new` untuk hasil baru.
-- Update item status menjadi completed atau failed.
-
-**Acceptance Criteria:**
-
-- Duplicate source tidak membuat row ganda.
-- Source dan confidence tetap tersimpan.
-- Search status item berubah sesuai hasil.
-
-**Dependencies:** `TASK-BE-004`, `TASK-BE-005`
-
-**Estimated:** 30-45 min
-
----
-
-### TASK-BE-007: Create Review And Edit APIs
-
-**File:** `orchestrator/main.py`
-
-**Description:**
-
-- Tambahkan endpoint:
-  - list group
-  - detail group
-  - detail client
-  - list results
-  - update result
-  - mark reviewed
-  - reject result
-  - approve result
-  - bulk approve
-- Edit fokus pada hasil kontak, bukan item client mentah.
-
-**Acceptance Criteria:**
-
-- Detail client menampilkan semua hasil kontak yang ditemukan.
-- Marketing dapat mengedit nomor atau email.
-- Flag `edited_manually` berubah saat user mengedit hasil.
-
-**Dependencies:** `TASK-BE-006`
-
-**Estimated:** 45-70 min
-
----
-
-### TASK-BE-008: Create Handoff APIs To WA Blast And Email Blast
-
-**File:** `orchestrator/main.py`
-
-**Description:**
-
-- Tambahkan endpoint handoff ke WA Blast dan Email Blast.
-- Map hasil approved menjadi payload yang kompatibel dengan `blast_service` dan `email_blast`.
-- Simpan audit ke tabel handoff.
-
-**Acceptance Criteria:**
-
-- Handoff ke WA dan email dapat dijalankan terpisah atau bersamaan.
-- Payload snapshot tersimpan.
-- Contract existing blast tidak berubah.
-
-**Dependencies:** `TASK-BE-007`, `TASK-DB-004`
-
-**Estimated:** 40-60 min
-
----
-
-## Frontend Tasks
-
-### TASK-FE-001: Add Routes And Sidebar Navigation
-
-**File:** `frontend/src/App.tsx` and `frontend/src/components/layout/Sidebar.tsx`
-
-**Description:**
-
-- Tambahkan route utama feature marketing.
-- Tambahkan route detail group dan detail client.
-- Tambahkan menu baru di sidebar.
-
-**Acceptance Criteria:**
-
-- Feature dapat diakses dari UI utama.
-- User dapat pindah dari list group ke detail group lalu detail client.
-
-**Dependencies:** None
-
-**Estimated:** 15-25 min
-
----
-
-### TASK-FE-002: Build Marketing Groups Page
-
-**File:** `frontend/src/pages/MarketingGetContactPage.tsx`
-
-**Description:**
-
-- Buat page list-detail dua kolom meniru pola `UniversityGroupsPage`.
-- Panel kiri: daftar group.
-- Panel kanan: detail ringkas group, action import, action run search.
-- Tampilkan:
-  - `client_type`
-  - status
-  - item count
-  - result count
-  - `created_at`
-
-**Acceptance Criteria:**
-
-- Group dengan nama sama tetap bisa dibedakan dari timestamp.
-- Empty state dan loading state tersedia.
-- Summary group terlihat tanpa membuka detail penuh.
-
-**Dependencies:** `TASK-BE-001`, `TASK-BE-007`
-
-**Estimated:** 40-60 min
-
----
-
-### TASK-FE-003: Build Create Group And Import Flow
-
-**File:** `frontend/src/components/marketing/MarketingImportModal.tsx` dan related hooks/api modules
-
-**Description:**
-
-- Buat modal create group dengan dropdown `client_type`.
-- Buat upload modal dengan preview import.
-- Reuse pola `ImportModal.tsx`, tetapi ubah format guide menjadi marketing client list.
-
-**Acceptance Criteria:**
-
-- User wajib memilih `client_type` saat create group.
-- User bisa upload `.csv` atau `.xlsx`.
-- Preview valid dan invalid rows tampil sebelum commit.
-
-**Dependencies:** `TASK-BE-002`, `TASK-BE-003`
-
-**Estimated:** 45-70 min
-
----
-
-### TASK-FE-004: Build Group Detail Table And Search Controls
-
-**File:** `frontend/src/components/marketing/MarketingGroupDetail.tsx`
-
-**Description:**
-
-- Tampilkan tabel item client dalam group.
-- Field minimal:
-  - client name
-  - website
-  - status pencarian
-  - email count
-  - WA count
-  - updated time
-- Tambahkan filter status, search by name, dan tombol retry untuk item failed.
-
-**Acceptance Criteria:**
-
-- Saat klik row, user masuk ke detail client.
-- Search status dan result counts tampil jelas.
-- Retry item gagal tersedia.
-
-**Dependencies:** `TASK-BE-006`, `TASK-BE-007`
-
-**Estimated:** 45-70 min
-
----
-
-### TASK-FE-005: Build Client Detail Review Page
-
-**File:** `frontend/src/pages/MarketingClientDetailPage.tsx`
-
-**Description:**
-
-- Tampilkan metadata client, website, Instagram, source list, dan semua hasil kontak.
-- Sediakan form edit untuk hasil kontak.
-- Tambahkan action:
-  - `Reviewed`
-  - `Reject`
-  - `Approve To Blast`
-  - `Approve To Email`
-  - `Approve Both`
-
-**Acceptance Criteria:**
-
-- Edit hasil dilakukan di page detail, bukan inline di list.
-- Marketing dapat melihat source URL dan confidence.
-- Action approve hanya tersedia untuk data valid.
-
-**Dependencies:** `TASK-BE-007`, `TASK-BE-008`
-
-**Estimated:** 60-90 min
-
----
-
-## Integration Tasks
-
-### TASK-INT-001: Verify WA Blast Handoff Compatibility
-
-**Description:**
-
-- Test bahwa hasil approved bertipe WA dapat diubah menjadi recipient payload yang cocok untuk blast service.
-- Verifikasi preview recipient di campaign tetap benar.
-
-**Test Steps:**
-
-1. Create group marketing.
-2. Import sample clients.
-3. Run search pada sample kecil.
-4. Approve satu WA result.
-5. Trigger handoff ke WA blast.
-6. Buka blast recipient list dan verifikasi payload.
-
-**Acceptance Criteria:**
-
-- Recipient masuk ke flow WA blast tanpa error contract.
-- Nomor dan nama kontak yang sudah diedit ikut terbawa.
-
-**Dependencies:** `TASK-BE-008`, `TASK-FE-005`
-
-**Estimated:** 20-30 min
-
----
-
-### TASK-INT-002: Verify Email Blast Handoff Compatibility
-
-**Description:**
-
-- Test bahwa hasil approved bertipe email dapat diubah menjadi recipient payload yang cocok untuk email blast.
-- Verifikasi bahwa email invalid atau kosong tidak ikut masuk.
-
-**Test Steps:**
-
-1. Create group marketing.
-2. Import sample clients.
-3. Run search pada sample kecil.
-4. Approve satu email result.
-5. Trigger handoff ke email blast.
-6. Buka email blast recipient list dan verifikasi payload.
-
-**Acceptance Criteria:**
-
-- Recipient masuk ke flow email blast tanpa memecah contract existing.
-- Payload snapshot tersimpan pada audit handoff.
-
-**Dependencies:** `TASK-BE-008`, `TASK-FE-005`
-
-**Estimated:** 20-30 min
-
----
-
-## Execution Order
-
-### Phase 1: Database Foundation
-
-1. `TASK-DB-001`
-2. `TASK-DB-002`
-3. `TASK-DB-003`
-4. `TASK-DB-004`
-5. `TASK-DB-005`
-
-### Phase 2: Backend Foundation
-
-6. `TASK-BE-001`
-7. `TASK-BE-002`
-8. `TASK-BE-003`
-9. `TASK-BE-004`
-10. `TASK-BE-005`
-11. `TASK-BE-006`
-12. `TASK-BE-007`
-13. `TASK-BE-008`
-
-### Phase 3: Frontend
-
-14. `TASK-FE-001`
-15. `TASK-FE-002`
-16. `TASK-FE-003`
-17. `TASK-FE-004`
-18. `TASK-FE-005`
-
-### Phase 4: Integration
-
-19. `TASK-INT-001`
-20. `TASK-INT-002`
+1. User dapat membuat group marketing baru dan memilih tipe client.
+2. User dapat membuat dua group dengan nama yang sama pada waktu berbeda.
+3. User dapat upload `.csv` dan `.xlsx` dengan format `name` wajib dan `website` opsional.
+4. User melihat preview import sebelum commit.
+5. Group detail menampilkan list client yang berhasil diimport.
+6. User dapat menjalankan search automation untuk satu group.
+7. Sistem dapat menemukan email dari website bila tersedia.
+8. Sistem dapat menemukan WA candidate bila tersedia.
+9. Sistem tidak mengklasifikasikan `021` sebagai `wa_phone`.
+10. User dapat membuka detail client dan melihat semua kandidat hasil scraping.
+11. User dapat mengedit hasil email atau nomor telepon.
+12. User dapat approve hasil ke staging ready to blast.
+13. User dapat handoff hasil approved ke WA Blast.
+14. User dapat handoff hasil approved ke Email Blast.
+15. Audit handoff tersimpan dengan payload snapshot.
 
 ## Relevant Files
 
@@ -739,42 +590,18 @@ Tetap reuse komponen yang sudah matang:
 - `orchestrator/email_blast.py`
 - `orchestrator/osint/tools.py`
 - `frontend/src/App.tsx`
-- `frontend/src/components/layout/Sidebar.tsx`
-- `frontend/src/components/universities/ImportModal.tsx`
+- `frontend/src/lib/queryKeys.ts`
+- `frontend/src/lib/types.ts`
 - `frontend/src/pages/UniversityGroupsPage.tsx`
-- `frontend/src/pages/BlastCampaignDetailPage.tsx`
+- `frontend/src/components/universityGroups/GroupUniversitiesPanel.tsx`
+- `frontend/src/components/universities/ImportModal.tsx`
+- `frontend/src/components/universities/ContactsPanel.tsx`
+- `frontend/src/components/blast/AddToBlastModal.tsx`
+- `frontend/src/api/emailBlast.ts`
+- `frontend/src/hooks/useEmailBlast.ts`
 
-## Verification
+## Related Execution Doc
 
-1. Migration berjalan aman di database existing.
-2. Import `.csv` dan `.xlsx` dengan `client_name` dan website opsional berhasil diparse.
-3. Search pada sample kecil menghasilkan email dan WA candidate yang terklasifikasi benar.
-4. Nomor landline seperti `021` tidak masuk jalur WA candidate.
-5. Detail client bisa diedit dan perubahan persist setelah refresh.
-6. Bulk approve ke WA dan email menghasilkan handoff record dan payload snapshot.
-7. Data approved benar-benar bisa dipakai di flow blast existing.
-8. Group dengan nama sama tetap terlihat unik lewat timestamp.
+Task breakdown detail untuk implementasi feature ini disimpan di:
 
-## Risks
-
-1. Reuse pipeline universitas secara langsung akan menghasilkan coupling schema yang buruk.
-2. Discovery Instagram untuk entity generic bisa lebih noisy daripada universitas.
-3. Jika import preview tidak dibuat, risiko salah mapping file akan tinggi untuk user marketing.
-4. Handoff ke dua channel butuh snapshot payload agar hasil review tidak berubah diam-diam.
-
-## Scope Boundaries
-
-Included:
-
-- group/list management
-- upload
-- search automation
-- result review-edit
-- ready-to-blast handoff
-- status UI
-
-Excluded from MVP:
-
-- multi-user approval
-- scheduler blast dari page marketing
-- generalized universal entity graph untuk semua domain repo
+- `docs/task-breakdown.md`

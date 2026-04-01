@@ -77,6 +77,104 @@ function RecipientStatusBadge({ status }: { status: string }) {
   )
 }
 
+function SummaryStat({
+  label,
+  value,
+  hint,
+}: {
+  label: string
+  value: string
+  hint: string
+}) {
+  return (
+    <div className="rounded-2xl border border-gray-200 bg-gray-50 px-4 py-3 dark:border-gray-700 dark:bg-gray-900/40">
+      <p className="text-[11px] uppercase tracking-[0.18em] text-gray-400 dark:text-gray-500">{label}</p>
+      <p className="mt-1 text-lg font-semibold text-gray-900 dark:text-gray-100">{value}</p>
+      <p className="mt-1 text-xs text-gray-500 dark:text-gray-400">{hint}</p>
+    </div>
+  )
+}
+
+function WorkflowCard({
+  step,
+  title,
+  description,
+  ready,
+  icon: Icon,
+}: {
+  step: string
+  title: string
+  description: string
+  ready: boolean
+  icon: React.ElementType
+}) {
+  return (
+    <div
+      className={cn(
+        'rounded-2xl border px-4 py-3 transition-colors',
+        ready
+          ? 'border-emerald-200 bg-emerald-50 dark:border-emerald-900/60 dark:bg-emerald-950/20'
+          : 'border-gray-200 bg-white/90 dark:border-gray-700 dark:bg-gray-900/50'
+      )}
+    >
+      <div className="flex items-start justify-between gap-3">
+        <div>
+          <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-gray-400 dark:text-gray-500">{step}</p>
+          <p className="mt-1 text-sm font-semibold text-gray-900 dark:text-gray-100">{title}</p>
+        </div>
+        <span
+          className={cn(
+            'inline-flex h-9 w-9 items-center justify-center rounded-xl border',
+            ready
+              ? 'border-emerald-200 bg-emerald-100 text-emerald-600 dark:border-emerald-800 dark:bg-emerald-900/40 dark:text-emerald-300'
+              : 'border-gray-200 bg-gray-50 text-gray-400 dark:border-gray-700 dark:bg-gray-800 dark:text-gray-500'
+          )}
+        >
+          <Icon className="h-4 w-4" />
+        </span>
+      </div>
+      <p className="mt-2 text-xs leading-5 text-gray-500 dark:text-gray-400">{description}</p>
+      <div className="mt-3">
+        <span
+          className={cn(
+            'inline-flex items-center gap-1 rounded-full px-2 py-1 text-[11px] font-medium',
+            ready
+              ? 'bg-emerald-100 text-emerald-700 dark:bg-emerald-900/40 dark:text-emerald-300'
+              : 'bg-gray-100 text-gray-500 dark:bg-gray-800 dark:text-gray-400'
+          )}
+        >
+          {ready ? <CheckCircle2 className="h-3.5 w-3.5" /> : <Clock className="h-3.5 w-3.5" />}
+          {ready ? 'Ready' : 'Needs attention'}
+        </span>
+      </div>
+    </div>
+  )
+}
+
+function SettingHintCard({
+  title,
+  description,
+  value,
+}: {
+  title: string
+  description: string
+  value: string
+}) {
+  return (
+    <div className="rounded-2xl border border-gray-200 bg-gray-50 px-4 py-3 dark:border-gray-700 dark:bg-gray-900/40">
+      <p className="text-xs font-semibold text-gray-700 dark:text-gray-200">{title}</p>
+      <p className="mt-1 text-[11px] leading-5 text-gray-500 dark:text-gray-400">{description}</p>
+      <p className="mt-2 text-xs font-medium text-indigo-600 dark:text-indigo-300">{value}</p>
+    </div>
+  )
+}
+
+function formatDelayLabel(ms: number): string {
+  if (ms < 1000) return `${ms}ms`
+  const seconds = ms / 1000
+  return Number.isInteger(seconds) ? `${seconds}s` : `${seconds.toFixed(1)}s`
+}
+
 // ---------------------------------------------------------------------------
 // Contact Selector Modal
 // ---------------------------------------------------------------------------
@@ -91,7 +189,7 @@ function ContactSelectorModal({
   onClose: () => void
 }) {
   const [searchQuery, setSearchQuery] = useState('')
-  const [filters, setFilters] = useState<BlastContactsParams>({ limit: PAGE_SIZE })
+  const [filters, setFilters] = useState<BlastContactsParams>({ limit: PAGE_SIZE, has_name: true })
   const [selectedIds, setSelectedIds] = useState<Set<number>>(new Set())
   const [selectedGroupIds, setSelectedGroupIds] = useState<Set<number>>(new Set())
   const [page, setPage] = useState(0)
@@ -142,7 +240,6 @@ function ContactSelectorModal({
   const handleAdd = async () => {
     if (selectedIds.size === 0 && selectedGroupIds.size === 0) return
 
-    // If groups are selected (and no individual contacts), add directly via group_ids
     if (selectedGroupIds.size > 0 && selectedIds.size === 0) {
       addMutation.mutate(
         { campaignId, group_ids: Array.from(selectedGroupIds) },
@@ -156,9 +253,8 @@ function ContactSelectorModal({
       const result = await checkPreviouslyBlasted({ contact_ids: Array.from(selectedIds) })
       if (result.previously_blasted.length > 0) {
         setDuplicates(result.previously_blasted)
-        setExcludedIds(new Set())  // default: include all, user can exclude
+        setExcludedIds(new Set())
       } else {
-        // No duplicates — add directly
         addMutation.mutate(
           {
             campaignId,
@@ -169,7 +265,6 @@ function ContactSelectorModal({
         )
       }
     } catch {
-      // If check fails, proceed anyway
       addMutation.mutate(
         {
           campaignId,
@@ -189,6 +284,7 @@ function ContactSelectorModal({
       setDuplicates(null)
       return
     }
+
     addMutation.mutate(
       {
         campaignId,
@@ -211,7 +307,6 @@ function ContactSelectorModal({
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 backdrop-blur-sm p-4">
       <div className="relative bg-white dark:bg-gray-800 rounded-2xl shadow-2xl w-full max-w-2xl max-h-[85vh] flex flex-col">
-        {/* Header */}
         <div className="flex items-center justify-between p-4 border-b border-gray-200 dark:border-gray-700">
           <div className="flex items-center gap-2">
             <Users className="w-5 h-5 text-indigo-500" />
@@ -222,9 +317,7 @@ function ContactSelectorModal({
           </button>
         </div>
 
-        {/* Filters */}
         <div className="p-4 border-b border-gray-100 dark:border-gray-700 space-y-3">
-          {/* Group Quick Select */}
           {groupsData && groupsData.groups.length > 0 && (
             <QuickSelectGroups
               groups={groupsData.groups}
@@ -250,6 +343,7 @@ function ContactSelectorModal({
               className="w-full pl-9 pr-3 py-2 border border-gray-300 dark:border-gray-600 rounded-lg text-sm dark:bg-gray-900 dark:text-gray-100 focus:ring-1 focus:ring-indigo-500 focus:border-indigo-500"
             />
           </div>
+
           <div className="flex flex-wrap gap-2">
             <FilterChip
               label="Has Name"
@@ -280,7 +374,6 @@ function ContactSelectorModal({
           </div>
         </div>
 
-        {/* Contact List */}
         <div className="flex-1 overflow-y-auto">
           {isLoading ? (
             <div className="flex items-center justify-center py-12">
@@ -290,47 +383,47 @@ function ContactSelectorModal({
             <div className="text-center py-12 text-gray-400 text-sm">No contacts found</div>
           ) : (
             <div>
-              {/* Select all row */}
               <div
                 className="sticky top-0 z-10 flex items-center gap-3 px-4 py-2 bg-gray-50 dark:bg-gray-750 border-b border-gray-200 dark:border-gray-700 text-xs font-medium text-gray-500 dark:text-gray-400 cursor-pointer hover:bg-gray-100 dark:hover:bg-gray-700"
                 onClick={toggleAll}
               >
                 <input
                   type="checkbox"
-                  checked={contacts.length > 0 && contacts.every(c => selectedIds.has(c.contact_id))}
+                  checked={contacts.length > 0 && contacts.every((contact) => selectedIds.has(contact.contact_id))}
                   readOnly
                   className="h-3.5 w-3.5 rounded border-gray-300 text-indigo-600 focus:ring-indigo-500"
                 />
                 <span>
-                  {contacts.length > 0 && contacts.every(c => selectedIds.has(c.contact_id))
+                  {contacts.length > 0 && contacts.every((contact) => selectedIds.has(contact.contact_id))
                     ? `Deselect page (${contacts.length})`
                     : `Select page (${contacts.length})`}
                   {selectedIds.size > 0 && ` · ${selectedIds.size} total selected`}
                 </span>
               </div>
-              {contacts.map((c) => (
+
+              {contacts.map((contact) => (
                 <div
-                  key={c.contact_id}
-                  onClick={() => toggleContact(c.contact_id)}
+                  key={contact.contact_id}
+                  onClick={() => toggleContact(contact.contact_id)}
                   className={cn(
                     'flex items-center gap-3 px-4 py-2.5 border-b border-gray-100 dark:border-gray-700/50 cursor-pointer transition-colors',
-                    selectedIds.has(c.contact_id)
+                    selectedIds.has(contact.contact_id)
                       ? 'bg-indigo-50 dark:bg-indigo-900/20'
                       : 'hover:bg-gray-50 dark:hover:bg-gray-800'
                   )}
                 >
                   <input
                     type="checkbox"
-                    checked={selectedIds.has(c.contact_id)}
+                    checked={selectedIds.has(contact.contact_id)}
                     readOnly
                     className="h-3.5 w-3.5 rounded border-gray-300 text-indigo-600 focus:ring-indigo-500"
                   />
                   <div className="flex-1 min-w-0">
                     <div className="flex items-center gap-2">
                       <span className="text-sm font-medium text-gray-900 dark:text-gray-100 truncate">
-                        {c.contact_name || c.phone_number}
+                        {contact.contact_name || contact.phone_number}
                       </span>
-                      {c.has_person_name ? (
+                      {contact.has_person_name ? (
                         <span className="text-[10px] px-1.5 py-0.5 rounded bg-green-100 dark:bg-green-900/30 text-green-600 dark:text-green-400">
                           Named
                         </span>
@@ -339,13 +432,13 @@ function ContactSelectorModal({
                     <div className="flex items-center gap-3 text-[11px] text-gray-500 dark:text-gray-400 mt-0.5">
                       <span className="flex items-center gap-1">
                         <Phone className="w-3 h-3" />
-                        {c.phone_number}
+                        {contact.phone_number}
                       </span>
                       <span className="flex items-center gap-1 truncate">
                         <GraduationCap className="w-3 h-3" />
-                        {c.university_name || 'Unknown'}
+                        {contact.university_name || 'Unknown'}
                       </span>
-                      {c.province && <span>{c.province}</span>}
+                      {contact.province && <span>{contact.province}</span>}
                     </div>
                   </div>
                 </div>
@@ -354,7 +447,6 @@ function ContactSelectorModal({
           )}
         </div>
 
-        {/* Pagination */}
         {totalContacts > PAGE_SIZE && (
           <div className="flex items-center justify-between px-4 py-2.5 border-t border-gray-100 dark:border-gray-700 bg-white dark:bg-gray-800 text-xs">
             <span className="text-gray-500 dark:text-gray-400">
@@ -362,37 +454,36 @@ function ContactSelectorModal({
             </span>
             <div className="flex items-center gap-1">
               <button
-                onClick={() => setPage((p) => Math.max(0, p - 1))}
+                onClick={() => setPage((current) => Math.max(0, current - 1))}
                 disabled={page === 0}
                 className="px-2.5 py-1 rounded-md text-xs font-medium border border-gray-300 dark:border-gray-600 text-gray-700 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-700 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
               >
                 Prev
               </button>
-              {/* Page number buttons */}
               {(() => {
                 const pages: number[] = []
                 const maxVisible = 5
                 let start = Math.max(0, page - Math.floor(maxVisible / 2))
                 const end = Math.min(totalPages, start + maxVisible)
                 if (end - start < maxVisible) start = Math.max(0, end - maxVisible)
-                for (let i = start; i < end; i++) pages.push(i)
-                return pages.map((p) => (
+                for (let index = start; index < end; index++) pages.push(index)
+                return pages.map((pageIndex) => (
                   <button
-                    key={p}
-                    onClick={() => setPage(p)}
+                    key={pageIndex}
+                    onClick={() => setPage(pageIndex)}
                     className={cn(
                       'w-7 h-7 rounded-md text-xs font-medium transition-colors',
-                      p === page
+                      pageIndex === page
                         ? 'bg-indigo-600 text-white'
                         : 'text-gray-600 dark:text-gray-400 hover:bg-gray-100 dark:hover:bg-gray-700'
                     )}
                   >
-                    {p + 1}
+                    {pageIndex + 1}
                   </button>
                 ))
               })()}
               <button
-                onClick={() => setPage((p) => Math.min(totalPages - 1, p + 1))}
+                onClick={() => setPage((current) => Math.min(totalPages - 1, current + 1))}
                 disabled={page >= totalPages - 1}
                 className="px-2.5 py-1 rounded-md text-xs font-medium border border-gray-300 dark:border-gray-600 text-gray-700 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-700 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
               >
@@ -402,7 +493,6 @@ function ContactSelectorModal({
           </div>
         )}
 
-        {/* Footer */}
         <div className="flex items-center justify-between p-4 border-t border-gray-200 dark:border-gray-700 bg-gray-50 dark:bg-gray-800/50">
           <span className="text-sm text-gray-500 dark:text-gray-400">
             {selectedIds.size} selected{data?.total ? ` of ${data.total}` : ''}
@@ -431,11 +521,9 @@ function ContactSelectorModal({
           </div>
         </div>
 
-        {/* Duplicate Confirmation Overlay */}
         {duplicates && duplicates.length > 0 && (
           <div className="absolute inset-0 z-10 flex items-center justify-center bg-black/30 backdrop-blur-[2px] rounded-2xl">
             <div className="bg-white dark:bg-gray-800 rounded-xl shadow-2xl w-full max-w-lg mx-4 max-h-[70vh] flex flex-col border border-amber-200 dark:border-amber-700">
-              {/* Confirmation Header */}
               <div className="flex items-center gap-3 p-4 border-b border-amber-100 dark:border-amber-800 bg-amber-50 dark:bg-amber-900/20 rounded-t-xl">
                 <div className="p-2 rounded-full bg-amber-100 dark:bg-amber-900/40">
                   <AlertCircle className="w-5 h-5 text-amber-600 dark:text-amber-400" />
@@ -450,47 +538,45 @@ function ContactSelectorModal({
                 </div>
               </div>
 
-              {/* Duplicate List */}
               <div className="flex-1 overflow-y-auto divide-y divide-gray-100 dark:divide-gray-700">
-                {duplicates.map((d) => (
+                {duplicates.map((duplicate) => (
                   <label
-                    key={d.contact_id}
+                    key={duplicate.contact_id}
                     className={cn(
                       'flex items-start gap-3 px-4 py-3 cursor-pointer transition-colors',
-                      excludedIds.has(d.contact_id)
+                      excludedIds.has(duplicate.contact_id)
                         ? 'bg-gray-50 dark:bg-gray-800/50 opacity-60'
                         : 'hover:bg-amber-50/50 dark:hover:bg-amber-900/10'
                     )}
                   >
                     <input
                       type="checkbox"
-                      checked={!excludedIds.has(d.contact_id)}
-                      onChange={() => toggleExclude(d.contact_id)}
+                      checked={!excludedIds.has(duplicate.contact_id)}
+                      onChange={() => toggleExclude(duplicate.contact_id)}
                       className="mt-0.5 h-4 w-4 rounded border-gray-300 text-indigo-600 focus:ring-indigo-500"
                     />
                     <div className="flex-1 min-w-0">
                       <div className="text-sm font-medium text-gray-900 dark:text-gray-100 truncate">
-                        {d.contact_name || d.phone_number}
+                        {duplicate.contact_name || duplicate.phone_number}
                       </div>
                       <div className="flex flex-wrap items-center gap-x-3 gap-y-0.5 mt-0.5 text-[11px] text-gray-500 dark:text-gray-400">
                         <span className="flex items-center gap-1">
-                          <Phone className="w-3 h-3" /> {d.phone_number}
+                          <Phone className="w-3 h-3" /> {duplicate.phone_number}
                         </span>
-                        {d.university_name && (
+                        {duplicate.university_name && (
                           <span className="flex items-center gap-1">
-                            <GraduationCap className="w-3 h-3" /> {d.university_name}
+                            <GraduationCap className="w-3 h-3" /> {duplicate.university_name}
                           </span>
                         )}
                       </div>
                       <div className="mt-1 text-[10px] text-amber-600 dark:text-amber-400">
-                        Blasted in "{d.campaign_name}"{d.sent_at ? ` on ${new Date(d.sent_at).toLocaleDateString()}` : ''}
+                        Blasted in "{duplicate.campaign_name}"{duplicate.sent_at ? ` on ${new Date(duplicate.sent_at).toLocaleDateString()}` : ''}
                       </div>
                     </div>
                   </label>
                 ))}
               </div>
 
-              {/* Confirmation Footer */}
               <div className="flex items-center justify-between p-4 border-t border-gray-200 dark:border-gray-700 bg-gray-50 dark:bg-gray-800/50 rounded-b-xl">
                 <span className="text-xs text-gray-500 dark:text-gray-400">
                   {excludedIds.size > 0 && (
@@ -638,12 +724,24 @@ export default function BlastCampaignDetailPage() {
   const currentLunchEnd = lunchEndDraft ?? campaign?.lunch_break_end ?? 13
   const currentWeekendFactor = weekendFactorDraft ?? campaign?.weekend_factor ?? 0.5
   const currentAutoResumeEnabled = autoResumeDraft ?? Boolean(campaign?.auto_resume_enabled ?? true)
+  const campaignSentCount = campaign?.sent_count ?? 0
+  const campaignFailedCount = campaign?.failed_count ?? 0
+  const selectedDeviceDetails = devicesData?.devices?.find((device) => device.id === currentDevice)
+  const selectedDeviceConnected = selectedDeviceDetails?.connectionState === 'connected'
+  const templateReady = currentTemplate.trim().length > 0
+  const recipientReady = totalRecipients > 0
+  const deviceReady = Boolean(selectedDeviceConnected)
+  const campaignReady = templateReady && recipientReady && deviceReady
+  const pendingCount = Math.max(0, totalRecipients - campaignSentCount - campaignFailedCount)
+  const namedRecipientCount = recipients.filter((recipient) => Boolean(recipient.contact_name)).length
+  const templateCharacterCount = currentTemplate.trim().length
+  const primaryPreview = previewData?.previews?.[0] ?? null
 
   // Contact selector modal
   const [showContactModal, setShowContactModal] = useState(false)
 
   // Sections toggle
-  const [showSettings, setShowSettings] = useState(false)
+  const [showSettings, setShowSettings] = useState(true)
   const [showPreview, setShowPreview] = useState(false)
 
   // Check if there are unsaved changes
@@ -664,6 +762,16 @@ export default function BlastCampaignDetailPage() {
     (lunchEndDraft !== null && lunchEndDraft !== campaign?.lunch_break_end) ||
     (weekendFactorDraft !== null && weekendFactorDraft !== campaign?.weekend_factor) ||
     (autoResumeDraft !== null && autoResumeDraft !== Boolean(campaign?.auto_resume_enabled ?? true))
+
+  const readinessMessage = !templateReady
+    ? 'Tulis template dulu supaya isi pesan jelas sebelum campaign dijalankan.'
+    : !recipientReady
+      ? 'Tambahkan recipient agar campaign punya target kirim.'
+      : !deviceReady
+        ? 'Pilih device WhatsApp yang sedang connected sebelum mulai blast.'
+        : hasUnsavedChanges
+          ? 'Ada perubahan yang belum disimpan. Simpan draft sebelum mulai kirim.'
+          : 'Campaign sudah siap dijalankan.'
 
   const buildUpdatePayload = () => {
     const payload: Record<string, unknown> = { id: campaignId }
@@ -740,6 +848,19 @@ export default function BlastCampaignDetailPage() {
     })
   }
 
+  const handleStartOrResume = () => {
+    if (!campaignReady) return
+
+    if (hasUnsavedChanges) {
+      updateMutation.mutate(buildUpdatePayload() as any, {
+        onSuccess: () => startMutation.mutate(campaignId),
+      })
+      return
+    }
+
+    startMutation.mutate(campaignId)
+  }
+
   // Loading
   if (loadingCampaign) {
     return (
@@ -764,113 +885,118 @@ export default function BlastCampaignDetailPage() {
     : 0
 
   return (
-    <div className="max-w-4xl mx-auto py-6 px-4 space-y-5">
-      {/* Top bar */}
-      <div className="flex items-center justify-between">
-        <div className="flex items-center gap-3">
-          <Link
-            to="/blast"
-            className="p-1.5 rounded-lg hover:bg-gray-100 dark:hover:bg-gray-800 text-gray-400 transition-colors"
-          >
-            <ArrowLeft className="w-5 h-5" />
-          </Link>
-          <div className="p-2 rounded-xl bg-gradient-to-br from-indigo-500 to-purple-600 text-white shadow">
-            <Megaphone className="w-4 h-4" />
-          </div>
-          <div>
-            <h1 className="text-lg font-bold text-gray-900 dark:text-gray-100">{campaign.name}</h1>
-            <div className="flex items-center gap-2 mt-0.5">
-              <CampaignStatusBadge status={campaign.status} />
-              {campaign.total_recipients > 0 && (
-                <span className="text-[11px] text-gray-400">
-                  {campaign.sent_count}/{campaign.total_recipients} sent
-                </span>
+    <div className="mx-auto max-w-5xl space-y-5 px-4 py-6 pb-28">
+      <section className="overflow-hidden rounded-[28px] border border-gray-200 bg-white shadow-sm dark:border-gray-700 dark:bg-gray-800">
+        <div className="p-5 md:p-6">
+          <div className="space-y-5">
+            <div className="flex flex-col gap-4 md:flex-row md:items-start md:justify-between">
+              <div className="flex items-start gap-3">
+                <Link
+                  to="/blast"
+                  className="mt-1 rounded-xl border border-gray-200 bg-gray-50 p-2 text-gray-500 transition-colors hover:bg-gray-100 hover:text-gray-700 dark:border-gray-700 dark:bg-gray-900/40 dark:text-gray-400 dark:hover:bg-gray-800 dark:hover:text-gray-200"
+                >
+                  <ArrowLeft className="h-4 w-4" />
+                </Link>
+                <div className="rounded-2xl border border-indigo-200 bg-indigo-50 p-3 text-indigo-600 shadow-sm dark:border-indigo-900/50 dark:bg-indigo-900/20 dark:text-indigo-300">
+                  <Megaphone className="h-5 w-5" />
+                </div>
+                <div className="min-w-0">
+                  <div className="flex flex-wrap items-center gap-2">
+                    <h1 className="text-2xl font-semibold tracking-tight text-gray-900 dark:text-gray-100">{campaign.name}</h1>
+                    <CampaignStatusBadge status={campaign.status} />
+                  </div>
+                  <p className="mt-2 max-w-2xl text-sm leading-6 text-gray-500 dark:text-gray-400">
+                    Susun pesan, pilih recipient yang tepat, lalu jalankan blast dengan device dan pengaturan yang aman.
+                  </p>
+                </div>
+              </div>
+
+              {(isDraft || isFinished) && (
+                <button
+                  onClick={handleDelete}
+                  disabled={deleteMutation.isPending}
+                  className="inline-flex items-center gap-2 self-start rounded-xl border border-gray-200 bg-white px-3 py-2 text-sm font-medium text-gray-600 transition-colors hover:border-red-200 hover:bg-red-50 hover:text-red-600 disabled:opacity-50 dark:border-gray-700 dark:bg-gray-900/40 dark:text-gray-300 dark:hover:border-red-900/50 dark:hover:bg-red-950/20 dark:hover:text-red-300"
+                >
+                  <Trash2 className="h-4 w-4" />
+                  Delete
+                </button>
               )}
+            </div>
+
+            <div className="grid gap-3 md:grid-cols-4">
+              <SummaryStat
+                label="Recipients"
+                value={`${totalRecipients}`}
+                hint={recipientReady ? `${pendingCount} pending to process` : 'Belum ada target kirim'}
+              />
+              <SummaryStat
+                label="Template"
+                value={templateReady ? `${templateCharacterCount} chars` : 'Belum siap'}
+                hint={templateReady ? 'Pesan utama sudah ditulis' : 'Isi pesan belum diisi'}
+              />
+              <SummaryStat
+                label="Device"
+                value={selectedDeviceConnected ? currentDevice : `${currentDevice} offline`}
+                hint={selectedDeviceDetails?.phoneNumber || 'Pilih device aktif untuk kirim'}
+              />
+              <SummaryStat
+                label="Pacing"
+                value={`${formatDelayLabel(currentDelay)} + ${formatDelayLabel(currentHumanMin)}-${formatDelayLabel(currentHumanMax)}`}
+                hint={currentScheduleEnabled ? 'Scheduler aktif' : 'Manual timing'}
+              />
+            </div>
+
+            <div className="grid gap-3 md:grid-cols-4">
+              <WorkflowCard
+                step="Step 1"
+                title="Tulis pesan"
+                description="Template yang jelas dan personal jadi fondasi campaign ini."
+                ready={templateReady}
+                icon={MessageSquareText}
+              />
+              <WorkflowCard
+                step="Step 2"
+                title="Pilih recipient"
+                description="Tambah kontak bernama agar hasil blast lebih relevan dan mudah dipantau."
+                ready={recipientReady}
+                icon={Users}
+              />
+              <WorkflowCard
+                step="Step 3"
+                title="Atur pengiriman"
+                description="Pilih device yang connect dan cek pacing supaya aman dijalankan."
+                ready={deviceReady}
+                icon={Settings2}
+              />
+              <WorkflowCard
+                step="Step 4"
+                title="Review & start"
+                description="Setelah semuanya siap, simpan draft dan mulai blast dari action bar bawah."
+                ready={campaignReady && !hasUnsavedChanges}
+                icon={Play}
+              />
+            </div>
+
+            <div className="rounded-2xl border border-gray-200 bg-gray-50 px-4 py-3 dark:border-gray-700 dark:bg-gray-900/40">
+              <div className="flex flex-col gap-2 md:flex-row md:items-center md:justify-between">
+                <div>
+                  <p className="text-xs font-semibold uppercase tracking-[0.18em] text-gray-400 dark:text-gray-500">Campaign readiness</p>
+                  <p className="mt-1 text-sm text-gray-700 dark:text-gray-200">{readinessMessage}</p>
+                </div>
+                <span className={cn(
+                  'inline-flex items-center gap-1 self-start rounded-full px-3 py-1 text-xs font-semibold',
+                  campaignReady && !hasUnsavedChanges
+                    ? 'bg-emerald-100 text-emerald-700'
+                    : 'bg-gray-200 text-gray-600 dark:bg-gray-800 dark:text-gray-300'
+                )}>
+                  {campaignReady && !hasUnsavedChanges ? <CheckCircle2 className="h-3.5 w-3.5" /> : <AlertCircle className="h-3.5 w-3.5" />}
+                  {campaignReady && !hasUnsavedChanges ? 'Ready to launch' : 'Setup incomplete'}
+                </span>
+              </div>
             </div>
           </div>
         </div>
-
-        {/* Action buttons */}
-        <div className="flex items-center gap-2">
-          {hasUnsavedChanges && canEditCampaign && (
-            <button
-              onClick={handleSave}
-              disabled={updateMutation.isPending}
-              className="flex items-center gap-1.5 px-3 py-1.5 bg-indigo-600 hover:bg-indigo-700 text-white text-sm font-medium rounded-lg disabled:opacity-50 transition-colors"
-            >
-              {updateMutation.isPending ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Save className="w-3.5 h-3.5" />}
-              Save
-            </button>
-          )}
-          {isDraft && campaign.total_recipients > 0 && currentTemplate.trim() && (
-            <button
-              onClick={() => {
-                // Save first if needed, then start
-                if (hasUnsavedChanges) {
-                  updateMutation.mutate(buildUpdatePayload() as any, {
-                    onSuccess: () => startMutation.mutate(campaignId),
-                  })
-                } else {
-                  startMutation.mutate(campaignId)
-                }
-              }}
-              disabled={startMutation.isPending}
-              className="flex items-center gap-1.5 px-3 py-1.5 bg-green-600 hover:bg-green-700 text-white text-sm font-medium rounded-lg disabled:opacity-50 transition-colors"
-            >
-              {startMutation.isPending ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Play className="w-3.5 h-3.5" />}
-              Start Blast
-            </button>
-          )}
-          {isPaused && (
-            <button
-              onClick={() => {
-                if (hasUnsavedChanges) {
-                  updateMutation.mutate(buildUpdatePayload() as any, {
-                    onSuccess: () => startMutation.mutate(campaignId),
-                  })
-                } else {
-                  startMutation.mutate(campaignId)
-                }
-              }}
-              disabled={startMutation.isPending}
-              className="flex items-center gap-1.5 px-3 py-1.5 bg-green-600 hover:bg-green-700 text-white text-sm font-medium rounded-lg disabled:opacity-50 transition-colors"
-            >
-              {startMutation.isPending ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Play className="w-3.5 h-3.5" />}
-              Resume
-            </button>
-          )}
-          {isSending && (
-            <button
-              onClick={() => pauseMutation.mutate(campaignId)}
-              disabled={pauseMutation.isPending}
-              className="flex items-center gap-1.5 px-3 py-1.5 bg-amber-500 hover:bg-amber-600 text-white text-sm font-medium rounded-lg disabled:opacity-50 transition-colors"
-            >
-              {pauseMutation.isPending ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Pause className="w-3.5 h-3.5" />}
-              Pause
-            </button>
-          )}
-          {(isSending || isPaused) && (
-            <button
-              onClick={() => cancelMutation.mutate(campaignId)}
-              disabled={cancelMutation.isPending}
-              className="flex items-center gap-1.5 px-3 py-1.5 bg-red-500 hover:bg-red-600 text-white text-sm font-medium rounded-lg disabled:opacity-50 transition-colors"
-            >
-              <XCircle className="w-3.5 h-3.5" />
-              Cancel
-            </button>
-          )}
-          {(isDraft || isFinished) && (
-            <button
-              onClick={handleDelete}
-              disabled={deleteMutation.isPending}
-              className="p-1.5 rounded-lg text-gray-400 hover:text-red-500 hover:bg-red-50 dark:hover:bg-red-900/30 transition-colors"
-              title="Delete campaign"
-            >
-              <Trash2 className="w-4 h-4" />
-            </button>
-          )}
-        </div>
-      </div>
+      </section>
 
       {/* Progress bar for active campaigns */}
       {(isSending || isPaused) && campaign.total_recipients > 0 && (
@@ -975,14 +1101,34 @@ export default function BlastCampaignDetailPage() {
       {/* ------------------------------------------------------------------ */}
       {/* Template Editor */}
       {/* ------------------------------------------------------------------ */}
-      <section className="bg-white dark:bg-gray-800 rounded-xl border border-gray-200 dark:border-gray-700 shadow-sm overflow-hidden">
-        <div className="flex items-center gap-2 px-4 py-3 border-b border-gray-100 dark:border-gray-700">
-          <MessageSquareText className="w-4 h-4 text-indigo-500" />
-          <h2 className="text-sm font-semibold text-gray-800 dark:text-gray-200">Message Template</h2>
+      <section className="overflow-hidden rounded-2xl border border-gray-200 bg-white shadow-sm dark:border-gray-700 dark:bg-gray-800">
+        <div className="flex flex-col gap-3 border-b border-gray-100 px-4 py-4 dark:border-gray-700 md:flex-row md:items-start md:justify-between">
+          <div className="flex items-start gap-3">
+            <div className="rounded-xl bg-indigo-50 p-2 text-indigo-600 dark:bg-indigo-900/30 dark:text-indigo-300">
+              <MessageSquareText className="h-4 w-4" />
+            </div>
+            <div>
+              <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-gray-400 dark:text-gray-500">Step 1</p>
+              <h2 className="mt-1 text-sm font-semibold text-gray-900 dark:text-gray-100">Message Template</h2>
+              <p className="mt-1 text-xs text-gray-500 dark:text-gray-400">
+                Tulis pesan inti sejelas mungkin. Personalization akan mengisi nama kontak dan universitas secara otomatis.
+              </p>
+            </div>
+          </div>
+          <div className="grid grid-cols-2 gap-2 text-xs md:min-w-[240px]">
+            <div className="rounded-xl bg-gray-50 px-3 py-2 dark:bg-gray-900/40">
+              <p className="text-gray-400 dark:text-gray-500">Characters</p>
+              <p className="mt-1 font-semibold text-gray-800 dark:text-gray-100">{templateCharacterCount}</p>
+            </div>
+            <div className="rounded-xl bg-gray-50 px-3 py-2 dark:bg-gray-900/40">
+              <p className="text-gray-400 dark:text-gray-500">Status</p>
+              <p className="mt-1 font-semibold text-gray-800 dark:text-gray-100">{templateReady ? 'Ready' : 'Needs copy'}</p>
+            </div>
+          </div>
         </div>
-        <div className="p-4">
-          {/* Placeholder buttons */}
-          <div className="flex flex-wrap gap-2 mb-3">
+        <div className="grid gap-5 p-4 lg:grid-cols-[minmax(0,1fr)_320px]">
+          <div>
+            <div className="mb-3 flex flex-wrap gap-2">
             {PLACEHOLDERS.map((p) => {
               const Icon = p.icon
               return (
@@ -998,34 +1144,81 @@ export default function BlastCampaignDetailPage() {
               )
             })}
           </div>
-          <textarea
-            ref={templateRef}
-            value={currentTemplate}
-            onChange={(e) => setTemplateDraft(e.target.value)}
-            disabled={!canEditCampaign}
-            rows={6}
-            placeholder="Halo {nama_kontak}, kami dari LSP ingin menghubungi {nama_universitas}..."
-            className="w-full px-3 py-2.5 border border-gray-300 dark:border-gray-600 rounded-lg text-sm dark:bg-gray-900 dark:text-gray-100 focus:ring-1 focus:ring-indigo-500 focus:border-indigo-500 disabled:opacity-60 disabled:cursor-not-allowed resize-none"
-          />
-          <p className="mt-1.5 text-[11px] text-gray-400 dark:text-gray-500">
-            Use placeholders above to personalize each message. They will be replaced with actual contact data.
-          </p>
+            <textarea
+              ref={templateRef}
+              value={currentTemplate}
+              onChange={(e) => setTemplateDraft(e.target.value)}
+              disabled={!canEditCampaign}
+              rows={8}
+              placeholder="Halo {nama_kontak}, kami dari LSP ingin menghubungi {nama_universitas}..."
+              className="w-full rounded-2xl border border-gray-300 px-4 py-3 text-sm leading-6 dark:border-gray-600 dark:bg-gray-900 dark:text-gray-100 focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500 disabled:cursor-not-allowed disabled:opacity-60 resize-none"
+            />
+            <div className="mt-2 flex flex-col gap-2 text-[11px] text-gray-400 dark:text-gray-500 md:flex-row md:items-center md:justify-between">
+              <p>Gunakan placeholder di atas untuk personalisasi otomatis tiap recipient.</p>
+              {hasUnsavedChanges && <p className="font-medium text-amber-500">Ada perubahan draft yang belum disimpan.</p>}
+            </div>
+          </div>
+
+          <div className="space-y-3">
+            <div className="rounded-2xl border border-gray-200 bg-gray-50 p-4 dark:border-gray-700 dark:bg-gray-900/40">
+              <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-gray-400 dark:text-gray-500">Inline preview</p>
+              {!templateReady ? (
+                <p className="mt-3 text-sm leading-6 text-gray-500 dark:text-gray-400">
+                  Tulis template dulu. Setelah recipient ada dan draft disimpan, preview personal akan muncul di sini.
+                </p>
+              ) : (
+                <div className="mt-3 space-y-3">
+                  <div>
+                    <p className="text-[11px] text-gray-400 dark:text-gray-500">
+                      {primaryPreview?.contact_name || recipients[0]?.contact_name || 'Sample recipient'}
+                      {primaryPreview?.phone_number ? ` • ${primaryPreview.phone_number}` : ''}
+                    </p>
+                    <div className="mt-2 max-w-full rounded-2xl rounded-tl-sm bg-green-100 px-3 py-2 text-sm leading-6 text-gray-800 dark:bg-green-900/30 dark:text-gray-100 whitespace-pre-wrap">
+                      {primaryPreview?.rendered_message || currentTemplate}
+                    </div>
+                  </div>
+                  {!primaryPreview && recipientReady && (
+                    <p className="text-[11px] text-amber-500">
+                      Simpan draft untuk melihat preview yang sudah dipersonalisasi.
+                    </p>
+                  )}
+                </div>
+              )}
+            </div>
+
+            <div className="rounded-2xl border border-gray-200 bg-gray-50 p-4 dark:border-gray-700 dark:bg-gray-900/40">
+              <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-gray-400 dark:text-gray-500">Copy guidance</p>
+              <ul className="mt-3 space-y-2 text-sm leading-6 text-gray-500 dark:text-gray-400">
+                <li>Mulai dari konteks dan tujuan, jangan langsung minta data.</li>
+                <li>Jaga agar 1 pesan tetap ringkas supaya nyaman dibaca di WhatsApp.</li>
+                <li>Pakai nama kontak bila tersedia agar pembuka terasa lebih natural.</li>
+              </ul>
+            </div>
+          </div>
         </div>
       </section>
 
       {/* ------------------------------------------------------------------ */}
       {/* Recipients */}
       {/* ------------------------------------------------------------------ */}
-      <section className="bg-white dark:bg-gray-800 rounded-xl border border-gray-200 dark:border-gray-700 shadow-sm overflow-hidden">
-        <div className="flex items-center justify-between px-4 py-3 border-b border-gray-100 dark:border-gray-700">
-          <div className="flex items-center gap-2">
-            <Users className="w-4 h-4 text-indigo-500" />
-            <h2 className="text-sm font-semibold text-gray-800 dark:text-gray-200">
+      <section className="overflow-hidden rounded-2xl border border-gray-200 bg-white shadow-sm dark:border-gray-700 dark:bg-gray-800">
+        <div className="flex flex-col gap-3 border-b border-gray-100 px-4 py-4 dark:border-gray-700 md:flex-row md:items-start md:justify-between">
+          <div className="flex items-start gap-3">
+            <div className="rounded-xl bg-indigo-50 p-2 text-indigo-600 dark:bg-indigo-900/30 dark:text-indigo-300">
+              <Users className="h-4 w-4" />
+            </div>
+            <div>
+              <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-gray-400 dark:text-gray-500">Step 2</p>
+              <h2 className="mt-1 text-sm font-semibold text-gray-900 dark:text-gray-100">
               Recipients
               {totalRecipients > 0 && (
                 <span className="ml-1.5 text-xs font-normal text-gray-400">({totalRecipients})</span>
               )}
-            </h2>
+              </h2>
+              <p className="mt-1 text-xs text-gray-500 dark:text-gray-400">
+                Pilih recipient yang akan menerima campaign. Kontak bernama akan lebih mudah dianalisis hasilnya.
+              </p>
+            </div>
           </div>
           {canEditCampaign && (
             <div className="flex items-center gap-2">
@@ -1051,22 +1244,44 @@ export default function BlastCampaignDetailPage() {
           )}
         </div>
 
+        <div className="grid gap-3 border-b border-gray-100 bg-gray-50/70 px-4 py-3 dark:border-gray-700 dark:bg-gray-900/20 md:grid-cols-3">
+          <div className="rounded-xl bg-white px-3 py-3 dark:bg-gray-800/80">
+            <p className="text-[11px] uppercase tracking-[0.14em] text-gray-400 dark:text-gray-500">Pending</p>
+            <p className="mt-1 text-base font-semibold text-gray-900 dark:text-gray-100">{pendingCount}</p>
+            <p className="mt-1 text-xs text-gray-500 dark:text-gray-400">Target yang belum diproses worker</p>
+          </div>
+          <div className="rounded-xl bg-white px-3 py-3 dark:bg-gray-800/80">
+            <p className="text-[11px] uppercase tracking-[0.14em] text-gray-400 dark:text-gray-500">Named Contacts</p>
+            <p className="mt-1 text-base font-semibold text-gray-900 dark:text-gray-100">{namedRecipientCount}</p>
+            <p className="mt-1 text-xs text-gray-500 dark:text-gray-400">Recipient dengan nama yang bisa dipersonalisasi</p>
+          </div>
+          <div className="rounded-xl bg-white px-3 py-3 dark:bg-gray-800/80">
+            <p className="text-[11px] uppercase tracking-[0.14em] text-gray-400 dark:text-gray-500">Results</p>
+            <p className="mt-1 text-base font-semibold text-gray-900 dark:text-gray-100">{campaign.sent_count} sent · {campaign.failed_count} failed</p>
+            <p className="mt-1 text-xs text-gray-500 dark:text-gray-400">Ringkasan hasil campaign sampai saat ini</p>
+          </div>
+        </div>
+
         {loadingRecipients ? (
           <div className="flex items-center justify-center py-10">
             <Loader2 className="w-5 h-5 animate-spin text-gray-400" />
           </div>
         ) : recipients.length === 0 ? (
-          <div className="text-center py-10">
+          <div className="px-4 py-8">
+            <div className="rounded-2xl border border-dashed border-gray-300 bg-gray-50/80 px-6 py-10 text-center dark:border-gray-700 dark:bg-gray-900/30">
             <Users className="w-8 h-8 mx-auto text-gray-300 dark:text-gray-600 mb-2" />
-            <p className="text-sm text-gray-400 dark:text-gray-500">No recipients yet</p>
+            <p className="text-sm font-medium text-gray-500 dark:text-gray-400">Belum ada recipient di campaign ini</p>
+            <p className="mt-1 text-xs text-gray-400 dark:text-gray-500">Pilih kontak dari database atau quick-select by group untuk mulai membangun target list.</p>
             {canEditCampaign && (
               <button
                 onClick={() => setShowContactModal(true)}
-                className="mt-2 text-sm text-indigo-600 hover:text-indigo-700 dark:text-indigo-400 font-medium"
+                className="mt-4 inline-flex items-center gap-2 rounded-xl bg-indigo-600 px-4 py-2 text-sm font-medium text-white transition-colors hover:bg-indigo-700"
               >
-                + Add contacts from database
+                <Plus className="h-4 w-4" />
+                Pilih recipient
               </button>
             )}
+            </div>
           </div>
         ) : (
           <div>
@@ -1142,14 +1357,30 @@ export default function BlastCampaignDetailPage() {
       {/* ------------------------------------------------------------------ */}
       {/* Settings (collapsible) */}
       {/* ------------------------------------------------------------------ */}
-      <section className="bg-white dark:bg-gray-800 rounded-xl border border-gray-200 dark:border-gray-700 shadow-sm overflow-hidden">
+      <section className="overflow-hidden rounded-2xl border border-gray-200 bg-white shadow-sm dark:border-gray-700 dark:bg-gray-800">
         <button
           onClick={() => setShowSettings(!showSettings)}
           className="flex items-center justify-between w-full px-4 py-3 text-left hover:bg-gray-50 dark:hover:bg-gray-800/50 transition-colors"
         >
           <div className="flex items-center gap-2">
             <Settings2 className="w-4 h-4 text-indigo-500" />
-            <h2 className="text-sm font-semibold text-gray-800 dark:text-gray-200">Sending Settings</h2>
+            <div>
+              <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-gray-400 dark:text-gray-500">Step 3</p>
+              <h2 className="text-sm font-semibold text-gray-800 dark:text-gray-200">Sending Settings</h2>
+            </div>
+          </div>
+          <div className="hidden items-center gap-2 md:flex">
+            <span className={cn(
+              'rounded-full px-2 py-1 text-[11px] font-medium',
+              selectedDeviceConnected
+                ? 'bg-emerald-100 text-emerald-700 dark:bg-emerald-900/40 dark:text-emerald-300'
+                : 'bg-amber-100 text-amber-700 dark:bg-amber-900/30 dark:text-amber-300'
+            )}>
+              {selectedDeviceConnected ? `${currentDevice} connected` : `${currentDevice} offline`}
+            </span>
+            <span className="rounded-full bg-gray-100 px-2 py-1 text-[11px] font-medium text-gray-500 dark:bg-gray-800 dark:text-gray-400">
+              {currentScheduleEnabled ? 'Scheduler on' : 'Scheduler off'}
+            </span>
           </div>
           {showSettings ? (
             <ChevronUp className="w-4 h-4 text-gray-400" />
@@ -1158,242 +1389,345 @@ export default function BlastCampaignDetailPage() {
           )}
         </button>
         {showSettings && (
-          <div className="px-4 pb-4 pt-1 border-t border-gray-100 dark:border-gray-700 space-y-4">
-            {/* Device selector */}
-            <div>
-              <label className="flex items-center gap-1.5 text-xs font-medium text-gray-600 dark:text-gray-400 mb-1.5">
-                <Smartphone className="w-3.5 h-3.5" />
-                WhatsApp Device
-              </label>
-              <select
-                value={currentDevice}
-                onChange={(e) => setDeviceDraft(e.target.value)}
-                disabled={!canEditCampaign}
-                className="w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-lg text-sm dark:bg-gray-900 dark:text-gray-100 focus:ring-1 focus:ring-indigo-500 focus:border-indigo-500 disabled:opacity-60"
-              >
-                {['device_1', 'device_2', 'device_3', 'device_4', 'device_5'].map((did) => {
-                  const dev = devicesData?.devices?.find((d) => d.id === did)
-                  const isConnected = dev?.connectionState === 'connected'
-                  return (
-                    <option key={did} value={did}>
-                      {did} {dev?.phoneNumber ? `(${dev.phoneNumber})` : ''} {isConnected ? '✓ Connected' : '✗ Offline'}
-                    </option>
-                  )
-                })}
-              </select>
-              {connectedDevices.length === 0 && (
-                <p className="mt-1 text-[11px] text-amber-500">
-                  No devices connected. Connect a device on the WhatsApp page first.
-                </p>
+          <div className="space-y-4 border-t border-gray-100 px-4 pb-4 pt-3 dark:border-gray-700">
+            <div className="rounded-2xl border border-gray-200 bg-gray-50/80 p-4 dark:border-gray-700 dark:bg-gray-900/30">
+              <div className="flex flex-col gap-3 md:flex-row md:items-start md:justify-between">
+                <div>
+                  <p className="text-sm font-semibold text-gray-900 dark:text-gray-100">Pengaturan ini menentukan cara campaign dikirim</p>
+                  <p className="mt-1 text-xs text-gray-500 dark:text-gray-400">Pilih device, atur delay, lalu aktifkan scheduler bila perlu.</p>
+                </div>
+                {hasUnsavedChanges && canEditCampaign && (
+                  <span className="inline-flex items-center gap-1 self-start rounded-full bg-amber-100 px-2.5 py-1 text-[11px] font-medium text-amber-700 dark:bg-amber-900/30 dark:text-amber-300">
+                    <AlertCircle className="h-3.5 w-3.5" />
+                    Draft settings belum disimpan
+                  </span>
+                )}
+              </div>
+            </div>
+
+            <div className="grid gap-3 md:grid-cols-3">
+              <SettingHintCard
+                title="Device aktif"
+                description="Pengirim"
+                value={selectedDeviceConnected
+                  ? `${currentDevice}${selectedDeviceDetails?.phoneNumber ? ` · ${selectedDeviceDetails.phoneNumber}` : ''}`
+                  : `${currentDevice} belum connected`}
+              />
+              <SettingHintCard
+                title="Ritme kirim"
+                description="Base + random delay"
+                value={`${formatDelayLabel(currentDelay)} + ${formatDelayLabel(currentHumanMin)}-${formatDelayLabel(currentHumanMax)}`}
+              />
+              <SettingHintCard
+                title="Scheduler"
+                description="Jam operasional"
+                value={currentScheduleEnabled
+                  ? `${currentActiveStart}:00-${currentActiveEnd}:00 ${currentScheduleTimezone}`
+                  : 'Nonaktif, kirim mengikuti run campaign'}
+              />
+            </div>
+
+            <div className="grid gap-4 xl:grid-cols-[1.2fr_0.8fr]">
+              <div className="rounded-2xl border border-gray-200 p-4 dark:border-gray-700">
+                <div className="flex items-start gap-3">
+                  <div className="rounded-xl bg-indigo-50 p-2 text-indigo-600 dark:bg-indigo-900/30 dark:text-indigo-300">
+                    <Smartphone className="h-4 w-4" />
+                  </div>
+                  <div>
+                    <p className="text-sm font-semibold text-gray-900 dark:text-gray-100">Device & ritme kirim</p>
+                  </div>
+                </div>
+
+                <div className="mt-4 space-y-4">
+                  <div>
+                    <label className="mb-1.5 flex items-center gap-1.5 text-xs font-medium text-gray-700 dark:text-gray-300">
+                      <Smartphone className="h-3.5 w-3.5" />
+                      WhatsApp Device
+                    </label>
+                    <select
+                      value={currentDevice}
+                      onChange={(e) => setDeviceDraft(e.target.value)}
+                      disabled={!canEditCampaign}
+                      className="w-full rounded-xl border border-gray-300 px-3 py-2 text-sm dark:border-gray-600 dark:bg-gray-900 dark:text-gray-100 focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500 disabled:opacity-60"
+                    >
+                      {['device_1', 'device_2', 'device_3', 'device_4', 'device_5'].map((did) => {
+                        const dev = devicesData?.devices?.find((d) => d.id === did)
+                        const isConnected = dev?.connectionState === 'connected'
+                        return (
+                          <option key={did} value={did}>
+                            {did} {dev?.phoneNumber ? `(${dev.phoneNumber})` : ''} {isConnected ? '✓ Connected' : '✗ Offline'}
+                          </option>
+                        )
+                      })}
+                    </select>
+                    {connectedDevices.length === 0 ? (
+                      <p className="mt-2 text-[11px] text-amber-500">
+                        Belum ada device yang connected. Hubungkan device dulu dari halaman WhatsApp.
+                      </p>
+                    ) : (
+                      <p className="mt-2 text-[11px] text-gray-500 dark:text-gray-400">
+                        Device terpilih: {selectedDeviceDetails?.phoneNumber || 'nomor belum tersedia'}.
+                      </p>
+                    )}
+                  </div>
+
+                  <div>
+                    <label className="mb-1.5 flex items-center gap-1.5 text-xs font-medium text-gray-700 dark:text-gray-300">
+                      <Timer className="h-3.5 w-3.5" />
+                      Base Delay Between Messages
+                    </label>
+                    <input
+                      type="number"
+                      value={currentDelay}
+                      onChange={(e) => setDelayDraft(Math.max(1000, Number(e.target.value)))}
+                      disabled={!canEditCampaign}
+                      min={1000}
+                      step={1000}
+                      className="w-full rounded-xl border border-gray-300 px-3 py-2 text-sm dark:border-gray-600 dark:bg-gray-900 dark:text-gray-100 focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500 disabled:opacity-60"
+                    />
+                  </div>
+
+                  <div className="grid gap-3 md:grid-cols-2">
+                    <div>
+                      <label className="mb-1.5 flex items-center gap-1.5 text-xs font-medium text-gray-700 dark:text-gray-300">
+                        <Zap className="h-3.5 w-3.5" />
+                        Human Delay Min
+                      </label>
+                      <input
+                        type="number"
+                        value={currentHumanMin}
+                        onChange={(e) => setHumanMinDraft(Math.max(500, Number(e.target.value)))}
+                        disabled={!canEditCampaign}
+                        min={500}
+                        step={500}
+                        className="w-full rounded-xl border border-gray-300 px-3 py-2 text-sm dark:border-gray-600 dark:bg-gray-900 dark:text-gray-100 focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500 disabled:opacity-60"
+                      />
+                    </div>
+                    <div>
+                      <label className="mb-1.5 flex items-center gap-1.5 text-xs font-medium text-gray-700 dark:text-gray-300">
+                        <Zap className="h-3.5 w-3.5" />
+                        Human Delay Max
+                      </label>
+                      <input
+                        type="number"
+                        value={currentHumanMax}
+                        onChange={(e) => setHumanMaxDraft(Math.max(currentHumanMin + 500, Number(e.target.value)))}
+                        disabled={!canEditCampaign}
+                        min={1000}
+                        step={500}
+                        className="w-full rounded-xl border border-gray-300 px-3 py-2 text-sm dark:border-gray-600 dark:bg-gray-900 dark:text-gray-100 focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500 disabled:opacity-60"
+                      />
+                    </div>
+                  </div>
+
+                  <div className="rounded-2xl border border-gray-200 bg-gray-50 px-3 py-3 dark:border-gray-700 dark:bg-gray-900/30">
+                    <p className="text-xs font-medium text-gray-700 dark:text-gray-300">Estimasi delay aktual per pesan</p>
+                    <p className="mt-1 text-sm font-semibold text-gray-900 dark:text-gray-100">
+                      {formatDelayLabel(currentDelay)} + random {formatDelayLabel(currentHumanMin)} sampai {formatDelayLabel(currentHumanMax)}
+                    </p>
+                  </div>
+                </div>
+              </div>
+
+              <div className="rounded-2xl border border-gray-200 p-4 dark:border-gray-700">
+                <div className="flex items-start gap-3">
+                  <div className="rounded-xl bg-indigo-50 p-2 text-indigo-600 dark:bg-indigo-900/30 dark:text-indigo-300">
+                    <Settings2 className="h-4 w-4" />
+                  </div>
+                  <div>
+                    <p className="text-sm font-semibold text-gray-900 dark:text-gray-100">Proteksi & automasi</p>
+                  </div>
+                </div>
+
+                <div className="mt-4 space-y-3">
+                  <label className="flex items-start gap-3 rounded-2xl border border-gray-200 px-3 py-3 dark:border-gray-700">
+                    <input
+                      type="checkbox"
+                      checked={currentVariationEnabled}
+                      onChange={(e) => setVariationDraft(e.target.checked)}
+                      disabled={!canEditCampaign}
+                      className="mt-0.5 h-4 w-4 rounded border-gray-300 text-indigo-600 focus:ring-indigo-500"
+                    />
+                    <span>
+                      <span className="block text-sm font-medium text-gray-700 dark:text-gray-300">Content variation</span>
+                      <span className="mt-1 block text-[11px] text-gray-500 dark:text-gray-400">Pesan tidak identik untuk setiap recipient.</span>
+                    </span>
+                  </label>
+
+                  <label className="flex items-start gap-3 rounded-2xl border border-gray-200 px-3 py-3 dark:border-gray-700">
+                    <input
+                      type="checkbox"
+                      checked={currentAutoResumeEnabled}
+                      onChange={(e) => setAutoResumeDraft(e.target.checked)}
+                      disabled={!canEditCampaign}
+                      className="mt-0.5 h-4 w-4 rounded border-gray-300 text-indigo-600 focus:ring-indigo-500"
+                    />
+                    <span>
+                      <span className="block text-sm font-medium text-gray-700 dark:text-gray-300">Auto-resume after anti-ban cooldown</span>
+                      <span className="mt-1 block text-[11px] text-gray-500 dark:text-gray-400">Lanjut otomatis setelah cooldown selesai.</span>
+                    </span>
+                  </label>
+                </div>
+              </div>
+            </div>
+
+            <div className="rounded-2xl border border-gray-200 p-4 dark:border-gray-700">
+              <div className="flex flex-col gap-3 md:flex-row md:items-start md:justify-between">
+                <div className="flex items-start gap-3">
+                  <div className="rounded-xl bg-indigo-50 p-2 text-indigo-600 dark:bg-indigo-900/30 dark:text-indigo-300">
+                    <Clock className="h-4 w-4" />
+                  </div>
+                  <div>
+                    <p className="text-sm font-semibold text-gray-900 dark:text-gray-100">Safe-hours scheduler</p>
+                    <p className="mt-1 text-xs text-gray-500 dark:text-gray-400">Batasi jam kirim bila campaign tidak boleh jalan sepanjang hari.</p>
+                  </div>
+                </div>
+                <label className="flex items-start gap-2 rounded-xl border border-gray-200 px-3 py-2 dark:border-gray-700">
+                  <input
+                    type="checkbox"
+                    checked={currentScheduleEnabled}
+                    onChange={(e) => setScheduleEnabledDraft(e.target.checked)}
+                    disabled={!canEditCampaign}
+                    className="mt-0.5 h-4 w-4 rounded border-gray-300 text-indigo-600 focus:ring-indigo-500"
+                  />
+                  <span>
+                    <span className="block text-sm font-medium text-gray-700 dark:text-gray-300">Aktifkan scheduler</span>
+                    <span className="mt-1 block text-[11px] text-gray-500 dark:text-gray-400">Gunakan jam operasional di bawah.</span>
+                  </span>
+                </label>
+              </div>
+
+              {currentScheduleEnabled ? (
+                <div className="mt-4 space-y-4 rounded-2xl border border-gray-200 bg-gray-50/60 p-4 dark:border-gray-700 dark:bg-gray-900/20">
+                  <div className="grid gap-3 md:grid-cols-3">
+                    <SettingHintCard
+                      title="Jam aktif"
+                      description="Active hours"
+                      value={`${currentActiveStart}:00-${currentActiveEnd}:00`}
+                    />
+                    <SettingHintCard
+                      title="Peak window"
+                      description="Faster window"
+                      value={`${currentPeakStart}:00-${currentPeakEnd}:00`}
+                    />
+                    <SettingHintCard
+                      title="Lunch slowdown"
+                      description="Lunch + weekend"
+                      value={`${currentLunchStart}:00-${currentLunchEnd}:00 · weekend x${currentWeekendFactor}`}
+                    />
+                  </div>
+
+                  <div className="grid gap-3 md:grid-cols-[1.2fr_1fr_1fr]">
+                    <div>
+                      <label className="mb-1.5 block text-xs font-medium text-gray-700 dark:text-gray-300">Timezone</label>
+                      <input
+                        type="text"
+                        value={currentScheduleTimezone}
+                        onChange={(e) => setScheduleTimezoneDraft(e.target.value)}
+                        disabled={!canEditCampaign}
+                        placeholder="Asia/Jakarta"
+                        className="w-full rounded-xl border border-gray-300 px-3 py-2 text-sm dark:border-gray-600 dark:bg-gray-900 dark:text-gray-100 focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500 disabled:opacity-60"
+                      />
+                    </div>
+                    <div>
+                      <label className="mb-1.5 block text-xs font-medium text-gray-700 dark:text-gray-300">Active Start</label>
+                      <input
+                        type="number"
+                        value={currentActiveStart}
+                        onChange={(e) => setActiveStartDraft(Math.max(0, Math.min(23, Number(e.target.value))))}
+                        disabled={!canEditCampaign}
+                        min={0}
+                        max={23}
+                        className="w-full rounded-xl border border-gray-300 px-3 py-2 text-sm dark:border-gray-600 dark:bg-gray-900 dark:text-gray-100 focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500 disabled:opacity-60"
+                      />
+                    </div>
+                    <div>
+                      <label className="mb-1.5 block text-xs font-medium text-gray-700 dark:text-gray-300">Active End</label>
+                      <input
+                        type="number"
+                        value={currentActiveEnd}
+                        onChange={(e) => setActiveEndDraft(Math.max(currentActiveStart + 1, Math.min(24, Number(e.target.value))))}
+                        disabled={!canEditCampaign}
+                        min={1}
+                        max={24}
+                        className="w-full rounded-xl border border-gray-300 px-3 py-2 text-sm dark:border-gray-600 dark:bg-gray-900 dark:text-gray-100 focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500 disabled:opacity-60"
+                      />
+                    </div>
+                  </div>
+
+                  <div className="grid gap-3 md:grid-cols-5">
+                    <div>
+                      <label className="mb-1.5 block text-xs font-medium text-gray-700 dark:text-gray-300">Peak Start</label>
+                      <input
+                        type="number"
+                        value={currentPeakStart}
+                        onChange={(e) => setPeakStartDraft(Math.max(0, Math.min(23, Number(e.target.value))))}
+                        disabled={!canEditCampaign}
+                        min={0}
+                        max={23}
+                        className="w-full rounded-xl border border-gray-300 px-3 py-2 text-sm dark:border-gray-600 dark:bg-gray-900 dark:text-gray-100 focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500 disabled:opacity-60"
+                      />
+                    </div>
+                    <div>
+                      <label className="mb-1.5 block text-xs font-medium text-gray-700 dark:text-gray-300">Peak End</label>
+                      <input
+                        type="number"
+                        value={currentPeakEnd}
+                        onChange={(e) => setPeakEndDraft(Math.max(currentPeakStart, Math.min(24, Number(e.target.value))))}
+                        disabled={!canEditCampaign}
+                        min={0}
+                        max={24}
+                        className="w-full rounded-xl border border-gray-300 px-3 py-2 text-sm dark:border-gray-600 dark:bg-gray-900 dark:text-gray-100 focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500 disabled:opacity-60"
+                      />
+                    </div>
+                    <div>
+                      <label className="mb-1.5 block text-xs font-medium text-gray-700 dark:text-gray-300">Lunch Start</label>
+                      <input
+                        type="number"
+                        value={currentLunchStart}
+                        onChange={(e) => setLunchStartDraft(Math.max(0, Math.min(23, Number(e.target.value))))}
+                        disabled={!canEditCampaign}
+                        min={0}
+                        max={23}
+                        className="w-full rounded-xl border border-gray-300 px-3 py-2 text-sm dark:border-gray-600 dark:bg-gray-900 dark:text-gray-100 focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500 disabled:opacity-60"
+                      />
+                    </div>
+                    <div>
+                      <label className="mb-1.5 block text-xs font-medium text-gray-700 dark:text-gray-300">Lunch End</label>
+                      <input
+                        type="number"
+                        value={currentLunchEnd}
+                        onChange={(e) => setLunchEndDraft(Math.max(currentLunchStart, Math.min(24, Number(e.target.value))))}
+                        disabled={!canEditCampaign}
+                        min={0}
+                        max={24}
+                        className="w-full rounded-xl border border-gray-300 px-3 py-2 text-sm dark:border-gray-600 dark:bg-gray-900 dark:text-gray-100 focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500 disabled:opacity-60"
+                      />
+                    </div>
+                    <div>
+                      <label className="mb-1.5 block text-xs font-medium text-gray-700 dark:text-gray-300">Weekend Factor</label>
+                      <input
+                        type="number"
+                        value={currentWeekendFactor}
+                        onChange={(e) => setWeekendFactorDraft(Math.max(0, Number(e.target.value)))}
+                        disabled={!canEditCampaign}
+                        min={0}
+                        max={2}
+                        step={0.1}
+                        className="w-full rounded-xl border border-gray-300 px-3 py-2 text-sm dark:border-gray-600 dark:bg-gray-900 dark:text-gray-100 focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500 disabled:opacity-60"
+                      />
+                    </div>
+                  </div>
+
+                  <p className="text-[11px] text-gray-500 dark:text-gray-400">Weekend factor: 0 berhenti, 1 normal, di bawah 1 lebih lambat.</p>
+                </div>
+              ) : (
+                <div className="mt-4 rounded-2xl border border-dashed border-gray-200 px-4 py-4 dark:border-gray-700">
+                  <p className="text-sm font-medium text-gray-700 dark:text-gray-300">Scheduler sedang nonaktif</p>
+                  <p className="mt-1 text-[11px] text-gray-500 dark:text-gray-400">Campaign mengikuti delay biasa tanpa batas jam.</p>
+                </div>
               )}
             </div>
-
-            {/* Delay between messages */}
-            <div>
-              <label className="flex items-center gap-1.5 text-xs font-medium text-gray-600 dark:text-gray-400 mb-1.5">
-                <Timer className="w-3.5 h-3.5" />
-                Delay Between Messages (ms)
-              </label>
-              <input
-                type="number"
-                value={currentDelay}
-                onChange={(e) => setDelayDraft(Math.max(1000, Number(e.target.value)))}
-                disabled={!canEditCampaign}
-                min={1000}
-                step={1000}
-                className="w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-lg text-sm dark:bg-gray-900 dark:text-gray-100 focus:ring-1 focus:ring-indigo-500 focus:border-indigo-500 disabled:opacity-60"
-              />
-              <p className="mt-1 text-[11px] text-gray-400">
-                Fixed delay between each message. Recommended: 5000–15000ms for safety.
-              </p>
-            </div>
-
-            {/* Human-like delay range */}
-            <div className="grid grid-cols-2 gap-3">
-              <div>
-                <label className="flex items-center gap-1.5 text-xs font-medium text-gray-600 dark:text-gray-400 mb-1.5">
-                  <Zap className="w-3.5 h-3.5" />
-                  Human Delay Min (ms)
-                </label>
-                <input
-                  type="number"
-                  value={currentHumanMin}
-                  onChange={(e) => setHumanMinDraft(Math.max(500, Number(e.target.value)))}
-                  disabled={!canEditCampaign}
-                  min={500}
-                  step={500}
-                  className="w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-lg text-sm dark:bg-gray-900 dark:text-gray-100 focus:ring-1 focus:ring-indigo-500 focus:border-indigo-500 disabled:opacity-60"
-                />
-              </div>
-              <div>
-                <label className="flex items-center gap-1.5 text-xs font-medium text-gray-600 dark:text-gray-400 mb-1.5">
-                  <Zap className="w-3.5 h-3.5" />
-                  Human Delay Max (ms)
-                </label>
-                <input
-                  type="number"
-                  value={currentHumanMax}
-                  onChange={(e) => setHumanMaxDraft(Math.max(currentHumanMin + 500, Number(e.target.value)))}
-                  disabled={!canEditCampaign}
-                  min={1000}
-                  step={500}
-                  className="w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-lg text-sm dark:bg-gray-900 dark:text-gray-100 focus:ring-1 focus:ring-indigo-500 focus:border-indigo-500 disabled:opacity-60"
-                />
-              </div>
-            </div>
-            <p className="text-[11px] text-gray-400">
-              Random extra delay added per message to mimic human behavior. Total delay = fixed + random(min, max).
-            </p>
-
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-              <label className="flex items-start gap-2 rounded-lg border border-gray-200 dark:border-gray-700 px-3 py-2">
-                <input
-                  type="checkbox"
-                  checked={currentVariationEnabled}
-                  onChange={(e) => setVariationDraft(e.target.checked)}
-                  disabled={!canEditCampaign}
-                  className="mt-0.5 h-4 w-4 rounded border-gray-300 text-indigo-600 focus:ring-indigo-500"
-                />
-                <span>
-                  <span className="block text-sm font-medium text-gray-700 dark:text-gray-300">Content variation</span>
-                  <span className="block text-[11px] text-gray-400">Adds invisible per-recipient variation so bulk messages are not byte-identical.</span>
-                </span>
-              </label>
-              <label className="flex items-start gap-2 rounded-lg border border-gray-200 dark:border-gray-700 px-3 py-2">
-                <input
-                  type="checkbox"
-                  checked={currentAutoResumeEnabled}
-                  onChange={(e) => setAutoResumeDraft(e.target.checked)}
-                  disabled={!canEditCampaign}
-                  className="mt-0.5 h-4 w-4 rounded border-gray-300 text-indigo-600 focus:ring-indigo-500"
-                />
-                <span>
-                  <span className="block text-sm font-medium text-gray-700 dark:text-gray-300">Auto-resume after anti-ban cooldown</span>
-                  <span className="block text-[11px] text-gray-400">If the device is temporarily blocked, resume automatically when retry-after expires.</span>
-                </span>
-              </label>
-            </div>
-
-            <label className="flex items-start gap-2 rounded-lg border border-gray-200 dark:border-gray-700 px-3 py-2">
-              <input
-                type="checkbox"
-                checked={currentScheduleEnabled}
-                onChange={(e) => setScheduleEnabledDraft(e.target.checked)}
-                disabled={!canEditCampaign}
-                className="mt-0.5 h-4 w-4 rounded border-gray-300 text-indigo-600 focus:ring-indigo-500"
-              />
-              <span>
-                <span className="block text-sm font-medium text-gray-700 dark:text-gray-300">Safe-hours scheduler</span>
-                <span className="block text-[11px] text-gray-400">Only sends during business-safe windows, slows down on weekends, and speeds up slightly during peak hours.</span>
-              </span>
-            </label>
-
-            {currentScheduleEnabled && (
-              <div className="space-y-3 rounded-xl border border-gray-200 dark:border-gray-700 p-3 bg-gray-50/60 dark:bg-gray-900/20">
-                <div>
-                  <label className="block text-xs font-medium text-gray-600 dark:text-gray-400 mb-1.5">Timezone</label>
-                  <input
-                    type="text"
-                    value={currentScheduleTimezone}
-                    onChange={(e) => setScheduleTimezoneDraft(e.target.value)}
-                    disabled={!canEditCampaign}
-                    placeholder="Asia/Jakarta"
-                    className="w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-lg text-sm dark:bg-gray-900 dark:text-gray-100 focus:ring-1 focus:ring-indigo-500 focus:border-indigo-500 disabled:opacity-60"
-                  />
-                </div>
-
-                <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
-                  <div>
-                    <label className="block text-xs font-medium text-gray-600 dark:text-gray-400 mb-1.5">Active Start</label>
-                    <input
-                      type="number"
-                      value={currentActiveStart}
-                      onChange={(e) => setActiveStartDraft(Math.max(0, Math.min(23, Number(e.target.value))))}
-                      disabled={!canEditCampaign}
-                      min={0}
-                      max={23}
-                      className="w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-lg text-sm dark:bg-gray-900 dark:text-gray-100 focus:ring-1 focus:ring-indigo-500 focus:border-indigo-500 disabled:opacity-60"
-                    />
-                  </div>
-                  <div>
-                    <label className="block text-xs font-medium text-gray-600 dark:text-gray-400 mb-1.5">Active End</label>
-                    <input
-                      type="number"
-                      value={currentActiveEnd}
-                      onChange={(e) => setActiveEndDraft(Math.max(currentActiveStart + 1, Math.min(24, Number(e.target.value))))}
-                      disabled={!canEditCampaign}
-                      min={1}
-                      max={24}
-                      className="w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-lg text-sm dark:bg-gray-900 dark:text-gray-100 focus:ring-1 focus:ring-indigo-500 focus:border-indigo-500 disabled:opacity-60"
-                    />
-                  </div>
-                  <div>
-                    <label className="block text-xs font-medium text-gray-600 dark:text-gray-400 mb-1.5">Peak Start</label>
-                    <input
-                      type="number"
-                      value={currentPeakStart}
-                      onChange={(e) => setPeakStartDraft(Math.max(0, Math.min(23, Number(e.target.value))))}
-                      disabled={!canEditCampaign}
-                      min={0}
-                      max={23}
-                      className="w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-lg text-sm dark:bg-gray-900 dark:text-gray-100 focus:ring-1 focus:ring-indigo-500 focus:border-indigo-500 disabled:opacity-60"
-                    />
-                  </div>
-                  <div>
-                    <label className="block text-xs font-medium text-gray-600 dark:text-gray-400 mb-1.5">Peak End</label>
-                    <input
-                      type="number"
-                      value={currentPeakEnd}
-                      onChange={(e) => setPeakEndDraft(Math.max(currentPeakStart, Math.min(24, Number(e.target.value))))}
-                      disabled={!canEditCampaign}
-                      min={0}
-                      max={24}
-                      className="w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-lg text-sm dark:bg-gray-900 dark:text-gray-100 focus:ring-1 focus:ring-indigo-500 focus:border-indigo-500 disabled:opacity-60"
-                    />
-                  </div>
-                  <div>
-                    <label className="block text-xs font-medium text-gray-600 dark:text-gray-400 mb-1.5">Lunch Start</label>
-                    <input
-                      type="number"
-                      value={currentLunchStart}
-                      onChange={(e) => setLunchStartDraft(Math.max(0, Math.min(23, Number(e.target.value))))}
-                      disabled={!canEditCampaign}
-                      min={0}
-                      max={23}
-                      className="w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-lg text-sm dark:bg-gray-900 dark:text-gray-100 focus:ring-1 focus:ring-indigo-500 focus:border-indigo-500 disabled:opacity-60"
-                    />
-                  </div>
-                  <div>
-                    <label className="block text-xs font-medium text-gray-600 dark:text-gray-400 mb-1.5">Lunch End</label>
-                    <input
-                      type="number"
-                      value={currentLunchEnd}
-                      onChange={(e) => setLunchEndDraft(Math.max(currentLunchStart, Math.min(24, Number(e.target.value))))}
-                      disabled={!canEditCampaign}
-                      min={0}
-                      max={24}
-                      className="w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-lg text-sm dark:bg-gray-900 dark:text-gray-100 focus:ring-1 focus:ring-indigo-500 focus:border-indigo-500 disabled:opacity-60"
-                    />
-                  </div>
-                  <div>
-                    <label className="block text-xs font-medium text-gray-600 dark:text-gray-400 mb-1.5">Weekend Factor</label>
-                    <input
-                      type="number"
-                      value={currentWeekendFactor}
-                      onChange={(e) => setWeekendFactorDraft(Math.max(0, Number(e.target.value)))}
-                      disabled={!canEditCampaign}
-                      min={0}
-                      max={2}
-                      step={0.1}
-                      className="w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-lg text-sm dark:bg-gray-900 dark:text-gray-100 focus:ring-1 focus:ring-indigo-500 focus:border-indigo-500 disabled:opacity-60"
-                    />
-                  </div>
-                </div>
-                <p className="text-[11px] text-gray-400">
-                  Weekend factor below 1 slows down weekend sending. Set to 0 to block weekends completely.
-                </p>
-              </div>
-            )}
           </div>
         )}
       </section>
@@ -1401,14 +1735,17 @@ export default function BlastCampaignDetailPage() {
       {/* ------------------------------------------------------------------ */}
       {/* Message Preview */}
       {/* ------------------------------------------------------------------ */}
-      <section className="bg-white dark:bg-gray-800 rounded-xl border border-gray-200 dark:border-gray-700 shadow-sm overflow-hidden">
+      <section className="overflow-hidden rounded-2xl border border-gray-200 bg-white shadow-sm dark:border-gray-700 dark:bg-gray-800">
         <button
           onClick={() => setShowPreview(!showPreview)}
           className="flex items-center justify-between w-full px-4 py-3 text-left hover:bg-gray-50 dark:hover:bg-gray-800/50 transition-colors"
         >
           <div className="flex items-center gap-2">
             <Eye className="w-4 h-4 text-indigo-500" />
-            <h2 className="text-sm font-semibold text-gray-800 dark:text-gray-200">Message Preview</h2>
+            <div>
+              <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-gray-400 dark:text-gray-500">Step 4</p>
+              <h2 className="text-sm font-semibold text-gray-800 dark:text-gray-200">Review Messages</h2>
+            </div>
           </div>
           {showPreview ? (
             <ChevronUp className="w-4 h-4 text-gray-400" />
@@ -1462,6 +1799,74 @@ export default function BlastCampaignDetailPage() {
           onClose={() => setShowContactModal(false)}
         />
       )}
+
+      <div className="sticky bottom-4 z-20">
+        <div className="rounded-2xl border border-gray-200 bg-white/95 px-4 py-3 shadow-xl shadow-gray-900/5 backdrop-blur dark:border-gray-700 dark:bg-gray-900/95">
+          <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
+            <div>
+              <p className="text-sm font-semibold text-gray-900 dark:text-gray-100">
+                {campaignReady ? 'Campaign siap dijalankan' : 'Lengkapi setup campaign'}
+              </p>
+              <p className="mt-1 text-xs text-gray-500 dark:text-gray-400">{readinessMessage}</p>
+            </div>
+            <div className="flex flex-wrap items-center gap-2">
+              {canEditCampaign && (
+                <button
+                  onClick={() => setShowContactModal(true)}
+                  className="inline-flex items-center gap-1.5 rounded-xl border border-gray-200 px-3 py-2 text-sm font-medium text-gray-600 transition-colors hover:bg-gray-50 dark:border-gray-700 dark:text-gray-300 dark:hover:bg-gray-800"
+                >
+                  <Plus className="h-4 w-4" />
+                  Recipient
+                </button>
+              )}
+
+              {hasUnsavedChanges && canEditCampaign && (
+                <button
+                  onClick={handleSave}
+                  disabled={updateMutation.isPending}
+                  className="inline-flex items-center gap-1.5 rounded-xl bg-indigo-600 px-3 py-2 text-sm font-medium text-white transition-colors hover:bg-indigo-700 disabled:opacity-50"
+                >
+                  {updateMutation.isPending ? <Loader2 className="h-4 w-4 animate-spin" /> : <Save className="h-4 w-4" />}
+                  Simpan Draft
+                </button>
+              )}
+
+              {(isDraft || isPaused) && (
+                <button
+                  onClick={handleStartOrResume}
+                  disabled={!campaignReady || startMutation.isPending || updateMutation.isPending}
+                  className="inline-flex items-center gap-1.5 rounded-xl bg-emerald-600 px-4 py-2 text-sm font-semibold text-white transition-colors hover:bg-emerald-700 disabled:cursor-not-allowed disabled:opacity-50"
+                >
+                  {startMutation.isPending ? <Loader2 className="h-4 w-4 animate-spin" /> : <Play className="h-4 w-4" />}
+                  {isPaused ? 'Resume Blast' : 'Mulai Blast'}
+                </button>
+              )}
+
+              {isSending && (
+                <button
+                  onClick={() => pauseMutation.mutate(campaignId)}
+                  disabled={pauseMutation.isPending}
+                  className="inline-flex items-center gap-1.5 rounded-xl bg-amber-500 px-4 py-2 text-sm font-semibold text-white transition-colors hover:bg-amber-600 disabled:opacity-50"
+                >
+                  {pauseMutation.isPending ? <Loader2 className="h-4 w-4 animate-spin" /> : <Pause className="h-4 w-4" />}
+                  Pause
+                </button>
+              )}
+
+              {(isSending || isPaused) && (
+                <button
+                  onClick={() => cancelMutation.mutate(campaignId)}
+                  disabled={cancelMutation.isPending}
+                  className="inline-flex items-center gap-1.5 rounded-xl bg-red-500 px-4 py-2 text-sm font-semibold text-white transition-colors hover:bg-red-600 disabled:opacity-50"
+                >
+                  <XCircle className="h-4 w-4" />
+                  Cancel
+                </button>
+              )}
+            </div>
+          </div>
+        </div>
+      </div>
     </div>
   )
 }

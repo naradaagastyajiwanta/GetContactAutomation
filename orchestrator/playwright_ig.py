@@ -1481,6 +1481,23 @@ def _verify_session_impl(username: str, password: str) -> dict:
                 if fb_resp and not fb_resp.get("__error"):
                     fb_user = fb_resp.get("data", {}).get("user", {})
                     verified_username = fb_user.get("username", username)
+                    verified_user_id = fb_user.get("id")
+
+                    # Some server runtimes cannot use ``current_user`` reliably,
+                    # but the authenticated following API still works. Probe it
+                    # before downgrading the session to profile-only access.
+                    if verified_user_id:
+                        following_probe = browser.ig_api_fetch(
+                            f"https://www.instagram.com/api/v1/friendships/{verified_user_id}/following/?count=1"
+                        )
+                        if following_probe and not following_probe.get("__error"):
+                            log.info(
+                                "[VerifySession] current_user soft-failed for @%s, but following API succeeded; treating session as connected.",
+                                username,
+                            )
+                            return {"status": "connected", "reason": None,
+                                    "username_verified": verified_username, "cookies": cookies}
+
                     return {"status": "auth_limited", "reason": "profile_only_access",
                             "username_verified": verified_username, "cookies": cookies}
 
