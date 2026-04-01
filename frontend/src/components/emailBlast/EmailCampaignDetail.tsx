@@ -1343,14 +1343,6 @@ export function EmailCampaignDetail({ campaignId, canManage, onClose }: Props) {
 
   const campaign = data?.campaign
 
-  // Auto-refresh when running
-  useEffect(() => {
-    if (campaign?.status === 'running' && campaignId) {
-      const interval = setInterval(() => refetch(), 2000)
-      return () => clearInterval(interval)
-    }
-  }, [campaign?.status, campaignId])
-
   const handleSave = useCallback(
     async (saveData: { name: string; subject: string; template_message: string; delay_between_ms: number }) => {
       if (!campaignId) return

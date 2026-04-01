@@ -86,14 +86,14 @@ services:
       - 1.1.1.1
       - 8.8.8.8
     ports:
-      - "8010:8000"
+      - "8000:8000"
     volumes:
       - ./data:/app/data
     env_file:
       - .env.production
     environment:
       - WA_SERVICE_URL=http://whatsapp:3100
-      - WEBHOOK_URL=http://orchestrator:8010/webhook/incoming
+      - WEBHOOK_URL=http://orchestrator:8000/webhook/incoming
       - DATABASE_PATH=data/getcontact.db
       - DDG_PROXY=socks5h://warp:1080
       - DDGS_PROXY=socks5h://warp:1080

@@ -123,6 +123,28 @@ async def _broadcast_blast_progress(campaign_id: int, sent_count: int, failed_co
     )
 
 
+async def broadcast_campaign_update(campaign_id: int) -> None:
+    """Broadcast the latest campaign snapshot for terminal state transitions."""
+    campaign = await get_campaign_status(campaign_id)
+    if campaign:
+        await ws_manager.broadcast_type("email_campaign_updated", campaign=campaign)
+
+
+async def broadcast_recipient_update(campaign_id: int, recipient: dict) -> None:
+    """Broadcast a single recipient state change."""
+    await ws_manager.broadcast_type("email_recipient_updated", campaign_id=campaign_id, recipient=recipient)
+
+
+async def broadcast_outbox_logged(email: dict) -> None:
+    """Broadcast a newly recorded outbox entry."""
+    await ws_manager.broadcast_type("email_outbox_logged", email=email)
+
+
+async def broadcast_inbox_received(email: dict, campaign_ids: list[int]) -> None:
+    """Broadcast a newly cached inbound email."""
+    await ws_manager.broadcast_type("email_inbox_received", email=email, campaign_ids=campaign_ids)
+
+
 def _get_socks_config() -> dict:
     """Get SOCKS5 proxy configuration from environment/config."""
     return {
@@ -1013,8 +1035,8 @@ async def _run_email_blast_campaign_inner(campaign_id: int,
             except:
                 pass
 
-        # Get pending recipients
-        query = """SELECT id, email, university_name FROM email_blast_recipients
+        query = """SELECT id, university_id, email, university_name, created_at
+                   FROM email_blast_recipients
                    WHERE campaign_id = ? AND status = 'pending'
                    ORDER BY id"""
         if max_recipients:
@@ -1030,6 +1052,7 @@ async def _run_email_blast_campaign_inner(campaign_id: int,
                 (datetime.now().isoformat(), campaign_id)
             )
             await db.commit()
+            await broadcast_campaign_update(campaign_id)
             return
 
         log.info(f"[EmailBlast] Starting campaign {campaign_id} with {len(recipients)} recipients")
@@ -1069,7 +1092,7 @@ Hormat kami,
 Sekretariat Asosiasi AI
 """
 
-    for recipient_id, email, uni_name in recipients:
+    for recipient_id, university_id, email, uni_name, recipient_created_at in recipients:
         # Check daily quota before processing
         daily_limit = cfg.get("EMAIL_BLAST_DAILY_LIMIT", 200)
         if daily_limit > 0:
@@ -1083,6 +1106,7 @@ Sekretariat Asosiasi AI
                         (datetime.now().isoformat(), campaign_id)
                     )
                     await db.commit()
+                await broadcast_campaign_update(campaign_id)
                 await ws_manager.broadcast_type(
                     "quota_exhausted",
                     campaign_id=campaign_id,
@@ -1110,6 +1134,23 @@ Sekretariat Asosiasi AI
                         (campaign_id,)
                     )
                     await db.commit()
+                await broadcast_recipient_update(
+                    campaign_id,
+                    {
+                        "id": recipient_id,
+                        "campaign_id": campaign_id,
+                        "university_id": university_id,
+                        "email": email,
+                        "university_name": uni_name,
+                        "rendered_subject": None,
+                        "rendered_message": None,
+                        "status": "invalid",
+                        "error_message": f"invalid: {reason}",
+                        "sent_at": None,
+                        "created_at": recipient_created_at,
+                        "letter_number": None,
+                    },
+                )
                 invalid += 1
                 await _broadcast_blast_progress(campaign_id, sent, failed, invalid, len(recipients))
                 continue  # Skip SMTP send for this recipient
@@ -1253,14 +1294,17 @@ Sekretariat Asosiasi AI
                 pass
 
         async with get_db() as db:
+            event_time = datetime.now().isoformat()
+            recipient_event = None
+            outbox_event = None
             if success:
                 await db.execute(
                     """UPDATE email_blast_recipients
                        SET status = 'sent', sent_at = ?, rendered_subject = ?, rendered_message = ?, letter_number = ? WHERE id = ?""",
-                    (datetime.now().isoformat(), rendered_subject, rendered_msg, letter_number, recipient_id)
+                    (event_time, rendered_subject, rendered_msg, letter_number, recipient_id)
                 )
                 # Log to outbox
-                await db.execute(
+                outbox_cursor = await db.execute(
                     """INSERT INTO email_outbox
                        (campaign_id, source, email, university_name, rendered_subject, rendered_message, status, error_message)
                        VALUES (?, 'campaign', ?, ?, ?, ?, 'sent', NULL)""",
@@ -1273,6 +1317,33 @@ Sekretariat Asosiasi AI
                     "UPDATE email_blast_campaigns SET sent_count = sent_count + 1 WHERE id = ?",
                     (campaign_id,)
                 )
+                recipient_event = {
+                    "id": recipient_id,
+                    "campaign_id": campaign_id,
+                    "university_id": university_id,
+                    "email": email,
+                    "university_name": uni_name,
+                    "rendered_subject": rendered_subject,
+                    "rendered_message": rendered_msg,
+                    "status": "sent",
+                    "error_message": None,
+                    "sent_at": event_time,
+                    "created_at": recipient_created_at,
+                    "letter_number": letter_number,
+                }
+                outbox_event = {
+                    "id": outbox_cursor.lastrowid,
+                    "campaign_id": campaign_id,
+                    "email": email,
+                    "university_name": uni_name,
+                    "subject": rendered_subject,
+                    "body": rendered_msg,
+                    "status": "sent",
+                    "sent_at": event_time,
+                    "error_message": None,
+                    "campaign_name": name,
+                    "source": "campaign",
+                }
                 sent += 1
             else:
                 await db.execute(
@@ -1281,7 +1352,7 @@ Sekretariat Asosiasi AI
                     (error, recipient_id)
                 )
                 # Log to outbox
-                await db.execute(
+                outbox_cursor = await db.execute(
                     """INSERT INTO email_outbox
                        (campaign_id, source, email, university_name, rendered_subject, status, error_message)
                        VALUES (?, 'campaign', ?, ?, ?, 'failed', ?)""",
@@ -1292,9 +1363,41 @@ Sekretariat Asosiasi AI
                     "UPDATE email_blast_campaigns SET failed_count = failed_count + 1 WHERE id = ?",
                     (campaign_id,)
                 )
+                recipient_event = {
+                    "id": recipient_id,
+                    "campaign_id": campaign_id,
+                    "university_id": university_id,
+                    "email": email,
+                    "university_name": uni_name,
+                    "rendered_subject": rendered_subject,
+                    "rendered_message": rendered_msg,
+                    "status": "failed",
+                    "error_message": error,
+                    "sent_at": None,
+                    "created_at": recipient_created_at,
+                    "letter_number": letter_number,
+                }
+                outbox_event = {
+                    "id": outbox_cursor.lastrowid,
+                    "campaign_id": campaign_id,
+                    "email": email,
+                    "university_name": uni_name,
+                    "subject": rendered_subject,
+                    "body": None,
+                    "status": "failed",
+                    "sent_at": event_time,
+                    "error_message": error,
+                    "campaign_name": name,
+                    "source": "campaign",
+                }
                 failed += 1
 
             await db.commit()
+
+        if recipient_event:
+            await broadcast_recipient_update(campaign_id, recipient_event)
+        if outbox_event:
+            await broadcast_outbox_logged(outbox_event)
 
         # Broadcast progress OUTSIDE the DB transaction (no lock contention)
         if success or error:
@@ -1317,6 +1420,7 @@ Sekretariat Asosiasi AI
 
     # Always sync counters from actual recipient state — prevents drift from concurrent increments
     await sync_campaign_counters(campaign_id)
+    await broadcast_campaign_update(campaign_id)
 
 
 async def retry_failed_email_blast(campaign_id: int, max_recipients: int = None):
@@ -1359,7 +1463,7 @@ async def _retry_failed_email_blast_inner(campaign_id: int, max_recipients: int 
                 pass
 
         # Only process 'pending' recipients (which are the retried ones)
-        query = """SELECT id, email, university_name, letter_number FROM email_blast_recipients
+        query = """SELECT id, university_id, email, university_name, letter_number, created_at FROM email_blast_recipients
                    WHERE campaign_id = ? AND status = 'pending'
                    ORDER BY id"""
         if max_recipients:
@@ -1375,6 +1479,7 @@ async def _retry_failed_email_blast_inner(campaign_id: int, max_recipients: int 
                 (datetime.now().isoformat(), campaign_id)
             )
             await db.commit()
+            await broadcast_campaign_update(campaign_id)
             return
 
         log.info(f"[EmailBlast] Retry campaign {campaign_id} with {len(recipients)} failed (now pending) recipients")
@@ -1397,13 +1502,20 @@ async def _retry_failed_email_blast_inner(campaign_id: int, max_recipients: int 
     failed = 0
     invalid = 0
 
-    for recipient_id, email, uni_name, stored_letter_number in recipients:
+    for recipient_id, university_id, email, uni_name, stored_letter_number, recipient_created_at in recipients:
         # Check daily quota before processing
         daily_limit = cfg.get("EMAIL_BLAST_DAILY_LIMIT", 200)
         if daily_limit > 0:
             quota = await get_email_blast_quota_info(daily_limit)
             if quota["is_exhausted"]:
                 log.warning(f"[EmailBlast] Retry — daily limit reached. Stopping retry for campaign {campaign_id}.")
+                async with get_db() as db:
+                    await db.execute(
+                        "UPDATE email_blast_campaigns SET status = 'paused', paused_at = ? WHERE id = ?",
+                        (datetime.now().isoformat(), campaign_id)
+                    )
+                    await db.commit()
+                await broadcast_campaign_update(campaign_id)
                 await ws_manager.broadcast_type(
                     "quota_exhausted",
                     campaign_id=campaign_id,
@@ -1431,6 +1543,23 @@ async def _retry_failed_email_blast_inner(campaign_id: int, max_recipients: int 
                         (campaign_id,)
                     )
                     await db.commit()
+                await broadcast_recipient_update(
+                    campaign_id,
+                    {
+                        "id": recipient_id,
+                        "campaign_id": campaign_id,
+                        "university_id": university_id,
+                        "email": email,
+                        "university_name": uni_name,
+                        "rendered_subject": None,
+                        "rendered_message": None,
+                        "status": "invalid",
+                        "error_message": f"invalid: {reason}",
+                        "sent_at": None,
+                        "created_at": recipient_created_at,
+                        "letter_number": stored_letter_number,
+                    },
+                )
                 invalid += 1
                 await _broadcast_blast_progress(campaign_id, sent, failed, invalid, len(recipients))
                 continue
@@ -1545,13 +1674,16 @@ async def _retry_failed_email_blast_inner(campaign_id: int, max_recipients: int 
                     pass
 
         async with get_db() as db:
+            event_time = datetime.now().isoformat()
+            recipient_event = None
+            outbox_event = None
             if success:
                 await db.execute(
                     """UPDATE email_blast_recipients
                        SET status = 'sent', sent_at = ?, rendered_subject = ?, rendered_message = ?, letter_number = ? WHERE id = ?""",
-                    (datetime.now().isoformat(), rendered_subject, rendered_msg, letter_number, recipient_id)
+                    (event_time, rendered_subject, rendered_msg, letter_number, recipient_id)
                 )
-                await db.execute(
+                outbox_cursor = await db.execute(
                     """INSERT INTO email_outbox
                        (campaign_id, source, email, university_name, rendered_subject, rendered_message, status, error_message)
                        VALUES (?, 'campaign', ?, ?, ?, ?, 'sent', NULL)""",
@@ -1562,6 +1694,33 @@ async def _retry_failed_email_blast_inner(campaign_id: int, max_recipients: int 
                     "UPDATE email_blast_campaigns SET sent_count = sent_count + 1 WHERE id = ?",
                     (campaign_id,)
                 )
+                recipient_event = {
+                    "id": recipient_id,
+                    "campaign_id": campaign_id,
+                    "university_id": university_id,
+                    "email": email,
+                    "university_name": uni_name,
+                    "rendered_subject": rendered_subject,
+                    "rendered_message": rendered_msg,
+                    "status": "sent",
+                    "error_message": None,
+                    "sent_at": event_time,
+                    "created_at": recipient_created_at,
+                    "letter_number": letter_number,
+                }
+                outbox_event = {
+                    "id": outbox_cursor.lastrowid,
+                    "campaign_id": campaign_id,
+                    "email": email,
+                    "university_name": uni_name,
+                    "subject": rendered_subject,
+                    "body": rendered_msg,
+                    "status": "sent",
+                    "sent_at": event_time,
+                    "error_message": None,
+                    "campaign_name": name,
+                    "source": "campaign",
+                }
                 sent += 1
             else:
                 await db.execute(
@@ -1569,7 +1728,7 @@ async def _retry_failed_email_blast_inner(campaign_id: int, max_recipients: int 
                        SET status = 'failed', error_message = ? WHERE id = ?""",
                     (error or "Unknown error", recipient_id)
                 )
-                await db.execute(
+                outbox_cursor = await db.execute(
                     """INSERT INTO email_outbox
                        (campaign_id, source, email, university_name, rendered_subject, status, error_message)
                        VALUES (?, 'campaign', ?, ?, ?, 'failed', ?)""",
@@ -1579,8 +1738,40 @@ async def _retry_failed_email_blast_inner(campaign_id: int, max_recipients: int 
                     "UPDATE email_blast_campaigns SET failed_count = failed_count + 1 WHERE id = ?",
                     (campaign_id,)
                 )
+                recipient_event = {
+                    "id": recipient_id,
+                    "campaign_id": campaign_id,
+                    "university_id": university_id,
+                    "email": email,
+                    "university_name": uni_name,
+                    "rendered_subject": rendered_subject,
+                    "rendered_message": rendered_msg,
+                    "status": "failed",
+                    "error_message": error or "Unknown error",
+                    "sent_at": None,
+                    "created_at": recipient_created_at,
+                    "letter_number": letter_number,
+                }
+                outbox_event = {
+                    "id": outbox_cursor.lastrowid,
+                    "campaign_id": campaign_id,
+                    "email": email,
+                    "university_name": uni_name,
+                    "subject": rendered_subject,
+                    "body": None,
+                    "status": "failed",
+                    "sent_at": event_time,
+                    "error_message": error or "Unknown error",
+                    "campaign_name": name,
+                    "source": "campaign",
+                }
                 failed += 1
             await db.commit()
+
+        if recipient_event:
+            await broadcast_recipient_update(campaign_id, recipient_event)
+        if outbox_event:
+            await broadcast_outbox_logged(outbox_event)
 
         # Broadcast progress OUTSIDE the DB transaction (no lock contention)
         if success or error:
@@ -1590,6 +1781,7 @@ async def _retry_failed_email_blast_inner(campaign_id: int, max_recipients: int 
             await asyncio.sleep(delay_ms / 1000)
 
     log.info(f"[EmailBlast] Retry campaign {campaign_id} done: {sent} sent, {failed} failed")
+    await broadcast_campaign_update(campaign_id)
 
 
 async def get_campaign_status(campaign_id: int) -> dict:
@@ -1695,7 +1887,8 @@ async def pause_campaign(campaign_id: int) -> bool:
             (datetime.now().isoformat(), campaign_id)
         )
         await db.commit()
-        return True
+    await broadcast_campaign_update(campaign_id)
+    return True
 
 
 async def cancel_campaign(campaign_id: int) -> bool:
@@ -1706,7 +1899,8 @@ async def cancel_campaign(campaign_id: int) -> bool:
             (campaign_id,)
         )
         await db.commit()
-        return True
+    await broadcast_campaign_update(campaign_id)
+    return True
 
 
 async def delete_recipient(recipient_id: int, campaign_id: int | None = None) -> bool:
@@ -1853,6 +2047,55 @@ def parse_email_message(msg):
     return result
 
 
+def _extract_email_address(value: str) -> str:
+    """Extract a plain email address from a header field."""
+    if not value:
+        return ''
+
+    match = re.search(r'<([^>]+)>', value)
+    if match:
+        return match.group(1).strip()
+
+    match = re.search(r'[\w\.-]+@[\w\.-]+', value)
+    if match:
+        return match.group(0).strip()
+
+    return value.strip()
+
+
+def _build_inbound_email_entry(uid: int, parsed: dict) -> dict:
+    """Normalize an IMAP message into the inbox-cache payload shape."""
+    from_field = parsed.get('from') or ''
+    return {
+        'id': uid,
+        'message_id': parsed.get('message_id') or '',
+        'in_reply_to': parsed.get('in_reply_to') or '',
+        'from_email': _extract_email_address(from_field),
+        'from_name': re.sub(r'<.+?>', '', from_field).strip(),
+        'to_email': parsed.get('to') or '',
+        'subject': parsed.get('subject') or '',
+        'body': (parsed.get('body_text') or '')[:2000],
+        'date': parsed.get('date') or '',
+        'is_read': True,
+    }
+
+
+async def _lookup_campaign_ids_for_inbound_email(from_email: str) -> list[int]:
+    """Find campaigns whose recipient list contains the sender email."""
+    normalized_email = (from_email or '').strip().lower()
+    if not normalized_email:
+        return []
+
+    async with get_db() as db:
+        cursor = await db.execute(
+            "SELECT DISTINCT campaign_id FROM email_blast_recipients WHERE lower(email) = ?",
+            (normalized_email,),
+        )
+        rows = await cursor.fetchall()
+
+    return [int(row[0]) for row in rows if row[0] is not None]
+
+
 async def fetch_inbox_emails(limit: int = 50, unread_only: bool = False, offset: int = 0) -> tuple[list[dict], int]:
     """
     Fetch emails from INBOX with SQLite caching.
@@ -1952,6 +2195,36 @@ def _maybe_trigger_background_refresh():
         asyncio.create_task(_refresh_inbox_cache_background())
 
 
+async def refresh_inbox_cache_now() -> bool:
+    """Synchronously refresh inbox cache if no other refresh is running."""
+    global _inbox_bg_refresh_running
+    if _inbox_bg_refresh_running:
+        return False
+
+    _inbox_bg_refresh_running = True
+    await _refresh_inbox_cache_background()
+    return True
+
+
+async def watch_inbox_replies_forever() -> None:
+    """Periodically poll IMAP so new replies can be pushed over WebSocket."""
+    startup_delay = max(0, int(cfg.get("EMAIL_BLAST_INBOX_WATCH_STARTUP_DELAY_SECONDS", 15)))
+    poll_interval = max(10, int(cfg.get("EMAIL_BLAST_INBOX_WATCH_INTERVAL_SECONDS", 30)))
+
+    if startup_delay:
+        await asyncio.sleep(startup_delay)
+
+    while True:
+        try:
+            await refresh_inbox_cache_now()
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            log.error("[InboxWatch] Polling error: %s", exc, exc_info=True)
+
+        await asyncio.sleep(poll_interval)
+
+
 async def _blocking_imap_fetch(limit: int, offset: int, unread_only: bool) -> tuple[list[dict], int]:
     """Fetch emails from IMAP synchronously (blocking). Used when cache is empty."""
     conn = get_imap_connection()
@@ -2007,27 +2280,7 @@ async def _blocking_imap_fetch(limit: int, offset: int, unread_only: bool) -> tu
 
                 msg = email.message_from_bytes(msg_data[0][1])
                 parsed = parse_email_message(msg)
-
-                from_field = parsed['from']
-                from_match = re.search(r'<([^>]+)>', from_field)
-                from_email = from_match.group(1) if from_match else ''
-                if not from_email:
-                    email_match = re.search(r'[\w\.-]+@[\w\.-]+', from_field)
-                    from_email = email_match.group(0) if email_match else from_field
-
-                entry = {
-                    'id': int(email_id),
-                    'message_id': parsed['message_id'],
-                    'in_reply_to': parsed['in_reply_to'],
-                    'from_email': from_email,
-                    'from_name': re.sub(r'<.+?>', '', parsed['from']).strip(),
-                    'to_email': parsed['to'],
-                    'subject': parsed['subject'],
-                    'body': parsed['body_text'][:2000],
-                    'date': parsed['date'],
-                    'is_read': True,
-                }
-                results.append(entry)
+                results.append(_build_inbound_email_entry(int(email_id), parsed))
             except Exception as e:
                 log.error(f"Error parsing email {email_id}: {e}")
                 continue
@@ -2065,6 +2318,7 @@ async def _blocking_imap_fetch(limit: int, offset: int, unread_only: bool) -> tu
 async def _refresh_inbox_cache_background():
     """Background task: fetch new emails and update cache without blocking."""
     global _inbox_bg_refresh_running
+    conn = None
     try:
         log.info("[InboxCache] Background refresh starting")
         conn = get_imap_connection()
@@ -2103,6 +2357,8 @@ async def _refresh_inbox_cache_background():
 
         log.info(f"[InboxCache] Background refresh: fetching {len(new_ids)} new emails")
 
+        new_entries: list[dict] = []
+
         for email_id in new_ids:
             try:
                 status, msg_data = conn.fetch(email_id, '(RFC822)')
@@ -2111,36 +2367,44 @@ async def _refresh_inbox_cache_background():
 
                 msg = email.message_from_bytes(msg_data[0][1])
                 parsed = parse_email_message(msg)
-
-                from_field = parsed['from']
-                from_match = re.search(r'<([^>]+)>', from_field)
-                from_email = from_match.group(1) if from_match else ''
-                if not from_email:
-                    email_match = re.search(r'[\w\.-]+@[\w\.-]+', from_field)
-                    from_email = email_match.group(0) if email_match else from_field
-
-                async with get_db() as db:
-                    await db.execute(
-                        """INSERT OR REPLACE INTO email_inbox_cache
-                           (uid, message_id, in_reply_to, from_email, from_name, to_email,
-                            subject, body, date, is_read, fetched_at)
-                           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))""",
-                        (int(email_id), parsed['message_id'], parsed['in_reply_to'],
-                         from_email, re.sub(r'<.+?>', '', parsed['from']).strip(),
-                         parsed['to'], parsed['subject'], parsed['body_text'][:2000],
-                         parsed['date'], 1)
-                    )
+                new_entries.append(_build_inbound_email_entry(int(email_id), parsed))
             except Exception:
                 continue
 
+        if not new_entries:
+            log.info("[InboxCache] Background refresh: no parsable new emails")
+            return
+
         async with get_db() as db:
+            for entry in new_entries:
+                await db.execute(
+                    """INSERT OR REPLACE INTO email_inbox_cache
+                       (uid, message_id, in_reply_to, from_email, from_name, to_email,
+                        subject, body, date, is_read, fetched_at)
+                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))""",
+                    (entry['id'], entry['message_id'], entry['in_reply_to'],
+                     entry['from_email'], entry['from_name'], entry['to_email'],
+                     entry['subject'], entry['body'], entry['date'], entry['is_read'])
+                )
             await db.commit()
-        conn.close()
-        conn.logout()
+
+        for entry in reversed(new_entries):
+            campaign_ids = await _lookup_campaign_ids_for_inbound_email(entry['from_email'])
+            await broadcast_inbox_received(entry, campaign_ids)
+
         log.info("[InboxCache] Background refresh complete")
     except Exception as e:
         log.error(f"[InboxCache] Background refresh error: {e}")
     finally:
+        if conn:
+            try:
+                conn.close()
+            except Exception:
+                pass
+            try:
+                conn.logout()
+            except Exception:
+                pass
         _inbox_bg_refresh_running = False
 
 
@@ -2771,13 +3035,28 @@ async def send_test_email(
             log.info(f"[EmailBlast] Test email sent to {to_email}")
             # Log to outbox
             async with get_db() as db:
-                await db.execute(
+                outbox_cursor = await db.execute(
                     """INSERT INTO email_outbox
                        (campaign_id, source, email, rendered_subject, rendered_message, status, error_message)
                        VALUES (?, 'test', ?, ?, ?, 'sent', NULL)""",
                     (campaign_id, to_email, rendered_subject, rendered_msg)
                 )
                 await db.commit()
+            await broadcast_outbox_logged(
+                {
+                    "id": outbox_cursor.lastrowid,
+                    "campaign_id": campaign_id,
+                    "email": to_email,
+                    "university_name": None,
+                    "subject": rendered_subject,
+                    "body": rendered_msg,
+                    "status": "sent",
+                    "sent_at": datetime.now().isoformat(),
+                    "error_message": None,
+                    "campaign_name": db_name,
+                    "source": "test",
+                }
+            )
             # Cleanup
             if final_attachment and os.path.exists(final_attachment):
                 try:
@@ -2788,13 +3067,28 @@ async def send_test_email(
         else:
             # Log failure
             async with get_db() as db:
-                await db.execute(
+                outbox_cursor = await db.execute(
                     """INSERT INTO email_outbox
                        (campaign_id, source, email, rendered_subject, status, error_message)
                        VALUES (?, 'test', ?, ?, 'failed', ?)""",
                     (campaign_id, to_email, rendered_subject or '', error)
                 )
                 await db.commit()
+            await broadcast_outbox_logged(
+                {
+                    "id": outbox_cursor.lastrowid,
+                    "campaign_id": campaign_id,
+                    "email": to_email,
+                    "university_name": None,
+                    "subject": rendered_subject or '',
+                    "body": None,
+                    "status": "failed",
+                    "sent_at": datetime.now().isoformat(),
+                    "error_message": error,
+                    "campaign_name": db_name,
+                    "source": "test",
+                }
+            )
             return False, f"Failed to send: {error}"
     finally:
         smtp_client.disconnect()

@@ -30,5 +30,5 @@ COPY scripts/ scripts/
 # Dirs for volume mounts
 RUN mkdir -p data data/audiensi_docs data/templates data/ig_sessions data/pw_sessions
 
-EXPOSE 8010
-CMD ["uvicorn", "orchestrator.main:app", "--host", "0.0.0.0", "--port", "8010"]
+EXPOSE 8000
+CMD ["uvicorn", "orchestrator.main:app", "--host", "0.0.0.0", "--port", "8000"]

@@ -3,6 +3,7 @@ import { useQueryClient } from '@tanstack/react-query'
 import { queryKeys } from '../lib/queryKeys'
 import toast from 'react-hot-toast'
 import { useNotifications } from './useNotifications'
+import type { EmailBlastRecipient, InboundEmail, SentEmail } from '../api/emailBlast'
 export type { Notification } from './useNotifications'
 
 type WSEvent =
@@ -16,6 +17,20 @@ type WSEvent =
   | { type: 'blast_completed'; campaign_id: number; failed: Array<{ phone: string; name: string; university: string; error: string }> }
   | { type: 'blast_paused'; campaign_id: number; reason?: string; retry_after_ms?: number; auto_resume_at?: string | null; phone?: string }
   | { type: 'blast_resumed'; campaign_id: number; source?: string }
+  | {
+      type: 'email_campaign_updated'
+      campaign: {
+        id: number
+        status: string
+        sent_count: number
+        failed_count: number
+        invalid_count: number
+        total_recipients: number
+      } & Record<string, unknown>
+    }
+  | { type: 'email_recipient_updated'; campaign_id: number; recipient: EmailBlastRecipient & { letter_number?: string | null } }
+  | { type: 'email_outbox_logged'; email: SentEmail & { campaign_id?: number | null } }
+  | { type: 'email_inbox_received'; email: InboundEmail; campaign_ids: number[] }
   | { type: 'email_quota_updated'; sent_today: number; daily_limit: number; remaining: number; is_exhausted: boolean; campaign_id: number }
   | { type: 'quota_exhausted'; campaign_id: number; remaining: number; daily_limit: number; pending_count: number }
   | { type: 'log_line'; ts: string; level: string; text: string }
@@ -50,6 +65,259 @@ function publishConnectionState(connected: boolean) {
   _connectionSubscribers.forEach((callback) => callback(connected))
 }
 
+function upsertById<T extends { id: number }>(items: T[], item: T, prepend: boolean = false): T[] {
+  const index = items.findIndex((entry) => entry.id === item.id)
+  if (index === -1) {
+    return prepend ? [item, ...items] : [...items, item]
+  }
+
+  const next = [...items]
+  next[index] = { ...next[index], ...item }
+  return next
+}
+
+function updateEmailCampaignListCaches(
+  qc: ReturnType<typeof useQueryClient>,
+  campaign: { id: number; status: string } & Record<string, unknown>,
+) {
+  const queries = qc.getQueryCache().findAll({ queryKey: ['email-blast-campaigns'] })
+
+  for (const query of queries) {
+    const [, statusFilter] = query.queryKey as [string, string?]
+    qc.setQueryData(
+      query.queryKey,
+      (old: { success: boolean; campaigns: Array<Record<string, unknown> & { id: number; status: string }> } | undefined) => {
+        if (!old) {
+          return old
+        }
+
+        const matchesFilter = !statusFilter || statusFilter === campaign.status
+        const existing = old.campaigns.find((entry) => entry.id === campaign.id)
+
+        if (!existing && !matchesFilter) {
+          return old
+        }
+
+        let campaigns = old.campaigns
+        if (existing) {
+          campaigns = campaigns
+            .map((entry) => (entry.id === campaign.id ? { ...entry, ...campaign } : entry))
+            .filter((entry) => !statusFilter || entry.status === statusFilter)
+        } else if (matchesFilter && 'created_at' in campaign) {
+          campaigns = [{ ...campaign }, ...campaigns]
+        }
+
+        return { ...old, campaigns }
+      },
+    )
+  }
+}
+
+function updateEmailRecipientCaches(
+  qc: ReturnType<typeof useQueryClient>,
+  campaignId: number,
+  recipient: EmailBlastRecipient,
+) {
+  const queries = qc.getQueryCache().findAll({ queryKey: ['email-blast-recipients', campaignId] })
+
+  for (const query of queries) {
+    const [, , statusFilter] = query.queryKey as [string, number, string?]
+    qc.setQueryData(
+      query.queryKey,
+      (old: { success: boolean; recipients: EmailBlastRecipient[] } | undefined) => {
+        if (!old) {
+          return old
+        }
+
+        const matchesFilter = !statusFilter || statusFilter === recipient.status
+        const exists = old.recipients.some((entry) => entry.id === recipient.id)
+
+        let recipients = old.recipients
+        if (matchesFilter) {
+          recipients = upsertById(recipients, recipient)
+        } else if (exists) {
+          recipients = recipients.filter((entry) => entry.id !== recipient.id)
+        }
+
+        return { ...old, recipients }
+      },
+    )
+  }
+}
+
+function updateCampaignSentCaches(
+  qc: ReturnType<typeof useQueryClient>,
+  campaignId: number,
+  email: SentEmail,
+) {
+  const queries = qc.getQueryCache().findAll({ queryKey: ['email-blast-sent-emails', campaignId] })
+
+  for (const query of queries) {
+    const [, , statusFilter] = query.queryKey as [string, number, string?]
+    qc.setQueryData(
+      query.queryKey,
+      (old: { success: boolean; emails: SentEmail[]; total: number } | undefined) => {
+        if (!old) {
+          return old
+        }
+
+        const matchesFilter = !statusFilter || statusFilter === email.status
+        const exists = old.emails.some((entry) => entry.id === email.id)
+
+        let emails = old.emails
+        let total = old.total
+
+        if (matchesFilter) {
+          emails = upsertById(emails, email, true)
+          if (!exists) {
+            total += 1
+          }
+        } else if (exists) {
+          emails = emails.filter((entry) => entry.id !== email.id)
+          total = Math.max(0, total - 1)
+        }
+
+        return { ...old, emails, total }
+      },
+    )
+  }
+}
+
+function updateAllSentInfiniteCache(
+  qc: ReturnType<typeof useQueryClient>,
+  email: SentEmail,
+) {
+  qc.setQueryData(
+    ['email-blast-all-sent-paginated'],
+    (old:
+      | {
+          pages: Array<{
+            success: boolean
+            emails: SentEmail[]
+            total: number
+            offset: number
+            limit: number
+          }>
+          pageParams: unknown[]
+        }
+      | undefined) => {
+      if (!old || old.pages.length === 0) {
+        return old
+      }
+
+      const exists = old.pages.some((page) => page.emails.some((entry) => entry.id === email.id))
+      const [firstPage, ...restPages] = old.pages
+
+      return {
+        ...old,
+        pages: [
+          {
+            ...firstPage,
+            emails: upsertById(firstPage.emails, email, true).slice(0, firstPage.limit),
+            total: exists ? firstPage.total : firstPage.total + 1,
+          },
+          ...restPages,
+        ],
+      }
+    },
+  )
+}
+
+function updateCampaignInboxCaches(
+  qc: ReturnType<typeof useQueryClient>,
+  campaignIds: number[],
+  email: InboundEmail,
+) {
+  for (const campaignId of campaignIds) {
+    const queries = qc.getQueryCache().findAll({ queryKey: ['email-blast-inbox', campaignId] })
+
+    for (const query of queries) {
+      const [, , limit] = query.queryKey as [string, number, number?]
+      qc.setQueryData(
+        query.queryKey,
+        (old: { success: boolean; emails: InboundEmail[]; total: number } | undefined) => {
+          if (!old) {
+            return old
+          }
+
+          const exists = old.emails.some((entry) => entry.id === email.id)
+          const nextEmails = upsertById(old.emails, email, true)
+
+          return {
+            ...old,
+            emails: typeof limit === 'number' ? nextEmails.slice(0, limit) : nextEmails,
+            total: exists ? old.total : old.total + 1,
+          }
+        },
+      )
+    }
+  }
+}
+
+function updateAllInboxCaches(
+  qc: ReturnType<typeof useQueryClient>,
+  email: InboundEmail,
+) {
+  const listQueries = qc.getQueryCache().findAll({ queryKey: ['email-blast-all-inbox'] })
+
+  for (const query of listQueries) {
+    const [, limit] = query.queryKey as [string, number?]
+    qc.setQueryData(
+      query.queryKey,
+      (old:
+        | { success: boolean; emails: InboundEmail[]; total: number; offset: number; limit: number }
+        | undefined) => {
+        if (!old) {
+          return old
+        }
+
+        const exists = old.emails.some((entry) => entry.id === email.id)
+        const nextEmails = upsertById(old.emails, email, true)
+
+        return {
+          ...old,
+          emails: typeof limit === 'number' ? nextEmails.slice(0, limit) : nextEmails,
+          total: exists ? old.total : old.total + 1,
+        }
+      },
+    )
+  }
+
+  qc.setQueryData(
+    ['email-blast-all-inbox-paginated'],
+    (old:
+      | {
+          pages: Array<{
+            success: boolean
+            emails: InboundEmail[]
+            total: number
+            offset: number
+            limit: number
+          }>
+          pageParams: unknown[]
+        }
+      | undefined) => {
+      if (!old || old.pages.length === 0) {
+        return old
+      }
+
+      const exists = old.pages.some((page) => page.emails.some((entry) => entry.id === email.id))
+      const [firstPage, ...restPages] = old.pages
+
+      return {
+        ...old,
+        pages: [
+          {
+            ...firstPage,
+            emails: upsertById(firstPage.emails, email, true).slice(0, firstPage.limit),
+            total: exists ? firstPage.total : firstPage.total + 1,
+          },
+          ...restPages,
+        ],
+      }
+    },
+  )
+}
 function handleEventNotifications(data: WSEvent, add: ReturnType<typeof useNotifications>['add']) {
   switch (data.type) {
     case 'agent_completed': {
@@ -165,9 +433,35 @@ function handleEventQuery(data: WSEvent, qc: ReturnType<typeof useQueryClient>) 
           }
         }
       )
-      // Also refresh the campaigns list and quota
-      qc.invalidateQueries({ queryKey: ['email-blast-campaigns'] })
-      qc.invalidateQueries({ queryKey: ['email-blast-quota'] })
+      updateEmailCampaignListCaches(qc, {
+        id: data.campaign_id,
+        sent_count: data.sent_count,
+        failed_count: data.failed_count,
+        invalid_count: data.invalid_count,
+        status: data.status,
+      })
+      break
+    case 'email_campaign_updated':
+      qc.setQueryData(['email-blast-campaign', data.campaign.id], {
+        success: true,
+        campaign: data.campaign,
+      })
+      updateEmailCampaignListCaches(qc, data.campaign)
+      break
+    case 'email_recipient_updated':
+      updateEmailRecipientCaches(qc, data.campaign_id, data.recipient)
+      break
+    case 'email_outbox_logged':
+      updateAllSentInfiniteCache(qc, data.email)
+      if (data.email.campaign_id && data.email.status === 'sent') {
+        updateCampaignSentCaches(qc, data.email.campaign_id, data.email)
+      }
+      break
+    case 'email_inbox_received':
+      updateAllInboxCaches(qc, data.email)
+      if (data.campaign_ids.length > 0) {
+        updateCampaignInboxCaches(qc, data.campaign_ids, data.email)
+      }
       break
     case 'blast_completed': {
       const failedCount = data.failed?.length || 0
@@ -200,6 +494,9 @@ function handleEventQuery(data: WSEvent, qc: ReturnType<typeof useQueryClient>) 
         remaining: data.remaining,
         is_exhausted: data.is_exhausted,
       }))
+      break
+    case 'quota_exhausted':
+      qc.invalidateQueries({ queryKey: ['email-blast-campaign', data.campaign_id] })
       break
   }
 }

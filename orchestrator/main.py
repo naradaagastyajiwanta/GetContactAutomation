@@ -277,6 +277,9 @@ async def lifespan(app: FastAPI):
     # Start periodic IG session health checker (every 5 min)
     ig_health_task = asyncio.create_task(_periodic_ig_health_check())
 
+    # Start inbox reply watcher so IMAP replies are pushed over WebSocket
+    inbox_watch_task = asyncio.create_task(email_blast.watch_inbox_replies_forever())
+
     # Start scheduler
     setup_scheduler()
     log.info("Orchestrator started on port 8000")
@@ -284,6 +287,7 @@ async def lifespan(app: FastAPI):
     yield
 
     # Cancel background tasks
+    inbox_watch_task.cancel()
     ig_health_task.cancel()
     worker_task.cancel()
 
@@ -4738,6 +4742,8 @@ async def start_email_campaign(campaign_id: int, payload: EmailBlastStartRequest
         )
         await db.commit()
 
+    await email_blast.broadcast_campaign_update(campaign_id)
+
     # Run async
     asyncio.create_task(
         email_blast.run_email_blast_campaign(
@@ -4776,7 +4782,10 @@ async def retry_failed_email_campaign(campaign_id: int, payload: EmailBlastStart
     async with get_db() as db:
         await db.execute(
             """UPDATE email_blast_campaigns
-               SET started_at = datetime('now'),
+               SET status = 'running',
+                   started_at = datetime('now'),
+                   completed_at = NULL,
+                   paused_at = NULL,
                    started_by_dms_user_id = ?,
                    started_by_email = ?,
                    started_by_name = ?
@@ -4805,6 +4814,8 @@ async def retry_failed_email_campaign(campaign_id: int, payload: EmailBlastStart
             (campaign_id,)
         )
         await db.commit()
+
+    await email_blast.broadcast_campaign_update(campaign_id)
 
     # Run async with only failed (now-pending) recipients
     asyncio.create_task(

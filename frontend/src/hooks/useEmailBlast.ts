@@ -1,4 +1,5 @@
 import { useQuery, useMutation, useQueryClient, useInfiniteQuery } from '@tanstack/react-query'
+import { useWebSocketContext } from '../context/WebSocketContext'
 import {
   createEmailCampaign,
   listEmailCampaigns,
@@ -46,11 +47,17 @@ export function useEmailBlastCampaigns(status?: string) {
 }
 
 export function useEmailBlastCampaign(id: number) {
+  const { connected } = useWebSocketContext()
+
   return useQuery<{ success: boolean; campaign: EmailBlastCampaign }>({
     queryKey: ['email-blast-campaign', id],
     queryFn: () => getEmailCampaign(id),
     enabled: !!id,
     refetchInterval: (query) => {
+      if (connected) {
+        return false
+      }
+
       const campaign = query.state.data
       return campaign?.campaign?.status === 'running' ? 2_000 : 10_000
     },
@@ -176,11 +183,14 @@ export function useCampaignAttachment(campaignId: number) {
 }
 
 export function useSentEmails(campaignId: number, status?: string) {
+  const { connected } = useWebSocketContext()
+
   return useQuery<{ success: boolean; emails: any[]; total: number }>({
     queryKey: ['email-blast-sent-emails', campaignId, status],
     queryFn: () => getSentEmails(campaignId, status),
     enabled: !!campaignId,
     staleTime: 30_000,
+    refetchInterval: connected ? false : 60_000,
   })
 }
 
@@ -193,11 +203,14 @@ export function useSentEmail(campaignId: number, emailId: number) {
 }
 
 export function useInboxEmails(campaignId: number, limit?: number) {
+  const { connected } = useWebSocketContext()
+
   return useQuery<{ success: boolean; emails: any[]; total: number }>({
     queryKey: ['email-blast-inbox', campaignId, limit],
     queryFn: () => getInboxEmails(campaignId, limit),
     enabled: !!campaignId,
     staleTime: 30_000,
+    refetchInterval: connected ? false : 60_000,
   })
 }
 
@@ -209,15 +222,20 @@ export function useLetterConfig() {
 }
 
 export function useAllInboxEmails(limit?: number, enabled?: boolean) {
+  const { connected } = useWebSocketContext()
+
   return useQuery<{ success: boolean; emails: any[]; total: number; offset: number; limit: number }>({
     queryKey: ['email-blast-all-inbox', limit],
     queryFn: () => getAllInboxEmails(limit),
     enabled: enabled !== false,
     staleTime: 30_000,
+    refetchInterval: enabled !== false && !connected ? 60_000 : false,
   })
 }
 
 export function useAllInboxEmailsPaginated(pageSize: number = 50, enabled: boolean = true) {
+  const { connected } = useWebSocketContext()
+
   return useInfiniteQuery({
     queryKey: ['email-blast-all-inbox-paginated'],
     queryFn: async ({ pageParam = 0 }: { pageParam?: number }) => {
@@ -232,10 +250,13 @@ export function useAllInboxEmailsPaginated(pageSize: number = 50, enabled: boole
     },
     enabled,
     staleTime: 30_000,
+    refetchInterval: enabled && !connected ? 60_000 : false,
   })
 }
 
 export function useAllSentEmailsPaginated(pageSize: number = 50, enabled: boolean = true) {
+  const { connected } = useWebSocketContext()
+
   return useInfiniteQuery({
     queryKey: ['email-blast-all-sent-paginated'],
     queryFn: async ({ pageParam = 0 }: { pageParam?: number }) => {
@@ -250,10 +271,13 @@ export function useAllSentEmailsPaginated(pageSize: number = 50, enabled: boolea
     },
     enabled,
     staleTime: 30_000,
+    refetchInterval: enabled && !connected ? 60_000 : false,
   })
 }
 
 export function useSentFolderEmailsPaginated(pageSize: number = 50, enabled: boolean = true) {
+  const { connected } = useWebSocketContext()
+
   return useInfiniteQuery({
     queryKey: ['email-blast-sent-folder-paginated'],
     queryFn: async ({ pageParam = 0 }: { pageParam?: number }) => {
@@ -268,6 +292,7 @@ export function useSentFolderEmailsPaginated(pageSize: number = 50, enabled: boo
     },
     enabled,
     staleTime: 30_000,
+    refetchInterval: enabled && !connected ? 60_000 : false,
   })
 }
 
@@ -330,10 +355,12 @@ export function useLetterHistory(params?: {
 }
 
 export function useEmailBlastQuota() {
+  const { connected } = useWebSocketContext()
+
   return useQuery<EmailBlastQuota>({
     queryKey: ['email-blast-quota'],
     queryFn: getEmailBlastQuota,
     staleTime: 30_000,
-    refetchInterval: 60_000,
+    refetchInterval: connected ? false : 60_000,
   })
 }
