@@ -9,12 +9,15 @@ import { Card } from '../components/ui/Card'
 import { Spinner } from '../components/ui/Spinner'
 import { AUDIENSI_STATE_COLORS } from '../lib/constants'
 import { formatDate } from '../lib/utils'
+import { useAuth } from '../context/AuthContext'
 
 export default function AudiensiDetailPage() {
+  const { hasPermission } = useAuth()
   const { id } = useParams<{ id: string }>()
   const navigate = useNavigate()
   const { data: conversation, isLoading } = useAudiensiConversation(Number(id) || 0)
   const sendZoomMutation = useSendZoomLink()
+  const canManageAudiensi = hasPermission('audiensi.manage')
 
   if (isLoading) {
     return (
@@ -163,7 +166,7 @@ export default function AudiensiDetailPage() {
       )}
 
       {/* Send Zoom Link action */}
-      {conversation.state === 'SCHEDULED' && (
+      {conversation.state === 'SCHEDULED' && canManageAudiensi && (
         <Card>
           <div className="flex items-center justify-between">
             <div>

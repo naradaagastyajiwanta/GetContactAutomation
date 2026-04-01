@@ -174,6 +174,21 @@ CREATE TABLE IF NOT EXISTS auth_sessions (
     user_agent TEXT,
     ip_address TEXT
 );
+
+CREATE TABLE IF NOT EXISTS auth_audit_logs (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    action TEXT NOT NULL,
+    actor_dms_user_id INTEGER,
+    actor_email TEXT,
+    subject_dms_user_id INTEGER,
+    subject_email TEXT,
+    role_key TEXT,
+    success INTEGER DEFAULT 1,
+    detail TEXT,
+    ip_address TEXT,
+    user_agent TEXT,
+    created_at TEXT DEFAULT (datetime('now'))
+);
 """
 
 _INDEXES_AGENT = """
@@ -191,6 +206,10 @@ CREATE INDEX IF NOT EXISTS idx_auth_user_roles_email ON auth_user_roles(user_ema
 CREATE INDEX IF NOT EXISTS idx_auth_user_roles_active ON auth_user_roles(is_active);
 CREATE INDEX IF NOT EXISTS idx_auth_sessions_user ON auth_sessions(dms_user_id);
 CREATE INDEX IF NOT EXISTS idx_auth_sessions_expiry ON auth_sessions(expires_at);
+CREATE INDEX IF NOT EXISTS idx_auth_audit_logs_action ON auth_audit_logs(action);
+CREATE INDEX IF NOT EXISTS idx_auth_audit_logs_actor_email ON auth_audit_logs(actor_email);
+CREATE INDEX IF NOT EXISTS idx_auth_audit_logs_subject_email ON auth_audit_logs(subject_email);
+CREATE INDEX IF NOT EXISTS idx_auth_audit_logs_created_at ON auth_audit_logs(created_at);
 """
 
 _DDL_AUDIENSI = """
@@ -353,6 +372,9 @@ CREATE TABLE IF NOT EXISTS blast_campaigns (
     total_recipients INTEGER DEFAULT 0,
     sent_count INTEGER DEFAULT 0,
     failed_count INTEGER DEFAULT 0,
+    created_by_dms_user_id INTEGER,
+    created_by_email TEXT,
+    created_by_name TEXT,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     started_at TIMESTAMP,
     completed_at TIMESTAMP,
@@ -378,6 +400,7 @@ CREATE TABLE IF NOT EXISTS blast_recipients (
 
 _INDEXES_BLAST = """
 CREATE INDEX IF NOT EXISTS idx_blast_campaigns_status ON blast_campaigns(status);
+CREATE INDEX IF NOT EXISTS idx_blast_campaigns_owner ON blast_campaigns(created_by_dms_user_id);
 CREATE INDEX IF NOT EXISTS idx_blast_campaigns_auto_resume ON blast_campaigns(auto_resume_at);
 CREATE INDEX IF NOT EXISTS idx_blast_recipients_campaign ON blast_recipients(campaign_id);
 CREATE INDEX IF NOT EXISTS idx_blast_recipients_status ON blast_recipients(status);
@@ -403,6 +426,9 @@ CREATE TABLE IF NOT EXISTS email_blast_campaigns (
     invalid_count INTEGER DEFAULT 0,
     attachment_filename TEXT,
     attachment_variables TEXT,
+    created_by_dms_user_id INTEGER,
+    created_by_email TEXT,
+    created_by_name TEXT,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     started_at TIMESTAMP,
     completed_at TIMESTAMP,
@@ -423,10 +449,6 @@ CREATE TABLE IF NOT EXISTS email_blast_recipients (
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     UNIQUE(campaign_id, email)
 );
-
-CREATE INDEX IF NOT EXISTS idx_email_blast_campaigns_status ON email_blast_campaigns(status);
-CREATE INDEX IF NOT EXISTS idx_email_blast_recipients_campaign ON email_blast_recipients(campaign_id);
-CREATE INDEX IF NOT EXISTS idx_email_blast_recipients_status ON email_blast_recipients(status);
 
 -- Email Blast Daily Quota
 CREATE TABLE IF NOT EXISTS email_blast_daily_quota (
@@ -493,6 +515,13 @@ CREATE TABLE IF NOT EXISTS email_sent_cache (
 );
 
 CREATE INDEX IF NOT EXISTS idx_sent_cache_fetched ON email_sent_cache(fetched_at DESC);
+"""
+
+_INDEXES_EMAIL_BLAST = """
+CREATE INDEX IF NOT EXISTS idx_email_blast_campaigns_status ON email_blast_campaigns(status);
+CREATE INDEX IF NOT EXISTS idx_email_blast_campaigns_owner ON email_blast_campaigns(created_by_dms_user_id);
+CREATE INDEX IF NOT EXISTS idx_email_blast_recipients_campaign ON email_blast_recipients(campaign_id);
+CREATE INDEX IF NOT EXISTS idx_email_blast_recipients_status ON email_blast_recipients(status);
 """
 
 # ---------------------------------------------------------------------------
@@ -3037,6 +3066,23 @@ async def list_auth_role_assignments() -> list[dict[str, Any]]:
         return _rows_to_dicts(rows)
 
 
+async def get_active_auth_role_assignment(dms_user_id: int, role_key: str) -> dict[str, Any] | None:
+    """Return one active role assignment for a user and role key."""
+    async with get_db() as db:
+        cursor = await db.execute(
+            """
+            SELECT id, dms_user_id, user_email, user_name, role_key,
+                   granted_by_email, created_at, updated_at
+            FROM auth_user_roles
+            WHERE dms_user_id = ? AND role_key = ? AND is_active = 1
+            LIMIT 1
+            """,
+            (dms_user_id, role_key),
+        )
+        row = await cursor.fetchone()
+        return _row_to_dict(row) if row else None
+
+
 async def upsert_auth_user_role(
     dms_user_id: int,
     user_email: str,
@@ -3162,6 +3208,73 @@ async def revoke_auth_sessions_for_user(dms_user_id: int) -> None:
             (_utcnow(), dms_user_id),
         )
         await db.commit()
+
+
+async def create_auth_audit_log(
+    action: str,
+    actor_dms_user_id: int | None = None,
+    actor_email: str | None = None,
+    subject_dms_user_id: int | None = None,
+    subject_email: str | None = None,
+    role_key: str | None = None,
+    success: bool = True,
+    detail: str | None = None,
+    ip_address: str | None = None,
+    user_agent: str | None = None,
+) -> None:
+    """Persist an auth-related audit event."""
+    async with get_db() as db:
+        await db.execute(
+            """
+            INSERT INTO auth_audit_logs (
+                action, actor_dms_user_id, actor_email, subject_dms_user_id,
+                subject_email, role_key, success, detail, ip_address, user_agent, created_at
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                action,
+                actor_dms_user_id,
+                actor_email,
+                subject_dms_user_id,
+                subject_email,
+                role_key,
+                1 if success else 0,
+                detail,
+                ip_address,
+                user_agent,
+                _utcnow(),
+            ),
+        )
+        await db.commit()
+
+
+async def count_auth_audit_logs() -> int:
+    """Return total auth audit log rows."""
+    async with get_db() as db:
+        cursor = await db.execute("SELECT COUNT(*) AS total FROM auth_audit_logs")
+        row = await cursor.fetchone()
+        return int(row["total"] if row else 0)
+
+
+async def list_auth_audit_logs(limit: int = 50, offset: int = 0) -> list[dict[str, Any]]:
+    """Return auth audit logs ordered from newest to oldest."""
+    async with get_db() as db:
+        cursor = await db.execute(
+            """
+            SELECT id, action, actor_dms_user_id, actor_email, subject_dms_user_id,
+                   subject_email, role_key, success, detail, ip_address, user_agent, created_at
+            FROM auth_audit_logs
+            ORDER BY created_at DESC, id DESC
+            LIMIT ? OFFSET ?
+            """,
+            (limit, offset),
+        )
+        rows = await cursor.fetchall()
+        items = _rows_to_dicts(rows)
+        for item in items:
+            item["success"] = bool(item.get("success"))
+        return items
 
 
 # ---------------------------------------------------------------------------

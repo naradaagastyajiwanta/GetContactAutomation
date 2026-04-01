@@ -7,12 +7,15 @@ import { Table, TableHeader, TableBody, TableRow, TableHead, TableCell } from '.
 import { uploadTemplate, getTemplatePlaceholders } from '../../api/audiensi'
 import { useQuery } from '@tanstack/react-query'
 import toast from 'react-hot-toast'
+import { useAuth } from '../../context/AuthContext'
 
 export function AudiensiTemplateUpload() {
+  const { hasPermission } = useAuth()
   const [uploading, setUploading] = useState(false)
   const [uploaded, setUploaded] = useState(false)
   const [selectedFile, setSelectedFile] = useState<File | null>(null)
   const fileInputRef = useRef<HTMLInputElement>(null)
+  const canManageAudiensi = hasPermission('audiensi.manage')
 
   const { data: placeholderData, isLoading: placeholdersLoading } = useQuery({
     queryKey: ['audiensi', 'template', 'placeholders'],
@@ -54,11 +57,17 @@ export function AudiensiTemplateUpload() {
           Surat Undangan Template
         </h2>
 
+        {!canManageAudiensi && (
+          <div className="rounded-lg border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800 dark:border-amber-900/40 dark:bg-amber-950/30 dark:text-amber-300">
+            Anda hanya memiliki akses lihat. Upload template membutuhkan permission audiensi.manage.
+          </div>
+        )}
+
         {/* File Upload */}
         <div className="space-y-3">
           <div
             className="flex cursor-pointer flex-col items-center justify-center rounded-lg border-2 border-dashed border-gray-300 px-6 py-8 transition-colors hover:border-indigo-400 dark:border-gray-600 dark:hover:border-indigo-500"
-            onClick={() => fileInputRef.current?.click()}
+            onClick={() => canManageAudiensi && fileInputRef.current?.click()}
           >
             {selectedFile ? (
               <>
@@ -93,7 +102,7 @@ export function AudiensiTemplateUpload() {
             <Button
               variant="primary"
               loading={uploading}
-              disabled={!selectedFile}
+              disabled={!selectedFile || !canManageAudiensi}
               onClick={handleUpload}
             >
               <FileText className="h-4 w-4" />

@@ -11,12 +11,14 @@ import {
   useRegeneratePdf,
 } from '../../hooks/useAudiensi'
 import type { AudiensiConversation } from '../../lib/types'
+import { useAuth } from '../../context/AuthContext'
 
 interface AudiensiApprovalCardProps {
   conversation: AudiensiConversation
 }
 
 export function AudiensiApprovalCard({ conversation }: AudiensiApprovalCardProps) {
+  const { hasPermission } = useAuth()
   const [rectorName, setRectorName] = useState(conversation.rector_name ?? '')
   const [initialMessage, setInitialMessage] = useState(conversation.initial_message_draft ?? '')
   const [rectorDirty, setRectorDirty] = useState(false)
@@ -27,6 +29,7 @@ export function AudiensiApprovalCard({ conversation }: AudiensiApprovalCardProps
   const updateRectorMutation = useUpdateRectorName()
   const updateMessageMutation = useUpdateInitialMessage()
   const regeneratePdfMutation = useRegeneratePdf()
+  const canManageAudiensi = hasPermission('audiensi.manage')
 
   const handleSaveRector = () => {
     updateRectorMutation.mutate(
@@ -83,9 +86,10 @@ export function AudiensiApprovalCard({ conversation }: AudiensiApprovalCardProps
                 setRectorDirty(true)
               }}
               placeholder="Enter rector name..."
+              disabled={!canManageAudiensi}
               className="flex-1 rounded-lg border border-gray-300 bg-white px-3 py-2 text-sm transition-colors focus:border-indigo-500 focus:outline-none focus:ring-1 focus:ring-indigo-500 dark:border-gray-600 dark:bg-gray-800 dark:text-gray-100 dark:focus:border-indigo-400 dark:focus:ring-indigo-400"
             />
-            {rectorDirty && (
+            {canManageAudiensi && rectorDirty && (
               <Button
                 variant="secondary"
                 size="sm"
@@ -110,9 +114,10 @@ export function AudiensiApprovalCard({ conversation }: AudiensiApprovalCardProps
               setMessageDirty(true)
             }}
             rows={5}
+            disabled={!canManageAudiensi}
             className="w-full rounded-lg border border-gray-300 bg-white px-3 py-2 text-sm transition-colors focus:border-indigo-500 focus:outline-none focus:ring-1 focus:ring-indigo-500 dark:border-gray-600 dark:bg-gray-800 dark:text-gray-100 dark:focus:border-indigo-400 dark:focus:ring-indigo-400"
           />
-          {messageDirty && (
+          {canManageAudiensi && messageDirty && (
             <div className="mt-2 flex justify-end">
               <Button
                 variant="secondary"
@@ -144,6 +149,7 @@ export function AudiensiApprovalCard({ conversation }: AudiensiApprovalCardProps
             variant="secondary"
             size="sm"
             loading={regeneratePdfMutation.isPending}
+            disabled={!canManageAudiensi}
             onClick={() => regeneratePdfMutation.mutate(conversation.id)}
           >
             <RefreshCw className="h-3.5 w-3.5" />
@@ -152,25 +158,27 @@ export function AudiensiApprovalCard({ conversation }: AudiensiApprovalCardProps
         </div>
 
         {/* Action Buttons */}
-        <div className="flex items-center gap-3 border-t border-gray-200 pt-4 dark:border-gray-700">
-          <Button
-            variant="primary"
-            loading={approveMutation.isPending}
-            onClick={() => approveMutation.mutate(conversation.id)}
-            className="bg-green-600 hover:bg-green-700 focus:ring-green-500 dark:bg-green-600 dark:hover:bg-green-700"
-          >
-            <Check className="h-4 w-4" />
-            Approve & Send
-          </Button>
-          <Button
-            variant="danger"
-            loading={rejectMutation.isPending}
-            onClick={() => rejectMutation.mutate(conversation.id)}
-          >
-            <X className="h-4 w-4" />
-            Reject
-          </Button>
-        </div>
+        {canManageAudiensi && (
+          <div className="flex items-center gap-3 border-t border-gray-200 pt-4 dark:border-gray-700">
+            <Button
+              variant="primary"
+              loading={approveMutation.isPending}
+              onClick={() => approveMutation.mutate(conversation.id)}
+              className="bg-green-600 hover:bg-green-700 focus:ring-green-500 dark:bg-green-600 dark:hover:bg-green-700"
+            >
+              <Check className="h-4 w-4" />
+              Approve & Send
+            </Button>
+            <Button
+              variant="danger"
+              loading={rejectMutation.isPending}
+              onClick={() => rejectMutation.mutate(conversation.id)}
+            >
+              <X className="h-4 w-4" />
+              Reject
+            </Button>
+          </div>
+        )}
       </div>
     </Card>
   )

@@ -9,6 +9,7 @@ from fastapi import HTTPException, Request, Response, WebSocket
 from orchestrator.config import cfg
 from orchestrator.db import (
     count_active_auth_roles,
+    create_auth_audit_log,
     create_auth_session,
     get_auth_role_keys_for_user,
     get_auth_session,
@@ -28,16 +29,23 @@ ROLE_DEFINITIONS: dict[str, dict[str, Any]] = {
         "permissions": [
             "dashboard.view",
             "pipeline.view",
+            "pipeline.manage",
             "pipeline.run",
             "universities.view",
             "universities.manage",
             "conversations.view",
             "audiensi.view",
+            "audiensi.manage",
+            "whatsapp.view",
             "whatsapp.manage",
+            "blast.view",
             "blast.manage",
             "knowledge.view",
+            "knowledge.manage",
             "learning.view",
+            "learning.manage",
             "crm.view",
+            "crm.manage",
             "logs.view",
         ],
     },
@@ -49,6 +57,8 @@ ROLE_DEFINITIONS: dict[str, dict[str, Any]] = {
             "universities.view",
             "conversations.view",
             "audiensi.view",
+            "whatsapp.view",
+            "blast.view",
             "knowledge.view",
             "learning.view",
             "crm.view",
@@ -77,6 +87,46 @@ def _default_password() -> str:
 def _default_role_key() -> str:
     role_key = str(cfg.get("AUTH_DEFAULT_ROLE", "viewer") or "viewer")
     return normalize_role_key(role_key)
+
+
+def _identity_from_user(user: dict[str, Any] | None) -> tuple[int | None, str | None]:
+    if not user:
+        return None, None
+
+    raw_id = user.get("dms_user_id")
+    email = user.get("email") or user.get("user_email")
+    return (int(raw_id) if raw_id is not None else None, str(email) if email else None)
+
+
+async def log_auth_event(
+    action: str,
+    *,
+    request: Request | None = None,
+    actor: dict[str, Any] | None = None,
+    actor_email: str | None = None,
+    subject: dict[str, Any] | None = None,
+    subject_dms_user_id: int | None = None,
+    subject_email: str | None = None,
+    role_key: str | None = None,
+    success: bool = True,
+    detail: str | None = None,
+) -> None:
+    """Persist a structured auth audit log entry."""
+    actor_dms_user_id, resolved_actor_email = _identity_from_user(actor)
+    resolved_subject_dms_user_id, resolved_subject_email = _identity_from_user(subject)
+
+    await create_auth_audit_log(
+        action=action,
+        actor_dms_user_id=actor_dms_user_id,
+        actor_email=resolved_actor_email or actor_email,
+        subject_dms_user_id=resolved_subject_dms_user_id if resolved_subject_dms_user_id is not None else subject_dms_user_id,
+        subject_email=resolved_subject_email or subject_email,
+        role_key=role_key,
+        success=success,
+        detail=detail,
+        ip_address=request.client.host if request and request.client else None,
+        user_agent=request.headers.get("user-agent") if request else None,
+    )
 
 
 def _hash_token(token: str) -> str:
@@ -173,6 +223,15 @@ async def create_session_for_user(
             user_name=str(dms_user.get("user_name") or "Unknown User"),
             role_key=default_role_key,
             granted_by_email="system:auto-grant",
+        )
+        await log_auth_event(
+            "auto_grant_role",
+            request=request,
+            actor_email="system:auto-grant",
+            subject=dms_user,
+            role_key=default_role_key,
+            success=True,
+            detail="Granted default role after successful default-password login",
         )
         role_keys = [default_role_key]
 

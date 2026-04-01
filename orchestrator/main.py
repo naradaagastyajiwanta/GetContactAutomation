@@ -75,6 +75,9 @@ from orchestrator.db import (
     get_email_blast_quota_info,
     get_db,
     count_active_auth_role_assignments,
+    count_auth_audit_logs,
+    get_active_auth_role_assignment,
+    list_auth_audit_logs,
     list_auth_role_assignments,
     upsert_auth_user_role,
     deactivate_auth_user_role,
@@ -111,6 +114,8 @@ from orchestrator.auth import (
     get_request_user,
     get_user_from_session_token,
     get_websocket_user,
+    has_permission,
+    log_auth_event,
     normalize_role_key,
     require_permission,
     revoke_session_token,
@@ -321,6 +326,73 @@ def _is_public_path(path: str) -> bool:
     return any(normalized.startswith(prefix) for prefix in _PUBLIC_AUTH_PREFIXES)
 
 
+def _required_permission_for_request(method: str, path: str) -> str | None:
+    normalized = _normalize_request_path(path)
+    upper_method = method.upper()
+
+    if normalized == "/conversations/test":
+        return "whatsapp.manage"
+
+    if normalized == "/universities/with-emails":
+        return "blast.manage"
+
+    if normalized.startswith("/auth/access") or normalized == "/auth/roles":
+        return "settings.manage"
+
+    if normalized.startswith("/config"):
+        return "settings.manage"
+
+    if normalized.startswith("/control"):
+        if normalized == "/control/status":
+            return "pipeline.view"
+        if normalized.startswith("/control/chatbot"):
+            return "settings.manage"
+        return "pipeline.manage"
+
+    if normalized.startswith("/wa"):
+        return "whatsapp.view" if upper_method == "GET" else "whatsapp.manage"
+
+    if normalized.startswith("/pipeline"):
+        if upper_method == "GET":
+            return "pipeline.view"
+        if normalized == "/pipeline/run-agent-targeted":
+            return "pipeline.run"
+        return "pipeline.manage"
+
+    if normalized.startswith("/outreach"):
+        return "pipeline.run"
+
+    if normalized.startswith("/universities") or normalized.startswith("/contacts") or normalized.startswith("/university-groups"):
+        if upper_method == "GET":
+            return "universities.view"
+        if normalized == "/universities/match-names":
+            return "universities.view"
+        return "universities.manage"
+
+    if normalized.startswith("/conversations"):
+        return "conversations.view"
+
+    if normalized.startswith("/learning"):
+        return "learning.view" if upper_method == "GET" else "learning.manage"
+
+    if normalized.startswith("/knowledge-items"):
+        return "knowledge.view" if upper_method == "GET" else "knowledge.manage"
+
+    if normalized.startswith("/api-logs"):
+        return "logs.view"
+
+    if normalized.startswith("/audiensi"):
+        return "audiensi.view" if upper_method == "GET" else "audiensi.manage"
+
+    if normalized.startswith("/crm"):
+        return "crm.view" if upper_method == "GET" else "crm.manage"
+
+    if normalized.startswith("/blast") or normalized.startswith("/email-blast"):
+        return "blast.view" if upper_method == "GET" else "blast.manage"
+
+    return None
+
+
 @app.middleware("http")
 async def auth_http_middleware(request: Request, call_next):
     request.state.current_user = None
@@ -332,6 +404,10 @@ async def auth_http_middleware(request: Request, call_next):
     user = await get_user_from_session_token(session_token)
     if not user:
         return JSONResponse(status_code=401, content={"detail": "Authentication required"})
+
+    required_permission = _required_permission_for_request(request.method, request.url.path)
+    if required_permission and not has_permission(user, required_permission):
+        return JSONResponse(status_code=403, content={"detail": "Insufficient permissions"})
 
     request.state.current_user = user
     return await call_next(request)
@@ -356,6 +432,11 @@ class AuthRevokeRolePayload(BaseModel):
     role_key: str
 
 
+class AuthAuditLogsResponse(BaseModel):
+    logs: list[dict[str, Any]]
+    total: int
+
+
 @app.get("/auth/bootstrap-status")
 async def auth_bootstrap_status():
     """Return whether local auth bootstrap is still required."""
@@ -366,35 +447,97 @@ async def auth_bootstrap_status():
 async def auth_setup(payload: AuthSetupPayload, request: Request, response: Response):
     """Bootstrap the first local dashboard admin using a valid DMS karyawan account."""
     if not await can_bootstrap_auth():
+        await log_auth_event(
+            "bootstrap",
+            request=request,
+            actor_email=payload.email.strip().lower(),
+            subject_email=payload.email.strip().lower(),
+            role_key=payload.role_key,
+            success=False,
+            detail="Auth bootstrap has already been completed",
+        )
         return JSONResponse(status_code=409, content={"detail": "Auth bootstrap has already been completed"})
 
-    dms_user = await validate_login_credentials(payload.email, payload.password)
-    role_key = normalize_role_key(payload.role_key)
-    await upsert_auth_user_role(
-        dms_user_id=int(dms_user["dms_user_id"]),
-        user_email=str(dms_user.get("user_email") or ""),
-        user_name=str(dms_user.get("user_name") or "Unknown User"),
-        role_key=role_key,
-        granted_by_email=str(dms_user.get("user_email") or ""),
-    )
-    user = await create_session_for_user(response, dms_user, request)
-    return {"status": "ok", "bootstrap_completed": True, "user": user}
+    try:
+        dms_user = await validate_login_credentials(payload.email, payload.password)
+        role_key = normalize_role_key(payload.role_key)
+        await upsert_auth_user_role(
+            dms_user_id=int(dms_user["dms_user_id"]),
+            user_email=str(dms_user.get("user_email") or ""),
+            user_name=str(dms_user.get("user_name") or "Unknown User"),
+            role_key=role_key,
+            granted_by_email=str(dms_user.get("user_email") or ""),
+        )
+        user = await create_session_for_user(response, dms_user, request)
+        await log_auth_event(
+            "bootstrap",
+            request=request,
+            actor=user,
+            subject=user,
+            role_key=role_key,
+            success=True,
+            detail="Initial dashboard admin created",
+        )
+        return {"status": "ok", "bootstrap_completed": True, "user": user}
+    except HTTPException as exc:
+        await log_auth_event(
+            "bootstrap",
+            request=request,
+            actor_email=payload.email.strip().lower(),
+            subject_email=payload.email.strip().lower(),
+            role_key=payload.role_key,
+            success=False,
+            detail=str(exc.detail),
+        )
+        raise
 
 
 @app.post("/auth/login")
 async def auth_login(payload: AuthLoginPayload, request: Request, response: Response):
     """Authenticate using DMS karyawan credentials and create a local dashboard session."""
-    dms_user = await validate_login_credentials(payload.email, payload.password)
-    user = await create_session_for_user(response, dms_user, request)
-    return {"status": "ok", "user": user}
+    try:
+        dms_user = await validate_login_credentials(payload.email, payload.password)
+        user = await create_session_for_user(response, dms_user, request)
+        detail = "Dashboard session created"
+        if dms_user.get("_auth_default_password_used"):
+            detail = "Dashboard session created using default password"
+        await log_auth_event(
+            "login",
+            request=request,
+            actor=user,
+            subject=user,
+            success=True,
+            detail=detail,
+        )
+        return {"status": "ok", "user": user}
+    except HTTPException as exc:
+        normalized_email = payload.email.strip().lower()
+        await log_auth_event(
+            "login",
+            request=request,
+            actor_email=normalized_email,
+            subject_email=normalized_email,
+            success=False,
+            detail=str(exc.detail),
+        )
+        raise
 
 
 @app.post("/auth/logout")
 async def auth_logout(request: Request, response: Response):
     """Revoke the current dashboard session."""
     session_token = request.cookies.get(str(cfg.get("AUTH_COOKIE_NAME", "dms_marketing_session")))
+    user = await get_user_from_session_token(session_token)
     await revoke_session_token(session_token)
     clear_auth_cookie(response)
+    await log_auth_event(
+        "logout",
+        request=request,
+        actor=user,
+        subject=user,
+        success=True,
+        detail="Dashboard session revoked",
+    )
     return {"status": "ok"}
 
 
@@ -425,6 +568,18 @@ async def auth_access_list(request: Request):
     }
 
 
+@app.get("/auth/audit-logs")
+async def auth_audit_logs(request: Request, limit: int = 50, offset: int = 0):
+    """Return recent auth audit logs for dashboard administration."""
+    await require_permission(request, "settings.manage")
+    bounded_limit = max(1, min(limit, 200))
+    bounded_offset = max(0, offset)
+    return {
+        "logs": await list_auth_audit_logs(limit=bounded_limit, offset=bounded_offset),
+        "total": await count_auth_audit_logs(),
+    }
+
+
 @app.post("/auth/access/grant")
 async def auth_access_grant(payload: AuthGrantRolePayload, request: Request):
     """Grant a local dashboard role to an active DMS karyawan user."""
@@ -432,6 +587,15 @@ async def auth_access_grant(payload: AuthGrantRolePayload, request: Request):
     role_key = normalize_role_key(payload.role_key)
     dms_user = await get_active_karyawan_by_email(payload.email)
     if not dms_user:
+        await log_auth_event(
+            "grant_role",
+            request=request,
+            actor=current_user,
+            subject_email=payload.email.strip().lower(),
+            role_key=role_key,
+            success=False,
+            detail="Active DMS user not found for this email",
+        )
         return JSONResponse(status_code=404, content={"detail": "Active DMS user not found for this email"})
 
     await upsert_auth_user_role(
@@ -441,21 +605,51 @@ async def auth_access_grant(payload: AuthGrantRolePayload, request: Request):
         role_key=role_key,
         granted_by_email=str(current_user.get("email") or ""),
     )
+    await log_auth_event(
+        "grant_role",
+        request=request,
+        actor=current_user,
+        subject=dms_user,
+        role_key=role_key,
+        success=True,
+        detail="Local dashboard role granted",
+    )
     return {"status": "ok"}
 
 
 @app.post("/auth/access/revoke")
 async def auth_access_revoke(payload: AuthRevokeRolePayload, request: Request):
     """Revoke a local dashboard role and invalidate active sessions for that user."""
-    await require_permission(request, "settings.manage")
+    current_user = await require_permission(request, "settings.manage")
     role_key = normalize_role_key(payload.role_key)
+    assignment = await get_active_auth_role_assignment(payload.dms_user_id, role_key)
     if role_key == "admin":
         admin_count = await count_active_auth_role_assignments("admin")
         if admin_count <= 1:
+            await log_auth_event(
+                "revoke_role",
+                request=request,
+                actor=current_user,
+                subject_dms_user_id=payload.dms_user_id,
+                subject_email=assignment.get("user_email") if assignment else None,
+                role_key=role_key,
+                success=False,
+                detail="At least one admin must remain active",
+            )
             return JSONResponse(status_code=409, content={"detail": "At least one admin must remain active"})
 
     await deactivate_auth_user_role(payload.dms_user_id, role_key)
     await revoke_auth_sessions_for_user(payload.dms_user_id)
+    await log_auth_event(
+        "revoke_role",
+        request=request,
+        actor=current_user,
+        subject_dms_user_id=payload.dms_user_id,
+        subject_email=assignment.get("user_email") if assignment else None,
+        role_key=role_key,
+        success=True,
+        detail="Local dashboard role revoked",
+    )
     return {"status": "ok"}
 
 

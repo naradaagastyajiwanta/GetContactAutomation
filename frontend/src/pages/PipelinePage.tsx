@@ -12,6 +12,7 @@ import { useControlStatus } from '../hooks/useControl'
 import { Spinner } from '../components/ui/Spinner'
 import { Select } from '../components/ui/Select'
 import { Button } from '../components/ui/Button'
+import { useAuth } from '../context/AuthContext'
 import { formatNumber } from '../lib/utils'
 import type { PipelineStatus, PipelineLog, PipelineAgentType, PipelineLogStatus } from '../lib/types'
 
@@ -94,13 +95,13 @@ function StageStat({ stageKey, count, maxCount, accent }: { stageKey: string; co
 }
 
 // ─── Agent trigger card ──────────────────────────────────────────────────────
-function AgentCard({ title, description, icon, onClick, loading }: {
-  title: string; description: string; icon: React.ReactNode; onClick: () => void; loading: boolean
+function AgentCard({ title, description, icon, onClick, loading, disabled }: {
+  title: string; description: string; icon: React.ReactNode; onClick: () => void; loading: boolean; disabled?: boolean
 }) {
   return (
     <button
       onClick={onClick}
-      disabled={loading}
+      disabled={loading || disabled}
       className="group flex items-center gap-3 rounded-xl border border-gray-100 bg-white px-4 py-3 text-left transition-all hover:border-indigo-200 hover:shadow-sm disabled:opacity-50 dark:border-gray-700 dark:bg-gray-800 dark:hover:border-indigo-800"
     >
       <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-indigo-50 text-indigo-600 transition-colors group-hover:bg-indigo-100 dark:bg-indigo-950/50 dark:text-indigo-400 dark:group-hover:bg-indigo-900/50">
@@ -116,7 +117,7 @@ function AgentCard({ title, description, icon, onClick, loading }: {
 }
 
 // ─── PDDIKTI trigger ──────────────────────────────────────────────────────────
-function PddiktiCard({ onTrigger, loading }: { onTrigger: (province: string | undefined) => void; loading: boolean }) {
+function PddiktiCard({ onTrigger, loading, disabled }: { onTrigger: (province: string | undefined) => void; loading: boolean; disabled?: boolean }) {
   const [province, setProvince] = useState('')
   const { data: provinces } = useProvinces()
   const options = [
@@ -138,7 +139,7 @@ function PddiktiCard({ onTrigger, loading }: { onTrigger: (province: string | un
         </div>
         <button
           onClick={() => onTrigger(province || undefined)}
-          disabled={loading}
+          disabled={loading || disabled}
           className="flex shrink-0 items-center gap-1 rounded-lg bg-amber-500 px-3 py-1.5 text-xs font-semibold text-white transition-colors hover:bg-amber-600 disabled:opacity-50"
         >
           {loading ? <Loader2 className="h-3 w-3 animate-spin" /> : <Zap className="h-3 w-3" />}
@@ -252,6 +253,7 @@ const AGENT_FILTER_OPTIONS = [
 ]
 
 export default function PipelinePage() {
+  const { hasPermission } = useAuth()
   const { data: status, isLoading: statusLoading } = usePipelineStatus()
   const [logFilter, setLogFilter] = useState('')
   const [logPage, setLogPage] = useState(0)
@@ -274,6 +276,8 @@ export default function PipelinePage() {
   const { data: controlStatus } = useControlStatus()
 
   const isBotPaused = controlStatus?.paused ?? false
+  const canRunPipeline = hasPermission('pipeline.run')
+  const canManagePipeline = hasPermission('pipeline.manage')
 
   if (statusLoading) return <div className="flex h-64 items-center justify-center"><Spinner size="lg" /></div>
   if (!status) return null
@@ -295,7 +299,7 @@ export default function PipelinePage() {
           </p>
         </div>
         <div className="flex items-center gap-2">
-          {isBotPaused ? (
+          {canManagePipeline && isBotPaused ? (
             <button
               onClick={() => resumeBot.mutate()}
               disabled={resumeBot.isPending}
@@ -308,7 +312,7 @@ export default function PipelinePage() {
               )}
               {resumeBot.isPending ? 'Resuming...' : 'Resume Pipeline'}
             </button>
-          ) : (
+          ) : canManagePipeline ? (
             <button
               onClick={() => pauseBot.mutate()}
               disabled={pauseBot.isPending}
@@ -321,7 +325,7 @@ export default function PipelinePage() {
               )}
               {pauseBot.isPending ? 'Stopping...' : 'Stop Pipeline'}
             </button>
-          )}
+          ) : null}
           <div className="flex h-8 items-center gap-1.5 rounded-full bg-emerald-50 px-3 dark:bg-emerald-950/30">
             <div className="h-2 w-2 rounded-full bg-emerald-400 animate-pulse" />
             <span className="text-xs font-medium text-emerald-600 dark:text-emerald-400">Live</span>
@@ -351,16 +355,23 @@ export default function PipelinePage() {
 
       {/* Trigger agents */}
       <div>
-        <p className="mb-3 text-xs font-semibold uppercase tracking-wide text-gray-400 dark:text-gray-500">
-          Trigger Agents
-        </p>
+        <div className="mb-3 flex items-center justify-between gap-3">
+          <p className="text-xs font-semibold uppercase tracking-wide text-gray-400 dark:text-gray-500">
+            Trigger Agents
+          </p>
+          {!canRunPipeline && (
+            <span className="text-xs text-amber-600 dark:text-amber-300">
+              Menjalankan agent membutuhkan permission pipeline.run.
+            </span>
+          )}
+        </div>
         <div className="grid gap-3 sm:grid-cols-3 lg:grid-cols-6">
-          <PddiktiCard onTrigger={(province) => collectUniv.mutate({ province, limit: undefined })} loading={collectUniv.isPending} />
-          <AgentCard title="Find IG Handles" description="Search IG handles" icon={<Search className="h-4 w-4" />} onClick={() => findHandles.mutate(50)} loading={findHandles.isPending} />
-          <AgentCard title="Discover BEM" description="Find BEM accounts" icon={<Users className="h-4 w-4" />} onClick={() => discoverBem.mutate(30)} loading={discoverBem.isPending} />
-          <AgentCard title="Scrape IG Posts" description="Scrape posts from IG" icon={<Download className="h-4 w-4" />} onClick={() => scrapePosts.mutate(20)} loading={scrapePosts.isPending} />
-          <AgentCard title="Extract Phones" description="Extract phones from posts" icon={<Phone className="h-4 w-4" />} onClick={() => extractPhones.mutate(50)} loading={extractPhones.isPending} />
-          <AgentCard title="Find Rectors" description="Find rector names" icon={<User className="h-4 w-4" />} onClick={() => findRectors.mutate(20)} loading={findRectors.isPending} />
+          <PddiktiCard onTrigger={(province) => collectUniv.mutate({ province, limit: undefined })} loading={collectUniv.isPending} disabled={!canRunPipeline} />
+          <AgentCard title="Find IG Handles" description="Search IG handles" icon={<Search className="h-4 w-4" />} onClick={() => findHandles.mutate(50)} loading={findHandles.isPending} disabled={!canRunPipeline} />
+          <AgentCard title="Discover BEM" description="Find BEM accounts" icon={<Users className="h-4 w-4" />} onClick={() => discoverBem.mutate(30)} loading={discoverBem.isPending} disabled={!canRunPipeline} />
+          <AgentCard title="Scrape IG Posts" description="Scrape posts from IG" icon={<Download className="h-4 w-4" />} onClick={() => scrapePosts.mutate(20)} loading={scrapePosts.isPending} disabled={!canRunPipeline} />
+          <AgentCard title="Extract Phones" description="Extract phones from posts" icon={<Phone className="h-4 w-4" />} onClick={() => extractPhones.mutate(50)} loading={extractPhones.isPending} disabled={!canRunPipeline} />
+          <AgentCard title="Find Rectors" description="Find rector names" icon={<User className="h-4 w-4" />} onClick={() => findRectors.mutate(20)} loading={findRectors.isPending} disabled={!canRunPipeline} />
         </div>
       </div>
 

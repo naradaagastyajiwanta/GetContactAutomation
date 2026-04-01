@@ -5,6 +5,7 @@ import { Card } from '../components/ui/Card'
 import { Badge } from '../components/ui/Badge'
 import { Button } from '../components/ui/Button'
 import { EmptyState } from '../components/ui/EmptyState'
+import { useAuth } from '../context/AuthContext'
 
 const situationColors: Record<string, string> = {
   initial_contact: 'bg-blue-100 text-blue-800 dark:bg-blue-900 dark:text-blue-200',
@@ -22,10 +23,12 @@ const outcomeColors: Record<string, string> = {
 }
 
 export default function LearningPage() {
+  const { hasPermission } = useAuth()
   const { data: stats, isLoading: statsLoading } = useLearningStats()
   const { data: lessonsData, isLoading: lessonsLoading } = useLessons()
   const { data: analysesData, isLoading: analysesLoading } = useAnalyses(10)
   const triggerReflection = useTriggerReflection()
+  const canManageLearning = hasPermission('learning.manage')
 
   if (statsLoading || lessonsLoading || analysesLoading) {
     return (
@@ -45,14 +48,16 @@ export default function LearningPage() {
         <h1 className="text-2xl font-bold text-gray-900 dark:text-gray-100">
           Learning System
         </h1>
-        <Button
-          onClick={() => triggerReflection.mutate()}
-          loading={triggerReflection.isPending}
-          size="sm"
-        >
-          <RefreshCw className="h-4 w-4" />
-          Trigger Reflection
-        </Button>
+        {canManageLearning && (
+          <Button
+            onClick={() => triggerReflection.mutate()}
+            loading={triggerReflection.isPending}
+            size="sm"
+          >
+            <RefreshCw className="h-4 w-4" />
+            Trigger Reflection
+          </Button>
+        )}
       </div>
 
       {/* Stats Row */}

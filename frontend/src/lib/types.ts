@@ -58,6 +58,21 @@ export interface AuthAccessAssignment {
   updated_at: string
 }
 
+export interface AuthAuditLog {
+  id: number
+  action: string
+  actor_dms_user_id: number | null
+  actor_email: string | null
+  subject_dms_user_id: number | null
+  subject_email: string | null
+  role_key: AuthRoleKey | null
+  success: boolean
+  detail: string | null
+  ip_address: string | null
+  user_agent: string | null
+  created_at: string
+}
+
 export type UniversityStatus =
   | 'pending'
   | 'ig_found'

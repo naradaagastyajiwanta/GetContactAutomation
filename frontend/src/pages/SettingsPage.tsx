@@ -7,6 +7,7 @@ import { ExportSection } from '../components/settings/ExportSection'
 import { IGSessionUploader } from '../components/settings/IGSessionUploader'
 import { IGAccountsManager } from '../components/settings/IGAccountsManager'
 import { AuthAccessManager } from '../components/settings/AuthAccessManager'
+import { AuthAuditLogViewer } from '../components/settings/AuthAuditLogViewer'
 
 const SECTIONS: SectionItem[] = [
   { id: 'control', label: 'Control', icon: <Settings className="h-4 w-4" /> },
@@ -39,7 +40,10 @@ export default function SettingsPage() {
       </section>
 
       <section id="settings-access">
-        <AuthAccessManager />
+        <div className="space-y-4">
+          <AuthAccessManager />
+          <AuthAuditLogViewer />
+        </div>
       </section>
 
       <section id="settings-config">

@@ -35,6 +35,7 @@ interface Props {
   campaignCounts: CampaignCounts
   onSelect: (campaign: EmailBlastCampaign) => void
   onNew: () => void
+  canManage: boolean
   statusFilter: string
   onStatusChange: (status: string) => void
 }
@@ -216,6 +217,7 @@ export function EmailCampaignList({
   campaignCounts,
   onSelect,
   onNew,
+  canManage,
   statusFilter,
   onStatusChange,
 }: Props) {
@@ -262,10 +264,12 @@ export function EmailCampaignList({
             />
           </div>
 
-          <Button size="sm" onClick={onNew}>
-            <Plus className="h-3.5 w-3.5" />
-            New
-          </Button>
+          {canManage && (
+            <Button size="sm" onClick={onNew}>
+              <Plus className="h-3.5 w-3.5" />
+              New
+            </Button>
+          )}
         </div>
       </div>
 
@@ -311,7 +315,7 @@ export function EmailCampaignList({
                 : 'Create your first email campaign to get started.'
             }
             action={
-              !search ? (
+              !search && canManage ? (
                 <Button onClick={onNew}>
                   <Plus className="h-4 w-4" />
                   New Campaign

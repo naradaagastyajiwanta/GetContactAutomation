@@ -52,6 +52,7 @@ export function AuthAccessManager() {
 
   const refreshAuthData = async () => {
     await queryClient.invalidateQueries({ queryKey: queryKeys.auth.access })
+    await queryClient.invalidateQueries({ queryKey: queryKeys.auth.auditLogs })
     await queryClient.invalidateQueries({ queryKey: queryKeys.auth.me })
   }
 

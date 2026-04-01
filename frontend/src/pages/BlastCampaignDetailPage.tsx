@@ -54,6 +54,7 @@ import type { BlastContact, BlastContactsParams, PreviouslyBlastedContact } from
 import { checkPreviouslyBlasted } from '../api/blast'
 import { useUniversityGroups } from '../hooks/useUniversityGroups'
 import { QuickSelectGroups } from '../components/universityGroups/QuickSelectGroups'
+import { useAuth } from '../context/AuthContext'
 
 // ---------------------------------------------------------------------------
 // Sub-components
@@ -646,9 +647,11 @@ const PLACEHOLDERS = [
 // ---------------------------------------------------------------------------
 
 export default function BlastCampaignDetailPage() {
+  const { hasPermission } = useAuth()
   const { id } = useParams<{ id: string }>()
   const navigate = useNavigate()
   const campaignId = Number(id)
+  const canManageBlast = hasPermission('blast.manage')
 
   // Campaign data
   const { data: campaign, isLoading: loadingCampaign } = useBlastCampaign(campaignId, !!id)
@@ -656,7 +659,7 @@ export default function BlastCampaignDetailPage() {
   const isSending = campaign?.status === 'sending'
   const isPaused = campaign?.status === 'paused'
   const isFinished = campaign?.status === 'completed' || campaign?.status === 'cancelled'
-  const canEditCampaign = isDraft || isPaused
+  const canEditCampaign = canManageBlast && (isDraft || isPaused)
 
   // Recipients
   const [recipientPage, setRecipientPage] = useState(0)
@@ -818,6 +821,7 @@ export default function BlastCampaignDetailPage() {
 
   // Save handler
   const handleSave = () => {
+    if (!canManageBlast) return
     updateMutation.mutate(buildUpdatePayload() as any, {
       onSuccess: () => {
         setTemplateDraft(null)
@@ -842,6 +846,7 @@ export default function BlastCampaignDetailPage() {
 
   // Delete handler
   const handleDelete = () => {
+    if (!canManageBlast) return
     if (!confirm('Delete this campaign and all its recipients?')) return
     deleteMutation.mutate(campaignId, {
       onSuccess: () => navigate('/blast'),
@@ -849,6 +854,7 @@ export default function BlastCampaignDetailPage() {
   }
 
   const handleStartOrResume = () => {
+    if (!canManageBlast) return
     if (!campaignReady) return
 
     if (hasUnsavedChanges) {
@@ -911,7 +917,7 @@ export default function BlastCampaignDetailPage() {
                 </div>
               </div>
 
-              {(isDraft || isFinished) && (
+              {canManageBlast && (isDraft || isFinished) && (
                 <button
                   onClick={handleDelete}
                   disabled={deleteMutation.isPending}
@@ -1831,7 +1837,7 @@ export default function BlastCampaignDetailPage() {
                 </button>
               )}
 
-              {(isDraft || isPaused) && (
+              {canManageBlast && (isDraft || isPaused) && (
                 <button
                   onClick={handleStartOrResume}
                   disabled={!campaignReady || startMutation.isPending || updateMutation.isPending}
@@ -1842,7 +1848,7 @@ export default function BlastCampaignDetailPage() {
                 </button>
               )}
 
-              {isSending && (
+              {canManageBlast && isSending && (
                 <button
                   onClick={() => pauseMutation.mutate(campaignId)}
                   disabled={pauseMutation.isPending}
@@ -1853,7 +1859,7 @@ export default function BlastCampaignDetailPage() {
                 </button>
               )}
 
-              {(isSending || isPaused) && (
+              {canManageBlast && (isSending || isPaused) && (
                 <button
                   onClick={() => cancelMutation.mutate(campaignId)}
                   disabled={cancelMutation.isPending}

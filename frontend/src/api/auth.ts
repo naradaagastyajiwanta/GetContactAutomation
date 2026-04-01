@@ -2,6 +2,7 @@ import axios from 'axios'
 import { apiClient } from './client'
 import type {
   AuthAccessAssignment,
+  AuthAuditLog,
   AuthBootstrapStatus,
   AuthMeResponse,
   AuthRoleDefinition,
@@ -26,6 +27,11 @@ export interface LoginResponse {
 export interface AuthAccessResponse {
   assignments: AuthAccessAssignment[]
   roles: AuthRoleDefinition[]
+}
+
+export interface AuthAuditLogsResponse {
+  logs: AuthAuditLog[]
+  total: number
 }
 
 export async function getCurrentUser(): Promise<AuthMeResponse | null> {
@@ -62,6 +68,11 @@ export async function logout(): Promise<{ status: string }> {
 
 export async function getAuthAccess(): Promise<AuthAccessResponse> {
   const { data } = await apiClient.get<AuthAccessResponse>('/auth/access')
+  return data
+}
+
+export async function getAuthAuditLogs(limit = 50, offset = 0): Promise<AuthAuditLogsResponse> {
+  const { data } = await apiClient.get<AuthAuditLogsResponse>('/auth/audit-logs', { params: { limit, offset } })
   return data
 }
 

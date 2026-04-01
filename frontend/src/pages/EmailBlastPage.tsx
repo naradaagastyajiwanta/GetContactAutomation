@@ -30,6 +30,7 @@ import { EmailCampaignList } from '../components/emailBlast/EmailCampaignList'
 import { EmailCampaignDetail } from '../components/emailBlast/EmailCampaignDetail'
 import { EmailSettingsPanel } from '../components/emailBlast/EmailSettingsPanel'
 import { EmailLetterHistory } from '../components/emailBlast/EmailLetterHistory'
+import { useAuth } from '../context/AuthContext'
 import type { EmailBlastCampaign } from '../api/emailBlast'
 
 // ─── Types ───────────────────────────────────────────────────────────────────
@@ -67,6 +68,7 @@ function EmailLeftRail({
   sentCount,
   activeStatusFilter,
   quota,
+  canManage,
 }: {
   activeView: View
   onViewChange: (v: View, campaignId?: number, status?: string) => void
@@ -76,6 +78,7 @@ function EmailLeftRail({
   sentCount: number
   activeStatusFilter: string
   quota?: { sent_today: number; daily_limit: number; remaining: number; is_exhausted: boolean }
+  canManage: boolean
 }) {
   const navItems: NavItem[] = [
     { id: 'inbox', label: 'Inbox', icon: Inbox, badge: inboxCount, section: 'messages' },
@@ -95,15 +98,17 @@ function EmailLeftRail({
   return (
     <aside className="flex w-[220px] shrink-0 flex-col bg-white dark:bg-[#111827] border-r border-gray-100 dark:border-gray-800/80">
       {/* New Campaign Button */}
-      <div className="p-3">
-        <button
-          onClick={() => onViewChange('campaign-detail', -1)}
-          className="flex w-full items-center justify-center gap-2 rounded-xl bg-indigo-600 px-4 py-2.5 text-sm font-semibold text-white shadow-sm transition-colors hover:bg-indigo-700 active:bg-indigo-800"
-        >
-          <Plus className="h-4 w-4" />
-          New Campaign
-        </button>
-      </div>
+      {canManage && (
+        <div className="p-3">
+          <button
+            onClick={() => onViewChange('campaign-detail', -1)}
+            className="flex w-full items-center justify-center gap-2 rounded-xl bg-indigo-600 px-4 py-2.5 text-sm font-semibold text-white shadow-sm transition-colors hover:bg-indigo-700 active:bg-indigo-800"
+          >
+            <Plus className="h-4 w-4" />
+            New Campaign
+          </button>
+        </div>
+      )}
 
       {/* Navigation */}
       <nav className="flex-1 space-y-0.5 overflow-y-auto px-3 pb-3">
@@ -273,20 +278,22 @@ function EmailLeftRail({
         </div>
 
         {/* Settings */}
-        <div className="mt-1">
-          <button
-            onClick={() => onViewChange('settings')}
-            className={cn(
-              'mb-0.5 flex w-full items-center gap-2.5 rounded-lg px-2 py-2 text-[13px] font-medium transition-all duration-150',
-              activeView === 'settings'
-                ? 'bg-indigo-600 text-white'
-                : 'text-gray-500 hover:bg-gray-50 hover:text-gray-900 dark:text-gray-400 dark:hover:bg-gray-800/60 dark:hover:text-white',
-            )}
-          >
-            <Settings className="h-4 w-4 shrink-0" />
-            Settings
-          </button>
-        </div>
+        {canManage && (
+          <div className="mt-1">
+            <button
+              onClick={() => onViewChange('settings')}
+              className={cn(
+                'mb-0.5 flex w-full items-center gap-2.5 rounded-lg px-2 py-2 text-[13px] font-medium transition-all duration-150',
+                activeView === 'settings'
+                  ? 'bg-indigo-600 text-white'
+                  : 'text-gray-500 hover:bg-gray-50 hover:text-gray-900 dark:text-gray-400 dark:hover:bg-gray-800/60 dark:hover:text-white',
+              )}
+            >
+              <Settings className="h-4 w-4 shrink-0" />
+              Settings
+            </button>
+          </div>
+        )}
       </nav>
     </aside>
   )
@@ -295,8 +302,10 @@ function EmailLeftRail({
 // ─── Main Page ────────────────────────────────────────────────────────────────
 
 export default function EmailBlastPage() {
+  const { hasPermission } = useAuth()
   const navigate = useNavigate()
   const params = useParams()
+  const canManageBlast = hasPermission('blast.manage')
 
   const campaignIdFromUrl = params.id ? parseInt(params.id) : undefined
 
@@ -317,6 +326,13 @@ export default function EmailBlastPage() {
   )
   const [showCompose, setShowCompose] = useState(false)
   const [statusFilter, setStatusFilter] = useState('')
+
+  useEffect(() => {
+    if (!canManageBlast && activeView === 'settings') {
+      setActiveView('campaigns')
+      navigate('/email-blast/campaigns')
+    }
+  }, [activeView, canManageBlast, navigate])
 
   // Sync state with URL when campaignIdFromUrl changes (navigating between campaigns)
   useEffect(() => {
@@ -345,6 +361,9 @@ export default function EmailBlastPage() {
   }
 
   function handleViewChange(view: View, campaignId?: number, status?: string) {
+    if (!canManageBlast && (view === 'settings' || campaignId === -1)) {
+      return
+    }
     setActiveView(view)
     if (status !== undefined) {
       setStatusFilter(status)
@@ -385,7 +404,7 @@ export default function EmailBlastPage() {
   // Content area
   function renderContent() {
     if (activeView === 'settings') {
-      return <EmailSettingsPanel />
+      return <EmailSettingsPanel canManage={canManageBlast} />
     }
 
     if (activeView === 'letter-history') {
@@ -396,6 +415,7 @@ export default function EmailBlastPage() {
       return (
         <EmailCampaignDetail
           campaignId={activeCampaignId}
+          canManage={canManageBlast}
           onClose={() => {
             setShowCompose(false)
             setActiveCampaignId(undefined)
@@ -422,6 +442,7 @@ export default function EmailBlastPage() {
         campaignCounts={campaignCounts}
         onSelect={handleCampaignSelect}
         onNew={handleNewCampaign}
+        canManage={canManageBlast}
         statusFilter={statusFilter}
         onStatusChange={setStatusFilter}
       />
@@ -440,6 +461,7 @@ export default function EmailBlastPage() {
         sentCount={totalSent}
         activeStatusFilter={statusFilter}
         quota={quota}
+        canManage={canManageBlast}
       />
 
       {/* Content Area */}
