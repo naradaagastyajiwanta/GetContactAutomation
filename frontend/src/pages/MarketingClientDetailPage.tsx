@@ -297,7 +297,7 @@ export default function MarketingClientDetailPage() {
                 size="sm"
                 onClick={handleBulkApprove}
                 loading={bulkApproveMutation.isPending}
-                disabled={clients.flatMap((c) => c.contacts).length === 0}
+                disabled={clients.flatMap((c) => c.contacts ?? []).length === 0}
               >
                 <CheckCircle2 className="h-4 w-4" />
                 Approve Semua

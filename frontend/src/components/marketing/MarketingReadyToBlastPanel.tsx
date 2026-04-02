@@ -23,7 +23,7 @@ interface MarketingReadyToBlastPanelProps {
 export function MarketingReadyToBlastPanel({ clients, groupId }: MarketingReadyToBlastPanelProps) {
   const [handoffOpen, setHandoffOpen] = useState(false)
 
-  const allContacts = clients.flatMap((c) => c.contacts)
+  const allContacts = clients.flatMap((c) => c.contacts ?? [])
   const { wa, email } = groupContactsByType(allContacts)
 
   const approvedSelectedContacts = allContacts.filter(

@@ -1,9 +1,13 @@
+import asyncio
 import hashlib
 import hmac
 import secrets
+import sqlite3
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 from typing import Any
 
+import aiosqlite
 from fastapi import HTTPException, Request, Response, WebSocket
 
 from orchestrator.config import cfg
@@ -189,12 +193,65 @@ async def can_bootstrap_auth() -> bool:
     return await count_active_auth_roles() == 0
 
 
+async def _sqlite_fallback_user(email: str, password: str) -> dict[str, Any] | None:
+    """
+    When MySQL is unreachable, allow login via SQLite auth_user_roles table
+    if AUTH_FALLBACK_PASSWORD is configured and matches.
+    """
+    fallback_pw = str(cfg.get("AUTH_FALLBACK_PASSWORD") or "").strip()
+    if not fallback_pw or not hmac.compare_digest(fallback_pw, password):
+        return None
+
+    db_path = Path(cfg.get("DATABASE_PATH", "data/getcontact.db"))
+    async with aiosqlite.connect(str(db_path)) as db:
+        db.row_factory = aiosqlite.Row
+        cursor = await db.execute(
+            """
+            SELECT r.dms_user_id, r.user_email, r.user_name, r.role_key
+            FROM auth_user_roles r
+            WHERE r.user_email = ? AND r.is_active = 1
+            LIMIT 1
+            """,
+            [email.strip().lower()],
+        )
+        row = await cursor.fetchone()
+
+    if not row:
+        return None
+
+    role_keys = [row["role_key"]]
+    return {
+        "dms_user_id": row["dms_user_id"],
+        "user_email": row["user_email"],
+        "user_name": row["user_name"],
+        "user_level": "",
+        "_auth_local_fallback": True,
+        "_role_keys": role_keys,
+    }
+
+
 async def validate_login_credentials(email: str, password: str) -> dict[str, Any]:
     normalized_email = (email or "").strip().lower()
     if not normalized_email or not password:
         raise HTTPException(status_code=422, detail="Email and password are required")
 
-    dms_user = await get_active_karyawan_by_email(normalized_email)
+    try:
+        dms_user = await asyncio.wait_for(
+            get_active_karyawan_by_email(normalized_email), timeout=5.0
+        )
+    except asyncio.TimeoutError:
+        # MySQL connection hanging (stale pool) — fall back to SQLite
+        local_user = await _sqlite_fallback_user(normalized_email, password)
+        if local_user:
+            return local_user
+        raise HTTPException(status_code=503, detail="Login service unavailable — please try again later")
+    except Exception:
+        # MySQL unreachable — fall back to SQLite local auth if configured
+        local_user = await _sqlite_fallback_user(normalized_email, password)
+        if local_user:
+            return local_user
+        raise HTTPException(status_code=503, detail="Login service unavailable — please try again later")
+
     if not dms_user:
         raise HTTPException(status_code=401, detail="Email or password is invalid")
 
@@ -217,7 +274,11 @@ async def create_session_for_user(
     dms_user: dict[str, Any],
     request: Request | None = None,
 ) -> dict[str, Any]:
-    role_keys = await get_auth_role_keys_for_user(int(dms_user["dms_user_id"]))
+    # SQLite fallback user has roles already embedded — skip DB lookup
+    if dms_user.get("_auth_local_fallback"):
+        role_keys = dms_user.get("_role_keys", [])
+    else:
+        role_keys = await get_auth_role_keys_for_user(int(dms_user["dms_user_id"]))
     if not role_keys and dms_user.get("_auth_default_password_used"):
         default_role_key = _default_role_key()
         await upsert_auth_user_role(

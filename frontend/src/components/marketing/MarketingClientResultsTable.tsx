@@ -246,8 +246,8 @@ function ClientCard({
     deleteClient.mutate({ clientId: client.id, groupId })
   }
 
-  const hasContacts = client.contacts.length > 0
-  const hasApproved = client.contacts.some((c) => c.is_approved)
+  const hasContacts = (client.contacts ?? []).length > 0
+  const hasApproved = (client.contacts ?? []).some((c) => c.is_approved)
 
   return (
     <Card padding={false} className="overflow-hidden">
@@ -284,7 +284,7 @@ function ClientCard({
           </div>
           <p className="mt-0.5 text-xs text-gray-500 dark:text-gray-400">
             {hasContacts
-              ? `${client.contacts.length} kontak · ${client.contacts.filter((c) => c.is_approved).length} approved`
+              ? `${(client.contacts ?? []).length} kontak · ${(client.contacts ?? []).filter((c) => c.is_approved).length} approved`
               : 'Belum ada kontak'}
           </p>
         </div>

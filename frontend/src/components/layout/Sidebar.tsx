@@ -19,6 +19,7 @@ import {
   Settings,
   ChevronRight,
   Folder,
+  Search,
   type LucideIcon,
 } from 'lucide-react'
 import { cn } from '../../lib/utils'
@@ -76,6 +77,7 @@ const NAV_SECTIONS: NavSection[] = [
       { to: '/whatsapp', label: 'WhatsApp', icon: Smartphone, permission: 'whatsapp.view' },
       { to: '/blast', label: 'WA Blast', icon: Megaphone, permission: 'blast.view' },
       { to: '/email-blast', label: 'Email Blast', icon: Mail, permission: 'blast.view' },
+      { to: '/marketing', label: 'Marketing Get Contact', icon: Search, permission: 'blast.view' },
     ],
   },
   {

@@ -48,12 +48,13 @@ async def list_groups(
 
 @router.get("/groups/{group_id}", response_model=dict)
 async def get_group(request: Request, group_id: int):
-    """Get a group with full client list."""
+    """Get a group with full client list and stats."""
     await require_permission(request, "marketing.view")
     group = await mkt.get_group_with_clients(group_id)
     if group is None:
         raise HTTPException(status_code=404, detail="Group not found")
-    return {"success": True, "group": group}
+    stats = await mkt.get_group_stats(group_id)
+    return {"success": True, "group": group, "stats": stats}
 
 
 @router.delete("/groups/{group_id}", response_model=dict)

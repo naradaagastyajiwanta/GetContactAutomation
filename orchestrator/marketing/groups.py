@@ -155,23 +155,55 @@ async def create_client(group_id: int, name: str, extra_data: dict | None = None
 
 
 async def list_clients(group_id: int) -> list[dict[str, Any]]:
-    """List all clients in a group with contact counts."""
+    """List all clients in a group with their contact results."""
     async with aiosqlite.connect(DATABASE_PATH) as db:
         cursor = await db.execute(
             """
             SELECT
                 c.id, c.group_id, c.name, c.extra_data, c.search_status, c.created_at,
-                COUNT(r.id) AS contact_count
+                r.id AS r_id, r.client_id AS r_client_id, r.contact_type,
+                r.value, r.source_url, r.source_type, r.confidence,
+                r.is_approved, r.is_selected, r.edited_value, r.created_at AS r_created_at
             FROM marketing_clients c
             LEFT JOIN marketing_contact_results r ON r.client_id = c.id
             WHERE c.group_id = ?
-            GROUP BY c.id
-            ORDER BY c.created_at DESC
+            ORDER BY c.created_at DESC, r.created_at DESC
             """,
             (group_id,),
         )
         rows = await cursor.fetchall()
-        return [_row_to_client_out(r) for r in rows]
+
+    # Group rows by client
+    clients_map: dict[int, dict[str, Any]] = {}
+    for row in rows:
+        cid = row[0]
+        if cid not in clients_map:
+            clients_map[cid] = {
+                "id": row[0],
+                "group_id": row[1],
+                "name": row[2],
+                "extra_data": json.loads(row[3]) if row[3] else None,
+                "search_status": row[4],
+                "created_at": row[5],
+                "contacts": [],
+            }
+        # Append contact if present (r_id is not None)
+        if row[6] is not None:
+            clients_map[cid]["contacts"].append({
+                "id": row[6],
+                "client_id": row[7],
+                "contact_type": row[8],
+                "value": row[9],
+                "source_url": row[10],
+                "source_type": row[11],
+                "confidence": row[12],
+                "is_approved": bool(row[13]),
+                "is_selected": bool(row[14]),
+                "edited_value": row[15],
+                "created_at": row[16],
+            })
+
+    return list(clients_map.values())
 
 
 async def get_client(client_id: int) -> dict[str, Any] | None:
@@ -289,6 +321,33 @@ async def update_contact_result(
         )
         await db.commit()
         return True
+
+
+async def get_group_stats(group_id: int) -> dict[str, int]:
+    """Get stats for a single group (total, found, not_found, pending, approved)."""
+    async with aiosqlite.connect(DATABASE_PATH) as db:
+        cursor = await db.execute(
+            """
+            SELECT
+                COUNT(c.id) AS total,
+                SUM(CASE WHEN c.search_status = 'found' THEN 1 ELSE 0 END) AS found,
+                SUM(CASE WHEN c.search_status = 'not_found' THEN 1 ELSE 0 END) AS not_found,
+                SUM(CASE WHEN c.search_status IN ('pending','searching') THEN 1 ELSE 0 END) AS pending,
+                SUM(CASE WHEN r.is_approved = 1 THEN 1 ELSE 0 END) AS approved
+            FROM marketing_clients c
+            LEFT JOIN marketing_contact_results r ON r.client_id = c.id
+            WHERE c.group_id = ?
+            """,
+            (group_id,),
+        )
+        row = await cursor.fetchone()
+        return {
+            "total": row[0] or 0,
+            "found": row[1] or 0,
+            "not_found": row[2] or 0,
+            "pending": row[3] or 0,
+            "approved": row[4] or 0,
+        }
 
 
 async def approve_all_in_group(group_id: int) -> int:

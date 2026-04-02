@@ -97,14 +97,16 @@ export async function getMarketingGroups(params?: {
   client_type?: ClientType | ''
 }): Promise<{ groups: MarketingGroup[]; total: number }> {
   const { data } = await apiClient.get('/marketing/groups', { params })
-  return data
+  // Backend returns {success, groups, total} — strip success wrapper
+  return { groups: data.groups, total: data.total }
 }
 
 export async function getMarketingGroup(
   groupId: number
 ): Promise<{ group: MarketingGroup; stats: GroupStats }> {
   const { data } = await apiClient.get(`/marketing/groups/${groupId}`)
-  return data
+  // Backend returns {success, group, stats} — strip success wrapper
+  return { group: data.group, stats: data.stats }
 }
 
 export async function createMarketingGroup(payload: {
@@ -112,7 +114,8 @@ export async function createMarketingGroup(payload: {
   client_type: ClientType
 }): Promise<{ id: number }> {
   const { data } = await apiClient.post('/marketing/groups', payload)
-  return data
+  // Backend returns {success, group: {id, name, ...}} — extract id
+  return { id: data.group.id }
 }
 
 export async function deleteMarketingGroup(groupId: number): Promise<void> {
@@ -125,7 +128,8 @@ export async function getMarketingClients(
   groupId: number
 ): Promise<{ clients: MarketingClient[] }> {
   const { data } = await apiClient.get(`/marketing/groups/${groupId}/clients`)
-  return data
+  // Backend returns {success, clients} — strip success wrapper
+  return { clients: data.clients }
 }
 
 export async function addMarketingClient(
@@ -133,7 +137,8 @@ export async function addMarketingClient(
   payload: { name: string }
 ): Promise<{ id: number }> {
   const { data } = await apiClient.post(`/marketing/groups/${groupId}/clients`, payload)
-  return data
+  // Backend returns {success, client: {id, ...}} — extract id
+  return { id: data.client.id }
 }
 
 export async function deleteMarketingClient(clientId: number): Promise<void> {
@@ -150,15 +155,18 @@ export async function updateMarketingContact(
     edited_value?: string
   }
 ): Promise<{ contact: MarketingContact }> {
-  const { data } = await apiClient.patch(`/marketing/contacts/${contactId}`, payload)
-  return data
+  // Backend returns {success} only — fetch updated contact after patch
+  await apiClient.patch(`/marketing/contacts/${contactId}`, payload)
+  // Return payload as optimistic contact (id is known)
+  return { contact: { id: contactId, ...payload } as unknown as MarketingContact }
 }
 
 export async function bulkApproveGroupContacts(
   groupId: number
 ): Promise<{ approved: number }> {
   const { data } = await apiClient.post(`/marketing/groups/${groupId}/approve-all`)
-  return data
+  // Backend returns {success, approved} — strip success wrapper
+  return { approved: data.approved }
 }
 
 // ── Import / Export API ────────────────────────────────────────────────────
@@ -174,14 +182,34 @@ export async function importPreview(
     formData,
     { headers: { 'Content-Type': 'multipart/form-data' } }
   )
-  return data
+  // Backend returns {detected_columns, preview, total_rows, duplicates}
+  // Map to frontend's ImportPreview interface {columns, rows, total_rows, duplicates}
+  return {
+    columns: data.detected_columns ?? [],
+    rows: data.preview ?? [],
+    total_rows: data.total_rows ?? 0,
+    duplicates: data.duplicates ?? 0,
+  }
 }
 
 export async function importCommit(
-  groupId: number
+  groupId: number,
+  file: File
 ): Promise<ImportResult> {
-  const { data } = await apiClient.post(`/marketing/groups/${groupId}/import/commit`)
-  return data
+  const formData = new FormData()
+  formData.append('file', file)
+  const { data } = await apiClient.post(
+    `/marketing/groups/${groupId}/import/commit`,
+    formData,
+    { headers: { 'Content-Type': 'multipart/form-data' } }
+  )
+  // Backend returns {success, inserted, skipped_empty, duplicates}
+  // Map skipped_empty → skipped for frontend interface
+  return {
+    inserted: data.inserted,
+    skipped: data.skipped_empty,
+    duplicates: data.duplicates,
+  }
 }
 
 export async function exportGroupClients(groupId: number): Promise<Blob> {
@@ -199,6 +227,8 @@ export interface SearchStatus {
   total: number
   found: number
   not_found: number
+  pending: number
+  searching: number
   error_message?: string
 }
 
@@ -208,7 +238,21 @@ export async function startGroupSearch(groupId: number): Promise<void> {
 
 export async function getSearchStatus(groupId: number): Promise<SearchStatus> {
   const { data } = await apiClient.get(`/marketing/groups/${groupId}/search/status`)
-  return data
+  const stats = data.stats
+  // Backend returns {success, stats: {total, pending, searching, found, not_found, error_count, approved, errors}}
+  // Map to frontend SearchStatus interface
+  return {
+    status: (stats.found + stats.not_found + stats.error_count > 0 && stats.pending + stats.searching === 0)
+      ? 'done' as GroupStatus
+      : 'searching' as GroupStatus,
+    progress: (stats.total ?? 0) - (stats.pending ?? 0) - (stats.searching ?? 0),
+    total: stats.total ?? 0,
+    found: stats.found ?? 0,
+    not_found: stats.not_found ?? 0,
+    pending: stats.pending ?? 0,
+    searching: stats.searching ?? 0,
+    error_message: (stats.errors ?? [])[0]?.message,
+  }
 }
 
 // ── Handoff API ─────────────────────────────────────────────────────────────
@@ -220,5 +264,12 @@ export async function handoffGroup(
   const { data } = await apiClient.post(`/marketing/groups/${groupId}/handoff`, {
     handoff_type: handoffType,
   })
-  return data
+  // Backend returns {success, campaign_id, wa_count, email_count, handoff_id, message}
+  // Map to HandoffResult interface
+  return {
+    success: data.success,
+    campaign_id: data.campaign_id,
+    campaign_type: handoffType,
+    message: data.message,
+  }
 }

@@ -142,8 +142,9 @@ export function useImportPreview() {
 export function useImportCommit() {
   const qc = useQueryClient()
   return useMutation({
-    mutationFn: (groupId: number) => importCommit(groupId),
-    onSuccess: (_data, groupId) => {
+    mutationFn: ({ groupId, file }: { groupId: number; file: File }) =>
+      importCommit(groupId, file),
+    onSuccess: (_data, { groupId }) => {
       qc.invalidateQueries({ queryKey: mkKeys.groupClients(groupId) })
       qc.invalidateQueries({ queryKey: mkKeys.groupDetail(groupId) })
     },
