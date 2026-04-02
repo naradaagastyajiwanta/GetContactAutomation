@@ -1,952 +1,663 @@
-# GetContactAI Agent
+# GetContactAI
 
-**AI-Powered Outreach & Intelligence Platform for Indonesian Universities**
+AI-assisted outreach and intelligence platform for Indonesian universities.
 
-Automated WhatsApp outreach with AI-driven conversations to collect university contact information, enriched with OSINT intelligence, CRM profiles, audiensi scheduling, and DMS integration.
+GetContactAI is a multi-service monorepo that combines contact discovery, WhatsApp outreach, audiensi scheduling, OSINT enrichment, CRM profiling, blast operations, email campaigns, and DMS integration in one operational dashboard.
 
 ![Python](https://img.shields.io/badge/Python-3.11+-3776AB?style=flat&logo=python&logoColor=white)
+![FastAPI](https://img.shields.io/badge/FastAPI-009688?style=flat&logo=fastapi&logoColor=white)
 ![Node.js](https://img.shields.io/badge/Node.js-20+-339933?style=flat&logo=node.js&logoColor=white)
 ![React](https://img.shields.io/badge/React-18-61DAFB?style=flat&logo=react&logoColor=white)
-![FastAPI](https://img.shields.io/badge/FastAPI-009688?style=flat&logo=fastapi&logoColor=white)
 ![TypeScript](https://img.shields.io/badge/TypeScript-5-blue?style=flat&logo=typescript&logoColor=white)
-![License](https://img.shields.io/badge/License-MIT-yellow.svg)
+![SQLite](https://img.shields.io/badge/SQLite-runtime_storage-003B57?style=flat&logo=sqlite&logoColor=white)
 
----
+## Table of Contents
 
-## What It Does
+1. [What This Project Is](#what-this-project-is)
+2. [Current Project State](#current-project-state)
+3. [System Overview](#system-overview)
+4. [Main Product Flows](#main-product-flows)
+5. [Repository Structure](#repository-structure)
+6. [Technology Stack](#technology-stack)
+7. [Runtime Data and Storage](#runtime-data-and-storage)
+8. [Local Development](#local-development)
+9. [Docker Deployment](#docker-deployment)
+10. [Environment Variables](#environment-variables)
+11. [How the Core Contact Pipeline Works](#how-the-core-contact-pipeline-works)
+12. [Conversation and Scheduling Flows](#conversation-and-scheduling-flows)
+13. [Frontend Surface Area](#frontend-surface-area)
+14. [Operational Notes](#operational-notes)
+15. [Common Commands](#common-commands)
+16. [Troubleshooting](#troubleshooting)
 
-GetContactAI automates outreach to Indonesian universities through a multi-channel, AI-driven pipeline:
+## What This Project Is
 
-| Channel | Description |
-|---------|-------------|
-| **Contact Collection** | PDDIKTI → IG Handle Discovery → IG Post Scraping → Phone Extraction → WhatsApp Outreach |
-| **Audiensi** | Auto-queue from successful contact → PDF Invitation → Zoom Scheduling |
-| **OSINT** | Web Profiling → Social Intel → Key People → News → Contact Enrichment (LangGraph) |
-| **CRM** | Identity Resolution → Academic Profiler → Social Profiler → Personal/Family Info (LangGraph) |
-| **Blast** | Bulk WhatsApp messaging with templates, human-like delays |
-| **Email Blast** | SMTP (SOCKS5 proxy) + IMAP reply tracking, letter numbering |
-| **DMS MySQL** | Sync schedules, contacts, approvals with external DMS system |
+This repository is not a single chatbot service. It is a working monorepo with three primary runtime services and several domain modules behind them:
 
----
+| Service | Role | Default Local Port |
+| --- | --- | --- |
+| `orchestrator` | Main backend, state machines, scheduler, APIs, database access, AI orchestration | `8000` |
+| `whatsapp-service` | Baileys-based WhatsApp bridge, multi-device session handling, outbound queueing, webhook forwarding | `3100` |
+| `frontend` | React dashboard for monitoring, operating, and reviewing all workflows | `5173` |
 
-## Architecture
+On top of those services, the codebase contains multiple business domains:
 
-Three independent services communicate via HTTP and WebSocket:
+| Domain | Purpose |
+| --- | --- |
+| Contact collection | Find university Instagram handles, scrape posts, extract phone numbers, run outreach |
+| Audiensi | Continue successful outreach into scheduling and PDF invitation flow |
+| OSINT | Build institutional intelligence from public web and social data |
+| CRM | Build person-level profiles for PICs and contacts |
+| WhatsApp Blast | Bulk outbound campaigns with queueing and anti-ban controls |
+| Email Blast | SMTP and IMAP driven outbound email campaigns with reply tracking |
+| DMS Integration | Synchronize contacts, schedules, approvals, and research with external MySQL-backed systems |
+| Auth and permissions | Role-based access for dashboard users |
 
+## Current Project State
+
+The repo is broad and operationally ambitious. Not every module has the same maturity or infrastructure dependency profile.
+
+### What is clearly implemented in code
+
+| Area | State in Repo |
+| --- | --- |
+| Core contact funnel | Implemented end-to-end: university collection, IG search, post scraping, phone extraction, WhatsApp outreach, follow-up logic |
+| Conversation engine | Implemented with state machine plus optional agentic reply path |
+| WhatsApp bridge | Implemented with device management, message queue, webhook forwarding, anti-ban hooks, and multi-device support |
+| Dashboard | Implemented with pages for universities, pipeline, conversations, WhatsApp, settings, blast, email blast, DMS, CRM, and audiensi |
+| Dynamic runtime config | Implemented via SQLite-backed config table, with DB values overriding defaults |
+| Auth and permission gates | Implemented in backend and frontend protected routes |
+
+### Areas that exist but are more infrastructure-heavy
+
+| Area | Notes |
+| --- | --- |
+| OSINT pipeline | Present in codebase and wired into API, but depends on external providers and real research conditions |
+| CRM pipeline | Present in codebase and exposed in dashboard, but relies on high-quality search and enrichment inputs |
+| Email blast | Present and substantial, but operational quality depends on SMTP, IMAP, proxy, and mailbox setup |
+| DMS sync and research | Present and integrated, but requires real external MySQL connectivity and domain data |
+| Instagram scraping | Works through multiple fallbacks, but is naturally sensitive to account health, cookies, proxying, and platform changes |
+
+### Practical summary
+
+If you want to understand the project quickly, treat it as:
+
+1. A contact discovery and outreach system at its core.
+2. An operations dashboard around that core.
+3. Several adjacent automation modules that extend the workflow after contact acquisition.
+
+## System Overview
+
+### High-level architecture
+
+```text
+                                   Browser
+                                      |
+                                      | HTTP + WebSocket
+                                      v
+                    +---------------------------------------+
+                    | Frontend (React + Vite)               |
+                    | Dashboard, pipeline control, review   |
+                    +------------------+--------------------+
+                                       |
+                                       | /api, /ws
+                                       v
+                    +---------------------------------------+
+                    | Orchestrator (FastAPI)                |
+                    | API surface, scheduler, state, AI     |
+                    | SQLite, config, auth, DMS, email      |
+                    +------------------+--------------------+
+                                       |
+                   +-------------------+-------------------+
+                   |                                       |
+                   | outbound send                         | webhook register / incoming replies
+                   v                                       ^
+          +------------------------+             +--------------------------+
+          | WhatsApp Service       |             | WhatsApp network         |
+          | Baileys + device mgr   |             | real conversations       |
+          | queue + anti-ban       |             +--------------------------+
+          +------------------------+
 ```
-┌──────────────────────────────────────────────────────────────────────────────┐
-│                          FRONTEND (React + Vite)                             │
-│                         Port 5173 · TanStack Query + WS                      │
-│  Dashboard · Universities · Pipeline · Conversations · Audiensi · CRM          │
-│  Blast · Email Blast · DMS Schedules · Settings                              │
-└────────────────────────────────┬─────────────────────────────────────────────┘
-                                 │ HTTP / WebSocket
-┌────────────────────────────────▼─────────────────────────────────────────────┐
-│                        ORCHESTRATOR (Python FastAPI)                          │
-│                              Port 8000                                        │
-│                                                                              │
-│  ┌─────────────────────────────────────────────────────────────────────────┐ │
-│  │  Endpoints: /universities /conversations /pipeline /audiensi /osint    │ │
-│  │            /crm /dms /blast /email-blast /wa /config /learning        │ │
-│  │            /ig-accounts /knowledge-items /api-logs                     │ │
-│  └─────────────────────────────────────────────────────────────────────────┘ │
-│                                                                              │
-│  ┌──────────────────┐  ┌───────────────────┐  ┌──────────────────────────┐  │
-│  │  MessageQueue     │  │  Scheduler        │  │  State Machines         │  │
-│  │  AI Semaphore     │  │  APScheduler      │  │  Contact + Audiensi      │  │
-│  │  + WA Send Queue  │  │  (Outreach+Follow)│  │  ReAct Agent            │  │
-│  └──────────────────┘  └───────────────────┘  └──────────────────────────┘  │
-│                                                                              │
-│  ┌──────────────────────────┐  ┌──────────────────────────────────────────┐  │
-│  │  LangGraph Pipelines     │  │  IG Agents (3-tier search)               │  │
-│  │  OSINT · CRM · Research  │  │  Find Handles · Scrape · Extract Phones │  │
-│  └──────────────────────────┘  └──────────────────────────────────────────┘  │
-└────────────────────────────────┬─────────────────────────────────────────────┘
-                                 │ HTTP POST /send · /send-document
-┌────────────────────────────────▼─────────────────────────────────────────────┐
-│                      WHATSAPP SERVICE (Node.js + Express)                    │
-│                             Port 3100                                        │
-│                                                                              │
-│  ┌──────────────────────────┐  ┌──────────────────────────────────────────┐  │
-│  │  DeviceManager             │  │  MessageQueue (SQLite-backed, persistent) │  │
-│  │  Multi-device (≤5)        │  │  pending → sending → sent/failed        │  │
-│  │  Baileys WASocket         │  │  Retry logic + deduplication            │  │
-│  │  QR auth · Auto-reconnect │  │  Rate limiting                          │  │
-│  └──────────────────────────┘  └──────────────────────────────────────────┘  │
-└──────────────────────────────────────────────────────────────────────────────┘
-                                 │
-                                 │ WhatsApp Protocol
-                                 ▼
-                            📱 WhatsApp Cloud
+
+### Local ports vs Docker ports
+
+The project supports both direct local development and containerized deployment. Ports differ between those modes.
+
+| Service | Local Dev | Docker Compose |
+| --- | --- | --- |
+| Frontend | `5173` | `3010` |
+| Orchestrator | `8000` | `8000` |
+| WhatsApp Service | `3100` | `3110` exposed from container `3100` |
+| PinchTab | optional | `9867` |
+| WARP SOCKS proxy | optional | internal service |
+
+## Main Product Flows
+
+### 1. Contact discovery and WhatsApp outreach
+
+```text
+PDDIKTI or manual university input
+  -> university records in SQLite
+  -> Agent 1 finds Instagram handles
+  -> Agent 2 scrapes Instagram posts and related accounts
+  -> Agent 3 extracts phone numbers from captions and images
+  -> scheduler picks eligible contacts
+  -> outbound WhatsApp message is queued
+  -> replies return through webhook
+  -> conversation state machine decides next action
+  -> success updates university secretariat phone
 ```
 
----
+### 2. Audiensi continuation
 
-## Tech Stack
+```text
+GOT_NUMBER from contact outreach
+  -> auto-queue audiensi conversation
+  -> send invitation context and follow-up
+  -> generate or regenerate PDF invitation
+  -> approve or reject flow
+  -> send Zoom details
+  -> sync schedules and related information into DMS
+```
 
-### Orchestrator (Python)
-| Component | Technology | Purpose |
-|-----------|-------------|---------|
-| Framework | FastAPI + Uvicorn | Async HTTP API |
-| Database | SQLite (aiosqlite) + WAL mode | Persistent storage |
-| AI | OpenAI GPT-4o-mini, GPT-4o | Vision OCR, Chat, Reasoning |
-| Orchestration | LangGraph | OSINT, CRM, Research pipelines |
-| Scheduler | APScheduler | Outreach loops, follow-ups, agent cron |
-| IG Scraping | Playwright, Apify, ScrapingBot, Serper | Instagram data collection |
-| External DB | aiomysql | DMS MySQL integration |
-| Phone Parsing | phonenumbers (libphonenumber) | Indonesian number validation |
+### 3. Intelligence and profiling
 
-### WhatsApp Service (Node.js)
-| Component | Technology | Purpose |
-|-----------|------------|---------|
-| Runtime | Node.js 20+ | JS runtime |
-| Framework | Express.js | HTTP server |
-| WhatsApp | @whiskeysockets/baileys | WA protocol |
-| Queue DB | better-sqlite3 | Persistent message queue |
-| Logging | pino | Structured logging |
-| Metrics | prom-client | Prometheus metrics |
+```text
+University or PIC selected
+  -> run OSINT workflow for institution-level enrichment
+  -> run CRM workflow for person-level profiling
+  -> store structured results for operations use
+```
 
-### Frontend (React)
-| Component | Technology | Purpose |
-|-----------|------------|---------|
-| Framework | React 18 + Vite | UI |
-| Routing | React Router 6 | SPA navigation |
-| State | TanStack React Query 5 | Server state + caching |
-| Styling | Tailwind CSS 3 | Utility-first CSS |
-| Icons | Lucide React | Icon library |
-| HTTP | axios | API client |
+### 4. Campaign operations
 
----
+```text
+Existing contacts and universities
+  -> WhatsApp blast campaigns
+  -> Email blast campaigns
+  -> progress tracking in dashboard and WebSocket updates
+```
 
-## Prerequisites
+## Repository Structure
 
-### Software
-- **Python 3.11+** — [python.org](https://www.python.org/downloads/)
-- **Node.js 20+** — [nodejs.org](https://nodejs.org/)
-- **Git** — [git-scm.com](https://git-scm.com/downloads)
+```text
+GetContactAI/
+|- orchestrator/            Python FastAPI backend and domain modules
+|- whatsapp-service/        Node.js TypeScript WhatsApp bridge
+|- frontend/                React dashboard
+|- data/                    SQLite database, generated docs, runtime assets
+|- docs/                    Architecture and public documentation
+|- nginx/                   Reverse proxy configuration
+|- scripts/                 Utility scripts for setup and maintenance
+|- docker-compose.yml       Main production-like container topology
+|- Dockerfile.orchestrator
+|- Dockerfile.whatsapp
+|- Dockerfile.frontend
+|- start-all.bat            Windows helper for local startup
+|- stop-all.bat             Windows helper for local stop
+|- STARTUP.md               Short startup guide
+```
 
-### Required API Keys
-| Service | Purpose | Get It |
-|---------|---------|--------|
-| `OPENAI_API_KEY` | GPT-4o Vision & Chat | [platform.openai.com](https://platform.openai.com) |
-| `SERPER_API_KEY` | Google search for IG handle discovery | [serper.dev](https://serper.dev) |
+### Backend structure
 
-### Optional API Keys
-| Service | Purpose |
-|---------|---------|
-| `IG_USERNAME` / `IG_PASSWORD` | Direct IG scraping via Playwright |
-| `APIFY_API_KEY` | Fallback IG data extraction |
-| `GEMINI_API_KEY` | Gap-filler in CRM pipeline |
-| `TAVILY_API_KEY` | OSINT research enhancement |
-| `DMS_MYSQL_HOST/PORT/USER/PASSWORD/DATABASE` | External DMS MySQL sync |
+| Path | Responsibility |
+| --- | --- |
+| `orchestrator/main.py` | FastAPI app, lifespan, webhook handling, main API endpoints |
+| `orchestrator/db.py` | SQLite schema and database queries |
+| `orchestrator/conversation.py` | Contact outreach conversation state machine |
+| `orchestrator/scheduler.py` | Scheduled jobs for outreach, follow-up, and agent batches |
+| `orchestrator/message_queue.py` | Serialized outbound WhatsApp queue and AI concurrency gate |
+| `orchestrator/agents/` | Instagram and rector discovery agents |
+| `orchestrator/audiensi/` | Audiensi workflow and PDF generation |
+| `orchestrator/osint/` | OSINT graph and tools |
+| `orchestrator/crm/` | CRM graph and person profiling |
+| `orchestrator/research_agents/` | Research flow for DMS and meeting prep |
+| `orchestrator/email_blast.py` | Email sending, inbox watching, and campaign management |
+| `orchestrator/blast_service.py` | WhatsApp bulk campaign execution |
+| `orchestrator/auth/` | Session, role, and permission handling |
 
----
+### WhatsApp service structure
 
-## Quick Start
+| Path | Responsibility |
+| --- | --- |
+| `whatsapp-service/src/index.ts` | Express app, webhook forwarding, send endpoints, QR and status APIs |
+| `whatsapp-service/src/deviceManager.ts` | Device lifecycle and Baileys socket management |
+| `whatsapp-service/src/messageQueue.ts` | Persistent SQLite-backed queue for WhatsApp sends |
+| `whatsapp-service/src/antiBan.ts` | Anti-ban and reachout timing logic |
+| `whatsapp-service/src/rateLimiter.ts` | Request rate limiting |
+| `whatsapp-service/src/metrics.ts` | Metrics and operational instrumentation |
+
+### Frontend structure
+
+| Path | Responsibility |
+| --- | --- |
+| `frontend/src/App.tsx` | Route registration and page composition |
+| `frontend/src/api/` | API clients by domain |
+| `frontend/src/hooks/` | React Query wrappers and WebSocket hooks |
+| `frontend/src/context/` | Auth, theme, toast, and WebSocket providers |
+| `frontend/src/pages/` | Main dashboard pages |
+| `frontend/src/components/` | Domain components and UI primitives |
+
+## Technology Stack
+
+### Orchestrator
+
+| Area | Technology |
+| --- | --- |
+| Web framework | FastAPI + Uvicorn |
+| Storage | SQLite via `aiosqlite` |
+| AI | OpenAI chat and vision models |
+| Scheduling | APScheduler |
+| Scraping and browsing | Playwright, DDGS, Serper, Apify, ScrapingBot |
+| External integration | MySQL via `aiomysql`, SMTP, IMAP, SOCKS proxy |
+| File processing | `openpyxl`, `python-docx`, PDF utilities |
+
+### WhatsApp service
+
+| Area | Technology |
+| --- | --- |
+| Runtime | Node.js |
+| Framework | Express |
+| WhatsApp | `@whiskeysockets/baileys` |
+| Queue storage | `better-sqlite3` |
+| Logging | `pino` |
+| QR generation | `qrcode` |
+
+### Frontend
+
+| Area | Technology |
+| --- | --- |
+| UI | React 18 |
+| Build tool | Vite |
+| Routing | React Router 6 |
+| Server state | TanStack React Query 5 |
+| Styling | Tailwind CSS 3 |
+| HTTP | Axios |
+
+## Runtime Data and Storage
+
+### Main runtime data
+
+| Path | What lives there |
+| --- | --- |
+| `data/getcontact.db` | Main SQLite database |
+| `whatsapp-service/auth_store*` | WhatsApp auth sessions, including per-device stores |
+| `whatsapp-service/data/` | WhatsApp service queue and related runtime data |
+| `data/audiensi_docs/` | Generated audiensi invitation files |
+| `data/email_attachments/` | Email campaign attachments |
+| `data/templates/` | Template assets |
+| `data/pw_sessions/` | Playwright or browser session artifacts |
+
+### Core database tables
+
+The database is much larger than a simple outreach tracker. A few tables matter most when onboarding to the project.
+
+| Table | Purpose |
+| --- | --- |
+| `universities` | Base institution records and status funnel |
+| `ig_posts` | Scraped Instagram content |
+| `ig_contacts` | Extracted phone numbers and contacts |
+| `conversations` | Outreach message history and conversation state |
+| `daily_quota` | Daily outbound usage tracking |
+| `config` | Runtime configuration persisted in DB |
+| `auth_*` | Dashboard user roles, sessions, audit logs, upgrade requests |
+| `conversation_analyses`, `lessons` | Learning and reflection artifacts |
+| `blast_*`, `email_*` | Campaign management and delivery data |
+
+## Local Development
+
+### Prerequisites
+
+| Requirement | Notes |
+| --- | --- |
+| Python 3.11+ | Required for orchestrator |
+| Node.js 20+ | Recommended for frontend and WhatsApp service |
+| OpenAI API key | Required for meaningful AI behaviour |
+| Serper API key | Optional fallback; DuckDuckGo path exists in codebase |
+| Real WhatsApp number | Required if you want real message delivery |
+
+### Recommended local startup order
+
+The startup order matters because the orchestrator attempts to register its webhook into the WhatsApp service at boot.
+
+1. Start `whatsapp-service`
+2. Start `orchestrator`
+3. Start `frontend`
+
+### Install dependencies
+
+#### PowerShell
+
+```powershell
+python -m pip install -r requirements.txt
+
+Push-Location whatsapp-service
+npm install
+Pop-Location
+
+Push-Location frontend
+npm install
+Pop-Location
+```
+
+#### Bash
 
 ```bash
-# 1. Clone
-git clone https://github.com/your-org/GetContactAI.git
-cd GetContactAI
-
-# 2. Install Python dependencies
 pip install -r requirements.txt
 
-# 3. Install Node.js dependencies
 cd whatsapp-service && npm install && cd ..
 cd frontend && npm install && cd ..
-
-# 4. Configure environment
-cp .env.example .env
-# Edit .env: fill in OPENAI_API_KEY and SERPER_API_KEY
-
-# 5. Initialize database (auto-created on first run too)
-python scripts/setup_db.py
-
-# 6. Start all three services
-# Terminal 1 — WhatsApp Service
-cd whatsapp-service && npm run dev
-
-# Terminal 2 — Orchestrator
-python -m uvicorn orchestrator.main:app --port 8000 --reload
-
-# Terminal 3 — Frontend
-cd frontend && npm run dev
 ```
 
-### Access Points
+### Prepare environment
 
-| Service | URL |
-|---------|-----|
-| Frontend | http://localhost:5173 |
-| Swagger UI | http://localhost:8000/docs |
-| ReDoc | http://localhost:8000/redoc |
-| Health Check | http://localhost:8000/health |
+Create a `.env` file from the example and fill the minimum keys.
 
----
+#### PowerShell
 
-## Configuration
+```powershell
+Copy-Item .env.example .env
+```
 
-### Environment Variables
+#### Bash
 
 ```bash
-# ═══════════════════════════════════════════════════
-# REQUIRED
-# ═══════════════════════════════════════════════════
-OPENAI_API_KEY=sk-...          # OpenAI API key
-SERPER_API_KEY=...              # Serper.dev API key
+cp .env.example .env
+```
 
-# ═══════════════════════════════════════════════════
-# DATABASE
-# ═══════════════════════════════════════════════════
-DATABASE_PATH=data/getcontact.db   # SQLite database path
+At minimum you normally need:
 
-# ═══════════════════════════════════════════════════
-# WHATSAPP SERVICE
-# ═══════════════════════════════════════════════════
+```env
+OPENAI_API_KEY=...
 WA_SERVICE_URL=http://localhost:3100
 WEBHOOK_URL=http://localhost:8000/webhook/incoming
+DATABASE_PATH=data/getcontact.db
+```
 
-# ═══════════════════════════════════════════════════
-# OUTREACH (WIB = UTC+7)
-# ═══════════════════════════════════════════════════
-OUTREACH_START_HOUR=7           # Start sending at 07:00 WIB
-OUTREACH_END_HOUR=22            # Stop sending at 22:00 WIB
-MAX_DAILY_CONVERSATIONS=20      # Daily conversation quota
-MIN_MESSAGE_GAP_SECONDS=30      # Min gap between messages
+### Run locally
 
-# ═══════════════════════════════════════════════════
-# AI SETTINGS
-# ═══════════════════════════════════════════════════
-AGENT_MODEL=gpt-4o-mini         # Chat model
-VISION_MODEL=gpt-4o-mini         # Vision OCR model
-MAX_AI_CONCURRENT=3              # Max parallel AI calls
+#### Terminal 1 - WhatsApp service
 
-# ═══════════════════════════════════════════════════
-# OPTIONAL: IG SCRAPING
-# ═══════════════════════════════════════════════════
+```bash
+cd whatsapp-service
+npm run dev
+```
+
+#### Terminal 2 - Orchestrator
+
+```bash
+python -m uvicorn orchestrator.main:app --port 8000 --reload
+```
+
+#### Terminal 3 - Frontend
+
+```bash
+cd frontend
+npm run dev
+```
+
+### Local access points
+
+| Surface | URL |
+| --- | --- |
+| Frontend | `http://localhost:5173` |
+| FastAPI Swagger | `http://localhost:8000/docs` |
+| FastAPI ReDoc | `http://localhost:8000/redoc` |
+| Health endpoint | `http://localhost:8000/health` |
+| WhatsApp status | `http://localhost:3100/status` |
+
+## Docker Deployment
+
+The root `docker-compose.yml` is not a minimal demo stack. It includes support services for real operational conditions.
+
+### Services in Docker Compose
+
+| Service | Purpose |
+| --- | --- |
+| `whatsapp` | WhatsApp bridge |
+| `orchestrator` | Main backend |
+| `frontend` | Built frontend served by internal web server |
+| `warp` | SOCKS5 proxy path used for scraping and email routing |
+| `pinchtab` | Headless browser automation service |
+
+### Start with Docker Compose
+
+```bash
+docker compose up -d --build
+docker compose logs -f
+```
+
+### Docker access points
+
+| Surface | URL |
+| --- | --- |
+| Frontend | `http://localhost:3010` |
+| Orchestrator | `http://localhost:8000` |
+| WhatsApp service | `http://localhost:3110` |
+| PinchTab | `http://localhost:9867` |
+
+### Important Docker notes
+
+1. Compose uses `.env.production` for the orchestrator container by default.
+2. The containerized orchestrator points `WA_SERVICE_URL` to the internal service name, not `localhost`.
+3. The containerized orchestrator registers `WEBHOOK_URL` using the internal Docker hostname, not the host machine URL.
+
+## Environment Variables
+
+The project has many config keys, but you do not need everything on day one.
+
+### Common minimum set
+
+```env
+OPENAI_API_KEY=...
+DATABASE_PATH=data/getcontact.db
+WA_SERVICE_URL=http://localhost:3100
+WEBHOOK_URL=http://localhost:8000/webhook/incoming
+OUTREACH_START_HOUR=7
+OUTREACH_END_HOUR=22
+MAX_DAILY_CONVERSATIONS=20
+MIN_MESSAGE_GAP_SECONDS=30
+AGENT_MODEL=gpt-4o-mini
+VISION_MODEL=gpt-4o-mini
+MAX_AI_CONCURRENT=3
+```
+
+### Frequently useful optional keys
+
+```env
+SERPER_API_KEY=...
 IG_USERNAME=...
 IG_PASSWORD=...
 APIFY_API_KEY=...
 
-# ═══════════════════════════════════════════════════
-# OPTIONAL: DMS MYSQL
-# ═══════════════════════════════════════════════════
 DMS_MYSQL_HOST=...
 DMS_MYSQL_PORT=3306
 DMS_MYSQL_USER=...
 DMS_MYSQL_PASSWORD=...
 DMS_MYSQL_DATABASE=...
 
-# ═══════════════════════════════════════════════════
-# OPTIONAL: EMAIL BLAST SMTP (SOCKS5 proxy required)
-# ═══════════════════════════════════════════════════
-SMTP_HOST=mail.asosiasi.ai
+SMTP_HOST=...
 SMTP_PORT=465
-SMTP_USERNAME=sekretariat@asosiasi.ai
+SMTP_USERNAME=...
 SMTP_PASSWORD=...
-SMTP_USE_SSL=true
-SMTP_SOCKS5_HOST=...
-SMTP_SOCKS5_PORT=1080
+SMTP_SOCKS_ENABLED=true
+SMTP_SOCKS_HOST=...
+SMTP_SOCKS_PORT=1080
 ```
 
-### Dynamic Configuration
+### Config precedence
 
-All settings are **runtime-adjustable** via the Settings page or API. Values persist in the SQLite `config` table (DB overrides .env).
+Many values are runtime-adjustable from the Settings UI or API and persisted into the SQLite `config` table. In practice that means DB-backed config can override your original environment defaults.
 
-```bash
-# View all config
-GET /config
+## How the Core Contact Pipeline Works
 
-# Update a setting (persists to DB, takes effect immediately)
-PATCH /config
-{"key": "MAX_DAILY_CONVERSATIONS", "value": "50"}
-```
+### Stage 1 - University source
 
----
+Universities can come from PDDIKTI collection, import flows, or manual creation.
 
-## Data Flow
+### Stage 2 - Instagram handle discovery
 
-### Contact Collection Pipeline
+The orchestrator tries to find official Instagram handles through a tiered strategy:
 
-```
-PDDIKTI API ──▶ Universities DB ──▶ Agent 1 (IG Handles)
-                                          │
-                                          ▼
-                                   Agent 2 (IG Posts)
-                                          │
-                                          ▼
-                                   Agent 3 (GPT-4o Vision OCR)
-                                          │
-                                          ▼
-                              ig_contacts + universities.status='contacted'
-                                          │
-                                          ▼
-                               Scheduler → MessageQueue → WhatsApp Service
-                                          │
-                                          ▼
-                              WhatsApp ──▶ Reply ──▶ Orchestrator
-                                          │            │
-                                          │    ┌───────┴───────┐
-                                          │    │               │
-                                          │  got_number    refused
-                                          │    │               │
-                                          ▼    ▼               ▼
-                                  auto-queue       polite close
-                                  audiensi
-```
+1. Web search and DuckDuckGo driven discovery
+2. Instagram web search fallback
+3. University website scraping
 
-### Audiensi Pipeline
+Accepted results update the university row and move status toward `ig_found`.
 
-```
-GOT_NUMBER (contact) ──▶ auto_queue → audiensi_conversations
-                                            │
-                            ┌───────────────┼───────────────┐
-                            │               │               │
-                         PDF invite      Zoom link       follow-up
-                            │               │               │
-                            └───────────────┴───────────────┘
-                                            │
-                                            ▼
-                              DMS MySQL ← sync_schedules
-```
+### Stage 3 - Instagram post scraping
 
----
+The scraper collects relevant posts from the main university Instagram and, where present, related accounts such as BEM or similar operational accounts.
 
-## Conversation States
+### Stage 4 - Phone extraction
 
-### Contact Outreach (Chatbot 1)
+The extractor combines caption parsing with image-based OCR and saves normalized contacts into `ig_contacts`.
 
-```
+### Stage 5 - Outreach
+
+The scheduler selects universities in the right state, chooses an eligible contact without an existing conversation, creates a conversation record, and enqueues a WhatsApp message through the orchestrator send queue.
+
+### Stage 6 - Reply processing
+
+Replies come back through the WhatsApp service webhook, are normalized by the orchestrator, then routed into the contact conversation manager or audiensi manager depending on the current phone context.
+
+## Conversation and Scheduling Flows
+
+### Contact conversation states
+
+The core contact chatbot revolves around these states:
+
+```text
 PENDING
-    │
-    ▼ (first message sent)
-INITIAL_SENT
-    │
-    ▼ (waiting for reply)
-WAITING_REPLY
-    │
-    ├──────────▶ GOT_NUMBER      ✅ Success (terminal)
-    ├──────────▶ REFUSED          ❌ Contact refused (terminal)
-    ├──────────▶ NEED_MORE        🔄 Follow-up needed
-    ├──────────▶ NO_REPLY         ⏰ No response (legacy)
-    ├──────────▶ ABANDONED        ⏹️ Max attempts (terminal)
-    └──────────▶ UNDELIVERED      📵 Message failed (terminal)
+  -> INITIAL_SENT
+  -> WAITING_REPLY / FOLLOWUP_SENT / NEED_MORE
+  -> GOT_NUMBER | REFUSED | ABANDONED | UNDELIVERED
 ```
 
-### Audiensi (Chatbot 2)
+What matters operationally is:
 
-```
-QUEUED ──▶ MESSAGE_SENT ──▶ WAITING_REPLY
-                                    │
-              ┌─────────────────────┼─────────────────────┐
-              │                     │                     │
-           APPROVED               REFUSED            ZOOM_SENT
-          ✅ (terminal)           ❌ (terminal)       📅 (terminal)
-```
+1. `GOT_NUMBER` is success.
+2. `REFUSED`, `ABANDONED`, and `UNDELIVERED` are terminal outcomes.
+3. Follow-ups are scheduled based on elapsed time since the last outbound contact.
 
----
+### Audiensi continuation
 
-## LangGraph Pipelines
+When a contact conversation successfully yields the right number, the system can auto-queue an audiensi workflow. That flow has its own conversation logic, document generation, and Zoom follow-up handling.
 
-### OSINT Pipeline (`osint/graph.py`)
+## Frontend Surface Area
 
-```
-START → load_existing_data
-             │
-             ▼
-    parallel_research (asyncio.gather)
-    ├── web_profiler      → address, phone, email, faculty, org structure
-    ├── social_intel      → official social media accounts
-    ├── key_people        → rectors, secretaries, BEM contacts
-    └── news_scanner      → recent news and events
-             │
-             ▼
-    contact_enricher (needs key_people + web_profiler output)
-             │
-             ▼
-    reviewer (QA gate)
-             │
-        ┌────┴────┐
-      approved  retry → selective_retry → reviewer
-        (loop)
-        │
-        ▼
-    persist_results → osint_profiles, osint_contacts, osint_social_media
-             │
-             ▼
-           END
-```
+The frontend is already much broader than a single dashboard page. Major pages include:
 
-### CRM Pipeline (`crm/graph.py`)
+| Page | Purpose |
+| --- | --- |
+| Dashboard | Funnel overview, quotas, summary metrics |
+| Universities | Search, filter, inspect, import, and group universities |
+| University Detail | Inspect posts, contacts, related IGs |
+| Pipeline | Trigger agents, inspect activity logs, control execution |
+| Conversations | Review outreach states and message history |
+| WhatsApp | Manage QR and connection state |
+| Audiensi | Track scheduling workflow |
+| CRM | Review and run person profiling requests |
+| Blast | WhatsApp campaign operations |
+| Email Blast | Email campaign creation and reply tracking |
+| DMS Schedules | Review DMS-sourced schedules and research state |
+| Settings | Config, access, exports, health, IG account management |
 
-```
-START → load_existing
-             │
-             ▼
-    identity_resolver (PDDIKTI → DuckDuckGo/Brave search)
-             │
-             ▼
-    parallel_phase_1 (asyncio.gather)
-    ├── academic_profiler    → education, publications, research
-    ├── social_profiler      → LinkedIn, Instagram, Facebook, email, phone
-    └── campus_context       → campus problems, concerns, hopes
-             │
-             ▼
-    parallel_phase_2 (uses phase_1 output)
-    ├── personal_interest    → hobbies, food, activities, personality
-    └── family_info          → marital status, spouse, children, residence
-             │
-             ▼
-    profile_compiler (merge all → CompiledProfile)
-             │
-             ▼
-    gap_filler (re-query missing fields via Gemini)
-             │
-             ▼
-    persist_results → crm_pic_profiles, crm_profile_sources
-             │
-             ▼
-           END
-```
+### Realtime behaviour
 
-### Research Pipeline (`research_agents/graph.py`) — DMS Audiensi Research
+The frontend uses WebSocket updates from the orchestrator to avoid excessive polling when live events are available. Query hooks fall back to periodic refetch when the WebSocket is not connected.
 
-```
-START → rector_agent (Who is the rector?)
-             │
-             ▼
-    rector gate
-      │ found + city       │ not found (retry ≤ 1)  │ not found (retry > 1)
-      ▼                     ▼                        ▼
-  birth_city_lookup    rector_agent (loop)      finalize (partial)
-      │
-      ▼
-    research_topics (6 agents in parallel via asyncio.gather)
-    tourism × 3 agents · food × 2 agents · psychographics × 1 agent
-      │
-      ▼
-    finalize → research results stored → DMS MySQL sync
-```
+## Operational Notes
 
----
+### This project is stateful
 
-## Project Structure
+You are not dealing with a stateless API demo. Runtime health depends on:
 
-```
-GetContactAI/
-├── orchestrator/                    # Python FastAPI backend
-│   ├── main.py                     # FastAPI app · 150+ endpoints
-│   ├── config.py                   # ConfigManager (DB-precedent) · logging
-│   ├── config_registry.py          # All dynamic config keys + defaults
-│   ├── db.py                       # SQLite schema (20+ tables) · aiosqlite
-│   ├── conversation.py             # Chatbot 1 state machine + GPT-4o-mini
-│   ├── message_queue.py            # AI semaphore + serial WA send queue
-│   ├── scheduler.py                # APScheduler jobs · ThreadPoolExecutor
-│   ├── instagram.py                # IG search + phone extraction + verification
-│   ├── playwright_ig.py            # IG account pool (Playwright WASocket)
-│   ├── websocket.py                # WebSocket broadcast manager
-│   ├── blast_service.py            # WA blast worker
-│   ├── email_blast.py              # SMTP (SOCKS5) + IMAP reply tracking
-│   ├── dms_mysql.py               # DMS MySQL pool + tables
-│   ├── university_groups.py        # University group management
-│   ├── audiensi_research.py       # Research result DB + table
-│   │
-│   ├── agents/                     # IG contact discovery agents
-│   │   ├── ig_handle_finder.py    # 3-tier: website → IG Web → Serper
-│   │   ├── ig_post_scraper.py     # Playwright IG scraping
-│   │   ├── ig_phone_extractor.py  # GPT-4o Vision OCR on images
-│   │   ├── bem_finder.py          # BEM/relevant IG discovery
-│   │   └── rector_finder.py       # Rector name from website + PDDIKTI
-│   │
-│   ├── agent/                      # Core AI + learning system
-│   │   ├── react_agent.py         # ReAct loop for AI replies
-│   │   ├── learning.py            # Conversation analysis + lesson generation
-│   │   ├── situation_detector.py  # Reply classification
-│   │   ├── tools.py               # Shared agent tools
-│   │   └── prompts.py             # System prompts
-│   │
-│   ├── osint/                     # OSINT LangGraph pipeline
-│   │   ├── state.py              # State definition
-│   │   ├── graph.py              # LangGraph StateGraph workflow
-│   │   ├── web_profiler.py       # University web scraping
-│   │   ├── social_intel.py       # Social media discovery
-│   │   ├── key_people.py         # Key personnel finder
-│   │   ├── news_scanner.py       # News monitoring
-│   │   ├── contact_enricher.py   # Contact aggregation
-│   │   ├── reviewer.py           # QA review agent
-│   │   └── tools.py              # Shared OSINT tools
-│   │
-│   ├── crm/                       # CRM LangGraph pipeline
-│   │   ├── state.py             # State definition
-│   │   ├── graph.py             # LangGraph workflow
-│   │   ├── identity_resolver.py # PDDIKTI + search identity
-│   │   ├── academic_profiler.py # Education + publications
-│   │   ├── social_profiler.py   # LinkedIn · Instagram · Facebook
-│   │   ├── campus_context.py    # Campus problems / concerns / hopes
-│   │   ├── personal_interest.py # Hobbies · food · personality
-│   │   ├── family_info.py      # Marital status · family
-│   │   ├── profile_compiler.py # Merge all → CompiledProfile
-│   │   └── tools.py             # Shared CRM tools
-│   │
-│   ├── audiensi/                  # Audiensi scheduling
-│   │   ├── conversation.py       # Chatbot 2 state machine
-│   │   ├── states.py            # AudiensiState enum
-│   │   ├── auto_queue.py       # Auto-queue from GOT_NUMBER
-│   │   ├── pdf_generator.py    # PDF invitation generation
-│   │   ├── prompts.py           # Audiensi system prompts
-│   │   ├── react_agent.py      # Audiensi ReAct agent
-│   │   └── tools.py            # Audiensi tools
-│   │
-│   ├── research_agents/           # DMS research LangGraph
-│   │   ├── state.py            # ResearchState
-│   │   ├── graph.py            # Research LangGraph
-│   │   ├── reviewer.py         # Research QA
-│   │   ├── gemini_caller.py    # Gemini API caller
-│   │   └── agents/
-│   │       ├── rector_agent.py
-│   │       ├── birth_city_lookup.py
-│   │       ├── psychographics_agent.py
-│   │       └── topic_agents.py  # tourism × 3, food × 2
-│   │
-│   └── osint/                    # OSINT tools + clients
-│       ├── state.py
-│       ├── graph.py
-│       ├── tavily_client.py    # Tavily search
-│       ├── pinchtab_client.py  # Email enrichment
-│       ├── pw_auth_client.py   # Password auth
-│       └── ...
-│
-├── whatsapp-service/              # Node.js WhatsApp bridge
-│   ├── src/
-│   │   ├── index.ts            # Express server · webhook · message handling
-│   │   ├── deviceManager.ts    # Multi-device WASocket management
-│   │   ├── messageQueue.ts     # SQLite-backed persistent queue
-│   │   ├── rateLimiter.ts      # Token bucket rate limiter
-│   │   ├── healthAndMetrics.ts # Health endpoints
-│   │   └── metrics.ts          # Prometheus metrics
-│   ├── data/
-│   │   └── message_queue.db   # Persistent message queue
-│   └── package.json
-│
-├── frontend/                      # React dashboard
-│   ├── src/
-│   │   ├── App.tsx            # Router setup (15 routes)
-│   │   ├── api/
-│   │   │   └── client.ts      # axios + interceptors
-│   │   ├── context/
-│   │   │   └── WebSocketContext.tsx  # Real-time updates
-│   │   ├── pages/
-│   │   │   ├── DashboardPage.tsx
-│   │   │   ├── UniversitiesPage.tsx
-│   │   │   ├── UniversityDetailPage.tsx
-│   │   │   ├── PipelinePage.tsx
-│   │   │   ├── ConversationsPage.tsx
-│   │   │   ├── ConversationDetailPage.tsx
-│   │   │   ├── LearningPage.tsx
-│   │   │   ├── WhatsAppPage.tsx
-│   │   │   ├── AudiensiQueuePage.tsx
-│   │   │   ├── AudiensiDetailPage.tsx
-│   │   │   ├── KnowledgeBasePage.tsx
-│   │   │   ├── ApiLogsPage.tsx
-│   │   │   ├── BlastCampaignsPage.tsx
-│   │   │   ├── BlastCampaignDetailPage.tsx
-│   │   │   ├── EmailBlastPage.tsx
-│   │   │   ├── EmailBlastCampaignsPage.tsx
-│   │   │   ├── EmailBlastCampaignDetailPage.tsx
-│   │   │   ├── DmsSchedulesPage.tsx
-│   │   │   ├── DmsScheduleDetailPage.tsx
-│   │   │   ├── CrmPage.tsx
-│   │   │   ├── CrmDetailPage.tsx
-│   │   │   ├── UniversityGroupsPage.tsx
-│   │   │   └── SettingsPage.tsx
-│   │   └── components/
-│   │       ├── layout/AppShell.tsx   # Sidebar + main layout
-│   │       └── ui/                    # Base UI components
-│   └── package.json
-│
-├── scripts/
-│   ├── setup_db.py               # DB initialization
-│   └── ...
-│
-├── data/                          # Runtime data (gitignored)
-│   ├── getcontact.db            # SQLite database
-│   ├── auth_store/              # WhatsApp session auth (per device)
-│   ├── auth_store_backup/       # Auth backup
-│   ├── audiensi_docs/          # Generated PDFs
-│   └── templates/              # Email blast templates
-│
-├── docker-compose.yml
-├── Dockerfile.orchestrator
-├── Dockerfile.whatsapp
-├── Dockerfile.frontend
-└── README.md
-```
+1. SQLite data integrity.
+2. Valid WhatsApp auth sessions.
+3. Valid IG sessions or fallback scraping methods.
+4. External provider connectivity.
+5. Correct config values persisted in DB.
 
----
+### The webhook path matters
 
-## Database Schema
+The orchestrator registers its webhook into the WhatsApp service at startup. If the WhatsApp service is not running first, incoming message handling will not be wired automatically until registration succeeds later.
 
-SQLite database at `data/getcontact.db` — schema auto-created on startup. WAL mode enabled for concurrent read/write.
+### Scheduler behaviour matters
 
-### Core Tables
+The project can perform work without manual button clicks. If you are debugging, always check whether scheduled jobs, pause state, quota limits, or time windows are affecting behaviour.
 
-| Table | Description |
-|-------|-------------|
-| `universities` | PDDIKTI-sourced universities, IG handles, status funnel |
-| `ig_contacts` | Phone numbers extracted via GPT-4o Vision from IG posts |
-| `ig_posts` | Scraped IG posts with captions and image URLs |
-| `ig_accounts` | Managed IG account pool for scraping (username, password, login status) |
-| `conversations` | Contact outreach state machine, message_history (JSON), extracted_number |
-| `daily_quota` | `date TEXT PRIMARY KEY` → messages_sent, conversations_started |
+### Auth now exists
 
-### Audiensi Tables
+The dashboard is no longer just an open admin console. Protected routes and backend role checks are present, so some pages and operations depend on the active user session and permissions.
 
-| Table | Description |
-|-------|-------------|
-| `audiensi_conversations` | Phase-2 Zoom scheduling conversations |
-| `university_related_igs` | BEM, humas, PMB IG accounts discovered per university |
+## Common Commands
 
-### Agent + Learning Tables
-
-| Table | Description |
-|-------|-------------|
-| `conversation_analyses` | Post-mortem of completed conversations |
-| `lessons` | Learned strategies keyed by situation_type + province |
-| `strategy_metrics` | Per-conversation strategy tracking |
-| `pipeline_logs` | Agent execution logs (find_handles, scrape_posts, extract_phones) |
-
-### OSINT Tables
-
-| Table | Description |
-|-------|-------------|
-| `osint_profiles` | University web profiling results |
-| `osint_contacts` | Aggregated contacts from multiple sources |
-| `osint_social_media` | Social media accounts per university |
-| `osint_news` | News items per university |
-| `osint_runs` | OSINT pipeline execution history |
-
-### CRM Tables
-
-| Table | Description |
-|-------|-------------|
-| `crm_requests` | Profile requests (PIC name, university, priority) |
-| `crm_pic_profiles` | Full PIC profiles (identity, academic, social, personal, family) |
-| `crm_profile_runs` | CRM pipeline execution history |
-| `crm_profile_sources` | Per-field data source tracking with confidence |
-
-### Blast Tables
-
-| Table | Description |
-|-------|-------------|
-| `blast_campaigns` | WA bulk messaging campaigns |
-| `blast_recipients` | Campaign recipients with rendered message |
-| `email_blast_campaigns` | Email campaigns with template + attachment |
-| `email_blast_recipients` | Email recipients with rendered content |
-| `email_inbox_cache` | IMAP inbox cache (reply tracking) |
-| `email_sent_cache` | IMAP sent folder cache |
-| `email_outbox` | All outgoing emails (campaign + test) |
-| `email_blast_letter_config` | Letter numbering (auto-increment per year) |
-
-### Support Tables
-
-| Table | Description |
-|-------|-------------|
-| `university_groups` | Named groups of universities |
-| `university_group_members` | Group membership |
-| `knowledge_items` | Chatbot knowledge base with trigger keywords |
-| `api_call_logs` | Per-conversation API call audit (prompt_tokens, completion_tokens) |
-| `config` | Dynamic runtime configuration (DB-persisted) |
-
----
-
-## API Reference
-
-### Key Endpoints
-
-```http
-# ── Health ──────────────────────────────────────────────────────────
-GET  /health                        # Full health check (IG, WA, DMS)
-GET  /dashboard                     # System statistics
-
-# ── Universities ──────────────────────────────────────────────────────
-GET    /universities                # List with filters (status, province, search...)
-POST   /universities                # Create university (single or bulk)
-POST   /universities/import         # Import from CSV/Excel
-GET    /universities/export-excel    # Export contacts as .xlsx
-GET    /universities/{id}           # University detail
-DELETE /universities/{id}/ig-handle  # Reset IG handle (force re-search)
-GET    /universities/{id}/contacts   # IG contacts for university
-GET    /universities/{id}/posts      # IG posts for university
-GET    /universities/{id}/related-igs # BEM/humas/pmb IG accounts
-GET    /universities/with-emails     # Universities with email_kampus
-GET    /universities/provinces       # Distinct province list
-PATCH  /universities/{id}/toggle-enabled
-PATCH  /universities/bulk-toggle
-
-# ── Pipeline ──────────────────────────────────────────────────────────
-POST /pipeline/collect-universities  # Fetch from PDDIKTI API
-POST /pipeline/find-ig-handles       # Agent 1: IG handle discovery
-POST /pipeline/scrape-ig-posts       # Agent 2: scrape IG posts
-POST /pipeline/extract-phones        # Agent 3: GPT-4o Vision OCR
-POST /pipeline/discover-bem           # Agent 4: BEM IG discovery
-POST /pipeline/find-rectors          # Agent 5: rector name finder
-POST /pipeline/run-agent-targeted     # Targeted agent run
-GET  /pipeline/status
-GET  /pipeline/logs
-
-# ── Outreach ──────────────────────────────────────────────────────────
-POST /outreach/start                 # Trigger daily outreach loop
-POST /outreach/process-followups     # Manual follow-up processing
-
-# ── Conversations ────────────────────────────────────────────────────
-GET  /conversations                  # List (state, university_id filters)
-GET  /conversations/{id}             # Detail with full message history
-POST /conversations/test             # Test conversation (real WA delivery)
-
-# ── Control ───────────────────────────────────────────────────────────
-POST /control/pause
-POST /control/resume
-GET  /control/status
-POST /control/chatbot/{chatbot_type}  # Enable/disable chatbot type
-
-# ── Audiensi ──────────────────────────────────────────────────────────
-GET  /audiensi                       # All audiensi conversations
-GET  /audiensi/queue                 # Queue (state=QUEUED)
-GET  /audiensi/{id}
-POST /audiensi/{id}/approve         # Approve + schedule Zoom
-POST /audiensi/{id}/reject
-POST /audiensi/{id}/send-zoom
-GET  /audiensi/{id}/pdf             # Download generated PDF
-POST /audiensi/{id}/regenerate-pdf
-POST /audiensi/template/upload
-
-# ── WhatsApp ─────────────────────────────────────────────────────────
-GET  /wa/qr                          # QR code for device_1
-GET  /wa/status                      # WA connection status
-GET  /wa/devices                     # All devices
-GET  /wa/devices/{id}/qr
-POST /wa/devices/{id}/connect
-POST /wa/devices/{id}/disconnect
-POST /wa/devices/{id}/reset
-POST /wa/bulk-send                  # Bulk text message
-POST /wa/bulk-send-document         # Bulk document + caption
-
-# ── IG Accounts ──────────────────────────────────────────────────────
-GET  /ig-accounts                    # List managed IG accounts
-POST /ig-accounts                    # Add IG account
-PUT  /ig-accounts/{id}
-DELETE /ig-accounts/{id}
-POST /ig-accounts/{id}/login         # Initiate login
-POST /ig-accounts/{id}/login/challenge  # OTP verification
-POST /ig-accounts/{id}/test-login   # Test session validity
-GET  /ig-accounts/{id}/test-login-live  # Live connection check
-GET  /ig-accounts/{id}/session/export  # Export session cookies
-POST /ig-accounts/{id}/session/import-cookies  # Import session
-GET  /ig-accounts/health             # Pool health status
-
-# ── OSINT ─────────────────────────────────────────────────────────────
-POST /osint/run/{university_id}      # Run OSINT for one university
-POST /osint/run-batch               # Run OSINT for batch
-GET  /osint/profile/{university_id}
-GET  /osint/runs
-GET  /osint/runs/{run_id}
-
-# ── CRM ───────────────────────────────────────────────────────────────
-POST /crm/requests                   # Create profile request
-GET  /crm/requests
-GET  /crm/requests/{id}
-POST /crm/requests/{id}/run          # Execute CRM pipeline
-GET  /crm/profiles/{id}
-PATCH /crm/profiles/{id}            # Update profile fields
-GET  /crm/stats
-
-# ── DMS ───────────────────────────────────────────────────────────────
-GET  /dms/health
-GET  /dms/stats
-GET  /dms/schedules                  # All schedules
-GET  /dms/schedules/today
-GET  /dms/schedules/{id}
-GET  /dms/followups
-GET  /dms/approvals
-GET  /dms/meetings
-GET  /dms/pics/search
-GET  /dms/universities/search
-POST /dms/sync/contacts             # Sync extracted contacts to DMS
-POST /dms/sync/schedules            # Sync schedules from DMS
-POST /dms/research/run-tomorrow     # Research H-1 audiensi schedules
-POST /dms/research/schedule/{id}    # Research specific schedule
-GET  /dms/research/results
-GET  /dms/research/results/{schedule_id}
-
-# ── Blast ─────────────────────────────────────────────────────────────
-GET  /blast/contacts                 # Blast-eligible contacts
-POST /blast/check-previously-blasted
-POST /blast/campaigns               # Create campaign
-GET  /blast/campaigns
-GET  /blast/campaigns/{id}
-PUT  /blast/campaigns/{id}
-DELETE /blast/campaigns/{id}
-POST /blast/campaigns/{id}/recipients/add-all
-POST /blast/campaigns/{id}/recipients
-GET  /blast/campaigns/{id}/recipients
-POST /blast/campaigns/{id}/start
-POST /blast/campaigns/{id}/pause
-POST /blast/campaigns/{id}/cancel
-
-# ── Email Blast ───────────────────────────────────────────────────────
-POST /email-blast/campaigns
-GET  /email-blast/campaigns
-GET  /email-blast/campaigns/{id}
-PATCH /email-blast/campaigns/{id}
-POST /email-blast/campaigns/{id}/start
-POST /email-blast/campaigns/{id}/pause
-POST /email-blast/campaigns/{id}/cancel
-POST /email-blast/campaigns/{id}/retry-failed
-GET  /email-blast/campaigns/{id}/recipients
-GET  /email-blast/campaigns/{id}/sent-emails
-GET  /email-blast/campaigns/{id}/inbox
-POST /email-blast/campaigns/{id}/attachment
-GET  /email-blast/campaigns/{id}/attachment
-GET  /email-blast/inbox             # IMAP inbox view
-GET  /email-blast/sent-emails      # IMAP sent folder view
-GET  /email-blast/letter-config
-POST /email-blast/letter-config
-POST /email-blast/test-smtp
-POST /email-blast/test-imap
-GET  /email-blast/debug-campaign-replies/{id}
-
-# ── Knowledge ──────────────────────────────────────────────────────────
-GET  /knowledge-items
-POST /knowledge-items
-PATCH /knowledge-items/{id}
-DELETE /knowledge-items/{id}
-POST /knowledge-items/upload         # Upload CSV/JSON
-
-# ── Learning ──────────────────────────────────────────────────────────
-GET  /learning/lessons               # Active lessons
-GET  /learning/analyses              # Unprocessed conversation analyses
-GET  /learning/stats
-POST /learning/trigger-reflection    # Run learning reflection manually
-
-# ── Config ────────────────────────────────────────────────────────────
-GET  /config                         # All config values
-PATCH /config                       # Update a config key
-DELETE /config/{key}
-GET  /config/models                  # Available AI models
-
-# ── University Groups ────────────────────────────────────────────────
-GET  /university-groups
-POST /university-groups
-GET  /university-groups/{id}
-PUT  /university-groups/{id}
-DELETE /university-groups/{id}
-POST /university-groups/{id}/universities/add
-POST /university-groups/{id}/universities/remove
-GET  /university-groups/{id}/university-ids
-
-# ── API Logs ─────────────────────────────────────────────────────────
-GET  /api-logs
-GET  /api-logs/{id}
-
-# ── Export ────────────────────────────────────────────────────────────
-GET  /export/csv
-```
-
-Full interactive documentation: **http://localhost:8000/docs**
-
----
-
-## Scheduler Jobs
-
-| Job | Schedule | Description |
-|-----|----------|-------------|
-| `daily_outreach` | Every 30 min (7–22 WIB) | Send initial WA messages to `ig_scraped` universities |
-| `process_followups` | Every hour (7–22 WIB) | Follow-up at 24h / 48h; mark `ABANDONED` at max attempts |
-| `agent_handle_finder` | Every 2 hours (8–20 WIB) | Agent 1: find IG handles for pending universities |
-| `agent_post_scraper` | Every 3 hours (8–20 WIB) | Agent 2: scrape IG posts |
-| `agent_phone_extractor` | Every hour (8–21 WIB) | Agent 3: GPT-4o Vision OCR on post images |
-| `agent_bem_discovery` | Every 4 hours (9–19 WIB) | Agent 4: discover BEM/relevant IG accounts |
-| `agent_rector_finder` | Every 4 hours (8–20 WIB) | Agent 5: find rector names |
-| `learning_reflection` | 08:00, 14:00, 20:00 WIB | Analyze completed conversations, generate lessons |
-| `dms_sync_schedules` | Every 30 min | Sync audiensi schedules from DMS MySQL |
-| `dms_contact_sync` | Every 2 hours (8–20 WIB) | Sync extracted contacts to DMS |
-| `dms_research_run_tomorrow` | Daily 18:00 WIB | Research H-1 audiensi schedules |
-| `dms_research_safety_check` | Every 4 hours (8–22 WIB) | Catch unresearched upcoming schedules |
-| `ig_health_check` | Every 5 min | Log unhealthy IG account pool members |
-| `periodic_ig_health_check` | Every 5 min | Periodic IG session health log |
-
----
-
-## Deployment
-
-### Docker Compose (Recommended)
+### Local development
 
 ```bash
-docker-compose up -d
-docker-compose logs -f
-docker-compose down
+# Backend
+python -m uvicorn orchestrator.main:app --port 8000 --reload
+
+# Frontend
+cd frontend && npm run dev
+
+# WhatsApp service
+cd whatsapp-service && npm run dev
 ```
 
-### Manual Build
+### Basic operations
 
 ```bash
-docker build -f Dockerfile.orchestrator -t getcontact-orchestrator .
-docker build -f Dockerfile.whatsapp    -t getcontact-whatsapp .
-docker build -f Dockerfile.frontend    -t getcontact-frontend .
+# Health
+curl http://localhost:8000/health
 
-docker run -p 8000:8000 --env-file .env getcontact-orchestrator
-docker run -p 3100:3100              getcontact-whatsapp
-docker run -p 5173:80                 getcontact-frontend
+# Trigger collection
+curl -X POST http://localhost:8000/pipeline/collect-universities
+
+# Trigger Agent 1
+curl -X POST http://localhost:8000/pipeline/find-ig-handles
+
+# Trigger Agent 2
+curl -X POST http://localhost:8000/pipeline/scrape-ig-posts
+
+# Trigger Agent 3
+curl -X POST http://localhost:8000/pipeline/extract-phones
+
+# Start outreach loop manually
+curl -X POST http://localhost:8000/outreach/start
+
+# Pause and resume
+curl -X POST http://localhost:8000/control/pause
+curl -X POST http://localhost:8000/control/resume
 ```
 
-### WhatsApp Device Setup
+### Windows helpers
 
-1. Navigate to **WhatsApp** page (port 5173)
-2. Select device → click **Connect**
-3. Scan QR code with WhatsApp app
-4. Wait for "connected" status
-5. Up to **5 devices** supported
-
----
-
-## Development
-
-### Code Conventions
-
-| Language | Style |
-|----------|-------|
-| Python | PEP 8 · `black` formatter · strict type hints |
-| TypeScript | Strict mode · functional components + hooks |
-| React | React 18 · TanStack Query patterns |
-
-### Running Tests
-
-```bash
-# Python (pytest)
-pytest orchestrator/tests/
-
-# Node.js
-npm test --prefix whatsapp-service
+```powershell
+.\start-all.bat
+.\stop-all.bat
 ```
 
-### Key Design Patterns
+## Troubleshooting
 
-- **LRU Phone Lock** (`main.py`): Prevents concurrent processing of same phone number across debounce windows
-- **AI Semaphore** (`message_queue.py`): `Semaphore(MAX_AI_CONCURRENT)` gates all AI calls to prevent rate limits
-- **Serial WA Queue** (`message_queue.py`): Background worker drains queue with `SEND_INTERVAL_MS` gap for human-like sending cadence
-- **Agent ThreadPool** (`scheduler.py`): Heavy Playwright/IG ops run in `ThreadPoolExecutor` so FastAPI event loop stays responsive
-- **Config Precedence** (`config.py`): DB value > .env > registry default — runtime changes without restart
-- **Dual-mode Chatbot** (`conversation.py`): Falls back from ReAct agent to legacy state machine on error
-- **SQLite WAL Mode** (`db.py`): Concurrent read/write from multiple threads via `PRAGMA journal_mode=WAL`
+| Problem | Likely Cause | What to Check |
+| --- | --- | --- |
+| QR does not appear | WhatsApp service not healthy | `http://localhost:3100/status` locally or container logs |
+| Orchestrator says webhook not registered | WhatsApp service started late or unavailable | Start WhatsApp service first and restart orchestrator |
+| Bot sends nothing | Pause state, quota, no eligible contacts, wrong time window | Check Settings, pipeline status, and `daily_quota` |
+| Incoming messages are ignored | No conversation exists for that phone or chatbot disabled | Check conversation records and control state |
+| IG scraping quality drops | Session health, proxy issues, platform changes | Check IG accounts, proxy path, fallback provider setup |
+| Email blast is unreliable | SMTP, IMAP, or SOCKS proxy misconfiguration | Validate mailbox config and connectivity |
+| Docker works but local dev does not | Port or env mismatch | Compare `WA_SERVICE_URL`, `WEBHOOK_URL`, and actual ports |
 
----
+## Final Orientation
 
-## License
+If you are new to this repository, the fastest way to build a correct mental model is:
 
-MIT License — see [LICENSE](LICENSE) file.
+1. Start with the core trio: `orchestrator/main.py`, `orchestrator/conversation.py`, and `whatsapp-service/src/index.ts`.
+2. Then inspect `orchestrator/scheduler.py` and `orchestrator/agents/`.
+3. Then move to `frontend/src/App.tsx`, `frontend/src/pages/PipelinePage.tsx`, and `frontend/src/pages/ConversationsPage.tsx`.
+4. Only after that expand into `audiensi/`, `crm/`, `osint/`, `email_blast.py`, and DMS sync.
 
----
-
-*Built for Indonesian Universities* 🇮🇩
-
+That order matches how the project behaves in real operation: discover contacts first, run outreach second, then layer intelligence and campaign workflows on top.
