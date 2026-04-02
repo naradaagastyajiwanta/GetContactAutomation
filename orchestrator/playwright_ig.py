@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import asyncio
 import base64 as _b64
+import html as _html
 import json
 import os
 import random
@@ -806,6 +807,11 @@ class _PlaywrightBrowser:
         Fetch full profile info + recent posts via IG's internal
         ``/api/v1/users/web_profile_info/`` endpoint.
 
+        On 401, do not destroy the imported browser session immediately.
+        Some accounts retain browser/profile access while IG rejects the
+        internal API from the current runtime fingerprint. Callers can then
+        fall back to HTML scraping in the same browser context.
+
         On 401 (session expired), attempts one re-login and retries.
         Returns the raw ``data.user`` dict on success, or *None*.
         """
@@ -814,15 +820,17 @@ class _PlaywrightBrowser:
         if resp is None:
             return None
 
-        # Detect 401 — session possibly expired despite ensure_logged_in passing
+        # Detect 401 — API auth may be limited even though the browser session
+        # is still usable for page navigation / HTML scraping.
         if resp.get("__error") and resp.get("status") == 401 and not _retried:
             acct_label = self._account.username if self._account else "(legacy)"
-            log.info("[Playwright] @%s: web_profile_info returned 401, "
-                     "attempting re-login for @%s...", username, acct_label)
-            if self._force_relogin():
-                _time.sleep(2)
-                return self.ig_get_web_profile(username, _retried=True)
-            log.warning("[Playwright] @%s: re-login failed, giving up API path", acct_label)
+            _pw_status["error"] = "profile_api_auth_limited"
+            log.info(
+                "[Playwright] @%s: web_profile_info returned 401 on @%s; "
+                "keeping browser session and falling back to HTML profile scraping",
+                username,
+                acct_label,
+            )
             return None
 
         if resp.get("__error"):
@@ -2121,13 +2129,13 @@ def pw_search_profiles(query: str, max_results: int = 10) -> list[dict]:
                         status = resp.get("status", 0)
                         last_error = f"search_api_http_{status}" if status else "search_api_error"
                         if status == 401:
-                            _account_pool.mark_login_failed(acct_label, last_error)
+                            _pw_status["error"] = "search_api_auth_limited"
                             log.warning(
-                                "[Playwright] Search API 401 on @%s for '%s' — trying next account (%d/%d)",
-                                acct_label, query[:50], account_attempts, max_account_retries,
+                                "[Playwright] Search API 401 on @%s for '%s' — keeping session and falling back to UI search",
+                                acct_label,
+                                query[:50],
                             )
-                            continue
-                        if status == 429:
+                        elif status == 429:
                             _account_pool.mark_rate_limited(acct_label)
                             log.warning(
                                 "[Playwright] Search API 429 on @%s for '%s' — trying next account (%d/%d)",
@@ -2841,9 +2849,8 @@ def _extract_profile_from_html(html: str, handle: str) -> dict | None:
 
     # Fallback: try meta tags
     if not bio:
-        m = re.search(r'<meta\s+(?:property|name)="(?:og:)?description"\s+content="([^"]*)"', html)
-        if m:
-            desc = m.group(1)
+        desc = _extract_meta_content(html, "og:description", "description")
+        if desc:
             # IG meta description format: "X Followers, Y Following, Z Posts - See photos..."
             # The bio is after the dash
             if " - " in desc:
@@ -2851,9 +2858,8 @@ def _extract_profile_from_html(html: str, handle: str) -> dict | None:
                 bio = bio_part.strip()
 
     if not full_name:
-        m = re.search(r'<meta\s+property="og:title"\s+content="([^"]*)"', html)
-        if m:
-            title = m.group(1)
+        title = _extract_meta_content(html, "og:title")
+        if title:
             # Format: "Full Name (@handle) • Instagram..."
             if "(" in title:
                 full_name = title.split("(")[0].strip()
@@ -2884,14 +2890,10 @@ def _extract_post_from_html(html: str, post_url: str) -> dict | None:
         caption = m.group(1).encode().decode("unicode_escape", errors="ignore")
     else:
         # Fallback: og:description
-        m = re.search(r'<meta\s+property="og:description"\s+content="([^"]*)"', html)
-        if m:
-            caption = m.group(1)
+        caption = _extract_meta_content(html, "og:description", "description")
 
     # Image URL from meta
-    m = re.search(r'<meta\s+property="og:image"\s+content="([^"]*)"', html)
-    if m:
-        image_url = m.group(1)
+    image_url = _extract_meta_content(html, "og:image")
 
     # Timestamp
     m = re.search(r'"taken_at"\s*:\s*(\d+)', html)
@@ -2912,6 +2914,26 @@ def _extract_post_from_html(html: str, post_url: str) -> dict | None:
         "caption": caption,
         "timestamp": timestamp,
     }
+
+
+def _extract_meta_content(html: str, *meta_names: str) -> str:
+    """Return the first meta tag content matching any property/name, regardless of attribute order."""
+    if not html or not meta_names:
+        return ""
+
+    meta_tags = re.findall(r"<meta\b[^>]*>", html, flags=re.IGNORECASE)
+    for tag in meta_tags:
+        for attr_name in ("property", "name"):
+            for meta_name in meta_names:
+                attr_pattern = rf'\b{attr_name}\s*=\s*["\']{re.escape(meta_name)}["\']'
+                if not re.search(attr_pattern, tag, flags=re.IGNORECASE):
+                    continue
+
+                content_match = re.search(r'\bcontent\s*=\s*["\']([^"\']*)["\']', tag, flags=re.IGNORECASE)
+                if content_match:
+                    return _html.unescape(content_match.group(1)).strip()
+
+    return ""
 
 
 # ---------------------------------------------------------------------------

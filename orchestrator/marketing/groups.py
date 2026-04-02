@@ -127,6 +127,10 @@ async def delete_group(group_id: int) -> bool:
                 f"DELETE FROM marketing_ig_posts WHERE client_id IN ({placeholders})",
                 client_ids,
             )
+            await db.execute(
+                f"DELETE FROM marketing_ig_candidates WHERE client_id IN ({placeholders})",
+                client_ids,
+            )
 
         # Delete clients
         await db.execute("DELETE FROM marketing_clients WHERE group_id = ?", (group_id,))
@@ -180,6 +184,7 @@ async def list_clients(group_id: int) -> list[dict[str, Any]]:
 
         client_ids = list({row[0] for row in rows})
         ig_rows: list[tuple[Any, ...]] = []
+        candidate_rows: list[tuple[Any, ...]] = []
         if client_ids:
             placeholders = ",".join("?" * len(client_ids))
             ig_cursor = await db.execute(
@@ -193,6 +198,22 @@ async def list_clients(group_id: int) -> list[dict[str, Any]]:
                 client_ids,
             )
             ig_rows = await ig_cursor.fetchall()
+
+            candidate_cursor = await db.execute(
+                f"""
+                SELECT id, client_id, handle, profile_url, source, title, snippet,
+                       full_name, bio, external_url, external_domain, is_verified,
+                      base_score, affinity_score, profile_score, final_score,
+                      llm_is_correct, llm_confidence, llm_reason, rank_order,
+                      is_primary, is_selected, created_at
+                FROM marketing_ig_candidates
+                WHERE client_id IN ({placeholders})
+                ORDER BY is_selected DESC, is_primary DESC,
+                         COALESCE(rank_order, 999999) ASC, final_score DESC, created_at DESC
+                """,
+                client_ids,
+            )
+            candidate_rows = await candidate_cursor.fetchall()
 
     # Group rows by client
     clients_map: dict[int, dict[str, Any]] = {}
@@ -210,6 +231,7 @@ async def list_clients(group_id: int) -> list[dict[str, Any]]:
                 "ig_profile_url": row[7],
                 "ig_last_scraped_at": row[8],
                 "created_at": row[9],
+                "ig_candidates": [],
                 "ig_posts": [],
                 "contacts": [],
             }
@@ -245,6 +267,37 @@ async def list_clients(group_id: int) -> list[dict[str, Any]]:
             "created_at": row[8],
         })
 
+    for row in candidate_rows:
+        client = clients_map.get(row[1])
+        if client is None:
+            continue
+        llm_is_correct = None if row[16] is None else bool(row[16])
+        client["ig_candidates"].append({
+            "id": row[0],
+            "client_id": row[1],
+            "handle": row[2],
+            "profile_url": row[3],
+            "source": row[4],
+            "title": row[5],
+            "snippet": row[6],
+            "full_name": row[7],
+            "bio": row[8],
+            "external_url": row[9],
+            "external_domain": row[10],
+            "is_verified": bool(row[11]),
+            "base_score": row[12] or 0.0,
+            "affinity_score": row[13] or 0.0,
+            "profile_score": row[14] or 0.0,
+            "final_score": row[15] or 0.0,
+            "llm_is_correct": llm_is_correct,
+            "llm_confidence": row[17] or 0.0,
+            "llm_reason": row[18],
+            "rank_order": row[19],
+            "is_primary": bool(row[20]),
+            "is_selected": bool(row[21]),
+            "created_at": row[22],
+        })
+
     return list(clients_map.values())
 
 
@@ -273,6 +326,7 @@ async def delete_client(client_id: int) -> bool:
     """Delete a client (cascade deletes results)."""
     async with aiosqlite.connect(DATABASE_PATH) as db:
         await db.execute("DELETE FROM marketing_ig_posts WHERE client_id = ?", (client_id,))
+        await db.execute("DELETE FROM marketing_ig_candidates WHERE client_id = ?", (client_id,))
         cursor = await db.execute("DELETE FROM marketing_clients WHERE id = ?", (client_id,))
         await db.commit()
         return cursor.rowcount > 0
@@ -330,7 +384,7 @@ async def replace_client_ig_posts(
         rows = [
             (
                 client_id,
-                ig_handle,
+                post.get("ig_handle") or ig_handle,
                 post.get("post_url"),
                 post.get("image_url"),
                 post.get("caption"),
@@ -346,6 +400,59 @@ async def replace_client_ig_posts(
                 INSERT OR IGNORE INTO marketing_ig_posts
                     (client_id, ig_handle, post_url, image_url, caption, post_timestamp, source)
                 VALUES (?, ?, ?, ?, ?, ?, ?)
+                """,
+                rows,
+            )
+
+        await db.commit()
+
+
+async def replace_client_ig_candidates(
+    client_id: int,
+    candidates: list[dict[str, Any]],
+) -> None:
+    """Replace stored Instagram candidate audit trail for a marketing client."""
+    async with aiosqlite.connect(DATABASE_PATH) as db:
+        await db.execute("DELETE FROM marketing_ig_candidates WHERE client_id = ?", (client_id,))
+
+        rows = [
+            (
+                client_id,
+                candidate.get("handle"),
+                candidate.get("url"),
+                candidate.get("source"),
+                candidate.get("title"),
+                candidate.get("snippet"),
+                candidate.get("full_name"),
+                candidate.get("bio"),
+                candidate.get("external_url"),
+                candidate.get("external_domain"),
+                1 if candidate.get("is_verified") else 0,
+                candidate.get("base_score", 0.0),
+                candidate.get("affinity_score", 0.0),
+                candidate.get("profile_score", 0.0),
+                candidate.get("final_score", 0.0),
+                None if candidate.get("llm_is_correct") is None else (1 if candidate.get("llm_is_correct") else 0),
+                candidate.get("llm_confidence", 0.0),
+                candidate.get("llm_reason"),
+                candidate.get("rank_order"),
+                1 if candidate.get("is_primary") else 0,
+                1 if candidate.get("is_selected") else 0,
+            )
+            for candidate in candidates
+            if candidate.get("handle")
+        ]
+        if rows:
+            await db.executemany(
+                """
+                INSERT OR REPLACE INTO marketing_ig_candidates (
+                    client_id, handle, profile_url, source, title, snippet,
+                    full_name, bio, external_url, external_domain, is_verified,
+                    base_score, affinity_score, profile_score, final_score,
+                    llm_is_correct, llm_confidence, llm_reason, rank_order,
+                    is_primary, is_selected
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 rows,
             )

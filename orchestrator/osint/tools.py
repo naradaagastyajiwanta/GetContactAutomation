@@ -355,12 +355,30 @@ def extract_social_links(html: str) -> dict[str, list[str]]:
     return found
 
 
+_EMAIL_PATTERN = re.compile(
+    r'(?<![a-zA-Z0-9._%+-])[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}(?![a-zA-Z0-9._%+-])'
+)
+
+
+def _is_truncated_email_variant(email: str, other: str) -> bool:
+    local, _, domain = email.lower().partition('@')
+    other_local, _, other_domain = other.lower().partition('@')
+    if not local or not other_local or domain != other_domain:
+        return False
+    if len(other_local) <= len(local):
+        return False
+    local_gap = len(other_local) - len(local)
+    if local_gap > 2:
+        return False
+    return other_local.endswith(local)
+
+
 def extract_emails(text: str) -> list[str]:
     """Extract email addresses from text with basic validation."""
-    pattern = r'[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}'
-    emails = re.findall(pattern, text)
+    emails = _EMAIL_PATTERN.findall(text)
     # Filter out invalid emails
-    valid_emails = []
+    valid_emails: list[str] = []
+    seen_lower: set[str] = set()
     for email in emails:
         email_lower = email.lower()
         # Skip if contains invalid patterns
@@ -376,10 +394,20 @@ def extract_emails(text: str) -> list[str]:
             continue
         # Skip test/fake TLDs
         tld = email_lower.split('.')[-1]
-        if tld in ('test', 'example', 'localhost', 'invalid'):
+        if tld in ('test', 'example', 'localhost', 'invalid', 'png', 'jpg', 'jpeg', 'gif', 'webp', 'svg', 'ico', 'js', 'css', 'json', 'xml', 'woff', 'woff2'):
             continue
+        if email_lower in seen_lower:
+            continue
+        seen_lower.add(email_lower)
         valid_emails.append(email)
-    return list(set(valid_emails))
+
+    filtered_emails: list[str] = []
+    for email in valid_emails:
+        if any(_is_truncated_email_variant(email, other) for other in valid_emails if other != email):
+            continue
+        filtered_emails.append(email)
+
+    return filtered_emails
 
 
 def extract_phones_from_text(text: str) -> list[str]:

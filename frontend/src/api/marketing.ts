@@ -50,8 +50,35 @@ export interface MarketingClient {
   ig_profile_url?: string | null
   ig_last_scraped_at?: string | null
   created_at: string
+  ig_candidates: MarketingInstagramCandidate[]
   ig_posts: MarketingInstagramPost[]
   contacts: MarketingContact[]
+}
+
+export interface MarketingInstagramCandidate {
+  id: number
+  client_id: number
+  handle: string
+  profile_url: string | null
+  source: string | null
+  title: string | null
+  snippet: string | null
+  full_name: string | null
+  bio: string | null
+  external_url: string | null
+  external_domain: string | null
+  is_verified: boolean
+  base_score: number
+  affinity_score: number
+  profile_score: number
+  final_score: number
+  llm_is_correct: boolean | null
+  llm_confidence: number
+  llm_reason: string | null
+  rank_order: number | null
+  is_primary: boolean
+  is_selected: boolean
+  created_at: string
 }
 
 export interface MarketingInstagramPost {

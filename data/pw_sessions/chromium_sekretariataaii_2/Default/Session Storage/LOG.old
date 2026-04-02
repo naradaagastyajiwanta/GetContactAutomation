@@ -1,3 +1,8 @@
-2026/04/02-16:22:32.775 28bc Reusing MANIFEST C:\Users\narad\Programming\GetContactAI\data\pw_sessions\chromium_sekretariataaii_2\Default\Session Storage/MANIFEST-000001
-2026/04/02-16:22:32.776 28bc Recovering log #7
-2026/04/02-16:22:32.776 28bc Reusing old log C:\Users\narad\Programming\GetContactAI\data\pw_sessions\chromium_sekretariataaii_2\Default\Session Storage/000007.log 
+2026/04/02-20:02:15.044 56b8 Reusing MANIFEST C:\Users\narad\Programming\GetContactAI\data\pw_sessions\chromium_sekretariataaii_2\Default\Session Storage/MANIFEST-000001
+2026/04/02-20:02:15.044 56b8 Recovering log #7
+2026/04/02-20:02:15.045 56b8 Level-0 table #9: started
+2026/04/02-20:02:15.047 56b8 Level-0 table #9: 14974 bytes OK
+2026/04/02-20:02:15.047 56b8 Recovering log #9
+2026/04/02-20:02:15.048 56b8 Reusing old log C:\Users\narad\Programming\GetContactAI\data\pw_sessions\chromium_sekretariataaii_2\Default\Session Storage/000009.log 
+2026/04/02-20:02:15.050 56b8 Delete type=0 #7
+2026/04/02-20:02:15.051 56b8 Delete type=2 #10

@@ -39,8 +39,10 @@ _proxy_probe_result: str | None = None
 # Engine rotation for ddgs v9.x (html/lite/api backends no longer exist).
 # ddgs v9 is a metasearch engine: each backend is a real search engine.
 # 'duckduckgo' is best for site: queries; 'google' and 'brave' as fallbacks.
-# 'auto' uses all engines but includes wikipedia/grokipedia which pollute results.
-_DDG_BACKEND_ROTATION = ["duckduckgo", "google", "brave", "yahoo"]
+# 'yahoo' was removed from rotation because it produces unstable RequestError
+# failures for some quoted site: queries and can incorrectly flip marketing
+# search runs into a hard dependency error.
+_DDG_BACKEND_ROTATION = ["duckduckgo", "google", "brave"]
 
 # Comma-delimited string for passing multiple backends at once
 _DDG_BACKENDS = "auto"

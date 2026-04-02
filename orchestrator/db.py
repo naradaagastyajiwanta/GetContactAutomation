@@ -857,6 +857,33 @@ CREATE TABLE IF NOT EXISTS marketing_ig_posts (
     created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
     UNIQUE(client_id, post_url)
 );
+
+CREATE TABLE IF NOT EXISTS marketing_ig_candidates (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    client_id INTEGER NOT NULL REFERENCES marketing_clients(id) ON DELETE CASCADE,
+    handle TEXT NOT NULL,
+    profile_url TEXT,
+    source TEXT,
+    title TEXT,
+    snippet TEXT,
+    full_name TEXT,
+    bio TEXT,
+    external_url TEXT,
+    external_domain TEXT,
+    is_verified INTEGER DEFAULT 0,
+    base_score REAL DEFAULT 0.0,
+    affinity_score REAL DEFAULT 0.0,
+    profile_score REAL DEFAULT 0.0,
+    final_score REAL DEFAULT 0.0,
+    llm_is_correct INTEGER,
+    llm_confidence REAL DEFAULT 0.0,
+    llm_reason TEXT,
+    rank_order INTEGER,
+    is_primary INTEGER DEFAULT 0,
+    is_selected INTEGER DEFAULT 0,
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE(client_id, handle)
+);
 """
 
 _INDEXES_MARKETING = """
@@ -868,6 +895,8 @@ CREATE INDEX IF NOT EXISTS idx_mch_group ON marketing_contact_handoffs(group_id)
 CREATE INDEX IF NOT EXISTS idx_mch_result ON marketing_contact_handoffs(result_id);
 CREATE INDEX IF NOT EXISTS idx_mip_client ON marketing_ig_posts(client_id);
 CREATE INDEX IF NOT EXISTS idx_mip_handle ON marketing_ig_posts(ig_handle);
+CREATE INDEX IF NOT EXISTS idx_mic_client ON marketing_ig_candidates(client_id);
+CREATE INDEX IF NOT EXISTS idx_mic_selected ON marketing_ig_candidates(client_id, is_selected, rank_order);
 """
 
 # ---------------------------------------------------------------------------
@@ -927,6 +956,13 @@ async def init_db() -> None:
         if "ig_last_scraped_at" not in columns:
             await db.execute(
                 "ALTER TABLE marketing_clients ADD COLUMN ig_last_scraped_at DATETIME"
+            )
+
+        cursor = await db.execute("PRAGMA table_info(marketing_ig_candidates)")
+        candidate_columns = {row[1] for row in await cursor.fetchall()}
+        if "affinity_score" not in candidate_columns:
+            await db.execute(
+                "ALTER TABLE marketing_ig_candidates ADD COLUMN affinity_score REAL DEFAULT 0.0"
             )
 
         async def _rebuild_email_cache_table_if_needed(table_name: str, recreate_script: str) -> None:
