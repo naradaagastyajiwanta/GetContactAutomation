@@ -42,6 +42,9 @@ IG_PASSWORD=...
 APIFY_API_KEY=...
 ```
 
+Untuk local development di Windows, pencarian DuckDuckGo akan lebih stabil jika ada SOCKS proxy lokal di `127.0.0.1:1080`.
+Backend sekarang akan otomatis mendeteksi proxy itu bila tersedia, jadi tidak wajib menambah env var manual.
+
 Setting lain bisa dibiarkan default (atau diubah via dashboard Settings nanti).
 
 ---
@@ -218,5 +221,6 @@ Tekan `Ctrl+C` di masing-masing terminal (urutan tidak penting).
 | Webhook not registered | Pastikan WA Service sudah running sebelum Orchestrator start |
 | Bot tidak membalas pesan | Cek apakah bot di-pause (`GET /control/status`). Cek log Orchestrator |
 | "Unknown number, ignoring" | Nomor pengirim tidak punya conversation record. Gunakan Test Conversation untuk testing |
+| Marketing search selalu `error` / `DDG unavailable` | Pastikan Docker Desktop aktif, lalu jalankan proxy lokal: `docker rm -f gc-warp-host` dan `docker run -d --name gc-warp-host --cap-add NET_ADMIN --sysctl net.ipv6.conf.all.disable_ipv6=0 --sysctl net.ipv4.conf.all.src_valid_mark=1 -e WARP_SLEEP=2 -p 1080:1080 caomingjun/warp:latest` |
 | Database error saat start | Hapus `data/getcontact.db` dan restart — schema akan dibuat ulang (data hilang) |
 | WhatsApp minta scan ulang | Session expired. Hapus `whatsapp-service/auth_store/` lalu scan QR baru |

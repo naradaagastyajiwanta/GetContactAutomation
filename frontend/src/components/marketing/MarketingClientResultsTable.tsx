@@ -13,6 +13,11 @@ import {
   Phone,
   User,
   Briefcase,
+  AlertTriangle,
+  Instagram,
+  ExternalLink,
+  Image as ImageIcon,
+  Clock3,
 } from 'lucide-react'
 import { cn } from '../../lib/utils'
 import { Button } from '../ui/Button'
@@ -27,6 +32,7 @@ import type {
   MarketingClient,
   MarketingContact,
   ContactType,
+  MarketingInstagramPost,
 } from '../../api/marketing'
 
 const CONTACT_ICONS: Record<ContactType, React.ElementType> = {
@@ -44,6 +50,143 @@ const CONTACT_TYPE_OPTIONS = [
   { value: 'pic_name', label: 'Nama PIC' },
   { value: 'pic_title', label: 'Jabatan PIC' },
 ]
+
+function formatDateTime(date: string | null | undefined): string {
+  if (!date) return '-'
+  return new Intl.DateTimeFormat('id-ID', {
+    day: 'numeric',
+    month: 'short',
+    year: 'numeric',
+    hour: '2-digit',
+    minute: '2-digit',
+  }).format(new Date(date))
+}
+
+function truncateText(value: string | null | undefined, maxLength = 180): string {
+  if (!value) return ''
+  if (value.length <= maxLength) return value
+  return `${value.slice(0, maxLength).trimEnd()}...`
+}
+
+function InstagramDiscoveryPanel({ client }: { client: MarketingClient }) {
+  const posts = client.ig_posts ?? []
+  const hasInstagramData = Boolean(client.ig_handle) || posts.length > 0
+
+  if (!hasInstagramData) {
+    return null
+  }
+
+  return (
+    <div className="border-b border-indigo-100 bg-indigo-50/60 p-4 dark:border-indigo-900/60 dark:bg-indigo-950/20">
+      <div className="flex flex-col gap-3 md:flex-row md:items-start md:justify-between">
+        <div className="space-y-1">
+          <div className="flex items-center gap-2">
+            <Instagram className="h-4 w-4 text-indigo-600 dark:text-indigo-300" />
+            <p className="text-sm font-semibold text-gray-900 dark:text-gray-100">
+              Instagram Discovery
+            </p>
+            {client.ig_handle && (
+              <span className="inline-flex items-center rounded-full bg-white px-2 py-0.5 text-xs font-semibold text-indigo-700 shadow-sm dark:bg-gray-900 dark:text-indigo-300">
+                @{client.ig_handle}
+              </span>
+            )}
+          </div>
+          <p className="text-xs text-gray-600 dark:text-gray-300">
+            {posts.length > 0
+              ? `${posts.length} post tersimpan dari akun IG ini untuk audit flow pencarian.`
+              : 'Handle IG sudah tersimpan, tapi belum ada post yang berhasil discrape.'}
+          </p>
+          {client.ig_last_scraped_at && (
+            <div className="flex items-center gap-1 text-[11px] text-gray-500 dark:text-gray-400">
+              <Clock3 className="h-3 w-3" />
+              Last scrape {formatDateTime(client.ig_last_scraped_at)}
+            </div>
+          )}
+        </div>
+
+        {client.ig_profile_url && (
+          <a
+            href={client.ig_profile_url}
+            target="_blank"
+            rel="noreferrer"
+            className="inline-flex items-center gap-1 self-start rounded-md border border-indigo-200 bg-white px-2.5 py-1 text-xs font-medium text-indigo-700 transition-colors hover:bg-indigo-100 dark:border-indigo-800 dark:bg-gray-900 dark:text-indigo-300 dark:hover:bg-indigo-900/40"
+          >
+            <ExternalLink className="h-3 w-3" />
+            Buka Profil
+          </a>
+        )}
+      </div>
+
+      {posts.length > 0 && (
+        <div className="mt-4 grid gap-3 lg:grid-cols-2">
+          {posts.map((post) => (
+            <InstagramPostCard key={post.id} post={post} />
+          ))}
+        </div>
+      )}
+    </div>
+  )
+}
+
+function InstagramPostCard({ post }: { post: MarketingInstagramPost }) {
+  return (
+    <div className="overflow-hidden rounded-xl border border-indigo-100 bg-white shadow-sm dark:border-gray-800 dark:bg-gray-900">
+      {post.image_url ? (
+        <a href={post.image_url} target="_blank" rel="noreferrer" className="block">
+          <img
+            src={post.image_url}
+            alt="Instagram post"
+            loading="lazy"
+            referrerPolicy="no-referrer"
+            className="h-44 w-full object-cover"
+          />
+        </a>
+      ) : (
+        <div className="flex h-44 items-center justify-center bg-gray-100 text-gray-400 dark:bg-gray-800 dark:text-gray-500">
+          <ImageIcon className="h-8 w-8" />
+        </div>
+      )}
+
+      <div className="space-y-3 p-3">
+        <div className="flex flex-wrap items-center gap-2 text-[11px] text-gray-500 dark:text-gray-400">
+          {post.source && (
+            <span className="rounded-full bg-gray-100 px-2 py-0.5 font-medium text-gray-600 dark:bg-gray-800 dark:text-gray-300">
+              {post.source}
+            </span>
+          )}
+          <span>{formatDateTime(post.post_timestamp ?? post.created_at)}</span>
+        </div>
+
+        <p className="text-sm leading-5 text-gray-700 dark:text-gray-200">
+          {truncateText(post.caption, 220) || 'Tanpa caption'}
+        </p>
+
+        <div className="flex flex-wrap items-center gap-2 text-xs font-medium">
+          <a
+            href={post.post_url}
+            target="_blank"
+            rel="noreferrer"
+            className="inline-flex items-center gap-1 rounded-md border border-gray-200 px-2.5 py-1 text-gray-700 transition-colors hover:bg-gray-50 dark:border-gray-700 dark:text-gray-200 dark:hover:bg-gray-800"
+          >
+            <ExternalLink className="h-3 w-3" />
+            Buka Post
+          </a>
+          {post.image_url && (
+            <a
+              href={post.image_url}
+              target="_blank"
+              rel="noreferrer"
+              className="inline-flex items-center gap-1 rounded-md border border-gray-200 px-2.5 py-1 text-gray-700 transition-colors hover:bg-gray-50 dark:border-gray-700 dark:text-gray-200 dark:hover:bg-gray-800"
+            >
+              <ImageIcon className="h-3 w-3" />
+              Buka Gambar
+            </a>
+          )}
+        </div>
+      </div>
+    </div>
+  )
+}
 
 function ContactRow({
   contact,
@@ -174,11 +317,11 @@ function ContactRow({
   )
 }
 
-function NotFoundClientForm({
-  clientId,
+function EmptyClientState({
+  client,
   groupId,
 }: {
-  clientId: number
+  client: MarketingClient
   groupId: number
 }) {
   const [show, setShow] = useState(false)
@@ -186,6 +329,8 @@ function NotFoundClientForm({
   // For manual contact entry, we'd use a different endpoint.
   // Since there's no "add contact" endpoint in the API contract, we'll just note the not_found status.
   void addClient
+
+  const isError = client.search_status === 'error'
 
   if (!show) {
     return (
@@ -204,9 +349,26 @@ function NotFoundClientForm({
   }
 
   return (
-    <div className="mt-2 flex items-center gap-2 rounded-lg border border-indigo-200 bg-indigo-50 p-3 dark:border-indigo-800 dark:bg-indigo-950">
-      <span className="text-xs font-medium text-indigo-700 dark:text-indigo-300">
-        Kontak tidak ditemukan — silakan tambah manual setelah data ditemukan
+    <div
+      className={cn(
+        'mt-2 flex items-start gap-2 rounded-lg border p-3',
+        isError
+          ? 'border-red-200 bg-red-50 dark:border-red-900 dark:bg-red-950/40'
+          : 'border-indigo-200 bg-indigo-50 dark:border-indigo-800 dark:bg-indigo-950'
+      )}
+    >
+      {isError && <AlertTriangle className="mt-0.5 h-4 w-4 flex-shrink-0 text-red-500" />}
+      <span
+        className={cn(
+          'text-xs font-medium',
+          isError
+            ? 'text-red-700 dark:text-red-300'
+            : 'text-indigo-700 dark:text-indigo-300'
+        )}
+      >
+        {isError
+          ? `Pencarian gagal: ${client.error_message ?? 'unknown error'}`
+          : 'Kontak tidak ditemukan — silakan tambah manual setelah data ditemukan'}
       </span>
       <Button
         size="sm"
@@ -248,6 +410,7 @@ function ClientCard({
 
   const hasContacts = (client.contacts ?? []).length > 0
   const hasApproved = (client.contacts ?? []).some((c) => c.is_approved)
+  const igPostCount = client.ig_posts?.length ?? 0
 
   return (
     <Card padding={false} className="overflow-hidden">
@@ -271,6 +434,11 @@ function ClientCard({
                 <X className="h-3 w-3" /> Tidak Ditemukan
               </span>
             )}
+            {client.search_status === 'error' && (
+              <span className="inline-flex items-center gap-1 rounded-full bg-amber-50 px-2 py-0.5 text-[10px] font-semibold text-amber-700 dark:bg-amber-900/30 dark:text-amber-300">
+                <AlertTriangle className="h-3 w-3" /> Error Search
+              </span>
+            )}
             {client.search_status === 'found' && (
               <span className="inline-flex items-center gap-1 rounded-full bg-green-50 px-2 py-0.5 text-[10px] font-semibold text-green-600 dark:bg-green-900/30 dark:text-green-400">
                 <CheckCircle2 className="h-3 w-3" /> Ditemukan
@@ -281,11 +449,17 @@ function ClientCard({
                 Searching...
               </span>
             )}
+            {client.ig_handle && (
+              <span className="inline-flex items-center gap-1 rounded-full bg-indigo-50 px-2 py-0.5 text-[10px] font-semibold text-indigo-700 dark:bg-indigo-900/30 dark:text-indigo-300">
+                <Instagram className="h-3 w-3" /> @{client.ig_handle}
+              </span>
+            )}
           </div>
           <p className="mt-0.5 text-xs text-gray-500 dark:text-gray-400">
             {hasContacts
               ? `${(client.contacts ?? []).length} kontak · ${(client.contacts ?? []).filter((c) => c.is_approved).length} approved`
               : 'Belum ada kontak'}
+            {igPostCount > 0 ? ` · ${igPostCount} post IG` : ''}
           </p>
         </div>
 
@@ -314,10 +488,11 @@ function ClientCard({
       {/* Expanded contacts table */}
       {expanded && (
         <div className="border-t border-gray-200 dark:border-gray-700">
+          <InstagramDiscoveryPanel client={client} />
           {!hasContacts ? (
             <div className="p-4">
               <p className="mb-2 text-sm text-gray-500 dark:text-gray-400">Belum ada kontak</p>
-              <NotFoundClientForm clientId={client.id} groupId={groupId} />
+              <EmptyClientState client={client} groupId={groupId} />
             </div>
           ) : (
             <div className="overflow-x-auto">

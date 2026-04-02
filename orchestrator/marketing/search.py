@@ -7,12 +7,13 @@ Stage 3: Web search fallback (DDG broad search → parse snippets)
 import asyncio
 import json
 import re
+from urllib.parse import urlparse
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from functools import partial
 
 from orchestrator.config import log
-from orchestrator.duckduckgo_client import async_search_text
+from orchestrator.duckduckgo_client import get_status as get_ddg_status
 from orchestrator.osint.tools import (
     ddg_search,
     fetch_page,
@@ -25,7 +26,38 @@ from orchestrator.instagram import (
     scrape_ig_posts_with_fallback,
     extract_phone_from_image,
     extract_named_contacts_from_text,
+    fetch_bios_for_candidates,
+    llm_verify_company_ig_handle,
 )
+
+_WHATSAPP_URL_PATTERNS = (
+    re.compile(r'https?://wa\.me/([0-9]{9,15})', re.IGNORECASE),
+    re.compile(r'https?://api\.whatsapp\.com/send\?[^"\'<>\s]*?phone=([0-9]{9,15})', re.IGNORECASE),
+    re.compile(r'https?://(?:www\.)?whatsapp\.com/send\?[^"\'<>\s]*?phone=([0-9]{9,15})', re.IGNORECASE),
+)
+
+_TEL_URL_PATTERN = re.compile(r'tel:([^"\'<>\s]+)', re.IGNORECASE)
+_CORPORATE_IG_SKIP_HANDLES = {
+    "",
+    "p",
+    "reel",
+    "reels",
+    "explore",
+    "settings",
+    "support",
+    "popular",
+}
+_CORPORATE_GENERIC_WORDS = {
+    "pt", "tbk", "cv", "co", "company", "indonesia", "group",
+    "persero", "official", "resmi", "holding", "international",
+}
+_CORPORATE_NEGATIVE_HANDLE_WORDS = {
+    "news", "media", "update", "karir", "career", "jobs", "loker",
+    "promo", "promosi", "fans", "fan", "community", "komunitas", "popular",
+}
+_CORPORATE_NEGATIVE_PROFILE_WORDS = {
+    "fan page", "fans", "community", "komunitas", "news", "media", "parody",
+}
 
 # Landline area codes (kode wilayah) to filter out
 _LANDLINE_PREFIXES = (
@@ -68,6 +100,183 @@ def filter_mobile_phones(phones: list[str]) -> list[str]:
     return [p for p in phones if is_mobile_phone(p)]
 
 
+def _extract_mobile_phones_from_html(html: str) -> list[str]:
+    """Extract mobile/WhatsApp numbers from raw HTML attributes and URLs."""
+    phones: list[str] = []
+
+    for pattern in _WHATSAPP_URL_PATTERNS:
+        phones.extend(pattern.findall(html))
+
+    phones.extend(_TEL_URL_PATTERN.findall(html))
+    return filter_mobile_phones(phones)
+
+
+def _normalize_company_tokens(company_name: str) -> list[str]:
+    tokens = re.findall(r"[a-z0-9]+", company_name.lower())
+    return [token for token in tokens if len(token) > 2 and token not in _CORPORATE_GENERIC_WORDS]
+
+
+def _build_company_abbreviation(company_name: str) -> str:
+    tokens = _normalize_company_tokens(company_name)
+    if len(tokens) < 2:
+        return ""
+    return "".join(token[0] for token in tokens)
+
+
+def _extract_direct_ig_profile_handle(url: str) -> str | None:
+    parsed = urlparse(url)
+    if "instagram.com" not in parsed.netloc.lower():
+        return None
+
+    path_parts = [part.strip() for part in parsed.path.split("/") if part.strip()]
+    if len(path_parts) != 1:
+        return None
+
+    handle = path_parts[0].lower()
+    if handle in _CORPORATE_IG_SKIP_HANDLES:
+        return None
+    return handle
+
+
+def _score_company_ig_candidate(company_name: str, handle: str, title: str, snippet: str) -> float:
+    tokens = _normalize_company_tokens(company_name)
+    abbreviation = _build_company_abbreviation(company_name)
+    handle_lower = handle.lower()
+    handle_stripped = re.sub(r"[_.\-]", "", handle_lower)
+    title_lower = title.lower()
+    snippet_lower = snippet.lower()
+
+    score = 0.0
+
+    token_hits = sum(1 for token in tokens if token in handle_stripped)
+    if token_hits:
+        score += 0.35 * min(token_hits / max(len(tokens), 1), 1.0)
+
+    if abbreviation and len(abbreviation) >= 3 and abbreviation in handle_stripped:
+        score += 0.2
+
+    exact_phrase = company_name.lower()
+    if exact_phrase in title_lower or exact_phrase in snippet_lower:
+        score += 0.3
+    else:
+        text_hits = sum(1 for token in tokens if token in title_lower or token in snippet_lower)
+        if text_hits:
+            score += 0.2 * min(text_hits / max(len(tokens), 1), 1.0)
+
+    if any(word in handle_lower for word in _CORPORATE_NEGATIVE_HANDLE_WORDS):
+        score -= 0.2
+
+    return score
+
+
+def _boost_company_candidate_from_profile(candidate: dict, company_name: str) -> float:
+    tokens = _normalize_company_tokens(company_name)
+    abbreviation = _build_company_abbreviation(company_name)
+    bio = (candidate.get("bio") or "").lower()
+    full_name = (candidate.get("full_name") or "").lower()
+    external_url = (candidate.get("external_url") or "").lower()
+    combined = " ".join(part for part in (bio, full_name) if part)
+
+    boost = 0.0
+
+    exact_phrase = company_name.lower()
+    if exact_phrase in combined:
+        boost += 0.3
+    else:
+        token_hits = sum(1 for token in tokens if token in combined)
+        if token_hits:
+            boost += 0.2 * min(token_hits / max(len(tokens), 1), 1.0)
+
+    if abbreviation and len(abbreviation) >= 3 and abbreviation in re.sub(r"[_.\-\s]", "", combined):
+        boost += 0.1
+
+    if candidate.get("is_verified"):
+        boost += 0.05
+
+    if external_url:
+        external_host = urlparse(external_url).netloc.lower()
+        if external_host:
+            candidate["external_domain"] = external_host
+        if any(token in external_host for token in tokens):
+            boost += 0.2
+
+    if any(word in combined for word in _CORPORATE_NEGATIVE_PROFILE_WORDS):
+        boost -= 0.25
+
+    return boost
+
+
+async def _select_corporate_ig_candidate(client_name: str) -> tuple[str | None, str | None]:
+    ddg_results = await _ddg_search_or_raise(
+        f'"{client_name}" site:instagram.com',
+        max_results=8,
+        stage="instagram discovery",
+    )
+
+    candidates: list[dict] = []
+    seen_handles: set[str] = set()
+    for result in ddg_results:
+        link = (result.get("link") or "").strip()
+        handle = _extract_direct_ig_profile_handle(link)
+        if not handle or handle in seen_handles:
+            continue
+        seen_handles.add(handle)
+        candidates.append({
+            "handle": handle,
+            "url": link,
+            "title": result.get("title", "") or "",
+            "snippet": result.get("snippet", "") or "",
+            "confidence": _score_company_ig_candidate(
+                client_name,
+                handle,
+                result.get("title", "") or "",
+                result.get("snippet", "") or "",
+            ),
+        })
+
+    if not candidates:
+        return None, None
+
+    candidates.sort(key=lambda item: item.get("confidence", 0.0), reverse=True)
+    loop = asyncio.get_running_loop()
+    enriched = await loop.run_in_executor(None, fetch_bios_for_candidates, candidates, min(5, len(candidates)))
+
+    for candidate in enriched:
+        candidate["confidence"] = float(candidate.get("confidence", 0.0)) + _boost_company_candidate_from_profile(candidate, client_name)
+
+    enriched.sort(key=lambda item: item.get("confidence", 0.0), reverse=True)
+
+    for candidate in enriched:
+        llm = await llm_verify_company_ig_handle(
+            candidate.get("handle", ""),
+            candidate.get("bio", "") or "",
+            candidate.get("full_name", "") or "",
+            client_name,
+            candidate.get("external_url", "") or "",
+        )
+        if llm["is_correct"] is False:
+            log.info(
+                "[Marketing IG] Candidate @%s rejected by LLM for %s: %s",
+                candidate.get("handle", ""),
+                client_name,
+                llm["reason"],
+            )
+            continue
+
+        if llm["is_correct"] is True or candidate.get("confidence", 0.0) >= 0.35:
+            log.info(
+                "[Marketing IG] Candidate @%s accepted for %s (score=%.2f, llm=%s: %s)",
+                candidate.get("handle", ""),
+                client_name,
+                candidate.get("confidence", 0.0),
+                llm["is_correct"],
+                llm["reason"],
+            )
+            return candidate.get("handle"), candidate.get("url")
+
+    return None, None
+
+
 # ---------------------------------------------------------------------------
 # Data model
 # ---------------------------------------------------------------------------
@@ -84,6 +293,73 @@ class ContactResult:
     pic_title: str | None = None
 
 
+@dataclass
+class InstagramDiscoveryResult:
+    handle: str | None = None
+    profile_url: str | None = None
+    posts: list[dict] = field(default_factory=list)
+    contacts: list[ContactResult] = field(default_factory=list)
+
+
+class SearchDependencyError(RuntimeError):
+    """Raised when a required external search backend is unavailable."""
+
+
+def _results_from_page_content(
+    *,
+    html: str,
+    text: str,
+    source_url: str,
+    source_type: str,
+    email_confidence: float,
+    phone_confidence: float,
+) -> list[ContactResult]:
+    """Build contact results from fetched page content."""
+    results: list[ContactResult] = []
+
+    for email in extract_emails(text):
+        results.append(ContactResult(
+            contact_type="email",
+            value=email,
+            source_url=source_url,
+            source_type=source_type,
+            confidence=email_confidence,
+        ))
+
+    phone_candidates = extract_phones_from_text(text) + _extract_mobile_phones_from_html(html)
+    for phone in filter_mobile_phones(phone_candidates):
+        results.append(ContactResult(
+            contact_type="wa_phone",
+            value=phone,
+            source_url=source_url,
+            source_type=source_type,
+            confidence=phone_confidence,
+        ))
+
+    return _dedupe_results(results)
+
+
+async def _ddg_search_or_raise(
+    query: str,
+    *,
+    max_results: int,
+    stage: str,
+) -> list[dict]:
+    """Return DDG results or raise when the backend is unavailable."""
+    results = await ddg_search(query, max_results=max_results)
+    if results:
+        return results
+
+    ddg_status = get_ddg_status()
+    if not ddg_status.get("ok", True):
+        error_message = ddg_status.get("error") or "unknown_ddg_error"
+        raise SearchDependencyError(
+            f"DDG unavailable during {stage}: {error_message}"
+        )
+
+    return []
+
+
 # ---------------------------------------------------------------------------
 # Stage 1 — Website Discovery
 # ---------------------------------------------------------------------------
@@ -94,7 +370,11 @@ async def website_discovery(client_name: str, extra_data: dict | None = None) ->
     results: list[ContactResult] = []
 
     # Primary search for official website
-    ddg_results = await ddg_search(f'"{client_name}" official website contact', max_results=5)
+    ddg_results = await _ddg_search_or_raise(
+        f'"{client_name}" official website contact',
+        max_results=5,
+        stage="website discovery",
+    )
     if not ddg_results:
         return results
 
@@ -117,25 +397,14 @@ async def website_discovery(client_name: str, extra_data: dict | None = None) ->
         if not text:
             continue
 
-        # Emails
-        for email in extract_emails(text):
-            results.append(ContactResult(
-                contact_type="email",
-                value=email,
-                source_url=url,
-                source_type=source_type,
-                confidence=0.7,
-            ))
-
-        # Mobile phones
-        for phone in filter_mobile_phones(extract_phones_from_text(text)):
-            results.append(ContactResult(
-                contact_type="wa_phone",
-                value=phone,
-                source_url=url,
-                source_type=source_type,
-                confidence=0.6,
-            ))
+        results.extend(_results_from_page_content(
+            html=html,
+            text=text,
+            source_url=url,
+            source_type=source_type,
+            email_confidence=0.7,
+            phone_confidence=0.6,
+        ))
 
     return _dedupe_results(results)
 
@@ -145,27 +414,14 @@ async def website_discovery(client_name: str, extra_data: dict | None = None) ->
 # ---------------------------------------------------------------------------
 
 
-async def ig_discovery(client_name: str) -> list[ContactResult]:
+async def ig_discovery(client_name: str) -> InstagramDiscoveryResult:
     """Find IG handle via DDG → scrape posts → GPT vision OCR."""
     results: list[ContactResult] = []
 
-    # Find IG handle
-    ddg_results = await ddg_search(f'"{client_name}" site:instagram.com', max_results=5)
-    ig_handle: str | None = None
-    ig_url: str | None = None
-
-    for r in ddg_results:
-        link = r.get("link", "") or ""
-        match = re.search(r"instagram\.com/([^/?]+)", link)
-        if match:
-            handle = match.group(1).strip()
-            if handle not in ("", "p", "explore", "settings", "support"):
-                ig_handle = handle
-                ig_url = link
-                break
+    ig_handle, ig_url = await _select_corporate_ig_candidate(client_name)
 
     if not ig_handle:
-        return results
+        return InstagramDiscoveryResult()
 
     # Scrape posts (run sync function in executor)
     try:
@@ -175,7 +431,7 @@ async def ig_discovery(client_name: str) -> list[ContactResult]:
         )
     except Exception as e:
         log.warning(f"[Marketing IG Discovery] scrape failed for {ig_handle}: {e}")
-        return results
+        return InstagramDiscoveryResult(handle=ig_handle, profile_url=ig_url)
 
     for post in posts:
         image_url = post.get("image_url", "")
@@ -187,7 +443,11 @@ async def ig_discovery(client_name: str) -> list[ContactResult]:
 
         # Extract phones from post image via GPT Vision
         try:
-            phone_contacts = await extract_phone_from_image(image_url, caption)
+            phone_contacts = await extract_phone_from_image(
+                image_url,
+                caption,
+                require_person_name=False,
+            )
             for pc in phone_contacts:
                 results.append(ContactResult(
                     contact_type="wa_phone",
@@ -203,21 +463,28 @@ async def ig_discovery(client_name: str) -> list[ContactResult]:
         # Extract named contacts from caption
         if caption:
             try:
-                named_contacts = await extract_named_contacts_from_text(caption)
+                named_contacts = await extract_named_contacts_from_text(
+                    caption,
+                    require_person_name=False,
+                )
                 for nc in named_contacts:
-                    if nc.get("name"):
-                        results.append(ContactResult(
-                            contact_type="wa_phone",
-                            value=nc["phone"],
-                            source_url=post_url,
-                            source_type="ig_caption",
-                            confidence=0.5,
-                            pic_name=nc.get("name"),
-                        ))
+                    results.append(ContactResult(
+                        contact_type="wa_phone",
+                        value=nc["phone"],
+                        source_url=post_url,
+                        source_type="ig_caption",
+                        confidence=0.5,
+                        pic_name=nc.get("name"),
+                    ))
             except Exception as e:
                 log.warning(f"[Marketing IG] Caption extract failed: {e}")
 
-    return _dedupe_results(results)
+    return InstagramDiscoveryResult(
+        handle=ig_handle,
+        profile_url=ig_url,
+        posts=posts,
+        contacts=_dedupe_results(results),
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -226,16 +493,19 @@ async def ig_discovery(client_name: str) -> list[ContactResult]:
 
 
 async def web_search_fallback(client_name: str) -> list[ContactResult]:
-    """Broad DDG search → parse snippets for contacts."""
+    """Broad DDG search → parse snippets and fetch result pages for contacts."""
     results: list[ContactResult] = []
 
     query = f'"{client_name}" WhatsApp email kontak PIC jabatan sekretariat'
-    ddg_results = await ddg_search(query, max_results=8)
+    ddg_results = await _ddg_search_or_raise(
+        query,
+        max_results=8,
+        stage="web search fallback",
+    )
 
     all_text = ""
     for r in ddg_results:
         snippet = r.get("snippet", "")
-        link = r.get("link", "")
         if snippet:
             all_text += snippet + "\n"
 
@@ -255,6 +525,31 @@ async def web_search_fallback(client_name: str) -> list[ContactResult]:
             source_url="",
             source_type="ddg_snippet",
             confidence=0.4,
+        ))
+
+    page_fetches = []
+    seen_links: set[str] = set()
+    for result in ddg_results:
+        link = (result.get("link") or "").strip()
+        if not link or link in seen_links:
+            continue
+        seen_links.add(link)
+        page_fetches.append((link, "ddg_result_page"))
+
+    for url, source_type in page_fetches:
+        html = await fetch_page(url)
+        if not html:
+            continue
+        text = extract_text_from_html(html)
+        if not text:
+            continue
+        results.extend(_results_from_page_content(
+            html=html,
+            text=text,
+            source_url=url,
+            source_type=source_type,
+            email_confidence=0.45,
+            phone_confidence=0.5,
         ))
 
     return _dedupe_results(results)
@@ -303,7 +598,15 @@ async def _search_single_client(
             stage2 = await ig_discovery(client_name)
             stage3 = await web_search_fallback(client_name)
 
-            all_results = stage1 + stage2 + stage3
+            if stage2.handle:
+                await mkt.save_client_instagram_profile(
+                    client_id,
+                    stage2.handle,
+                    stage2.profile_url,
+                )
+                await mkt.replace_client_ig_posts(client_id, stage2.handle, stage2.posts)
+
+            all_results = _dedupe_results(stage1 + stage2.contacts + stage3)
             status = "found" if all_results else "not_found"
 
             for r in all_results:

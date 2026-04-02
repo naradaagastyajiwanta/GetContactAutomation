@@ -16,6 +16,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+import socket
 import time as _time
 from typing import Any
 
@@ -31,6 +32,9 @@ for _noisy in ("primp", "httpx", "httpcore", "ddgs", "ddgs.ddgs"):
 
 # SOCKS5 proxy to bypass ISP DPI blocking (e.g. Cloudflare WARP)
 _DDG_PROXY: str | None = os.environ.get("DDG_PROXY")
+_LOCAL_WARP_PROXY = "socks5h://127.0.0.1:1080"
+_proxy_probe_checked_at: float = 0.0
+_proxy_probe_result: str | None = None
 
 # Engine rotation for ddgs v9.x (html/lite/api backends no longer exist).
 # ddgs v9 is a metasearch engine: each backend is a real search engine.
@@ -68,6 +72,32 @@ def _rate_limit_wait() -> None:
     _last_query_time = _time.monotonic()
 
 
+def _resolve_ddg_proxy() -> str | None:
+    """Resolve the proxy to use for DDG queries.
+
+    Priority:
+    1. Explicit DDG_PROXY env var
+    2. Host-local WARP SOCKS proxy on 127.0.0.1:1080 (for local dev)
+    """
+    global _proxy_probe_checked_at, _proxy_probe_result
+
+    if _DDG_PROXY:
+        return _DDG_PROXY
+
+    now = _time.monotonic()
+    if now - _proxy_probe_checked_at < 15:
+        return _proxy_probe_result
+
+    _proxy_probe_checked_at = now
+    try:
+        with socket.create_connection(("127.0.0.1", 1080), timeout=0.5):
+            _proxy_probe_result = _LOCAL_WARP_PROXY
+    except OSError:
+        _proxy_probe_result = None
+
+    return _proxy_probe_result
+
+
 def search_text(
     query: str,
     max_results: int = 5,
@@ -101,7 +131,7 @@ def search_text(
 
     for backend in _DDG_BACKEND_ROTATION:
         try:
-            with DDGS(proxy=_DDG_PROXY, timeout=10) as ddgs:
+            with DDGS(proxy=_resolve_ddg_proxy(), timeout=10) as ddgs:
                 raw = list(ddgs.text(query, region=region, max_results=max_results, backend=backend))
 
             if not raw:
@@ -159,7 +189,7 @@ def search_text(
             _time.sleep(wait)
             # Retry the same backend once for transient errors
             try:
-                with DDGS(proxy=_DDG_PROXY, timeout=10) as ddgs2:
+                with DDGS(proxy=_resolve_ddg_proxy(), timeout=10) as ddgs2:
                     raw = list(ddgs2.text(query, region=region, max_results=max_results, backend=backend))
                 if raw:
                     _ddg_status["ok"] = True

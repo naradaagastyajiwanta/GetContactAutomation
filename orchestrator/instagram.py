@@ -1883,16 +1883,25 @@ def _verify_from_profile_data(handle: str, university_name: str, profile: dict) 
 # Phase 3b: Extract Phone Numbers from Images (OpenAI Vision)
 # ---------------------------------------------------------------------------
 
-async def extract_phone_from_image(image_url: str, caption: str = "") -> list[PhoneContact]:
+async def extract_phone_from_image(
+    image_url: str,
+    caption: str = "",
+    *,
+    require_person_name: bool = True,
+) -> list[PhoneContact]:
     """
     Extract Indonesian phone numbers with contact names from a flyer/poster image.
     Uses GPT for both caption text and Vision OCR on images.
-    Only returns contacts that have a real person's name (not generic names).
+    By default only returns contacts that have a real person's name.
+    Corporate marketing flows can opt out and accept nameless mobile numbers.
     """
     by_phone: dict[str, PhoneContact] = {}
 
     # 1. Extract named contacts from caption text via GPT
-    caption_contacts = await extract_named_contacts_from_text(caption)
+    caption_contacts = await extract_named_contacts_from_text(
+        caption,
+        require_person_name=require_person_name,
+    )
     for c in caption_contacts:
         by_phone[c["phone"]] = c
 
@@ -1900,7 +1909,10 @@ async def extract_phone_from_image(image_url: str, caption: str = "") -> list[Ph
     try:
         image_b64 = await _download_image_as_base64(image_url)
         if image_b64:
-            vision_contacts = await _vision_extract_named_contacts(image_b64)
+            vision_contacts = await _vision_extract_named_contacts(
+                image_b64,
+                require_person_name=require_person_name,
+            )
             for c in vision_contacts:
                 existing = by_phone.get(c["phone"])
                 if not existing or (not existing["name"] and c["name"]):
@@ -1911,11 +1923,16 @@ async def extract_phone_from_image(image_url: str, caption: str = "") -> list[Ph
     return list(by_phone.values())
 
 
-async def extract_named_contacts_from_text(text: str) -> list[PhoneContact]:
+async def extract_named_contacts_from_text(
+    text: str,
+    *,
+    require_person_name: bool = True,
+) -> list[PhoneContact]:
     """
     Extract phone numbers with contact names from text using GPT-4o-mini.
-    Only returns contacts where a person's name is associated with the number.
-    Skips GPT call if no phone number is detected in the text.
+    By default only returns contacts where a person's name is associated with the
+    number. Corporate marketing flows can opt out and keep nameless mobile
+    numbers. Skips GPT call if no phone number is detected in the text.
     """
     if not text or not _PHONE_QUICK_RE.search(text.replace(" ", "").replace("-", "")):
         return []
@@ -1951,7 +1968,10 @@ async def extract_named_contacts_from_text(text: str) -> list[PhoneContact]:
         return []
 
     raw = response.choices[0].message.content or ""
-    return _parse_phone_contacts_json(raw)
+    return _parse_phone_contacts_json(
+        raw,
+        require_person_name=require_person_name,
+    )
 
 
 def extract_phones_from_text(text: str) -> list[str]:
@@ -1991,7 +2011,11 @@ async def _download_image_as_base64(url: str) -> str | None:
             return None
 
 
-async def _vision_extract_named_contacts(image_b64: str) -> list[PhoneContact]:
+async def _vision_extract_named_contacts(
+    image_b64: str,
+    *,
+    require_person_name: bool = True,
+) -> list[PhoneContact]:
     """Use OpenAI Vision to extract phone numbers with contact names from image."""
     from orchestrator.config import is_paused
 
@@ -2052,10 +2076,17 @@ async def _vision_extract_named_contacts(image_b64: str) -> list[PhoneContact]:
     if "NONE" in raw.upper():
         return []
 
-    return _parse_phone_contacts_json(raw)
+    return _parse_phone_contacts_json(
+        raw,
+        require_person_name=require_person_name,
+    )
 
 
-def _parse_phone_contacts_json(raw: str) -> list[PhoneContact]:
+def _parse_phone_contacts_json(
+    raw: str,
+    *,
+    require_person_name: bool = True,
+) -> list[PhoneContact]:
     """Parse GPT JSON response into validated PhoneContact list."""
     # Try to extract JSON array from response
     raw = raw.strip()
@@ -2093,7 +2124,7 @@ def _parse_phone_contacts_json(raw: str) -> list[PhoneContact]:
         if name and _is_generic_name(name):
             name = ""
         validated = validate_phone(phone)
-        if validated:
+        if validated and (name or not require_person_name):
             results.append(PhoneContact(phone=validated, name=name))
 
     return results
@@ -3164,6 +3195,76 @@ async def llm_verify_ig_handle(handle: str, bio: str, full_name: str, university
         return result
     except Exception as e:
         log.warning("[LLM-Verify] Failed for @%s (%s): %s", handle, university_name[:40], e)
+        return {"is_correct": None, "confidence": 0.0, "reason": f"llm_error: {e}"}
+
+
+async def llm_verify_company_ig_handle(
+    handle: str,
+    bio: str,
+    full_name: str,
+    company_name: str,
+    external_url: str = "",
+) -> dict:
+    """Use GPT-4o-mini to decide if an IG account is the official account for a company.
+
+    Returns the same structure as ``llm_verify_ig_handle`` so callers can apply
+    the same accept/reject loop used by the university handle finder.
+    """
+    if not bio.strip() and not full_name.strip() and not external_url.strip():
+        log.debug("[LLM-Verify-Company] @%s — no profile evidence, skipping LLM", handle)
+        return {"is_correct": None, "confidence": 0.0, "reason": "no profile evidence to verify"}
+
+    client = _get_openai()
+
+    user_prompt = (
+        f"Company: {company_name}\n"
+        f"Instagram account:\n"
+        f"- Handle: @{handle}\n"
+        f'- Full name: "{full_name}"\n'
+        f'- Bio: "{bio}"\n'
+        f'- External URL: "{external_url}"\n\n'
+        f"Is @{handle} likely the OFFICIAL Instagram account for {company_name}?\n"
+        f'Answer JSON: {{"is_correct": true/false, "confidence": 0.0-1.0, "reason": "brief explanation"}}'
+    )
+
+    try:
+        response = await client.chat.completions.create(
+            model="gpt-4o-mini",
+            messages=[
+                {
+                    "role": "system",
+                    "content": (
+                        "You are an expert at identifying official Indonesian company Instagram accounts. "
+                        "Decide if the given account is the main or clearly official Instagram account for that exact company. "
+                        "Be strict: reject news repost accounts, fan pages, keyword landing pages, unrelated brands, and generic topic pages. "
+                        "A strong signal is when the bio, full name, or external URL clearly points to the same company or its official domain. "
+                        "Respond ONLY with valid JSON — no markdown, no explanation."
+                    ),
+                },
+                {"role": "user", "content": user_prompt},
+            ],
+            temperature=0,
+            max_tokens=120,
+            response_format={"type": "json_object"},
+        )
+        raw = response.choices[0].message.content or ""
+        data = json.loads(raw)
+        result = {
+            "is_correct": bool(data.get("is_correct", False)),
+            "confidence": float(data.get("confidence", 0.0)),
+            "reason": data.get("reason", ""),
+        }
+        log.info(
+            "[LLM-Verify-Company] @%s for '%s': is_correct=%s (conf=%.2f) — %s",
+            handle,
+            company_name[:40],
+            result["is_correct"],
+            result["confidence"],
+            result["reason"],
+        )
+        return result
+    except Exception as e:
+        log.warning("[LLM-Verify-Company] Failed for @%s (%s): %s", handle, company_name[:40], e)
         return {"is_correct": None, "confidence": 0.0, "reason": f"llm_error: {e}"}
 
 

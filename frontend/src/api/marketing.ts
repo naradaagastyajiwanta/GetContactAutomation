@@ -45,8 +45,25 @@ export interface MarketingClient {
   group_id: number
   name: string
   search_status: ClientSearchStatus
+  error_message?: string | null
+  ig_handle?: string | null
+  ig_profile_url?: string | null
+  ig_last_scraped_at?: string | null
   created_at: string
+  ig_posts: MarketingInstagramPost[]
   contacts: MarketingContact[]
+}
+
+export interface MarketingInstagramPost {
+  id: number
+  client_id: number
+  ig_handle: string | null
+  post_url: string
+  image_url: string | null
+  caption: string | null
+  post_timestamp: string | null
+  source: string | null
+  created_at: string
 }
 
 export interface MarketingContact {
@@ -67,6 +84,7 @@ export interface GroupStats {
   total: number
   found: number
   not_found: number
+  error_count: number
   pending: number
   approved: number
 }

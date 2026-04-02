@@ -1,4 +1,5 @@
 import { useState, useEffect } from 'react'
+import { useQueryClient } from '@tanstack/react-query'
 import { Link, useParams, useNavigate } from 'react-router-dom'
 import {
   ArrowLeft,
@@ -163,12 +164,15 @@ export default function MarketingClientDetailPage() {
   const navigate = useNavigate()
   const { hasPermission } = useAuth()
   const groupId = Number(id)
+  const queryClient = useQueryClient()
 
   const [importOpen, setImportOpen] = useState(false)
   const [addClientOpen, setAddClientOpen] = useState(false)
 
   const { data, isLoading, error } = useMarketingGroupDetail(groupId)
-  const { data: clientsData } = useMarketingClients(groupId)
+  const { data: clientsData } = useMarketingClients(groupId, {
+    refetchInterval: data?.group.status === 'searching' ? 3_000 : false,
+  })
   const canManage = hasPermission('marketing.manage') || hasPermission('blast.manage')
 
   const group = data?.group
@@ -184,6 +188,12 @@ export default function MarketingClientDetailPage() {
   const exportMutation = useExportGroupClients()
 
   const statusCfg = statusConfig[group?.status ?? 'draft']
+
+  useEffect(() => {
+    if (searchStatus?.status !== 'done') return
+    void queryClient.invalidateQueries({ queryKey: ['marketing', 'clients', groupId] })
+    void queryClient.invalidateQueries({ queryKey: ['marketing', 'group', groupId] })
+  }, [groupId, queryClient, searchStatus?.status])
 
   async function handleStartSearch() {
     try {
@@ -220,7 +230,7 @@ export default function MarketingClientDetailPage() {
     }
   }
 
-  const isSearching = group?.status === 'searching'
+  const isSearching = searchStatus?.status === 'searching' || group?.status === 'searching'
 
   if (isLoading) {
     return (
@@ -350,6 +360,7 @@ export default function MarketingClientDetailPage() {
             { label: 'Total', value: stats.total, color: 'text-gray-900 dark:text-gray-100' },
             { label: 'Ditemukan', value: stats.found, color: 'text-green-600 dark:text-green-400' },
             { label: 'Tidak Ditemukan', value: stats.not_found, color: 'text-red-500' },
+            { label: 'Error', value: stats.error_count, color: 'text-amber-600 dark:text-amber-400' },
             { label: 'Pending', value: stats.pending, color: 'text-blue-600 dark:text-blue-400' },
             { label: 'Approved', value: stats.approved, color: 'text-indigo-600 dark:text-indigo-400' },
           ].map((s) => (

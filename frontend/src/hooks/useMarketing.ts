@@ -68,11 +68,15 @@ export function useDeleteMarketingGroup() {
 
 // ── Client Hooks ────────────────────────────────────────────────────────────
 
-export function useMarketingClients(groupId: number) {
+export function useMarketingClients(
+  groupId: number,
+  options?: { refetchInterval?: number | false }
+) {
   return useQuery({
     queryKey: mkKeys.groupClients(groupId),
     queryFn: () => getMarketingClients(groupId),
     enabled: !!groupId,
+    refetchInterval: options?.refetchInterval,
   })
 }
 

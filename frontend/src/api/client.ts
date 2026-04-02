@@ -11,7 +11,11 @@ export const apiClient = axios.create({
 apiClient.interceptors.response.use(
   (response) => response,
   (error) => {
-    if (error?.response?.status === 401 && typeof window !== 'undefined') {
+    const status = error?.response?.status
+    const requestUrl = typeof error?.config?.url === 'string' ? error.config.url : ''
+    const isAuthMeRequest = requestUrl.endsWith('/auth/me')
+
+    if (status === 401 && !isAuthMeRequest && typeof window !== 'undefined') {
       window.dispatchEvent(new CustomEvent('app:unauthorized'))
     }
     return Promise.reject(error)

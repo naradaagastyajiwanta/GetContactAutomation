@@ -816,6 +816,9 @@ CREATE TABLE IF NOT EXISTS marketing_clients (
     extra_data TEXT,
     search_status TEXT DEFAULT 'pending',
     error_message TEXT,
+    ig_handle TEXT,
+    ig_profile_url TEXT,
+    ig_last_scraped_at DATETIME,
     created_at DATETIME DEFAULT CURRENT_TIMESTAMP
 );
 
@@ -841,6 +844,19 @@ CREATE TABLE IF NOT EXISTS marketing_contact_handoffs (
     campaign_id INTEGER,
     created_at DATETIME DEFAULT CURRENT_TIMESTAMP
 );
+
+CREATE TABLE IF NOT EXISTS marketing_ig_posts (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    client_id INTEGER NOT NULL REFERENCES marketing_clients(id) ON DELETE CASCADE,
+    ig_handle TEXT,
+    post_url TEXT NOT NULL,
+    image_url TEXT,
+    caption TEXT,
+    post_timestamp TEXT,
+    source TEXT,
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE(client_id, post_url)
+);
 """
 
 _INDEXES_MARKETING = """
@@ -850,6 +866,8 @@ CREATE INDEX IF NOT EXISTS idx_mcr_client ON marketing_contact_results(client_id
 CREATE INDEX IF NOT EXISTS idx_mcr_type ON marketing_contact_results(contact_type);
 CREATE INDEX IF NOT EXISTS idx_mch_group ON marketing_contact_handoffs(group_id);
 CREATE INDEX IF NOT EXISTS idx_mch_result ON marketing_contact_handoffs(result_id);
+CREATE INDEX IF NOT EXISTS idx_mip_client ON marketing_ig_posts(client_id);
+CREATE INDEX IF NOT EXISTS idx_mip_handle ON marketing_ig_posts(ig_handle);
 """
 
 # ---------------------------------------------------------------------------
@@ -897,6 +915,18 @@ async def init_db() -> None:
         if "error_message" not in columns:
             await db.execute(
                 "ALTER TABLE marketing_clients ADD COLUMN error_message TEXT"
+            )
+        if "ig_handle" not in columns:
+            await db.execute(
+                "ALTER TABLE marketing_clients ADD COLUMN ig_handle TEXT"
+            )
+        if "ig_profile_url" not in columns:
+            await db.execute(
+                "ALTER TABLE marketing_clients ADD COLUMN ig_profile_url TEXT"
+            )
+        if "ig_last_scraped_at" not in columns:
+            await db.execute(
+                "ALTER TABLE marketing_clients ADD COLUMN ig_last_scraped_at DATETIME"
             )
 
         async def _rebuild_email_cache_table_if_needed(table_name: str, recreate_script: str) -> None:

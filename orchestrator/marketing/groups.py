@@ -123,6 +123,10 @@ async def delete_group(group_id: int) -> bool:
                 f"DELETE FROM marketing_contact_results WHERE client_id IN ({placeholders})",
                 client_ids,
             )
+            await db.execute(
+                f"DELETE FROM marketing_ig_posts WHERE client_id IN ({placeholders})",
+                client_ids,
+            )
 
         # Delete clients
         await db.execute("DELETE FROM marketing_clients WHERE group_id = ?", (group_id,))
@@ -160,7 +164,8 @@ async def list_clients(group_id: int) -> list[dict[str, Any]]:
         cursor = await db.execute(
             """
             SELECT
-                c.id, c.group_id, c.name, c.extra_data, c.search_status, c.created_at,
+                c.id, c.group_id, c.name, c.extra_data, c.search_status, c.error_message,
+                c.ig_handle, c.ig_profile_url, c.ig_last_scraped_at, c.created_at,
                 r.id AS r_id, r.client_id AS r_client_id, r.contact_type,
                 r.value, r.source_url, r.source_type, r.confidence,
                 r.is_approved, r.is_selected, r.edited_value, r.created_at AS r_created_at
@@ -173,6 +178,22 @@ async def list_clients(group_id: int) -> list[dict[str, Any]]:
         )
         rows = await cursor.fetchall()
 
+        client_ids = list({row[0] for row in rows})
+        ig_rows: list[tuple[Any, ...]] = []
+        if client_ids:
+            placeholders = ",".join("?" * len(client_ids))
+            ig_cursor = await db.execute(
+                f"""
+                SELECT id, client_id, ig_handle, post_url, image_url, caption,
+                       post_timestamp, source, created_at
+                FROM marketing_ig_posts
+                WHERE client_id IN ({placeholders})
+                ORDER BY COALESCE(post_timestamp, created_at) DESC, created_at DESC
+                """,
+                client_ids,
+            )
+            ig_rows = await ig_cursor.fetchall()
+
     # Group rows by client
     clients_map: dict[int, dict[str, Any]] = {}
     for row in rows:
@@ -184,24 +205,45 @@ async def list_clients(group_id: int) -> list[dict[str, Any]]:
                 "name": row[2],
                 "extra_data": json.loads(row[3]) if row[3] else None,
                 "search_status": row[4],
-                "created_at": row[5],
+                "error_message": row[5],
+                "ig_handle": row[6],
+                "ig_profile_url": row[7],
+                "ig_last_scraped_at": row[8],
+                "created_at": row[9],
+                "ig_posts": [],
                 "contacts": [],
             }
         # Append contact if present (r_id is not None)
-        if row[6] is not None:
+        if row[10] is not None:
             clients_map[cid]["contacts"].append({
-                "id": row[6],
-                "client_id": row[7],
-                "contact_type": row[8],
-                "value": row[9],
-                "source_url": row[10],
-                "source_type": row[11],
-                "confidence": row[12],
-                "is_approved": bool(row[13]),
-                "is_selected": bool(row[14]),
-                "edited_value": row[15],
-                "created_at": row[16],
+                "id": row[10],
+                "client_id": row[11],
+                "contact_type": row[12],
+                "value": row[13],
+                "source_url": row[14],
+                "source_type": row[15],
+                "confidence": row[16],
+                "is_approved": bool(row[17]),
+                "is_selected": bool(row[18]),
+                "edited_value": row[19],
+                "created_at": row[20],
             })
+
+    for row in ig_rows:
+        client = clients_map.get(row[1])
+        if client is None:
+            continue
+        client["ig_posts"].append({
+            "id": row[0],
+            "client_id": row[1],
+            "ig_handle": row[2],
+            "post_url": row[3],
+            "image_url": row[4],
+            "caption": row[5],
+            "post_timestamp": row[6],
+            "source": row[7],
+            "created_at": row[8],
+        })
 
     return list(clients_map.values())
 
@@ -212,12 +254,12 @@ async def get_client(client_id: int) -> dict[str, Any] | None:
         cursor = await db.execute(
             """
             SELECT
-                c.id, c.group_id, c.name, c.extra_data, c.search_status, c.created_at,
-                COUNT(r.id) AS contact_count
+                c.id, c.group_id, c.name, c.extra_data, c.search_status,
+                c.ig_handle, c.ig_profile_url, c.ig_last_scraped_at, c.created_at,
+                (SELECT COUNT(*) FROM marketing_contact_results r WHERE r.client_id = c.id) AS contact_count,
+                (SELECT COUNT(*) FROM marketing_ig_posts p WHERE p.client_id = c.id) AS ig_post_count
             FROM marketing_clients c
-            LEFT JOIN marketing_contact_results r ON r.client_id = c.id
             WHERE c.id = ?
-            GROUP BY c.id
             """,
             (client_id,),
         )
@@ -230,6 +272,7 @@ async def get_client(client_id: int) -> dict[str, Any] | None:
 async def delete_client(client_id: int) -> bool:
     """Delete a client (cascade deletes results)."""
     async with aiosqlite.connect(DATABASE_PATH) as db:
+        await db.execute("DELETE FROM marketing_ig_posts WHERE client_id = ?", (client_id,))
         cursor = await db.execute("DELETE FROM marketing_clients WHERE id = ?", (client_id,))
         await db.commit()
         return cursor.rowcount > 0
@@ -239,7 +282,7 @@ async def update_client_search_status(client_id: int, status: str) -> None:
     """Update client search status."""
     async with aiosqlite.connect(DATABASE_PATH) as db:
         await db.execute(
-            "UPDATE marketing_clients SET search_status = ? WHERE id = ?",
+            "UPDATE marketing_clients SET search_status = ?, error_message = NULL WHERE id = ?",
             (status, client_id),
         )
         await db.commit()
@@ -252,6 +295,61 @@ async def update_client_error_message(client_id: int, error_message: str) -> Non
             "UPDATE marketing_clients SET search_status = ?, error_message = ? WHERE id = ?",
             ("error", error_message, client_id),
         )
+        await db.commit()
+
+
+async def save_client_instagram_profile(
+    client_id: int,
+    ig_handle: str,
+    ig_profile_url: str | None = None,
+) -> None:
+    """Persist the resolved Instagram profile for a marketing client."""
+    async with aiosqlite.connect(DATABASE_PATH) as db:
+        await db.execute(
+            """
+            UPDATE marketing_clients
+            SET ig_handle = ?,
+                ig_profile_url = ?,
+                ig_last_scraped_at = CURRENT_TIMESTAMP
+            WHERE id = ?
+            """,
+            (ig_handle, ig_profile_url, client_id),
+        )
+        await db.commit()
+
+
+async def replace_client_ig_posts(
+    client_id: int,
+    ig_handle: str,
+    posts: list[dict[str, Any]],
+) -> None:
+    """Replace stored Instagram posts for a marketing client with the latest scrape."""
+    async with aiosqlite.connect(DATABASE_PATH) as db:
+        await db.execute("DELETE FROM marketing_ig_posts WHERE client_id = ?", (client_id,))
+
+        rows = [
+            (
+                client_id,
+                ig_handle,
+                post.get("post_url"),
+                post.get("image_url"),
+                post.get("caption"),
+                post.get("timestamp"),
+                post.get("source"),
+            )
+            for post in posts
+            if post.get("post_url")
+        ]
+        if rows:
+            await db.executemany(
+                """
+                INSERT OR IGNORE INTO marketing_ig_posts
+                    (client_id, ig_handle, post_url, image_url, caption, post_timestamp, source)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+                """,
+                rows,
+            )
+
         await db.commit()
 
 
@@ -324,7 +422,7 @@ async def update_contact_result(
 
 
 async def get_group_stats(group_id: int) -> dict[str, int]:
-    """Get stats for a single group (total, found, not_found, pending, approved)."""
+    """Get stats for a single group (total, found, not_found, error, pending, approved)."""
     async with aiosqlite.connect(DATABASE_PATH) as db:
         cursor = await db.execute(
             """
@@ -332,6 +430,7 @@ async def get_group_stats(group_id: int) -> dict[str, int]:
                 COUNT(c.id) AS total,
                 SUM(CASE WHEN c.search_status = 'found' THEN 1 ELSE 0 END) AS found,
                 SUM(CASE WHEN c.search_status = 'not_found' THEN 1 ELSE 0 END) AS not_found,
+                SUM(CASE WHEN c.search_status = 'error' THEN 1 ELSE 0 END) AS error_count,
                 SUM(CASE WHEN c.search_status IN ('pending','searching') THEN 1 ELSE 0 END) AS pending,
                 SUM(CASE WHEN r.is_approved = 1 THEN 1 ELSE 0 END) AS approved
             FROM marketing_clients c
@@ -345,8 +444,9 @@ async def get_group_stats(group_id: int) -> dict[str, int]:
             "total": row[0] or 0,
             "found": row[1] or 0,
             "not_found": row[2] or 0,
-            "pending": row[3] or 0,
-            "approved": row[4] or 0,
+            "error_count": row[3] or 0,
+            "pending": row[4] or 0,
+            "approved": row[5] or 0,
         }
 
 
@@ -497,8 +597,12 @@ def _row_to_client_out(row: tuple[Any, ...]) -> dict[str, Any]:
         "name": row[2],
         "extra_data": json.loads(row[3]) if row[3] else None,
         "search_status": row[4],
-        "created_at": row[5],
-        "contact_count": row[6] or 0,
+        "ig_handle": row[5],
+        "ig_profile_url": row[6],
+        "ig_last_scraped_at": row[7],
+        "created_at": row[8],
+        "contact_count": row[9] or 0,
+        "ig_post_count": row[10] or 0,
     }
 
 
