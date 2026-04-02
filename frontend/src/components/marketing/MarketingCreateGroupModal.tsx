@@ -6,14 +6,15 @@ import { useCreateMarketingGroup } from '../../hooks/useMarketing'
 import toast from 'react-hot-toast'
 import type { ClientType } from '../../api/marketing'
 
+// Options use snake_case values (matching API), labels are for display
 const CLIENT_TYPE_OPTIONS = [
-  { value: 'Lembaga Negara', label: 'Lembaga Negara' },
-  { value: 'Kementerian', label: 'Kementerian' },
-  { value: 'BUMN', label: 'BUMN' },
-  { value: 'Perusahaan Swasta Besar', label: 'Perusahaan Swasta Besar' },
-  { value: 'Asosiasi', label: 'Asosiasi' },
-  { value: 'LPK', label: 'LPK' },
-  { value: 'LKP', label: 'LKP' },
+  { value: 'lembaga_negara', label: 'Lembaga Negara' },
+  { value: 'kementerian', label: 'Kementerian' },
+  { value: 'bumn', label: 'BUMN' },
+  { value: 'swasta_besar', label: 'Perusahaan Swasta Besar' },
+  { value: 'asosiasi', label: 'Asosiasi' },
+  { value: 'lpk', label: 'LPK' },
+  { value: 'lkp', label: 'LKP' },
 ]
 
 interface MarketingCreateGroupModalProps {
@@ -22,7 +23,7 @@ interface MarketingCreateGroupModalProps {
 
 export function MarketingCreateGroupModal({ onClose }: MarketingCreateGroupModalProps) {
   const [name, setName] = useState('')
-  const [clientType, setClientType] = useState<ClientType>('Lembaga Negara')
+  const [clientType, setClientType] = useState<ClientType>('lembaga_negara')
 
   const createMutation = useCreateMarketingGroup()
 

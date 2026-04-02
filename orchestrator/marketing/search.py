@@ -295,38 +295,44 @@ async def _search_single_client(
     async with _search_semaphore:
         await update_fn(client_id, "searching")
 
-        stage1 = await website_discovery(client_name, extra_data)
-        stage2 = await ig_discovery(client_name)
-        stage3 = await web_search_fallback(client_name)
-
-        all_results = stage1 + stage2 + stage3
-        status = "found" if all_results else "not_found"
-
-        # Persist to DB — import here to avoid circular
+        # Import here to avoid circular
         from . import groups as mkt
 
-        for r in all_results:
-            await mkt.upsert_contact_result(
-                client_id=client_id,
-                contact_type=r.contact_type,
-                value=r.value,
-                source_url=r.source_url,
-                source_type=r.source_type,
-                confidence=r.confidence,
-            )
+        try:
+            stage1 = await website_discovery(client_name, extra_data)
+            stage2 = await ig_discovery(client_name)
+            stage3 = await web_search_fallback(client_name)
 
-            # Also store pic_name/pic_title if present
-            if r.pic_name:
+            all_results = stage1 + stage2 + stage3
+            status = "found" if all_results else "not_found"
+
+            for r in all_results:
                 await mkt.upsert_contact_result(
                     client_id=client_id,
-                    contact_type="pic_name",
-                    value=r.pic_name,
-                    source_url=r.source_url or "",
-                    source_type=r.source_type or "",
+                    contact_type=r.contact_type,
+                    value=r.value,
+                    source_url=r.source_url,
+                    source_type=r.source_type,
                     confidence=r.confidence,
                 )
 
-        await mkt.update_client_search_status(client_id, status)
+                # Also store pic_name/pic_title if present
+                if r.pic_name:
+                    await mkt.upsert_contact_result(
+                        client_id=client_id,
+                        contact_type="pic_name",
+                        value=r.pic_name,
+                        source_url=r.source_url or "",
+                        source_type=r.source_type or "",
+                        confidence=r.confidence,
+                    )
+
+            await mkt.update_client_search_status(client_id, status)
+
+        except Exception as e:
+            error_msg = str(e) or type(e).__name__
+            log.warning(f"[Marketing Search] Client {client_id} ({client_name}) failed: {error_msg}")
+            await mkt.update_client_error_message(client_id, error_msg)
 
 
 async def process_search_queue(group_id: int) -> None:

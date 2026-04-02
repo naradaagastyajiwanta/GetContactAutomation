@@ -3,13 +3,23 @@ import { apiClient } from './client'
 // ── Types ─────────────────────────────────────────────────────────────────
 
 export type ClientType =
-  | 'Lembaga Negara'
-  | 'Kementerian'
-  | 'BUMN'
-  | 'Perusahaan Swasta Besar'
-  | 'Asosiasi'
-  | 'LPK'
-  | 'LKP'
+  | 'lembaga_negara'
+  | 'kementerian'
+  | 'bumn'
+  | 'swasta_besar'
+  | 'asosiasi'
+  | 'lpk'
+  | 'lkp'
+
+export const CLIENT_TYPE_LABELS: Record<ClientType, string> = {
+  lembaga_negara: 'Lembaga Negara',
+  kementerian: 'Kementerian',
+  bumn: 'BUMN',
+  swasta_besar: 'Perusahaan Swasta Besar',
+  asosiasi: 'Asosiasi',
+  lpk: 'LPK',
+  lkp: 'LKP',
+}
 
 export type GroupStatus = 'draft' | 'searching' | 'done'
 

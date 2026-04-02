@@ -36,7 +36,7 @@ import { MarketingClientResultsTable } from '../components/marketing/MarketingCl
 import { MarketingReadyToBlastPanel } from '../components/marketing/MarketingReadyToBlastPanel'
 import { useAuth } from '../context/AuthContext'
 import toast from 'react-hot-toast'
-import type { GroupStatus } from '../api/marketing'
+import { type GroupStatus, CLIENT_TYPE_LABELS } from '../api/marketing'
 
 const statusConfig: Record<
   GroupStatus,
@@ -265,7 +265,7 @@ export default function MarketingClientDetailPage() {
                 {group.name}
               </h1>
               <span className="rounded-full bg-gray-100 px-2 py-0.5 text-xs font-medium text-gray-600 dark:bg-gray-800 dark:text-gray-400">
-                {group.client_type}
+                {CLIENT_TYPE_LABELS[group.client_type] ?? group.client_type}
               </span>
             </div>
             <div className="mt-1 flex items-center gap-2">

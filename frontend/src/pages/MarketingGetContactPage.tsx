@@ -24,17 +24,18 @@ import { EmptyState } from '../components/ui/EmptyState'
 import { MarketingCreateGroupModal } from '../components/marketing/MarketingCreateGroupModal'
 import { useAuth } from '../context/AuthContext'
 import { formatDate } from '../lib/utils'
-import type { MarketingGroup, ClientType } from '../api/marketing'
+import { type MarketingGroup, type ClientType, CLIENT_TYPE_LABELS } from '../api/marketing'
 
-const CLIENT_TYPE_OPTIONS = [
+// Options use snake_case values (matching API); import label map for display
+const CLIENT_TYPE_OPTIONS: { value: ClientType | ''; label: string }[] = [
   { value: '', label: 'Semua Tipe' },
-  { value: 'Lembaga Negara', label: 'Lembaga Negara' },
-  { value: 'Kementerian', label: 'Kementerian' },
-  { value: 'BUMN', label: 'BUMN' },
-  { value: 'Perusahaan Swasta Besar', label: 'Perusahaan Swasta Besar' },
-  { value: 'Asosiasi', label: 'Asosiasi' },
-  { value: 'LPK', label: 'LPK' },
-  { value: 'LKP', label: 'LKP' },
+  { value: 'lembaga_negara', label: 'Lembaga Negara' },
+  { value: 'kementerian', label: 'Kementerian' },
+  { value: 'bumn', label: 'BUMN' },
+  { value: 'swasta_besar', label: 'Perusahaan Swasta Besar' },
+  { value: 'asosiasi', label: 'Asosiasi' },
+  { value: 'lpk', label: 'LPK' },
+  { value: 'lkp', label: 'LKP' },
 ]
 
 const statusConfig: Record<
@@ -98,7 +99,7 @@ function GroupRow({
         </Link>
       </td>
       <td className="px-4 py-3 text-sm text-gray-600 dark:text-gray-400">
-        {group.client_type}
+        {CLIENT_TYPE_LABELS[group.client_type] ?? group.client_type}
       </td>
       <td className="px-4 py-3 text-center text-sm text-gray-600 dark:text-gray-400">
         {group.total_clients}

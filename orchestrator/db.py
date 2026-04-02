@@ -815,6 +815,7 @@ CREATE TABLE IF NOT EXISTS marketing_clients (
     name TEXT NOT NULL,
     extra_data TEXT,
     search_status TEXT DEFAULT 'pending',
+    error_message TEXT,
     created_at DATETIME DEFAULT CURRENT_TIMESTAMP
 );
 
@@ -889,6 +890,14 @@ async def init_db() -> None:
         await db.executescript(_INDEXES_UNIVERSITY_GROUPS)
         await db.executescript(_DDL_MARKETING)
         await db.executescript(_INDEXES_MARKETING)
+
+        # Migration: add error_message column to marketing_clients if missing
+        cursor = await db.execute("PRAGMA table_info(marketing_clients)")
+        columns = {row[1] for row in await cursor.fetchall()}
+        if "error_message" not in columns:
+            await db.execute(
+                "ALTER TABLE marketing_clients ADD COLUMN error_message TEXT"
+            )
 
         async def _rebuild_email_cache_table_if_needed(table_name: str, recreate_script: str) -> None:
             cursor = await db.execute(f"PRAGMA table_info({table_name})")

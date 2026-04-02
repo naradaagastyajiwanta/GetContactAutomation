@@ -213,6 +213,16 @@ async def update_client_search_status(client_id: int, status: str) -> None:
         await db.commit()
 
 
+async def update_client_error_message(client_id: int, error_message: str) -> None:
+    """Set error_message and status='error' for a client after a search failure."""
+    async with aiosqlite.connect(DATABASE_PATH) as db:
+        await db.execute(
+            "UPDATE marketing_clients SET search_status = ?, error_message = ? WHERE id = ?",
+            ("error", error_message, client_id),
+        )
+        await db.commit()
+
+
 async def upsert_contact_result(
     client_id: int,
     contact_type: str,
@@ -294,17 +304,18 @@ async def approve_all_in_group(group_id: int) -> int:
         return cursor.rowcount
 
 
-async def get_group_search_status(group_id: int) -> dict[str, int]:
+async def get_group_search_status(group_id: int) -> dict[str, Any]:
     """Get search status counts for a group."""
     async with aiosqlite.connect(DATABASE_PATH) as db:
         cursor = await db.execute(
             """
             SELECT
                 COUNT(*) AS total,
-                SUM(CASE WHEN search_status = 'pending' THEN 1 ELSE 0 END) AS pending,
-                SUM(CASE WHEN search_status = 'searching' THEN 1 ELSE 0 END) AS searching,
-                SUM(CASE WHEN search_status = 'found' THEN 1 ELSE 0 END) AS found,
-                SUM(CASE WHEN search_status = 'not_found' THEN 1 ELSE 0 END) AS not_found,
+                SUM(CASE WHEN c.search_status = 'pending' THEN 1 ELSE 0 END) AS pending,
+                SUM(CASE WHEN c.search_status = 'searching' THEN 1 ELSE 0 END) AS searching,
+                SUM(CASE WHEN c.search_status = 'found' THEN 1 ELSE 0 END) AS found,
+                SUM(CASE WHEN c.search_status = 'not_found' THEN 1 ELSE 0 END) AS not_found,
+                SUM(CASE WHEN c.search_status = 'error' THEN 1 ELSE 0 END) AS error_count,
                 SUM(CASE WHEN r.is_approved = 1 THEN 1 ELSE 0 END) AS approved
             FROM marketing_clients c
             LEFT JOIN marketing_contact_results r ON r.client_id = c.id
@@ -313,13 +324,28 @@ async def get_group_search_status(group_id: int) -> dict[str, int]:
             (group_id,),
         )
         row = await cursor.fetchone()
+
+        # Fetch error messages for clients in error state
+        err_cursor = await db.execute(
+            """SELECT c.id, c.name, c.error_message
+               FROM marketing_clients c
+               WHERE c.group_id = ? AND c.search_status = 'error'""",
+            (group_id,),
+        )
+        errors = [
+            {"client_id": r[0], "client_name": r[1], "message": r[2] or "Unknown error"}
+            for r in await err_cursor.fetchall()
+        ]
+
         return {
             "total": row[0] or 0,
             "pending": row[1] or 0,
             "searching": row[2] or 0,
             "found": row[3] or 0,
             "not_found": row[4] or 0,
-            "approved": row[5] or 0,
+            "error_count": row[5] or 0,
+            "approved": row[6] or 0,
+            "errors": errors,
         }
 
 
