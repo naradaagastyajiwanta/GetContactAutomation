@@ -178,12 +178,14 @@ service_account.json
 certbot/
 
 # =============================================================================
-# Docs Internal / Agent Artifacts (not user-facing)
+# Internal / Agent Artifacts (not user-facing)
 # =============================================================================
+# Agent specs, planning docs, execution flow, analytics
+docs/agents/
 docs/pipeline-flow/
-docs/hook-analytics.md
-docs/token-reports/
+!docs/public/
 agentGuide.md
+data/audiensi_docs/
 
 # =============================================================================
 # Local Scripts (adhoc, not project-owned)

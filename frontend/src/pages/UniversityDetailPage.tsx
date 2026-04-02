@@ -1,5 +1,6 @@
 import { useState } from 'react'
 import { useParams, useNavigate } from 'react-router-dom'
+import axios from 'axios'
 import { ArrowLeft } from 'lucide-react'
 import { useUniversity, useUniversityContacts, useUniversityPosts, useUniversityRelatedIgs } from '../hooks/useUniversities'
 import { Button } from '../components/ui/Button'
@@ -19,15 +20,54 @@ export default function UniversityDetailPage() {
   const [activeTab, setActiveTab] = useState<Tab>('contacts')
 
   const universityId = Number(id) || 0
-  const { data: university, isLoading } = useUniversity(universityId)
+  const { data: university, isLoading, error } = useUniversity(universityId)
   const { data: contacts } = useUniversityContacts(universityId)
   const { data: posts } = useUniversityPosts(universityId)
   const { data: relatedIgs } = useUniversityRelatedIgs(universityId)
+
+  const isUnauthorized = axios.isAxiosError(error) && error.response?.status === 401
+  const isNotFound = axios.isAxiosError(error) && error.response?.status === 404
 
   if (isLoading) {
     return (
       <div className="flex h-64 items-center justify-center">
         <Spinner size="lg" />
+      </div>
+    )
+  }
+
+  if (isUnauthorized) {
+    return (
+      <div className="space-y-4 text-center">
+        <p className="text-gray-500 dark:text-gray-400">
+          Sesi Anda sudah habis. Silakan login ulang untuk membuka detail universitas ini.
+        </p>
+        <div className="flex justify-center gap-3">
+          <Button variant="secondary" size="sm" onClick={() => navigate('/login', { replace: true })}>
+            Ke Login
+          </Button>
+          <Button variant="ghost" size="sm" onClick={() => navigate('/universities')}>
+            Kembali ke List
+          </Button>
+        </div>
+      </div>
+    )
+  }
+
+  if (error && !isNotFound) {
+    return (
+      <div className="space-y-4 text-center">
+        <p className="text-gray-500 dark:text-gray-400">
+          Gagal memuat detail universitas. Coba refresh atau kembali ke list.
+        </p>
+        <div className="flex justify-center gap-3">
+          <Button variant="secondary" size="sm" onClick={() => window.location.reload()}>
+            Refresh
+          </Button>
+          <Button variant="ghost" size="sm" onClick={() => navigate('/universities')}>
+            Kembali ke List
+          </Button>
+        </div>
       </div>
     )
   }
