@@ -1855,6 +1855,15 @@ async def get_group_university_ids(group_id: int):
 
 
 # ---------------------------------------------------------------------------
+# Marketing endpoints
+# ---------------------------------------------------------------------------
+
+from orchestrator.marketing import router as marketing_router
+
+app.include_router(marketing_router, prefix="/marketing", tags=["marketing"])
+
+
+# ---------------------------------------------------------------------------
 # Conversations endpoints
 # ---------------------------------------------------------------------------
 

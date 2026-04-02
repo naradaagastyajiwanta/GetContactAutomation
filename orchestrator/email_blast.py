@@ -1217,6 +1217,61 @@ async def add_recipients_to_campaign(campaign_id: int, university_ids: list[int]
         return added
 
 
+async def add_email_recipients_from_marketing_contacts(
+    campaign_id: int,
+    contacts: list[dict],
+) -> int:
+    """Add email recipients to a campaign from marketing contact results.
+
+    Does NOT require university_id FK — marketing contacts live outside the
+    university domain.
+
+    Args:
+        campaign_id: email blast campaign ID
+        contacts: list of dicts with keys:
+            - value         (required, the email address)
+            - client_name   (optional, used as university_name)
+            - source_url    (optional)
+            - result_id     (optional, not used here but included for API compat)
+
+    Returns:
+        Number of recipients added.
+    """
+    added = 0
+    async with get_db() as db:
+        for contact in contacts:
+            email = contact.get("value")
+            if not email:
+                continue
+
+            try:
+                cursor = await db.execute(
+                    """INSERT OR IGNORE INTO email_blast_recipients
+                       (campaign_id, university_id, email, university_name)
+                       VALUES (?, NULL, ?, ?)""",
+                    (
+                        campaign_id,
+                        email,
+                        contact.get("client_name"),
+                    ),
+                )
+                if cursor.lastrowid is not None and cursor.lastrowid > 0:
+                    added += 1
+            except Exception:
+                pass
+
+        await db.commit()
+
+        # Update total count — accumulate
+        await db.execute(
+            "UPDATE email_blast_campaigns SET total_recipients = total_recipients + ? WHERE id = ?",
+            (added, campaign_id),
+        )
+        await db.commit()
+
+    return added
+
+
 async def add_all_emails_to_campaign(campaign_id: int,
                                       provinces: list[str] = None) -> int:
     """Add all universities with emails to campaign, optionally filtered"""

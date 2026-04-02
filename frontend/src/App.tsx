@@ -32,6 +32,8 @@ const DmsScheduleDetailPage = lazy(() => import('./pages/DmsScheduleDetailPage')
 const CrmPage = lazy(() => import('./pages/CrmPage'))
 const CrmDetailPage = lazy(() => import('./pages/CrmDetailPage'))
 const UniversityGroupsPage = lazy(() => import('./pages/UniversityGroupsPage'))
+const MarketingGetContactPage = lazy(() => import('./pages/MarketingGetContactPage'))
+const MarketingClientDetailPage = lazy(() => import('./pages/MarketingClientDetailPage'))
 const LoginPage = lazy(() => import('./pages/LoginPage'))
 
 const queryClient = new QueryClient({
@@ -85,6 +87,8 @@ export default function App() {
                       <Route path="crm" element={<PermissionGuard permission="crm.view"><ErrorBoundary><CrmPage /></ErrorBoundary></PermissionGuard>} />
                       <Route path="crm/:id" element={<PermissionGuard permission="crm.view"><ErrorBoundary><CrmDetailPage /></ErrorBoundary></PermissionGuard>} />
                       <Route path="university-groups" element={<PermissionGuard permission="universities.view"><ErrorBoundary><UniversityGroupsPage /></ErrorBoundary></PermissionGuard>} />
+                      <Route path="marketing" element={<PermissionGuard permission="blast.view"><ErrorBoundary><MarketingGetContactPage /></ErrorBoundary></PermissionGuard>} />
+                      <Route path="marketing/groups/:id" element={<PermissionGuard permission="blast.view"><ErrorBoundary><MarketingClientDetailPage /></ErrorBoundary></PermissionGuard>} />
                       <Route path="settings" element={<PermissionGuard permission="settings.manage"><ErrorBoundary><SettingsPage /></ErrorBoundary></PermissionGuard>} />
                     </Route>
                   </Route>

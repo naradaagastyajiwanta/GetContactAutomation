@@ -974,6 +974,32 @@ def setup_scheduler():
             misfire_grace_time=600,
         )
 
+        # Marketing client search — run every hour, process all groups with pending clients
+        async def _run_marketing_search_queue():
+            # Lazy import to avoid circular imports
+            from orchestrator.marketing.search import process_search_queue
+            from orchestrator.marketing.groups import get_group_search_status, list_groups
+
+            groups = await list_groups()
+            for g in groups:
+                if g["status"] == "draft":
+                    # Auto-start search for draft groups with pending clients
+                    status = await get_group_search_status(g["id"])
+                    if status["pending"] > 0:
+                        asyncio.create_task(process_search_queue(g["id"]))
+
+        scheduler.add_job(
+            _run_marketing_search_queue,
+            "cron",
+            hour="8-22",  # Only during active hours
+            minute=0,
+            timezone=WIB,
+            id="marketing_search_queue",
+            replace_existing=True,
+            max_instances=1,
+            misfire_grace_time=600,
+        )
+
     scheduler.start()
     log.info(
         "Scheduler started: outreach every 30min, followups every hour, "
