@@ -9,6 +9,55 @@ description: >
 
 # Laravel / PHP Conventions
 
+## Convention Adoption Gate
+
+**Jalankan ini PERTAMA sebelum apply konvensi apapun.**
+
+### Step 1 — Deteksi Project Type
+```bash
+find app -name "*.php" 2>/dev/null | wc -l
+```
+Jika output `0` → **GREENFIELD**. Skip gate, apply konvensi penuh langsung.
+Jika output > 0 → **EXISTING PROJECT**. Lanjut ke Step 2.
+
+### Step 2 — Migration Risk Assessment
+```bash
+# Cek versi Laravel
+cat composer.json 2>/dev/null | grep '"laravel/framework"' | head -1
+# Cek struktur existing
+ls app/Http/Controllers/ 2>/dev/null | wc -l
+# Cek test suite
+ls tests/ 2>/dev/null && echo "HAS_TESTS" || echo "NO_TESTS"
+# Jumlah file terdampak
+find app -name "*.php" 2>/dev/null | wc -l
+# Cek apakah sudah pakai Service-Repository atau masih fat controller
+grep -r "Repository" app/ 2>/dev/null | wc -l
+```
+
+### Step 3 — Hitung Risk Score
+```
++40  Versi Laravel < 9 (konvensi modern tidak backward-compatible)
++30  Tidak ada test suite
++20  > 30 file yang harus diubah
++20  Fat controllers existing (refactor ke Service-Repository = besar)
++10  Tidak ada type hints di existing code
+```
+
+### Step 4 — Decision
+```
+< 40%  → Apply konvensi penuh.
+40-79% → STOP. Tampilkan ke programmer:
+         "⚠️ Convention migration risk: [N]%
+          Impact: [N] files | Reason: [alasan]
+          APPROVE → proceed | SKIP → keep existing + catat tech debt"
+≥ 80%  → KEEP AS IS. Otomatis tanpa tanya.
+         Catat ke .claude/memory/tech-debt.md:
+         "[YYYY-MM-DD] Laravel convention migration skipped — risk [N]% ([alasan])"
+         Tampilkan: "ℹ️ Convention migration skipped (risk [N]%). Pakai konvensi existing."
+```
+
+---
+
 ## Prinsip Utama
 - Ikuti PSR-12 coding standard
 - Gunakan Service-Repository pattern untuk business logic

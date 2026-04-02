@@ -38,6 +38,43 @@ export interface EmailBlastQuota {
   is_exhausted: boolean
 }
 
+export interface ManagedSMTPAccount {
+  id: number
+  host: string
+  port: number
+  user: string
+  password: string
+  use_ssl: boolean
+  from_name: string
+  enabled: boolean
+  notes: string
+  health_status?: 'unknown' | 'healthy' | 'error' | 'checking'
+  health_message?: string
+  last_checked_at?: string | null
+  last_healthy_at?: string | null
+  last_error_at?: string | null
+  is_current?: boolean
+  connected?: boolean
+  email_count?: number
+  daily_sent_count?: number
+  daily_limit?: number | null
+  cooldown_remaining_seconds?: number
+  skip_reason?: string | null
+  created_at: string
+  updated_at: string
+}
+
+export interface ManagedSMTPAccountPayload {
+  host: string
+  port: number
+  user: string
+  password: string
+  use_ssl: boolean
+  from_name: string
+  enabled?: boolean
+  notes?: string
+}
+
 export interface EmailBlastRecipient {
   id: number
   campaign_id: number
@@ -135,6 +172,39 @@ export async function testSmtpConnection(): Promise<{ success: boolean; message:
   return response.data
 }
 
+export async function getManagedSMTPAccounts(): Promise<{ accounts: ManagedSMTPAccount[] }> {
+  const response = await apiClient.get('/email-smtp-accounts')
+  return response.data
+}
+
+export async function createManagedSMTPAccount(payload: ManagedSMTPAccountPayload): Promise<{ status: string; account: ManagedSMTPAccount }> {
+  const response = await apiClient.post('/email-smtp-accounts', payload)
+  return response.data
+}
+
+export async function updateManagedSMTPAccount(
+  id: number,
+  payload: Partial<ManagedSMTPAccountPayload> & { enabled?: boolean; notes?: string }
+): Promise<{ status: string; account: ManagedSMTPAccount }> {
+  const response = await apiClient.put(`/email-smtp-accounts/${id}`, payload)
+  return response.data
+}
+
+export async function deleteManagedSMTPAccount(id: number): Promise<{ status: string }> {
+  const response = await apiClient.delete(`/email-smtp-accounts/${id}`)
+  return response.data
+}
+
+export async function testManagedSMTPAccount(id: number): Promise<{ success: boolean; message: string; account?: ManagedSMTPAccount | null }> {
+  const response = await apiClient.post(`/email-smtp-accounts/${id}/test`)
+  return response.data
+}
+
+export async function checkAllManagedSMTPAccounts(): Promise<{ success: boolean; checked: number; healthy: number; failed: number }> {
+  const response = await apiClient.post('/email-smtp-accounts/check-all')
+  return response.data
+}
+
 export interface UpdateEmailCampaignRequest {
   subject?: string
   template_message?: string
@@ -178,6 +248,8 @@ export interface SentEmail {
   id: number
   email: string
   university_name: string | null
+  from_email?: string | null
+  from_name?: string | null
   subject: string | null
   body: string | null
   status: string
@@ -203,8 +275,12 @@ export async function getSentEmail(campaignId: number, emailId: number): Promise
 }
 
 // Inbound Emails (Replies)
+export type EmailCacheRowId = string
+
 export interface InboundEmail {
-  id: number
+  id: EmailCacheRowId
+  mailbox_email?: string
+  uid?: number
   message_id: string
   in_reply_to: string
   from_email: string
@@ -249,7 +325,9 @@ export async function getAllSentEmails(
 }
 
 export interface SentFolderEmail {
-  id: number
+  id: EmailCacheRowId
+  mailbox_email?: string
+  uid?: number
   message_id: string
   from_email: string
   from_name: string

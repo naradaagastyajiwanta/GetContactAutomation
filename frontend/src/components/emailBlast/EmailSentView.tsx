@@ -30,6 +30,7 @@ const SentRow = memo(function SentRow({
   const bodyPreview = email.body?.replace(/<[^>]+>/g, '').slice(0, 80) ?? ''
   const operatorName = email.started_by_name || email.started_by_email
   const sourceLabel = email.source === 'test' ? 'Test email' : email.campaign_name || 'Campaign email'
+  const senderLabel = email.from_name || email.from_email
 
   return (
     <div
@@ -68,6 +69,7 @@ const SentRow = memo(function SentRow({
         </div>
         <div className="mt-1 flex flex-wrap gap-x-3 gap-y-1 text-[11px] text-gray-400 dark:text-gray-500">
           <span>{sourceLabel}</span>
+          {senderLabel ? <span>Dari {senderLabel}</span> : null}
           {operatorName ? <span>Dijalankan oleh {operatorName}</span> : null}
         </div>
       </div>
@@ -128,6 +130,13 @@ function SentDetailPane({
           <span className="font-medium">To: </span>
           {email.email || '(unknown)'}
         </div>
+        {email.from_email && (
+          <div className="mb-1 text-sm text-gray-700 dark:text-gray-200">
+            <span className="font-medium">From: </span>
+            {email.from_name || email.from_email}
+            {email.from_name ? ` <${email.from_email}>` : ''}
+          </div>
+        )}
         {email.university_name && (
           <div className="mb-1 text-sm text-gray-700 dark:text-gray-200">
             <span className="font-medium">Universitas: </span>
@@ -176,6 +185,7 @@ function SentDetailPane({
 
 export function EmailSentView() {
   const [search, setSearch] = useState('')
+  const [mailboxFilter, setMailboxFilter] = useState('')
   const [selectedIds, setSelectedIds] = useState<Set<number>>(new Set())
   const [detailEmail, setDetailEmail] = useState<SentEmail | null>(null)
   const loadMoreRef = useRef<HTMLDivElement>(null)
@@ -194,19 +204,31 @@ export function EmailSentView() {
 
   const emails: SentEmail[] = data?.pages.flatMap((page) => (page.emails as SentEmail[]) ?? []) ?? []
   const total = data?.pages[0]?.total ?? 0
+  const mailboxOptions = Array.from(new Set(emails.map((email) => (email.from_email ?? '').trim()).filter(Boolean))).sort()
 
-  const filtered = search.trim()
-    ? emails.filter(
-        (e) =>
-          (e.email ?? '').toLowerCase().includes(search.toLowerCase()) ||
-          (e.university_name ?? '').toLowerCase().includes(search.toLowerCase()) ||
-          (e.subject ?? '').toLowerCase().includes(search.toLowerCase()) ||
-          (e.body ?? '').toLowerCase().includes(search.toLowerCase()) ||
-          (e.campaign_name ?? '').toLowerCase().includes(search.toLowerCase()) ||
-          (e.started_by_name ?? '').toLowerCase().includes(search.toLowerCase()) ||
-          (e.started_by_email ?? '').toLowerCase().includes(search.toLowerCase()),
-      )
-    : emails
+  const searchValue = search.toLowerCase()
+  const filtered = emails.filter((email) => {
+    const matchesMailbox = !mailboxFilter || (email.from_email ?? '') === mailboxFilter
+    if (!matchesMailbox) {
+      return false
+    }
+
+    if (!search.trim()) {
+      return true
+    }
+
+    return (
+      (email.email ?? '').toLowerCase().includes(searchValue) ||
+      (email.university_name ?? '').toLowerCase().includes(searchValue) ||
+      (email.from_email ?? '').toLowerCase().includes(searchValue) ||
+      (email.from_name ?? '').toLowerCase().includes(searchValue) ||
+      (email.subject ?? '').toLowerCase().includes(searchValue) ||
+      (email.body ?? '').toLowerCase().includes(searchValue) ||
+      (email.campaign_name ?? '').toLowerCase().includes(searchValue) ||
+      (email.started_by_name ?? '').toLowerCase().includes(searchValue) ||
+      (email.started_by_email ?? '').toLowerCase().includes(searchValue)
+    )
+  })
 
   // Auto-load more on scroll
   useEffect(() => {
@@ -261,6 +283,17 @@ export function EmailSentView() {
                 className="h-8 w-48 rounded-lg border border-gray-200 bg-gray-50 pl-8 pr-3 text-xs text-gray-900 placeholder-gray-400 focus:border-indigo-500 focus:bg-white focus:outline-none focus:ring-1 focus:ring-indigo-500 dark:border-gray-700 dark:bg-gray-800 dark:text-gray-100 dark:placeholder-gray-500"
               />
             </div>
+
+            <select
+              value={mailboxFilter}
+              onChange={(event) => setMailboxFilter(event.target.value)}
+              className="h-8 rounded-lg border border-gray-200 bg-gray-50 px-2.5 text-xs text-gray-900 focus:border-indigo-500 focus:bg-white focus:outline-none focus:ring-1 focus:ring-indigo-500 dark:border-gray-700 dark:bg-gray-800 dark:text-gray-100"
+            >
+              <option value="">Semua mailbox</option>
+              {mailboxOptions.map((mailbox) => (
+                <option key={mailbox} value={mailbox}>{mailbox}</option>
+              ))}
+            </select>
 
             {/* Refresh */}
             <button

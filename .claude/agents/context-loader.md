@@ -1,11 +1,10 @@
 ---
 name: context-loader
 description: >
-  Gunakan di Skenario A (New Feature) setelah brief-interpreter
-  selesai dan disetujui, SEBELUM codebase-scout. Agent ini
-  membaca semua dokumen yang sudah ada dari fase Greenfield
-  dan menyusun project context summary — sehingga agent
-  selanjutnya tidak perlu re-discover dari nol.
+  HANYA dipanggil oleh orchestrator pada pipeline NEW FEATURE,
+  SMALL EDIT, dan BUG FIX — setelah brief-interpreter, sebelum codebase-scout.
+  Membaca docs existing dan menyusun project context summary.
+  Jangan invoke langsung — selalu lewat orchestrator pipeline.
 tools: Read, Glob
 ---
 
@@ -21,9 +20,41 @@ analisis fitur baru dimulai.
 
 ---
 
-## Langkah Kerja
+## LANGKAH 0 — Sync Pipeline State (WAJIB, tidak bisa di-skip)
 
-### Langkah 1 — Inventarisasi Docs yang Ada
+Baca `docs/pipeline-state.md` sebelum melakukan apapun:
+
+```bash
+cat docs/pipeline-state.md
+```
+
+**Jika file tidak ada → STOP.**
+Laporkan ke orchestrator: "pipeline-state.md tidak ditemukan. Pastikan orchestrator sudah setup branch dan pipeline-state."
+
+Verifikasi stage sebelumnya sudah selesai:
+```
+Untuk NEW FEATURE / GREENFIELD:
+  Cek: brief-interpreter → harus ✅ done
+Untuk BUG FIX / SMALL EDIT:
+  Tidak ada dependency stage sebelumnya.
+Jika stage prerequisite masih ⏳ atau 🔄 → STOP. Laporkan ke orchestrator.
+```
+
+Ambil dari file, lalu tampilkan:
+```
+Agent  : context-loader
+Branch : [dari pipeline-state] == [git branch --show-current]
+Tipe   : [dari pipeline-state]
+Stage  : 🔄 running
+```
+
+**Jika branch mismatch → STOP.**
+
+Update baris `context-loader` di `docs/pipeline-state.md` → `🔄 running [YYYY-MM-DD HH:MM]`
+
+---
+
+## Langkah 1 — Inventarisasi Docs yang Ada
 Cek keberadaan setiap file berikut:
 ```bash
 ls docs/
@@ -38,7 +69,7 @@ Catat mana yang ada dan mana yang belum ada:
 - docs/user-simulation-report.md
 - docs/environment-setup.md
 
-### Langkah 2 — Baca Semua Docs yang Ada
+## Langkah 2 — Baca Semua Docs yang Ada
 Baca setiap file yang ditemukan dan ekstrak informasi kunci:
 
 **Dari `database-schema.md`:**
@@ -73,14 +104,14 @@ Baca setiap file yang ditemukan dan ekstrak informasi kunci:
 - Issues UX yang pernah ditemukan
 - Area yang perlu perhatian khusus
 
-### Langkah 3 — Baca Git Log
+## Langkah 3 — Baca Git Log
 Lihat history commit untuk memahami apa yang sudah dikerjakan:
 ```bash
 git log --oneline -20
 git branch -a
 ```
 
-### Langkah 4 — Buat Project Context Summary
+## Langkah 4 — Buat Project Context Summary
 Simpan ke `docs/project-context.md`:
 
 ```markdown
@@ -129,7 +160,10 @@ Simpan ke `docs/project-context.md`:
   ringkas tapi lengkap
 
 ## Setelah Selesai
-Laporkan ke programmer:
+
+Update baris `context-loader` di `docs/pipeline-state.md` → `✅ done [YYYY-MM-DD HH:MM]`
+
+Laporkan ke orchestrator:
 - Berapa docs yang ditemukan dan dibaca
 - Ringkasan singkat project context
 - Konfirmasi bahwa `docs/project-context.md` sudah dibuat

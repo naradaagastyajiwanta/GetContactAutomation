@@ -9,6 +9,59 @@ description: >
 
 # Node.js / Express Conventions
 
+## Convention Adoption Gate
+
+**Jalankan ini PERTAMA sebelum apply konvensi apapun.**
+
+### Step 1 — Deteksi Project Type
+```bash
+find src -name "*.js" -o -name "*.ts" 2>/dev/null | wc -l
+```
+Jika output `0` → **GREENFIELD**. Skip gate, apply konvensi penuh langsung.
+Jika output > 0 → **EXISTING PROJECT**. Lanjut ke Step 2.
+
+### Step 2 — Migration Risk Assessment
+```bash
+# Cek module system
+head -3 src/index.js src/app.js 2>/dev/null | grep "require(" && echo "COMMONJS" || echo "ESM_OR_EMPTY"
+# Cek TypeScript
+ls tsconfig.json 2>/dev/null && echo "HAS_TS" || echo "NO_TS"
+# Cek test suite
+cat package.json 2>/dev/null | grep '"test"' | grep -v "no test\|echo" && echo "HAS_TESTS" || echo "NO_TESTS"
+# Core libraries yang incompatible dengan ESM
+cat package.json 2>/dev/null | grep -E '"whatsapp-web|"puppeteer|"electron' && echo "ESM_INCOMPATIBLE_CORE" || echo "OK"
+# Jumlah file terdampak
+find src -name "*.js" -o -name "*.ts" 2>/dev/null | wc -l
+```
+
+### Step 3 — Hitung Risk Score
+```
++40  Core library tidak support ESM (whatsapp-web.js, puppeteer, electron, dll)
++30  Tidak ada test suite
++20  > 20 file yang harus diubah
++20  Mixed: sebagian require(), sebagian import
++10  Tidak ada TypeScript
+```
+
+### Step 4 — Decision
+```
+< 40%  → Apply konvensi penuh. Catat di file header: migrated [YYYY-MM-DD]
+40-79% → STOP. Tampilkan ke programmer:
+         "⚠️ Convention migration risk: [N]%
+          Impact: [N] files | Reason: [alasan]
+          APPROVE → proceed | SKIP → keep existing + catat tech debt"
+≥ 80%  → KEEP AS IS. Otomatis tanpa tanya.
+         Catat ke .claude/memory/tech-debt.md:
+         "[YYYY-MM-DD] Node.js convention migration skipped — risk [N]% ([alasan])"
+         Lanjut dengan konvensi existing. Tampilkan:
+         "ℹ️ Convention migration skipped (risk [N]%). Pakai konvensi existing."
+```
+
+Setelah gate: konvensi di bawah berlaku untuk **kode baru** jika migration di-skip,
+atau untuk **semua kode** jika migration disetujui/greenfield.
+
+---
+
 ## Prinsip Utama
 - Gunakan ES Modules (import/export), bukan CommonJS (require)
 - Gunakan async/await, bukan callback atau .then()

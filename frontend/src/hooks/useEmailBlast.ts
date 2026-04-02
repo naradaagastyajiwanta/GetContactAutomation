@@ -27,12 +27,21 @@ import {
   getSentFolderEmails,
   sendTestEmail,
   getLetterHistory,
+  getManagedSMTPAccounts,
+  createManagedSMTPAccount,
+  checkAllManagedSMTPAccounts,
+  updateManagedSMTPAccount,
+  deleteManagedSMTPAccount,
+  testManagedSMTPAccount,
   type EmailBlastCampaign,
   type EmailBlastRecipient,
+  type ManagedSMTPAccount,
+  type ManagedSMTPAccountPayload,
   type CreateEmailCampaignRequest,
   type StartEmailCampaignRequest,
   type UpdateEmailCampaignRequest,
 } from '../api/emailBlast'
+import toast from 'react-hot-toast'
 
 // ---------------------------------------------------------------------------
 // Hooks
@@ -147,6 +156,82 @@ export function useAddSelectedRecipients() {
 export function useTestSmtp() {
   return useMutation({
     mutationFn: () => testSmtpConnection(),
+  })
+}
+
+export function useManagedSMTPAccounts() {
+  const { connected } = useWebSocketContext()
+
+  return useQuery<{ accounts: ManagedSMTPAccount[] }>({
+    queryKey: ['email-smtp-accounts'],
+    queryFn: getManagedSMTPAccounts,
+    staleTime: 30_000,
+    refetchInterval: connected ? false : 60_000,
+  })
+}
+
+export function useCreateManagedSMTPAccount() {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: (payload: ManagedSMTPAccountPayload) => createManagedSMTPAccount(payload),
+    onSuccess: (data) => {
+      toast.success(`SMTP account ${data.account.user} added`)
+      queryClient.invalidateQueries({ queryKey: ['email-smtp-accounts'] })
+    },
+    onError: (error: any) => {
+      toast.error(error?.response?.data?.detail || 'Failed to add SMTP account')
+    },
+  })
+}
+
+export function useUpdateManagedSMTPAccount() {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: ({ id, ...payload }: { id: number } & Partial<ManagedSMTPAccountPayload> & { enabled?: boolean; notes?: string }) =>
+      updateManagedSMTPAccount(id, payload),
+    onSuccess: () => {
+      toast.success('SMTP account updated')
+      queryClient.invalidateQueries({ queryKey: ['email-smtp-accounts'] })
+    },
+    onError: (error: any) => {
+      toast.error(error?.response?.data?.detail || 'Failed to update SMTP account')
+    },
+  })
+}
+
+export function useDeleteManagedSMTPAccount() {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: (id: number) => deleteManagedSMTPAccount(id),
+    onSuccess: () => {
+      toast.success('SMTP account removed')
+      queryClient.invalidateQueries({ queryKey: ['email-smtp-accounts'] })
+    },
+    onError: (error: any) => {
+      toast.error(error?.response?.data?.detail || 'Failed to delete SMTP account')
+    },
+  })
+}
+
+export function useTestManagedSMTPAccount() {
+  const queryClient = useQueryClient()
+
+  return useMutation({
+    mutationFn: (id: number) => testManagedSMTPAccount(id),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['email-smtp-accounts'] })
+    },
+  })
+}
+
+export function useCheckAllManagedSMTPAccounts() {
+  const queryClient = useQueryClient()
+
+  return useMutation({
+    mutationFn: () => checkAllManagedSMTPAccounts(),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['email-smtp-accounts'] })
+    },
   })
 }
 

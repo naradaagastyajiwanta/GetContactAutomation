@@ -174,6 +174,7 @@ async def _get_phone_lock(phone: str) -> asyncio.Lock:
 # ---------------------------------------------------------------------------
 
 _IG_HEALTH_INTERVAL = 300  # 5 minutes
+_SMTP_HEALTH_INTERVAL = 60  # 1 minute
 
 async def _periodic_ig_health_check():
     """
@@ -206,6 +207,110 @@ async def _periodic_ig_health_check():
         await asyncio.sleep(_IG_HEALTH_INTERVAL)
 
 
+def _normalize_smtp_health_status(status: Any) -> str:
+    normalized = str(status or "").strip().lower()
+    if normalized in {"unknown", "healthy", "error", "checking"}:
+        return normalized
+    return "unknown"
+
+
+def _smtp_health_event_payload(account: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "id": int(account.get("id", 0)),
+        "enabled": bool(account.get("enabled", True)),
+        "health_status": _normalize_smtp_health_status(account.get("health_status")),
+        "health_message": str(account.get("health_message") or "").strip(),
+        "last_checked_at": account.get("last_checked_at"),
+        "last_healthy_at": account.get("last_healthy_at"),
+        "last_error_at": account.get("last_error_at"),
+    }
+
+
+def _apply_smtp_health_result(
+    account: dict[str, Any],
+    *,
+    success: bool,
+    message: str,
+    checked_at: str,
+) -> dict[str, Any]:
+    updated = {
+        **account,
+        "health_status": "healthy" if success else "error",
+        "health_message": str(message or "").strip(),
+        "last_checked_at": checked_at,
+    }
+
+    if success:
+        updated["last_healthy_at"] = checked_at
+    else:
+        updated["last_error_at"] = checked_at
+
+    return updated
+
+
+async def _set_managed_smtp_account_health(account_id: int, success: bool, message: str) -> dict[str, Any] | None:
+    accounts = await _get_managed_smtp_accounts()
+    index = next((i for i, account in enumerate(accounts) if int(account.get("id", 0)) == account_id), -1)
+    if index == -1:
+        return None
+
+    checked_at = datetime.now(timezone.utc).isoformat()
+    updated = _apply_smtp_health_result(accounts[index], success=success, message=message, checked_at=checked_at)
+    accounts[index] = updated
+    await _save_managed_smtp_accounts(accounts, reset_client=False)
+    await ws_manager.broadcast_type("email_smtp_account_health", account=_smtp_health_event_payload(updated))
+    return updated
+
+
+async def _run_managed_smtp_health_checks() -> dict[str, int]:
+    accounts = await _get_managed_smtp_accounts()
+    if not accounts:
+        return {"checked": 0, "healthy": 0, "failed": 0}
+
+    next_accounts = list(accounts)
+    health_updates: list[dict[str, Any]] = []
+    checked = 0
+    healthy = 0
+    failed = 0
+
+    for index, account in enumerate(accounts):
+        if not bool(account.get("enabled", True)):
+            continue
+
+        success, message = await asyncio.to_thread(email_blast.test_smtp_account, account)
+        checked_at = datetime.now(timezone.utc).isoformat()
+        updated = _apply_smtp_health_result(account, success=success, message=message, checked_at=checked_at)
+        next_accounts[index] = updated
+        health_updates.append(_smtp_health_event_payload(updated))
+        checked += 1
+        if success:
+            healthy += 1
+        else:
+            failed += 1
+
+    if health_updates:
+        await _save_managed_smtp_accounts(next_accounts, reset_client=False)
+        for payload in health_updates:
+            await ws_manager.broadcast_type("email_smtp_account_health", account=payload)
+
+    return {"checked": checked, "healthy": healthy, "failed": failed}
+
+
+async def _periodic_smtp_health_check() -> None:
+    """Periodically verify enabled managed SMTP accounts and publish health updates."""
+    await asyncio.sleep(30)
+
+    while True:
+        try:
+            await _run_managed_smtp_health_checks()
+        except asyncio.CancelledError:
+            break
+        except Exception as exc:
+            log.error("[SMTPHealthCheck] Error: %s", exc, exc_info=True)
+
+        await asyncio.sleep(_SMTP_HEALTH_INTERVAL)
+
+
 # ---------------------------------------------------------------------------
 # Lifespan
 # ---------------------------------------------------------------------------
@@ -215,6 +320,7 @@ async def lifespan(app: FastAPI):
     # Startup
     await init_db()
     await cfg.init_from_db()
+    await _sync_managed_smtp_accounts_from_storage()
     log.info("Database initialized")
 
     # Register the running event loop so LogStreamHandler can broadcast log lines
@@ -277,6 +383,9 @@ async def lifespan(app: FastAPI):
     # Start periodic IG session health checker (every 5 min)
     ig_health_task = asyncio.create_task(_periodic_ig_health_check())
 
+    # Start periodic SMTP health checker for managed mailbox rotation
+    smtp_health_task = asyncio.create_task(_periodic_smtp_health_check())
+
     # Start inbox reply watcher so IMAP replies are pushed over WebSocket
     inbox_watch_task = asyncio.create_task(email_blast.watch_inbox_replies_forever())
 
@@ -289,6 +398,7 @@ async def lifespan(app: FastAPI):
     # Cancel background tasks
     inbox_watch_task.cancel()
     ig_health_task.cancel()
+    smtp_health_task.cancel()
     worker_task.cancel()
 
     # Shutdown
@@ -356,6 +466,9 @@ def _required_permission_for_request(method: str, path: str) -> str | None:
         return "settings.manage"
 
     if normalized.startswith("/config"):
+        return "settings.manage"
+
+    if normalized.startswith("/email-smtp-accounts"):
         return "settings.manage"
 
     if normalized.startswith("/control"):
@@ -2751,6 +2864,270 @@ def _mask_password(pw: str) -> str:
     return "\u2022" * (len(pw) - 2) + pw[-2:]
 
 
+def _sanitize_smtp_account(account: dict[str, Any], *, mask_password: bool = True) -> dict[str, Any]:
+    sanitized = {
+        "id": int(account.get("id", 0)),
+        "host": str(account.get("host") or "mail.asosiasi.ai").strip(),
+        "port": int(account.get("port") or 465),
+        "user": str(account.get("user") or "").strip().lower(),
+        "password": str(account.get("password") or ""),
+        "use_ssl": bool(account.get("use_ssl", True)),
+        "from_name": str(account.get("from_name") or "Sekretariat Asosiasi AI").strip() or "Sekretariat Asosiasi AI",
+        "enabled": bool(account.get("enabled", True)),
+        "notes": str(account.get("notes") or "").strip(),
+        "health_status": _normalize_smtp_health_status(account.get("health_status")),
+        "health_message": str(account.get("health_message") or "").strip(),
+        "last_checked_at": account.get("last_checked_at"),
+        "last_healthy_at": account.get("last_healthy_at"),
+        "last_error_at": account.get("last_error_at"),
+        "created_at": account.get("created_at") or datetime.now(timezone.utc).isoformat(),
+        "updated_at": account.get("updated_at") or datetime.now(timezone.utc).isoformat(),
+    }
+    if mask_password:
+        sanitized["password"] = _mask_password(sanitized["password"])
+    return sanitized
+
+
+def _validate_smtp_account_payload(payload: dict[str, Any], *, partial: bool = False) -> tuple[dict[str, Any], str | None]:
+    validated: dict[str, Any] = {}
+
+    if not partial or "host" in payload:
+        host = str(payload.get("host") or "").strip()
+        if not host:
+            return {}, "SMTP host is required"
+        validated["host"] = host
+
+    if not partial or "user" in payload:
+        user = str(payload.get("user") or "").strip().lower()
+        if not user:
+            return {}, "SMTP username/email is required"
+        validated["user"] = user
+
+    if not partial or "password" in payload:
+        password = str(payload.get("password") or "")
+        if not partial and not password:
+            return {}, "SMTP password is required"
+        if password:
+            validated["password"] = password
+
+    if not partial or "port" in payload:
+        try:
+            port = int(payload.get("port") or 0)
+        except (TypeError, ValueError):
+            return {}, "SMTP port must be a number"
+        if port <= 0 or port > 65535:
+            return {}, "SMTP port must be between 1 and 65535"
+        validated["port"] = port
+
+    if "use_ssl" in payload or not partial:
+        validated["use_ssl"] = bool(payload.get("use_ssl", True))
+
+    if "enabled" in payload or not partial:
+        validated["enabled"] = bool(payload.get("enabled", True))
+
+    if "from_name" in payload or not partial:
+        validated["from_name"] = str(payload.get("from_name") or "Sekretariat Asosiasi AI").strip() or "Sekretariat Asosiasi AI"
+
+    if "notes" in payload or not partial:
+        validated["notes"] = str(payload.get("notes") or "").strip()
+
+    return validated, None
+
+
+async def _get_managed_smtp_accounts() -> list[dict[str, Any]]:
+    raw = cfg.get("SMTP_ACCOUNTS", "") or ""
+    if not str(raw).strip():
+        return []
+
+    try:
+        accounts = _json.loads(raw)
+    except Exception as exc:
+        log.error("Failed to parse managed SMTP accounts JSON: %s", exc)
+        return []
+
+    if not isinstance(accounts, list):
+        return []
+
+    return [_sanitize_smtp_account(account, mask_password=False) for account in accounts if isinstance(account, dict)]
+
+
+def _get_runtime_smtp_status_map() -> dict[str, dict[str, Any]]:
+    try:
+        status = email_blast.get_smtp_client().get_status()
+    except Exception as exc:
+        log.warning("Failed to read runtime SMTP status: %s", exc)
+        return {}
+
+    result: dict[str, dict[str, Any]] = {}
+    for account in status.get("accounts", []):
+        user = str(account.get("user") or "").strip().lower()
+        if user:
+            result[user] = account
+    return result
+
+
+async def _save_managed_smtp_accounts(accounts: list[dict[str, Any]], *, reset_client: bool = True) -> None:
+    serialized = _json.dumps(accounts)
+    await upsert_config("SMTP_ACCOUNTS", serialized)
+    cfg.set("SMTP_ACCOUNTS", serialized)
+    if reset_client:
+        email_blast.reset_smtp_client()
+
+
+async def _sync_managed_smtp_accounts_from_storage() -> None:
+    rows = await get_all_config()
+    raw_accounts = rows.get("SMTP_ACCOUNTS", "")
+    if raw_accounts:
+        cfg.set("SMTP_ACCOUNTS", raw_accounts)
+    email_blast.reset_smtp_client()
+
+
+class SMTPAccountPayload(BaseModel):
+    host: str
+    port: int = 465
+    user: str
+    password: str
+    use_ssl: bool = True
+    from_name: str = "Sekretariat Asosiasi AI"
+    enabled: bool = True
+    notes: str = ""
+
+
+class SMTPAccountUpdatePayload(BaseModel):
+    host: str | None = None
+    port: int | None = None
+    user: str | None = None
+    password: str | None = None
+    use_ssl: bool | None = None
+    from_name: str | None = None
+    enabled: bool | None = None
+    notes: str | None = None
+
+
+@app.get("/email-smtp-accounts")
+async def list_email_smtp_accounts(request: Request):
+    """Return FE-managed SMTP accounts for rotation (passwords masked)."""
+    await require_permission(request, "settings.manage")
+    accounts = await _get_managed_smtp_accounts()
+    runtime_map = _get_runtime_smtp_status_map()
+    merged_accounts: list[dict[str, Any]] = []
+
+    for account in accounts:
+        sanitized = _sanitize_smtp_account(account, mask_password=True)
+        runtime = runtime_map.get(str(sanitized.get("user") or "").strip().lower(), {})
+        cooldown_remaining = float(runtime.get("cooldown_remaining_seconds") or 0)
+        merged_accounts.append({
+            **sanitized,
+            "is_current": bool(runtime.get("is_current", False)),
+            "connected": bool(runtime.get("connected", False)),
+            "email_count": int(runtime.get("email_count", 0) or 0),
+            "daily_sent_count": int(runtime.get("daily_sent_count", 0) or 0),
+            "daily_limit": runtime.get("daily_limit"),
+            "cooldown_remaining_seconds": cooldown_remaining,
+            "skip_reason": runtime.get("skip_reason") or ("disabled" if not sanitized.get("enabled", True) else None),
+        })
+
+    return {"accounts": merged_accounts}
+
+
+@app.post("/email-smtp-accounts/check-all")
+async def check_all_email_smtp_accounts(request: Request):
+    """Run an immediate health check for all enabled managed SMTP accounts."""
+    await require_permission(request, "settings.manage")
+    summary = await _run_managed_smtp_health_checks()
+    return {"success": True, **summary}
+
+
+@app.post("/email-smtp-accounts")
+async def create_email_smtp_account(payload: SMTPAccountPayload, request: Request):
+    """Create a managed SMTP account for email blast rotation."""
+    await require_permission(request, "settings.manage")
+    data, err = _validate_smtp_account_payload(payload.model_dump(), partial=False)
+    if err:
+        return JSONResponse(status_code=422, content={"detail": err})
+
+    accounts = await _get_managed_smtp_accounts()
+    if any(str(account.get("user") or "").lower() == data["user"] for account in accounts):
+        return JSONResponse(status_code=409, content={"detail": f"SMTP account {data['user']} already exists"})
+
+    next_id = max((int(account.get("id", 0)) for account in accounts), default=0) + 1
+    now = datetime.now(timezone.utc).isoformat()
+    record = {
+        **data,
+        "id": next_id,
+        "health_status": "unknown",
+        "health_message": "Awaiting first health check",
+        "last_checked_at": None,
+        "last_healthy_at": None,
+        "last_error_at": None,
+        "created_at": now,
+        "updated_at": now,
+    }
+    accounts.append(record)
+    await _save_managed_smtp_accounts(accounts)
+    return {"status": "ok", "account": _sanitize_smtp_account(record, mask_password=True)}
+
+
+@app.put("/email-smtp-accounts/{account_id}")
+async def update_email_smtp_account(account_id: int, payload: SMTPAccountUpdatePayload, request: Request):
+    """Update a managed SMTP account."""
+    await require_permission(request, "settings.manage")
+    changes, err = _validate_smtp_account_payload(payload.model_dump(exclude_none=True), partial=True)
+    if err:
+        return JSONResponse(status_code=422, content={"detail": err})
+    if not changes:
+        return JSONResponse(status_code=422, content={"detail": "No changes provided"})
+
+    accounts = await _get_managed_smtp_accounts()
+    index = next((i for i, account in enumerate(accounts) if int(account.get("id", 0)) == account_id), -1)
+    if index == -1:
+        return JSONResponse(status_code=404, content={"detail": "SMTP account not found"})
+
+    existing = accounts[index]
+    next_user = str(changes.get("user") or existing.get("user") or "").lower()
+    if any(i != index and str(account.get("user") or "").lower() == next_user for i, account in enumerate(accounts)):
+        return JSONResponse(status_code=409, content={"detail": f"SMTP account {next_user} already exists"})
+
+    updated = {**existing, **changes, "updated_at": datetime.now(timezone.utc).isoformat()}
+    if {"host", "port", "user", "password", "use_ssl"}.intersection(changes):
+        updated["health_status"] = "unknown"
+        updated["health_message"] = "Awaiting health check after config change"
+    accounts[index] = updated
+    await _save_managed_smtp_accounts(accounts)
+    return {"status": "ok", "account": _sanitize_smtp_account(updated, mask_password=True)}
+
+
+@app.delete("/email-smtp-accounts/{account_id}")
+async def delete_email_smtp_account(account_id: int, request: Request):
+    """Delete a managed SMTP account."""
+    await require_permission(request, "settings.manage")
+    accounts = await _get_managed_smtp_accounts()
+    remaining = [account for account in accounts if int(account.get("id", 0)) != account_id]
+    if len(remaining) == len(accounts):
+        return JSONResponse(status_code=404, content={"detail": "SMTP account not found"})
+
+    await _save_managed_smtp_accounts(remaining)
+    return {"status": "ok"}
+
+
+@app.post("/email-smtp-accounts/{account_id}/test")
+async def test_email_smtp_account(account_id: int, request: Request):
+    """Test a managed SMTP account without mutating the shared SMTP singleton."""
+    await require_permission(request, "settings.manage")
+    accounts = await _get_managed_smtp_accounts()
+    account = next((entry for entry in accounts if int(entry.get("id", 0)) == account_id), None)
+    if not account:
+        return JSONResponse(status_code=404, content={"detail": "SMTP account not found"})
+
+    success, message = await asyncio.to_thread(email_blast.test_smtp_account, account)
+    updated = await _set_managed_smtp_account_health(account_id, success, message)
+    return {
+        "success": success,
+        "message": message,
+        "account": _sanitize_smtp_account(updated, mask_password=True) if updated else None,
+    }
+
+
 def _map_ig_account_login_status(status: str | None, current_status: str = "untested") -> str:
     """Map runtime verification status to the DB login_status field."""
     if status == "connected":
@@ -4928,7 +5305,21 @@ async def get_sent_emails(campaign_id: int, request: Request, status: str = None
     query = """SELECT r.id, r.email, r.university_name, r.rendered_subject, r.rendered_message,
                       r.status, r.sent_at, r.error_message,
                       c.name as campaign_name, c.started_by_email, c.started_by_name,
-                      c.created_by_email, c.created_by_name
+                      c.created_by_email, c.created_by_name,
+                      COALESCE(
+                          (SELECT o.from_email FROM email_outbox o
+                           WHERE o.recipient_id = r.id
+                           ORDER BY o.sent_at DESC, o.id DESC
+                           LIMIT 1),
+                          c.from_email
+                      ) as from_email,
+                      COALESCE(
+                          (SELECT o.from_name FROM email_outbox o
+                           WHERE o.recipient_id = r.id
+                           ORDER BY o.sent_at DESC, o.id DESC
+                           LIMIT 1),
+                          c.from_name
+                      ) as from_name
                FROM email_blast_recipients r
                JOIN email_blast_campaigns c ON c.id = r.campaign_id
                WHERE r.campaign_id = ? AND r.sent_at IS NOT NULL"""
@@ -4960,6 +5351,8 @@ async def get_sent_emails(campaign_id: int, request: Request, status: str = None
             "started_by_name": row[10],
             "created_by_email": row[11],
             "created_by_name": row[12],
+            "from_email": row[13],
+            "from_name": row[14],
         })
 
     return {"success": True, "emails": emails, "total": len(emails)}
@@ -4974,9 +5367,25 @@ async def get_sent_email(campaign_id: int, email_id: int, request: Request):
 
     async with get_db() as db:
         cursor = await db.execute(
-            """SELECT id, email, university_name, rendered_subject, rendered_message, status, sent_at, error_message
-               FROM email_blast_recipients
-               WHERE id = ? AND campaign_id = ?""",
+            """SELECT r.id, r.email, r.university_name, r.rendered_subject, r.rendered_message,
+                      r.status, r.sent_at, r.error_message,
+                      COALESCE(
+                          (SELECT o.from_email FROM email_outbox o
+                           WHERE o.recipient_id = r.id
+                           ORDER BY o.sent_at DESC, o.id DESC
+                           LIMIT 1),
+                          c.from_email
+                      ) as from_email,
+                      COALESCE(
+                          (SELECT o.from_name FROM email_outbox o
+                           WHERE o.recipient_id = r.id
+                           ORDER BY o.sent_at DESC, o.id DESC
+                           LIMIT 1),
+                          c.from_name
+                      ) as from_name
+               FROM email_blast_recipients r
+               JOIN email_blast_campaigns c ON c.id = r.campaign_id
+               WHERE r.id = ? AND r.campaign_id = ?""",
             (email_id, campaign_id)
         )
         row = await cursor.fetchone()
@@ -4994,7 +5403,9 @@ async def get_sent_email(campaign_id: int, email_id: int, request: Request):
             "body": row[4],
             "status": row[5],
             "sent_at": row[6],
-            "error_message": row[7]
+            "error_message": row[7],
+            "from_email": row[8],
+            "from_name": row[9],
         }
     }
 
@@ -5041,8 +5452,8 @@ async def get_all_sent_emails(
         count_row = await count_cursor.fetchone()
         total = count_row[0] if count_row else 0
 
-        data_query = """SELECT o.id, o.email, o.university_name, o.rendered_subject,
-                       o.rendered_message, o.status, o.sent_at, o.error_message,
+        data_query = """SELECT o.id, o.email, o.university_name, o.from_email, o.from_name,
+                   o.rendered_subject, o.rendered_message, o.status, o.sent_at, o.error_message,
                        c.name as campaign_name, o.source,
                        c.started_by_email, c.started_by_name,
                        c.created_by_email, c.created_by_name
@@ -5064,17 +5475,19 @@ async def get_all_sent_emails(
             "id": row[0],
             "email": row[1],
             "university_name": row[2],
-            "subject": row[3],
-            "body": row[4],
-            "status": row[5],
-            "sent_at": row[6],
-            "error_message": row[7],
-            "campaign_name": row[8],
-            "source": row[9],
-            "started_by_email": row[10],
-            "started_by_name": row[11],
-            "created_by_email": row[12],
-            "created_by_name": row[13],
+            "from_email": row[3],
+            "from_name": row[4],
+            "subject": row[5],
+            "body": row[6],
+            "status": row[7],
+            "sent_at": row[8],
+            "error_message": row[9],
+            "campaign_name": row[10],
+            "source": row[11],
+            "started_by_email": row[12],
+            "started_by_name": row[13],
+            "created_by_email": row[14],
+            "created_by_name": row[15],
         })
 
     return {"success": True, "emails": emails, "total": total, "offset": offset, "limit": limit}

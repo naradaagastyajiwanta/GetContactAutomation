@@ -12,7 +12,7 @@ import {
 } from 'lucide-react'
 import { cn, formatRelative } from '../../lib/utils'
 import { useSentFolderEmailsPaginated } from '../../hooks/useEmailBlast'
-import type { SentFolderEmail } from '../../api/emailBlast'
+import type { EmailCacheRowId, SentFolderEmail } from '../../api/emailBlast'
 import { Spinner } from '../ui/Spinner'
 import { EmptyState } from '../ui/EmptyState'
 
@@ -24,7 +24,7 @@ const SentRow = memo(function SentRow({
 }: {
   email: SentFolderEmail
   isSelected: boolean
-  onSelect: (id: number, checked: boolean) => void
+  onSelect: (id: EmailCacheRowId, checked: boolean) => void
   onClick: () => void
 }) {
   const bodyPreview = email.body?.replace(/<[^>]+>/g, '').slice(0, 80) ?? ''
@@ -62,6 +62,11 @@ const SentRow = memo(function SentRow({
         <div className="truncate text-[12px] text-gray-500 dark:text-gray-400">
           {email.subject ? `${email.subject} — ` : ''}{bodyPreview}
         </div>
+        {email.mailbox_email && (
+          <div className="mt-1 truncate text-[11px] text-gray-400 dark:text-gray-500">
+            Mailbox: {email.mailbox_email}
+          </div>
+        )}
       </div>
 
       <div className="flex shrink-0 items-center gap-2">
@@ -107,6 +112,11 @@ function SentDetailPane({
             <p className="text-xs text-gray-500 dark:text-gray-400">
               From: {email.from_email}
             </p>
+            {email.mailbox_email && (
+              <p className="text-xs text-gray-500 dark:text-gray-400">
+                Mailbox: {email.mailbox_email}
+              </p>
+            )}
           </div>
         </div>
 
@@ -143,7 +153,8 @@ function SentDetailPane({
 
 export function EmailImapSentView() {
   const [search, setSearch] = useState('')
-  const [selectedIds, setSelectedIds] = useState<Set<number>>(new Set())
+  const [mailboxFilter, setMailboxFilter] = useState('')
+  const [selectedIds, setSelectedIds] = useState<Set<EmailCacheRowId>>(new Set())
   const [detailEmail, setDetailEmail] = useState<SentFolderEmail | null>(null)
   const loadMoreRef = useRef<HTMLDivElement>(null)
 
@@ -161,17 +172,27 @@ export function EmailImapSentView() {
 
   const emails: SentFolderEmail[] = data?.pages.flatMap((page) => (page.emails as SentFolderEmail[]) ?? []) ?? []
   const total = data?.pages[0]?.total ?? 0
+  const mailboxOptions = Array.from(new Set(emails.map((email) => (email.mailbox_email ?? '').trim()).filter(Boolean))).sort()
 
-  const filtered = search.trim()
-    ? emails.filter(
-        (e) =>
-          (e.to_email ?? '').toLowerCase().includes(search.toLowerCase()) ||
-          (e.from_email ?? '').toLowerCase().includes(search.toLowerCase()) ||
-          (e.from_name ?? '').toLowerCase().includes(search.toLowerCase()) ||
-          (e.subject ?? '').toLowerCase().includes(search.toLowerCase()) ||
-          (e.body ?? '').toLowerCase().includes(search.toLowerCase()),
-      )
-    : emails
+  const searchValue = search.toLowerCase()
+  const filtered = emails.filter((email) => {
+    const matchesMailbox = !mailboxFilter || (email.mailbox_email ?? '') === mailboxFilter
+    if (!matchesMailbox) {
+      return false
+    }
+
+    if (!search.trim()) {
+      return true
+    }
+
+    return (
+      (email.to_email ?? '').toLowerCase().includes(searchValue) ||
+      (email.from_email ?? '').toLowerCase().includes(searchValue) ||
+      (email.from_name ?? '').toLowerCase().includes(searchValue) ||
+      (email.subject ?? '').toLowerCase().includes(searchValue) ||
+      (email.body ?? '').toLowerCase().includes(searchValue)
+    )
+  })
 
   useEffect(() => {
     const el = loadMoreRef.current
@@ -189,7 +210,7 @@ export function EmailImapSentView() {
     return () => observer.disconnect()
   }, [hasNextPage, isFetchingNextPage, fetchNextPage])
 
-  function toggleSelect(id: number, checked: boolean) {
+  function toggleSelect(id: EmailCacheRowId, checked: boolean) {
     setSelectedIds((prev) => {
       const next = new Set(prev)
       if (checked) next.add(id)
@@ -222,6 +243,17 @@ export function EmailImapSentView() {
                 className="h-8 w-48 rounded-lg border border-gray-200 bg-gray-50 pl-8 pr-3 text-xs text-gray-900 placeholder-gray-400 focus:border-indigo-500 focus:bg-white focus:outline-none focus:ring-1 focus:ring-indigo-500 dark:border-gray-700 dark:bg-gray-800 dark:text-gray-100 dark:placeholder-gray-500"
               />
             </div>
+
+            <select
+              value={mailboxFilter}
+              onChange={(event) => setMailboxFilter(event.target.value)}
+              className="h-8 rounded-lg border border-gray-200 bg-gray-50 px-2.5 text-xs text-gray-900 focus:border-indigo-500 focus:bg-white focus:outline-none focus:ring-1 focus:ring-indigo-500 dark:border-gray-700 dark:bg-gray-800 dark:text-gray-100"
+            >
+              <option value="">Semua mailbox</option>
+              {mailboxOptions.map((mailbox) => (
+                <option key={mailbox} value={mailbox}>{mailbox}</option>
+              ))}
+            </select>
 
             <button
               onClick={() => refetch()}

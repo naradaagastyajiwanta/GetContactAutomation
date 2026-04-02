@@ -569,6 +569,24 @@ CONFIG_DEFINITIONS: list[ConfigDef] = [
         description="Switch to next SMTP account after sending N emails (per account). Prevents rate-limit bans."
     ),
     ConfigDef(
+        key="SMTP_ACCOUNT_MIN_COOLDOWN_SECONDS", type=ConfigType.INT, default=60,
+        group=ConfigGroup.GENERAL, label="SMTP Account Cooldown Seconds",
+        description="Minimum cooldown between sends on the same SMTP mailbox. Helps avoid rapid-fire patterns.",
+        min_value=0, max_value=3600,
+    ),
+    ConfigDef(
+        key="SMTP_ACCOUNT_DAILY_LIMIT", type=ConfigType.INT, default=40,
+        group=ConfigGroup.GENERAL, label="SMTP Account Daily Limit",
+        description="Maximum emails per SMTP mailbox per day. 0 = unlimited.",
+        min_value=0, max_value=10000,
+    ),
+    ConfigDef(
+        key="EMAIL_BLAST_DELAY_JITTER_MS", type=ConfigType.INT, default=5000,
+        group=ConfigGroup.GENERAL, label="Email Blast Delay Jitter (ms)",
+        description="Random extra delay added after each email send to avoid perfectly uniform timing.",
+        min_value=0, max_value=600000,
+    ),
+    ConfigDef(
         key="VALIDATE_EMAIL_BEFORE_SEND", type=ConfigType.BOOL, default=True,
         group=ConfigGroup.GENERAL, label="Validate Emails Before Sending",
         description="Check email syntax and MX record before sending. Invalid emails are skipped (not failed). Reduces bounce rate."

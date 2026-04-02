@@ -4,13 +4,16 @@ Email Blast Module - Send bulk emails via SMTP
 import asyncio
 import json
 import os
+import random
 import re
 import smtplib
 import ssl
+import sqlite3
 import socket
 import subprocess
 import shutil
 import threading
+import time
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 from email.mime.base import MIMEBase
@@ -20,8 +23,9 @@ from typing import Optional
 from pathlib import Path
 
 import socks
+from docx import Document
 
-from orchestrator.config import cfg, log
+from orchestrator.config import DATABASE_PATH, cfg, log
 from orchestrator.db import get_db, get_email_blast_quota_info, increment_email_blast_quota
 from orchestrator.websocket import manager as ws_manager
 
@@ -72,6 +76,52 @@ async def sync_campaign_counters(campaign_id: int) -> dict:
 
     log.info(f"[EmailBlast] Synced counters for campaign {campaign_id}: sent={sent}, failed={failed}, invalid={invalid}, pending={pending}")
     return {"sent_count": sent, "failed_count": failed, "invalid_count": invalid, "pending_count": pending}
+
+
+async def _finalize_campaign_status_after_run(campaign_id: int, max_recipients: int | None) -> tuple[str | None, int]:
+    """Finalize campaign status based on actual remaining pending recipients."""
+    counters = await sync_campaign_counters(campaign_id)
+    pending_count = int(counters.get("pending_count", 0) or 0)
+
+    async with get_db() as db:
+        cursor = await db.execute(
+            "SELECT status FROM email_blast_campaigns WHERE id = ?",
+            (campaign_id,)
+        )
+        row = await cursor.fetchone()
+        current_status = row[0] if row else None
+
+        if current_status != 'running':
+            return current_status, pending_count
+
+        now = datetime.now().isoformat()
+        if pending_count > 0:
+            await db.execute(
+                "UPDATE email_blast_campaigns SET status = 'paused', paused_at = ?, completed_at = NULL WHERE id = ?",
+                (now, campaign_id)
+            )
+            await db.commit()
+            if max_recipients:
+                log.info(
+                    "[EmailBlast] Campaign %s paused after batch limit %s with %s pending recipients remaining",
+                    campaign_id,
+                    max_recipients,
+                    pending_count,
+                )
+            else:
+                log.warning(
+                    "[EmailBlast] Campaign %s paused with %s pending recipients still remaining after run",
+                    campaign_id,
+                    pending_count,
+                )
+            return 'paused', pending_count
+
+        await db.execute(
+            "UPDATE email_blast_campaigns SET status = 'completed', completed_at = ?, paused_at = NULL WHERE id = ?",
+            (now, campaign_id)
+        )
+        await db.commit()
+        return 'completed', 0
 
 
 # ---------------------------------------------------------------------------
@@ -256,6 +306,10 @@ class SMTPAccount:
         self._connection: Optional[smtplib.SMTP_SSL] = None
         self.email_count = 0  # emails sent with this account this session
         self.degraded = False  # True if recent auth error
+        self.last_sent_monotonic: float | None = None
+        self.daily_sent_count = 0
+        self.daily_sent_date: str | None = None
+        self.daily_count_checked_monotonic = 0.0
 
 
 class SMTPClient:
@@ -269,19 +323,29 @@ class SMTPClient:
     Thread-safe via a lock for rotation decisions.
     """
 
-    def __init__(self):
+    def __init__(self, accounts: list[SMTPAccount] | None = None):
         self._rotate_after = cfg.get("ROTATE_AFTER_N_EMAILS", 50)
-        self._rotation_lock = threading.Lock()
+        self._min_cooldown_seconds = max(0, int(cfg.get("SMTP_ACCOUNT_MIN_COOLDOWN_SECONDS", 60)))
+        self._daily_limit_per_account = max(0, int(cfg.get("SMTP_ACCOUNT_DAILY_LIMIT", 40)))
+        self._rotation_lock = threading.RLock()
 
         # Load accounts
         self._accounts: list[SMTPAccount] = []
         self._current_index = 0
+        managed_accounts_configured = False
+
+        if accounts is not None:
+            self._accounts = accounts
+            return
 
         raw_accounts = cfg.get("SMTP_ACCOUNTS", "")
         if raw_accounts:
             try:
                 accounts_data = json.loads(raw_accounts)
+                managed_accounts_configured = isinstance(accounts_data, list)
                 for acc in accounts_data:
+                    if not bool(acc.get("enabled", True)):
+                        continue
                     self._accounts.append(SMTPAccount(
                         host=acc.get("host", "mail.asosiasi.ai"),
                         port=int(acc.get("port", 465)),
@@ -290,13 +354,17 @@ class SMTPClient:
                         use_ssl=acc.get("use_ssl", True),
                         from_name=acc.get("from_name", "Sekretariat Asosiasi AI"),
                     ))
-                log.info(f"[EmailBlast] SMTP: loaded {len(self._accounts)} accounts for rotation")
+                log.info(f"[EmailBlast] SMTP: loaded {len(self._accounts)} enabled accounts for rotation")
             except Exception as e:
                 log.error(f"[EmailBlast] SMTP_ACCOUNTS JSON parse error: {e}. Falling back to single account.")
                 self._accounts = []
+                managed_accounts_configured = False
+
+        if managed_accounts_configured and not self._accounts:
+            log.warning("[EmailBlast] SMTP: managed accounts configured, but none are enabled")
 
         # Fallback: single legacy account
-        if not self._accounts:
+        if not self._accounts and not managed_accounts_configured:
             self._accounts.append(SMTPAccount(
                 host=cfg.get("SMTP_HOST", "mail.asosiasi.ai"),
                 port=cfg.get("SMTP_PORT", 465),
@@ -311,6 +379,147 @@ class SMTPClient:
     def _current_account(self) -> SMTPAccount:
         return self._accounts[self._current_index]
 
+    def _today_key(self) -> str:
+        return datetime.now().strftime("%Y-%m-%d")
+
+    def _get_daily_sent_count(self, acc: SMTPAccount) -> int:
+        today = self._today_key()
+        now_mono = time.monotonic()
+        conn: sqlite3.Connection | None = None
+
+        if acc.daily_sent_date != today:
+            acc.daily_sent_date = today
+            acc.daily_sent_count = 0
+            acc.daily_count_checked_monotonic = 0.0
+
+        if now_mono - acc.daily_count_checked_monotonic < 30:
+            return acc.daily_sent_count
+
+        try:
+            conn = sqlite3.connect(DATABASE_PATH)
+            cursor = conn.execute(
+                """SELECT COUNT(*)
+                   FROM email_outbox
+                   WHERE status = 'sent'
+                     AND lower(trim(from_email)) = ?
+                     AND substr(sent_at, 1, 10) = ?""",
+                (acc.user.lower().strip(), today),
+            )
+            row = cursor.fetchone()
+            acc.daily_sent_count = int(row[0] if row else 0)
+        except Exception as exc:
+            log.warning("[EmailBlast] Failed to read per-account daily count for %s: %s", acc.user, exc)
+        finally:
+            try:
+                conn.close()
+            except Exception:
+                pass
+
+        acc.daily_count_checked_monotonic = now_mono
+        return acc.daily_sent_count
+
+    def _remaining_cooldown(self, acc: SMTPAccount) -> float:
+        if self._min_cooldown_seconds <= 0 or acc.last_sent_monotonic is None:
+            return 0.0
+        remaining = self._min_cooldown_seconds - (time.monotonic() - acc.last_sent_monotonic)
+        return max(0.0, remaining)
+
+    def _is_daily_limited(self, acc: SMTPAccount) -> bool:
+        if self._daily_limit_per_account <= 0:
+            return False
+        return self._get_daily_sent_count(acc) >= self._daily_limit_per_account
+
+    def _can_send_now(self, acc: SMTPAccount) -> bool:
+        if acc.degraded:
+            return False
+        if self._is_daily_limited(acc):
+            return False
+        return self._remaining_cooldown(acc) <= 0
+
+    def _skip_reason(self, acc: SMTPAccount) -> str | None:
+        if acc.degraded:
+            return "degraded"
+        if self._is_daily_limited(acc):
+            return "daily_limit"
+        cooldown = self._remaining_cooldown(acc)
+        if cooldown > 0:
+            return f"cooldown:{round(cooldown, 1)}"
+        return None
+
+    def _switch_to_index(self, next_index: int, reason: str) -> None:
+        if next_index == self._current_index:
+            return
+
+        old = self._current_account
+        self._disconnect_account(old)
+        old.email_count = 0
+
+        self._current_index = next_index
+        new_acc = self._current_account
+        log.info(
+            "[EmailBlast] SMTP rotated: %s -> %s (%s)",
+            old.user,
+            new_acc.user,
+            reason,
+        )
+
+    def _rotate_to_next_sendable_account(self, reason: str) -> bool:
+        if len(self._accounts) <= 1:
+            return self._can_send_now(self._current_account)
+
+        start_index = self._current_index
+        for step in range(1, len(self._accounts) + 1):
+            candidate_index = (start_index + step) % len(self._accounts)
+            candidate = self._accounts[candidate_index]
+            if self._can_send_now(candidate):
+                self._switch_to_index(candidate_index, reason)
+                return True
+
+        return False
+
+    def _wait_for_next_available_account(self) -> bool:
+        wait_candidates = [
+            self._remaining_cooldown(acc)
+            for acc in self._accounts
+            if not acc.degraded and not self._is_daily_limited(acc)
+        ]
+        wait_candidates = [seconds for seconds in wait_candidates if seconds > 0]
+        if not wait_candidates:
+            return False
+
+        sleep_for = min(wait_candidates)
+        log.info("[EmailBlast] All SMTP accounts cooling down. Waiting %.1fs", sleep_for)
+        time.sleep(sleep_for)
+        return True
+
+    def _ensure_ready_account(self) -> tuple[bool, str | None]:
+        if not self._accounts:
+            return False, "SMTP: no enabled account configured"
+
+        while True:
+            acc = self._current_account
+
+            if acc.email_count >= self._rotate_after and len(self._accounts) > 1:
+                if self._rotate_to_next_sendable_account("rotate_after_threshold"):
+                    continue
+
+            if self._can_send_now(acc):
+                return True, None
+
+            if acc.degraded and self._rotate_to_next_sendable_account("degraded_account"):
+                continue
+
+            if self._is_daily_limited(acc) and self._rotate_to_next_sendable_account("daily_limit_reached"):
+                continue
+
+            if self._remaining_cooldown(acc) > 0 and self._rotate_to_next_sendable_account("cooldown_active"):
+                continue
+
+            if self._wait_for_next_available_account():
+                continue
+
+            return False, "SMTP: no eligible account available (daily cap reached or degraded)"
+
     def _maybe_rotate(self) -> None:
         """Rotate to next account if limit reached or current is degraded."""
         acc = self._current_account
@@ -319,25 +528,8 @@ class SMTPClient:
 
     def _rotate_next(self) -> None:
         """Switch to next account, disconnecting the current one."""
-        old = self._current_account
-        self._disconnect_account(old)
-        old.email_count = 0  # reset counter for next round
-        old.degraded = False
-
-        # Pick next non-degraded account
-        start = self._current_index
-        attempts = 0
-        while attempts < len(self._accounts):
-            self._current_index = (self._current_index + 1) % len(self._accounts)
-            attempts += 1
-            if not self._accounts[self._current_index].degraded:
-                break
-
-        new_acc = self._current_account
-        log.info(
-            f"[EmailBlast] SMTP rotated: {old.user} (sent={old.email_count}) → {new_acc.user} "
-            f"(degraded={new_acc.degraded}, total_accounts={len(self._accounts)})"
-        )
+        if not self._rotate_to_next_sendable_account("manual_rotation"):
+            self._switch_to_index((self._current_index + 1) % len(self._accounts), "manual_rotation_fallback")
 
     def _disconnect_account(self, acc: SMTPAccount) -> None:
         """Disconnect a specific account's connection."""
@@ -350,13 +542,14 @@ class SMTPClient:
 
     def _ensure_connected(self) -> bool:
         """Ensure current account is connected. Rotates if needed."""
+        ready, reason = self._ensure_ready_account()
+        if not ready:
+            log.warning("[EmailBlast] %s", reason)
+            return False
+
         acc = self._current_account
         if acc._connection is not None:
             return True
-
-        # Rotate if needed before connecting
-        self._maybe_rotate()
-        acc = self._current_account  # may have changed
 
         global _original_create_connection
         socks_config = _get_socks_config()
@@ -415,22 +608,31 @@ class SMTPClient:
         """
         return self._ensure_connected()
 
-    def send_email(self, to_email: str, subject: str, body: str,
-                   from_email: str = None, from_name: str = None,
-                   attachment_path: str = None,
-                   attachment_filename: str = None) -> tuple[bool, str]:
-        """Send single email with optional attachment. Thread-safe rotation."""
+    def send_email_with_context(self, to_email: str, subject: str, body: str,
+                                from_email: str = None, from_name: str = None,
+                                attachment_path: str = None,
+                                attachment_filename: str = None) -> tuple[bool, str, dict[str, str | None]]:
+        """Send a single email and return sender metadata for auditing."""
         with self._rotation_lock:
             connected = self._ensure_connected()
             if not connected:
-                return False, "SMTP: no account available (all degraded or rotated)"
+                return False, "SMTP: no eligible account available (daily cap reached, cooling down, or degraded)", {
+                    "smtp_account": None,
+                    "from_email": from_email,
+                    "from_name": from_name,
+                }
 
         # Build message (no lock held)
         acc = self._current_account
+        from_addr = from_email or acc.user
+        from_display = from_name or acc.from_name
+        send_context = {
+            "smtp_account": acc.user,
+            "from_email": from_addr,
+            "from_name": from_display,
+        }
         try:
             msg = MIMEMultipart('mixed')
-            from_addr = from_email or acc.user
-            from_display = from_name or acc.from_name
             msg['From'] = f"{from_display} <{from_addr}>"
             msg['To'] = to_email
             msg['Subject'] = subject
@@ -456,17 +658,24 @@ class SMTPClient:
             # Send
             acc._connection.sendmail(from_addr, [to_email], msg.as_string())
             acc.email_count += 1
+            acc.last_sent_monotonic = time.monotonic()
+            today = self._today_key()
+            if acc.daily_sent_date != today:
+                acc.daily_sent_date = today
+                acc.daily_sent_count = 0
+            acc.daily_sent_count += 1
+            acc.daily_count_checked_monotonic = time.monotonic()
 
             log.info(
                 f"[EmailBlast] Sent to {to_email} via {acc.user} "
-                f"(account_count={acc.email_count}/{self._rotate_after})"
+                f"(account_count={acc.email_count}/{self._rotate_after}, daily_count={acc.daily_sent_count}/{self._daily_limit_per_account or 'inf'})"
             )
 
             # Check if we should rotate after this send
             with self._rotation_lock:
                 self._maybe_rotate()
 
-            return True, ""
+            return True, "", send_context
 
         except Exception as e:
             err_str = str(e).lower()
@@ -478,23 +687,46 @@ class SMTPClient:
                     acc.degraded = True
                     self._disconnect_account(acc)
                     self._rotate_next()
-                return False, f"SMTP auth error ({acc.user}), rotated: {str(e)}"
+                return False, f"SMTP auth error ({acc.user}), rotated: {str(e)}", send_context
 
-            return False, str(e)
+            return False, str(e), send_context
+
+    def send_email(self, to_email: str, subject: str, body: str,
+                   from_email: str = None, from_name: str = None,
+                   attachment_path: str = None,
+                   attachment_filename: str = None) -> tuple[bool, str]:
+        """Backward-compatible wrapper around send_email_with_context()."""
+        success, error, _ = self.send_email_with_context(
+            to_email=to_email,
+            subject=subject,
+            body=body,
+            from_email=from_email,
+            from_name=from_name,
+            attachment_path=attachment_path,
+            attachment_filename=attachment_filename,
+        )
+        return success, error
 
     def get_status(self) -> dict:
         """Return per-account status for monitoring."""
         return {
             "total_accounts": len(self._accounts),
             "rotate_after": self._rotate_after,
+            "min_cooldown_seconds": self._min_cooldown_seconds,
+            "daily_limit_per_account": self._daily_limit_per_account,
             "accounts": [
                 {
                     "user": acc.user,
+                    "is_current": index == self._current_index,
                     "email_count": acc.email_count,
+                    "daily_sent_count": self._get_daily_sent_count(acc),
+                    "daily_limit": self._daily_limit_per_account,
+                    "cooldown_remaining_seconds": round(self._remaining_cooldown(acc), 1),
+                    "skip_reason": self._skip_reason(acc),
                     "degraded": acc.degraded,
                     "connected": acc._connection is not None,
                 }
-                for acc in self._accounts
+                for index, acc in enumerate(self._accounts)
             ]
         }
 
@@ -509,6 +741,74 @@ def get_smtp_client() -> SMTPClient:
     if _smtp_client is None:
         _smtp_client = SMTPClient()
     return _smtp_client
+
+
+def reset_smtp_client() -> None:
+    """Drop the cached SMTP client so updated account config takes effect immediately."""
+    global _smtp_client
+    if _smtp_client is not None:
+        try:
+            _smtp_client.disconnect()
+        except Exception:
+            pass
+    _smtp_client = None
+
+
+def using_managed_smtp_accounts() -> bool:
+    """Return True when SMTP rotation is configured via managed accounts JSON."""
+    raw_accounts = cfg.get("SMTP_ACCOUNTS", "")
+    return bool(str(raw_accounts or "").strip())
+
+
+def build_smtp_account(account: dict) -> SMTPAccount:
+    """Build an SMTPAccount object from a serialized account dict."""
+    return SMTPAccount(
+        host=str(account.get("host") or "mail.asosiasi.ai").strip(),
+        port=int(account.get("port") or 465),
+        user=str(account.get("user") or "").strip().lower(),
+        password=str(account.get("password") or ""),
+        use_ssl=bool(account.get("use_ssl", True)),
+        from_name=str(account.get("from_name") or "Sekretariat Asosiasi AI").strip() or "Sekretariat Asosiasi AI",
+    )
+
+
+def test_smtp_account(account: dict) -> tuple[bool, str]:
+    """Test a single SMTP account without affecting the shared singleton."""
+    client = SMTPClient(accounts=[build_smtp_account(account)])
+    try:
+        success = client.connect()
+        if success:
+            return True, "SMTP connected"
+        return False, "SMTP failed"
+    except Exception as exc:
+        log.error("[EmailBlast] SMTP account test failed: %s", exc, exc_info=True)
+        return False, str(exc)
+    finally:
+        client.disconnect()
+
+
+def compute_inter_send_delay_ms(base_delay_ms: int) -> int:
+    """Return the actual delay after a send, with random jitter added."""
+    base_delay_ms = max(0, int(base_delay_ms or 0))
+    jitter_ms = max(0, int(cfg.get("EMAIL_BLAST_DELAY_JITTER_MS", 5000) or 0))
+    if jitter_ms <= 0:
+        return base_delay_ms
+    return base_delay_ms + random.randint(0, jitter_ms)
+
+
+def _resolve_from_email_for_send(from_email: str | None) -> str | None:
+    """Use rotating account identity when managed SMTP accounts are enabled."""
+    if using_managed_smtp_accounts():
+        return None
+
+    normalized = (from_email or "").strip()
+    return normalized or None
+
+
+def _get_sender_identity(send_context: dict[str, str | None], fallback_email: str | None, fallback_name: str | None) -> tuple[str, str]:
+    sender_email = str(send_context.get("from_email") or fallback_email or "sekretariat@asosiasi.ai").strip() or "sekretariat@asosiasi.ai"
+    sender_name = str(send_context.get("from_name") or fallback_name or "Sekretariat Asosiasi AI").strip() or "Sekretariat Asosiasi AI"
+    return sender_email, sender_name
 
 
 # ---------------------------------------------------------------------------
@@ -1275,8 +1575,8 @@ Sekretariat Asosiasi AI
         # Send email
         log.info(f"[EmailBlast] About to send email to {email} with attachment: {final_attachment}")
         try:
-            success, error = smtp_client.send_email(
-                email, rendered_subject, rendered_msg, from_email, from_name,
+            success, error, send_context = smtp_client.send_email_with_context(
+                email, rendered_subject, rendered_msg, _resolve_from_email_for_send(from_email), from_name,
                 attachment_path=final_attachment,
                 attachment_filename=clean_attachment_filename,
             )
@@ -1285,6 +1585,9 @@ Sekretariat Asosiasi AI
             log.error(f"[EmailBlast] Exception sending email: {e}")
             success = False
             error = str(e)
+            send_context = {"from_email": from_email, "from_name": from_name}
+
+        sender_email, sender_name = _get_sender_identity(send_context, from_email, from_name)
 
         # Cleanup generated attachment
         if final_attachment and os.path.exists(final_attachment):
@@ -1306,9 +1609,10 @@ Sekretariat Asosiasi AI
                 # Log to outbox
                 outbox_cursor = await db.execute(
                     """INSERT INTO email_outbox
-                       (campaign_id, source, email, university_name, rendered_subject, rendered_message, status, error_message)
-                       VALUES (?, 'campaign', ?, ?, ?, ?, 'sent', NULL)""",
-                    (campaign_id, email, uni_name, rendered_subject, rendered_msg)
+                       (campaign_id, recipient_id, source, email, university_name, from_email, from_name,
+                        rendered_subject, rendered_message, status, error_message)
+                       VALUES (?, ?, 'campaign', ?, ?, ?, ?, ?, ?, 'sent', NULL)""",
+                    (campaign_id, recipient_id, email, uni_name, sender_email, sender_name, rendered_subject, rendered_msg)
                 )
                 # Increment quota inside same transaction (no nested connection)
                 await _increment_quota_and_broadcast(db, campaign_id, daily_limit)
@@ -1336,6 +1640,8 @@ Sekretariat Asosiasi AI
                     "campaign_id": campaign_id,
                     "email": email,
                     "university_name": uni_name,
+                    "from_email": sender_email,
+                    "from_name": sender_name,
                     "subject": rendered_subject,
                     "body": rendered_msg,
                     "status": "sent",
@@ -1354,9 +1660,10 @@ Sekretariat Asosiasi AI
                 # Log to outbox
                 outbox_cursor = await db.execute(
                     """INSERT INTO email_outbox
-                       (campaign_id, source, email, university_name, rendered_subject, status, error_message)
-                       VALUES (?, 'campaign', ?, ?, ?, 'failed', ?)""",
-                    (campaign_id, email, uni_name, rendered_subject, error)
+                       (campaign_id, recipient_id, source, email, university_name, from_email, from_name,
+                        rendered_subject, status, error_message)
+                       VALUES (?, ?, 'campaign', ?, ?, ?, ?, ?, 'failed', ?)""",
+                    (campaign_id, recipient_id, email, uni_name, sender_email, sender_name, rendered_subject, error)
                 )
                 # Update campaign failed_count in same transaction
                 await db.execute(
@@ -1382,6 +1689,8 @@ Sekretariat Asosiasi AI
                     "campaign_id": campaign_id,
                     "email": email,
                     "university_name": uni_name,
+                    "from_email": sender_email,
+                    "from_name": sender_name,
                     "subject": rendered_subject,
                     "body": None,
                     "status": "failed",
@@ -1404,22 +1713,15 @@ Sekretariat Asosiasi AI
             await _broadcast_blast_progress(campaign_id, sent, failed, invalid, len(recipients))
 
         # Delay between emails
-        if delay_ms > 0:
-            await asyncio.sleep(delay_ms / 1000)
+        actual_delay_ms = compute_inter_send_delay_ms(delay_ms)
+        if actual_delay_ms > 0:
+            await asyncio.sleep(actual_delay_ms / 1000)
 
-    # Update campaign status when done
-    async with get_db() as db:
-        if status == 'running':
-            await db.execute(
-                "UPDATE email_blast_campaigns SET status = 'completed', completed_at = ? WHERE id = ?",
-                (datetime.now().isoformat(), campaign_id)
-            )
-            await db.commit()
+    final_status, pending_count = await _finalize_campaign_status_after_run(campaign_id, max_recipients)
+    log.info(
+        f"[EmailBlast] Campaign {campaign_id} finished: {sent} sent, {failed} failed, {invalid} invalid, pending={pending_count}, final_status={final_status}"
+    )
 
-    log.info(f"[EmailBlast] Campaign {campaign_id} finished: {sent} sent, {failed} failed")
-
-    # Always sync counters from actual recipient state — prevents drift from concurrent increments
-    await sync_campaign_counters(campaign_id)
     await broadcast_campaign_update(campaign_id)
 
 
@@ -1651,11 +1953,11 @@ async def _retry_failed_email_blast_inner(campaign_id: int, max_recipients: int 
                     except Exception as e:
                         log.warning(f"[EmailBlast] Retry — Failed to generate attachment: {e}")
 
-            ok, err = smtp_client.send_email(
+            ok, err, send_context = smtp_client.send_email_with_context(
                 to_email=email,
                 subject=rendered_subject,
                 body=rendered_msg,
-                from_email=from_email,
+                from_email=_resolve_from_email_for_send(from_email),
                 from_name=from_name,
                 attachment_path=attachment_to_send,
                 attachment_filename=clean_attachment_filename,
@@ -1665,6 +1967,9 @@ async def _retry_failed_email_blast_inner(campaign_id: int, max_recipients: int 
         except Exception as e:
             error = str(e)
             log.error(f"[EmailBlast] Retry — send error for {email}: {e}")
+            send_context = {"from_email": from_email, "from_name": from_name}
+
+        sender_email, sender_name = _get_sender_identity(send_context, from_email, from_name)
 
         for generated_file in (generated_pdf, generated_docx):
             if generated_file and os.path.exists(generated_file):
@@ -1685,9 +1990,10 @@ async def _retry_failed_email_blast_inner(campaign_id: int, max_recipients: int 
                 )
                 outbox_cursor = await db.execute(
                     """INSERT INTO email_outbox
-                       (campaign_id, source, email, university_name, rendered_subject, rendered_message, status, error_message)
-                       VALUES (?, 'campaign', ?, ?, ?, ?, 'sent', NULL)""",
-                    (campaign_id, email, uni_name, rendered_subject, rendered_msg)
+                       (campaign_id, recipient_id, source, email, university_name, from_email, from_name,
+                        rendered_subject, rendered_message, status, error_message)
+                       VALUES (?, ?, 'campaign', ?, ?, ?, ?, ?, ?, 'sent', NULL)""",
+                    (campaign_id, recipient_id, email, uni_name, sender_email, sender_name, rendered_subject, rendered_msg)
                 )
                 await _increment_quota_and_broadcast(db, campaign_id, daily_limit)
                 await db.execute(
@@ -1713,6 +2019,8 @@ async def _retry_failed_email_blast_inner(campaign_id: int, max_recipients: int 
                     "campaign_id": campaign_id,
                     "email": email,
                     "university_name": uni_name,
+                    "from_email": sender_email,
+                    "from_name": sender_name,
                     "subject": rendered_subject,
                     "body": rendered_msg,
                     "status": "sent",
@@ -1730,9 +2038,10 @@ async def _retry_failed_email_blast_inner(campaign_id: int, max_recipients: int 
                 )
                 outbox_cursor = await db.execute(
                     """INSERT INTO email_outbox
-                       (campaign_id, source, email, university_name, rendered_subject, status, error_message)
-                       VALUES (?, 'campaign', ?, ?, ?, 'failed', ?)""",
-                    (campaign_id, email, uni_name, rendered_subject, error or "Unknown error")
+                       (campaign_id, recipient_id, source, email, university_name, from_email, from_name,
+                        rendered_subject, status, error_message)
+                       VALUES (?, ?, 'campaign', ?, ?, ?, ?, ?, 'failed', ?)""",
+                    (campaign_id, recipient_id, email, uni_name, sender_email, sender_name, rendered_subject, error or "Unknown error")
                 )
                 await db.execute(
                     "UPDATE email_blast_campaigns SET failed_count = failed_count + 1 WHERE id = ?",
@@ -1757,6 +2066,8 @@ async def _retry_failed_email_blast_inner(campaign_id: int, max_recipients: int 
                     "campaign_id": campaign_id,
                     "email": email,
                     "university_name": uni_name,
+                    "from_email": sender_email,
+                    "from_name": sender_name,
                     "subject": rendered_subject,
                     "body": None,
                     "status": "failed",
@@ -1777,8 +2088,9 @@ async def _retry_failed_email_blast_inner(campaign_id: int, max_recipients: int 
         if success or error:
             await _broadcast_blast_progress(campaign_id, sent, failed, invalid, len(recipients))
 
-        if delay_ms > 0:
-            await asyncio.sleep(delay_ms / 1000)
+        actual_delay_ms = compute_inter_send_delay_ms(delay_ms)
+        if actual_delay_ms > 0:
+            await asyncio.sleep(actual_delay_ms / 1000)
 
     log.info(f"[EmailBlast] Retry campaign {campaign_id} done: {sent} sent, {failed} failed")
     await broadcast_campaign_update(campaign_id)
@@ -1952,16 +2264,115 @@ import email
 from email.header import decode_header
 
 
-def get_imap_connection():
-    """Create IMAP connection"""
-    try:
-        imap_host = cfg.IMAP_HOST
-        imap_port = cfg.IMAP_PORT
-        imap_user = cfg.IMAP_USERNAME
-        imap_pass = cfg.IMAP_PASSWORD
-        use_ssl = cfg.IMAP_USE_SSL
+def _normalize_mailbox_email(value: str) -> str:
+    return str(value or '').strip().lower()
 
-        log.info(f"Connecting to IMAP: {imap_host}:{imap_port} (SSL: {use_ssl})")
+
+def _parse_email_sort_ts(value: str) -> int:
+    if not value:
+        return 0
+
+    try:
+        parsed = email.utils.parsedate_to_datetime(value)
+        if parsed.tzinfo is None:
+            parsed = parsed.replace(tzinfo=timezone.utc)
+        else:
+            parsed = parsed.astimezone(timezone.utc)
+        return int(parsed.timestamp())
+    except Exception:
+        pass
+
+    try:
+        parsed = datetime.fromisoformat(str(value).replace('Z', '+00:00'))
+        if parsed.tzinfo is None:
+            parsed = parsed.replace(tzinfo=timezone.utc)
+        else:
+            parsed = parsed.astimezone(timezone.utc)
+        return int(parsed.timestamp())
+    except Exception:
+        return 0
+
+
+def _build_mailbox_cache_key(mailbox_email: str, uid: int) -> str:
+    return f"{_normalize_mailbox_email(mailbox_email)}:{int(uid)}"
+
+
+def _load_managed_smtp_accounts_config() -> list[dict]:
+    raw_accounts = cfg.get("SMTP_ACCOUNTS", "")
+    if not str(raw_accounts or '').strip():
+        return []
+
+    try:
+        accounts = json.loads(raw_accounts)
+    except Exception as exc:
+        log.error("[EmailBlast] Failed to parse SMTP_ACCOUNTS for IMAP mailbox discovery: %s", exc)
+        return []
+
+    return accounts if isinstance(accounts, list) else []
+
+
+def get_imap_mailboxes() -> list[dict]:
+    """Return all IMAP mailboxes that should be watched for replies/sent mail."""
+    mailboxes: list[dict] = []
+    seen: set[str] = set()
+
+    imap_host = str(cfg.get("IMAP_HOST", cfg.get("SMTP_HOST", "mail.asosiasi.ai"))).strip() or "mail.asosiasi.ai"
+    imap_port = int(cfg.get("IMAP_PORT", 993))
+    imap_use_ssl = bool(cfg.get("IMAP_USE_SSL", True))
+
+    for account in _load_managed_smtp_accounts_config():
+        if not account.get("enabled", True):
+            continue
+
+        user = _normalize_mailbox_email(account.get("user"))
+        password = str(account.get("password") or "")
+        if not user or not password or user in seen:
+            continue
+
+        mailboxes.append({
+            "mailbox_email": user,
+            "host": imap_host,
+            "port": imap_port,
+            "use_ssl": imap_use_ssl,
+            "user": user,
+            "password": password,
+        })
+        seen.add(user)
+
+    legacy_user = _normalize_mailbox_email(cfg.get("IMAP_USERNAME", ""))
+    legacy_password = str(cfg.get("IMAP_PASSWORD", "") or "")
+    if legacy_user and legacy_password and legacy_user not in seen:
+        mailboxes.append({
+            "mailbox_email": legacy_user,
+            "host": imap_host,
+            "port": imap_port,
+            "use_ssl": imap_use_ssl,
+            "user": legacy_user,
+            "password": legacy_password,
+        })
+
+    return mailboxes
+
+
+def get_imap_connection(mailbox: dict | None = None):
+    """Create IMAP connection for a specific mailbox."""
+    try:
+        mailbox = mailbox or ({
+            "host": cfg.IMAP_HOST,
+            "port": cfg.IMAP_PORT,
+            "user": cfg.IMAP_USERNAME,
+            "password": cfg.IMAP_PASSWORD,
+            "use_ssl": cfg.IMAP_USE_SSL,
+            "mailbox_email": cfg.IMAP_USERNAME,
+        })
+        imap_host = mailbox["host"]
+        imap_port = mailbox["port"]
+        imap_user = mailbox["user"]
+        imap_pass = mailbox["password"]
+        use_ssl = mailbox["use_ssl"]
+        mailbox_email = mailbox.get("mailbox_email") or imap_user
+
+        log.info(f"Connecting to IMAP mailbox {mailbox_email}: {imap_host}:{imap_port} (SSL: {use_ssl})")
 
         if use_ssl:
             conn = imaplib.IMAP4_SSL(imap_host, imap_port)
@@ -1969,7 +2380,7 @@ def get_imap_connection():
             conn = imaplib.IMAP4(imap_host, imap_port)
 
         conn.login(imap_user, imap_pass)
-        log.info(f"IMAP login successful for {imap_user}")
+        log.info(f"IMAP login successful for {mailbox_email}")
         return conn
     except Exception as e:
         log.error(f"Failed to connect to IMAP: {e}")
@@ -2063,11 +2474,16 @@ def _extract_email_address(value: str) -> str:
     return value.strip()
 
 
-def _build_inbound_email_entry(uid: int, parsed: dict) -> dict:
+def _build_inbound_email_entry(mailbox_email: str, uid: int, parsed: dict) -> dict:
     """Normalize an IMAP message into the inbox-cache payload shape."""
     from_field = parsed.get('from') or ''
+    normalized_mailbox = _normalize_mailbox_email(mailbox_email)
+    cache_key = _build_mailbox_cache_key(normalized_mailbox, uid)
     return {
-        'id': uid,
+        'id': cache_key,
+        'mailbox_email': normalized_mailbox,
+        'uid': uid,
+        'sort_ts': _parse_email_sort_ts(parsed.get('date') or ''),
         'message_id': parsed.get('message_id') or '',
         'in_reply_to': parsed.get('in_reply_to') or '',
         'from_email': _extract_email_address(from_field),
@@ -2078,6 +2494,112 @@ def _build_inbound_email_entry(uid: int, parsed: dict) -> dict:
         'date': parsed.get('date') or '',
         'is_read': True,
     }
+
+
+def _build_sent_email_entry(mailbox_email: str, uid: int, parsed: dict) -> dict:
+    from_field = parsed.get('from') or ''
+    normalized_mailbox = _normalize_mailbox_email(mailbox_email)
+    cache_key = _build_mailbox_cache_key(normalized_mailbox, uid)
+
+    return {
+        'id': cache_key,
+        'mailbox_email': normalized_mailbox,
+        'uid': uid,
+        'sort_ts': _parse_email_sort_ts(parsed.get('date') or ''),
+        'message_id': parsed.get('message_id') or '',
+        'from_email': _extract_email_address(from_field),
+        'from_name': re.sub(r'<.+?>', '', from_field).strip(),
+        'to_email': parsed.get('to') or '',
+        'subject': parsed.get('subject') or '',
+        'body': (parsed.get('body_text') or '')[:2000],
+        'date': parsed.get('date') or '',
+    }
+
+
+async def _get_cached_mailbox_uids(table_name: str, mailbox_email: str) -> set[int]:
+    async with get_db() as db:
+        cursor = await db.execute(
+            f"SELECT uid FROM {table_name} WHERE mailbox_email = ?",
+            (_normalize_mailbox_email(mailbox_email),),
+        )
+        rows = await cursor.fetchall()
+    return {int(row[0]) for row in rows}
+
+
+async def _store_inbox_entries(entries: list[dict]) -> None:
+    if not entries:
+        return
+
+    async with get_db() as db:
+        for entry in entries:
+            await db.execute(
+                """INSERT OR REPLACE INTO email_inbox_cache
+                   (cache_key, mailbox_email, uid, sort_ts, message_id, in_reply_to,
+                    from_email, from_name, to_email, subject, body, date, is_read, fetched_at)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))""",
+                (
+                    entry['id'], entry['mailbox_email'], entry['uid'], entry['sort_ts'],
+                    entry['message_id'], entry['in_reply_to'], entry['from_email'],
+                    entry['from_name'], entry['to_email'], entry['subject'], entry['body'],
+                    entry['date'], entry['is_read'],
+                ),
+            )
+        await db.commit()
+
+
+async def _store_sent_entries(entries: list[dict]) -> None:
+    if not entries:
+        return
+
+    async with get_db() as db:
+        for entry in entries:
+            await db.execute(
+                """INSERT OR REPLACE INTO email_sent_cache
+                   (cache_key, mailbox_email, uid, sort_ts, message_id, from_email,
+                    from_name, to_email, subject, body, date, fetched_at)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))""",
+                (
+                    entry['id'], entry['mailbox_email'], entry['uid'], entry['sort_ts'],
+                    entry['message_id'], entry['from_email'], entry['from_name'],
+                    entry['to_email'], entry['subject'], entry['body'], entry['date'],
+                ),
+            )
+        await db.commit()
+
+
+def _safe_close_imap_connection(conn) -> None:
+    if not conn:
+        return
+
+    try:
+        conn.close()
+    except Exception:
+        pass
+
+    try:
+        conn.logout()
+    except Exception:
+        pass
+
+
+def _decode_imap_id_list(messages) -> list[str]:
+    if not messages or not messages[0]:
+        return []
+    raw_value = messages[0]
+    if isinstance(raw_value, bytes):
+        return raw_value.decode().split()
+    return str(raw_value).split()
+
+
+def _extract_uid_from_fetch_payload(msg_data, fallback_uid: str) -> int:
+    payload = msg_data[0][0] if isinstance(msg_data[0], tuple) else msg_data[0]
+    if isinstance(payload, bytes):
+        raw_payload = payload
+    else:
+        raw_payload = str(payload).encode()
+
+    uid_match = re.search(rb'UID (\d+)', raw_payload)
+    return int(uid_match.group(1)) if uid_match else int(fallback_uid)
 
 
 async def _lookup_campaign_ids_for_inbound_email(from_email: str) -> list[int]:
@@ -2151,10 +2673,10 @@ async def _fetch_from_cache(limit: int, offset: int) -> tuple[list[dict], int]:
         total_count = row[0] if row else 0
 
         cursor = await db.execute(
-            """SELECT uid, message_id, in_reply_to, from_email, from_name, to_email,
-                      subject, body, date, is_read
+            """SELECT cache_key, mailbox_email, uid, message_id, in_reply_to,
+                      from_email, from_name, to_email, subject, body, date, is_read
                FROM email_inbox_cache
-               ORDER BY uid DESC
+               ORDER BY sort_ts DESC, uid DESC, fetched_at DESC
                LIMIT ? OFFSET ?""",
             (limit, offset)
         )
@@ -2164,15 +2686,17 @@ async def _fetch_from_cache(limit: int, offset: int) -> tuple[list[dict], int]:
     for row in rows:
         results.append({
             'id': row[0],
-            'message_id': row[1],
-            'in_reply_to': row[2],
-            'from_email': row[3],
-            'from_name': row[4],
-            'to_email': row[5],
-            'subject': row[6],
-            'body': row[7],
-            'date': row[8],
-            'is_read': bool(row[9]),
+            'mailbox_email': row[1],
+            'uid': row[2],
+            'message_id': row[3],
+            'in_reply_to': row[4],
+            'from_email': row[5],
+            'from_name': row[6],
+            'to_email': row[7],
+            'subject': row[8],
+            'body': row[9],
+            'date': row[10],
+            'is_read': bool(row[11]),
         })
     return results, total_count
 
@@ -2227,168 +2751,122 @@ async def watch_inbox_replies_forever() -> None:
 
 async def _blocking_imap_fetch(limit: int, offset: int, unread_only: bool) -> tuple[list[dict], int]:
     """Fetch emails from IMAP synchronously (blocking). Used when cache is empty."""
-    conn = get_imap_connection()
-    if not conn:
-        log.error("Failed to get IMAP connection")
+    mailboxes = get_imap_mailboxes()
+    if not mailboxes:
+        log.error("[InboxCache] No IMAP mailboxes configured")
         return await _fetch_from_cache_fallback(limit, offset)
 
+    fetch_window = max(limit + offset, 100)
+    fetched_entries: list[dict] = []
+
     try:
-        status, folder_count = conn.select('INBOX')
-        if status != 'OK':
-            log.error(f"IMAP select failed: {status}")
-            return await _fetch_from_cache_fallback(limit, offset)
-
-        log.info(f"INBOX select status: {status}, messages: {folder_count}")
-
-        search_criteria = 'UNSEEN' if unread_only else 'ALL'
-        status, messages = conn.search(None, search_criteria)
-        if status != 'OK':
-            log.error(f"IMAP search failed: {status}")
-            return await _fetch_from_cache_fallback(limit, offset)
-
-        email_ids = messages[0].split()
-        log.info(f"Found {len(email_ids)} total emails")
-
-        # Get cached UIDs
-        cached_uids: set[int] = set()
-        async with get_db() as db:
-            cursor = await db.execute("SELECT uid FROM email_inbox_cache")
-            for r in await cursor.fetchall():
-                cached_uids.add(r[0])
-
-        log.info(f"[InboxCache] Already cached: {len(cached_uids)} emails")
-
-        all_reversed = email_ids[::-1]  # newest first
-        new_ids = [eid for eid in all_reversed if int(eid) not in cached_uids]
-
-        # Fetch needed page + new emails
-        to_fetch_ids_set: set[int] = set()
-        for eid in all_reversed[offset:offset + limit]:
-            to_fetch_ids_set.add(int(eid))
-        for eid in new_ids[:500]:
-            to_fetch_ids_set.add(int(eid))
-
-        to_fetch_ids = [eid for eid in all_reversed if int(eid) in to_fetch_ids_set]
-        log.info(f"[InboxCache] Fetching {len(to_fetch_ids)} emails from IMAP")
-
-        results: list[dict] = []
-        for email_id in to_fetch_ids:
-            try:
-                status, msg_data = conn.fetch(email_id, '(RFC822)')
-                if status != 'OK':
-                    continue
-
-                msg = email.message_from_bytes(msg_data[0][1])
-                parsed = parse_email_message(msg)
-                results.append(_build_inbound_email_entry(int(email_id), parsed))
-            except Exception as e:
-                log.error(f"Error parsing email {email_id}: {e}")
+        for mailbox in mailboxes:
+            conn = get_imap_connection(mailbox)
+            if not conn:
                 continue
 
-        conn.close()
-        conn.logout()
+            try:
+                status, folder_count = conn.select('INBOX')
+                if status != 'OK':
+                    log.error("[InboxCache] IMAP select failed for %s: %s", mailbox['mailbox_email'], status)
+                    continue
 
-        if results:
-            async with get_db() as db:
-                for entry in results:
-                    await db.execute(
-                        """INSERT OR REPLACE INTO email_inbox_cache
-                           (uid, message_id, in_reply_to, from_email, from_name, to_email,
-                            subject, body, date, is_read, fetched_at)
-                           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))""",
-                        (entry['id'], entry['message_id'], entry['in_reply_to'],
-                         entry['from_email'], entry['from_name'], entry['to_email'],
-                         entry['subject'], entry['body'], entry['date'], entry['is_read'])
-                    )
-                await db.commit()
-            log.info(f"[InboxCache] Updated cache with {len(results)} emails")
+                log.info("[InboxCache] INBOX select for %s: %s messages=%s", mailbox['mailbox_email'], status, folder_count)
 
+                search_criteria = 'UNSEEN' if unread_only else 'ALL'
+                status, messages = conn.search(None, search_criteria)
+                if status != 'OK':
+                    log.error("[InboxCache] IMAP search failed for %s: %s", mailbox['mailbox_email'], status)
+                    continue
+
+                email_ids = _decode_imap_id_list(messages)
+                cached_uids = await _get_cached_mailbox_uids('email_inbox_cache', mailbox['mailbox_email'])
+                all_reversed = email_ids[::-1]
+                recent_ids = all_reversed[:fetch_window]
+                new_ids = [email_id for email_id in all_reversed if int(email_id) not in cached_uids][:500]
+                to_fetch_ids = list(dict.fromkeys([*recent_ids, *new_ids]))
+
+                log.info(
+                    "[InboxCache] Mailbox %s total=%s cached=%s fetching=%s",
+                    mailbox['mailbox_email'], len(email_ids), len(cached_uids), len(to_fetch_ids),
+                )
+
+                for email_id in to_fetch_ids:
+                    try:
+                        status, msg_data = conn.fetch(email_id, '(RFC822)')
+                        if status != 'OK' or not msg_data or not msg_data[0]:
+                            continue
+
+                        msg = email.message_from_bytes(msg_data[0][1])
+                        parsed = parse_email_message(msg)
+                        fetched_entries.append(_build_inbound_email_entry(mailbox['mailbox_email'], int(email_id), parsed))
+                    except Exception as exc:
+                        log.error("[InboxCache] Error parsing email %s for %s: %s", email_id, mailbox['mailbox_email'], exc)
+            finally:
+                _safe_close_imap_connection(conn)
+
+        await _store_inbox_entries(fetched_entries)
+        if fetched_entries:
+            log.info("[InboxCache] Updated cache with %s emails across %s mailbox(es)", len(fetched_entries), len(mailboxes))
         return await _fetch_from_cache(limit, offset)
-
     except Exception as e:
         log.error(f"Error in blocking IMAP fetch: {e}")
-        try:
-            conn.close()
-            conn.logout()
-        except Exception:
-            pass
         return await _fetch_from_cache_fallback(limit, offset)
 
 
 async def _refresh_inbox_cache_background():
     """Background task: fetch new emails and update cache without blocking."""
     global _inbox_bg_refresh_running
-    conn = None
     try:
         log.info("[InboxCache] Background refresh starting")
-        conn = get_imap_connection()
-        if not conn:
-            return
-
-        status, folder_count = conn.select('INBOX')
-        if status != 'OK':
-            conn.close()
-            conn.logout()
-            return
-
-        status, messages = conn.search(None, 'ALL')
-        if status != 'OK':
-            conn.close()
-            conn.logout()
-            return
-
-        email_ids = messages[0].split()
-        all_reversed = email_ids[::-1]
-
-        # Get cached UIDs
-        cached_uids: set[int] = set()
-        async with get_db() as db:
-            cursor = await db.execute("SELECT uid FROM email_inbox_cache")
-            for r in await cursor.fetchall():
-                cached_uids.add(r[0])
-
-        new_ids = [eid for eid in all_reversed if int(eid) not in cached_uids][:500]
-
-        if not new_ids:
-            log.info("[InboxCache] Background refresh: no new emails")
-            conn.close()
-            conn.logout()
-            return
-
-        log.info(f"[InboxCache] Background refresh: fetching {len(new_ids)} new emails")
-
         new_entries: list[dict] = []
 
-        for email_id in new_ids:
+        for mailbox in get_imap_mailboxes():
+            conn = get_imap_connection(mailbox)
+            if not conn:
+                continue
+
             try:
-                status, msg_data = conn.fetch(email_id, '(RFC822)')
+                status, _ = conn.select('INBOX')
                 if status != 'OK':
                     continue
 
-                msg = email.message_from_bytes(msg_data[0][1])
-                parsed = parse_email_message(msg)
-                new_entries.append(_build_inbound_email_entry(int(email_id), parsed))
-            except Exception:
-                continue
+                status, messages = conn.search(None, 'ALL')
+                if status != 'OK':
+                    continue
+
+                email_ids = _decode_imap_id_list(messages)
+                all_reversed = email_ids[::-1]
+                cached_uids = await _get_cached_mailbox_uids('email_inbox_cache', mailbox['mailbox_email'])
+                new_ids = [email_id for email_id in all_reversed if int(email_id) not in cached_uids][:500]
+
+                if not new_ids:
+                    log.info("[InboxCache] Mailbox %s: no new emails", mailbox['mailbox_email'])
+                    continue
+
+                log.info("[InboxCache] Mailbox %s: fetching %s new emails", mailbox['mailbox_email'], len(new_ids))
+
+                for email_id in new_ids:
+                    try:
+                        status, msg_data = conn.fetch(email_id, '(RFC822)')
+                        if status != 'OK' or not msg_data or not msg_data[0]:
+                            continue
+
+                        msg = email.message_from_bytes(msg_data[0][1])
+                        parsed = parse_email_message(msg)
+                        new_entries.append(_build_inbound_email_entry(mailbox['mailbox_email'], int(email_id), parsed))
+                    except Exception:
+                        continue
+            finally:
+                _safe_close_imap_connection(conn)
 
         if not new_entries:
             log.info("[InboxCache] Background refresh: no parsable new emails")
             return
 
-        async with get_db() as db:
-            for entry in new_entries:
-                await db.execute(
-                    """INSERT OR REPLACE INTO email_inbox_cache
-                       (uid, message_id, in_reply_to, from_email, from_name, to_email,
-                        subject, body, date, is_read, fetched_at)
-                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))""",
-                    (entry['id'], entry['message_id'], entry['in_reply_to'],
-                     entry['from_email'], entry['from_name'], entry['to_email'],
-                     entry['subject'], entry['body'], entry['date'], entry['is_read'])
-                )
-            await db.commit()
+        await _store_inbox_entries(new_entries)
 
-        for entry in reversed(new_entries):
+        for entry in sorted(new_entries, key=lambda item: (item.get('sort_ts', 0), str(item.get('id', '')))):
             campaign_ids = await _lookup_campaign_ids_for_inbound_email(entry['from_email'])
             await broadcast_inbox_received(entry, campaign_ids)
 
@@ -2396,15 +2874,6 @@ async def _refresh_inbox_cache_background():
     except Exception as e:
         log.error(f"[InboxCache] Background refresh error: {e}")
     finally:
-        if conn:
-            try:
-                conn.close()
-            except Exception:
-                pass
-            try:
-                conn.logout()
-            except Exception:
-                pass
         _inbox_bg_refresh_running = False
 
 
@@ -2514,31 +2983,7 @@ async def fetch_sent_emails(limit: int = 50, offset: int = 0) -> tuple[list[dict
         log.info(f"[SentFolder] Cache age: {cache_age:.1f}s, fresh: {cache_fresh}")
 
     # ── Fetch from IMAP cache ──────────────────────────────
-    imap_results: list[dict] = []
-    imap_total: int = 0
-    async with get_db() as db:
-        cursor = await db.execute("SELECT COUNT(*) FROM email_sent_cache")
-        row = await cursor.fetchone()
-        imap_total = row[0] if row else 0
-
-        cursor = await db.execute(
-            """SELECT uid, message_id, from_email, from_name, to_email,
-                      subject, body, date
-               FROM email_sent_cache
-               ORDER BY uid DESC"""
-        )
-        rows = await cursor.fetchall()
-        for row in rows:
-            imap_results.append({
-                'id': row[0],
-                'message_id': row[1],
-                'from_email': row[2],
-                'from_name': row[3],
-                'to_email': row[4],
-                'subject': row[5],
-                'body': row[6],
-                'date': row[7],
-            })
+    imap_results, imap_total = await _fetch_sent_from_cache(limit=10_000, offset=0)
 
     # ── Fetch recent outbox entries (last 24h, not yet in IMAP cache) ──
     OUTBOX_WINDOW_HOURS = 24
@@ -2546,35 +2991,44 @@ async def fetch_sent_emails(limit: int = 50, offset: int = 0) -> tuple[list[dict
 
     async with get_db() as db:
         cursor = await db.execute(
-            f"""SELECT id, campaign_id, email, university_name,
-                      rendered_subject, rendered_message, sent_at
-               FROM email_outbox
-               WHERE status = 'sent'
-                 AND sent_at >= datetime('now', '-{OUTBOX_WINDOW_HOURS} hours')
-               ORDER BY sent_at DESC"""
+                        f"""SELECT id, campaign_id, recipient_id, email, university_name,
+                                                from_email, from_name, rendered_subject, rendered_message, sent_at
+                                 FROM email_outbox
+                                 WHERE status = 'sent'
+                                     AND sent_at >= datetime('now', '-{OUTBOX_WINDOW_HOURS} hours')
+                                 ORDER BY sent_at DESC"""
         )
         outbox_rows = await cursor.fetchall()
         for row in outbox_rows:
             outbox_results.append({
                 'id': row[0],
-                'message_id': f"outbox-{row[0]}",
-                'from_email': 'sekretariat@asosiasi.ai',
-                'from_name': 'Sekretariat Asosiasi AI',
-                'to_email': row[2],
-                'subject': row[4],
-                'body': row[5],
-                'date': row[6],
+              'message_id': f"outbox-{row[0]}",
+              'recipient_id': row[2],
+              'from_email': row[5] or 'sekretariat@asosiasi.ai',
+              'from_name': row[6] or 'Sekretariat Asosiasi AI',
+              'to_email': row[3],
+              'subject': row[7],
+              'body': row[8],
+              'date': row[9],
             })
 
     # ── Merge: dedup outbox entries that are already in IMAP ──
     dedup_keys: set[tuple] = {
-        (r['to_email'].lower().strip(), r['subject'].lower().strip())
-        for r in imap_results if r['to_email'] and r['subject']
+        (
+            (r.get('from_email') or '').lower().strip(),
+            (r.get('to_email') or '').lower().strip(),
+            (r.get('subject') or '').lower().strip(),
+        )
+        for r in imap_results if r.get('to_email') and r.get('subject')
     }
 
     merged: list[dict] = []
     for item in outbox_results:
-        key = (item['to_email'].lower().strip(), item['subject'].lower().strip())
+        key = (
+            (item.get('from_email') or '').lower().strip(),
+            (item.get('to_email') or '').lower().strip(),
+            (item.get('subject') or '').lower().strip(),
+        )
         if key not in dedup_keys:
             merged.append(item)
             dedup_keys.add(key)
@@ -2615,7 +3069,11 @@ async def fetch_sent_emails(limit: int = 50, offset: int = 0) -> tuple[list[dict
             imap_fetched, _ = imap_fetch_result
             # Merge those into the response too
             for item in imap_fetched:
-                key = (item.get('to_email', '').lower().strip(), item.get('subject', '').lower().strip())
+                key = (
+                    (item.get('from_email') or '').lower().strip(),
+                    (item.get('to_email') or '').lower().strip(),
+                    (item.get('subject') or '').lower().strip(),
+                )
                 if key not in dedup_keys:
                     merged.append(item)
                     dedup_keys.add(key)
@@ -2637,10 +3095,10 @@ async def _fetch_sent_from_cache(limit: int, offset: int) -> tuple[list[dict], i
         total_count = row[0] if row else 0
 
         cursor = await db.execute(
-            """SELECT uid, message_id, from_email, from_name, to_email,
-                      subject, body, date
+            """SELECT cache_key, mailbox_email, uid, message_id, from_email, from_name,
+                      to_email, subject, body, date
                FROM email_sent_cache
-               ORDER BY uid DESC
+               ORDER BY sort_ts DESC, uid DESC, fetched_at DESC
                LIMIT ? OFFSET ?""",
             (limit, offset)
         )
@@ -2650,13 +3108,15 @@ async def _fetch_sent_from_cache(limit: int, offset: int) -> tuple[list[dict], i
     for row in rows:
         results.append({
             'id': row[0],
-            'message_id': row[1],
-            'from_email': row[2],
-            'from_name': row[3],
-            'to_email': row[4],
-            'subject': row[5],
-            'body': row[6],
-            'date': row[7],
+            'mailbox_email': row[1],
+            'uid': row[2],
+            'message_id': row[3],
+            'from_email': row[4],
+            'from_name': row[5],
+            'to_email': row[6],
+            'subject': row[7],
+            'body': row[8],
+            'date': row[9],
         })
     return results, total_count
 
@@ -2674,121 +3134,83 @@ async def _blocking_sent_fetch(limit: int, offset: int) -> tuple[list[dict], int
     Fetch sent emails from IMAP using stable UIDs (not sequence numbers).
     Returns (results, total) on success, None on failure.
     """
-    conn = get_imap_connection()
-    if not conn:
-        log.error("[SentFolder] Failed to get IMAP connection")
+    mailboxes = get_imap_mailboxes()
+    if not mailboxes:
+        log.error("[SentFolder] No IMAP mailboxes configured")
         return None
 
     try:
-        sent_folder = _find_sent_folder(conn)
-        if not sent_folder:
-            log.error("[SentFolder] Could not find Sent folder")
-            return None
-
-        log.info(f"[SentFolder] Selecting folder: {sent_folder}")
-        status, _ = conn.select(f'"{sent_folder}"')
-        if status != 'OK':
-            log.error(f"[SentFolder] Failed to select folder: {status}")
-            return None
-
-        # Use UID SEARCH (not sequence number search) for stable IDs
-        try:
-            status, messages = conn.uid('SEARCH', None, 'ALL')
-        except Exception as e:
-            log.warning(f"[SentFolder] UID SEARCH not supported ({e}), falling back to sequence search")
-            status, messages = conn.search(None, 'ALL')
-
-        if status != 'OK':
-            log.error(f"[SentFolder] IMAP search failed: {status}")
-            return None
-
-        raw_uids = messages[0].decode().split() if messages[0] else []
-        log.info(f"[SentFolder] Found {len(raw_uids)} sent emails via UID search")
-
-        # Get cached UIDs
-        cached_uids: set[int] = set()
-        async with get_db() as db:
-            cursor = await db.execute("SELECT uid FROM email_sent_cache")
-            for r in await cursor.fetchall():
-                cached_uids.add(r[0])
-
-        log.info(f"[SentFolder] Already cached: {len(cached_uids)} emails")
-
-        all_uids_reversed = raw_uids[::-1]
-        new_uids = [uid for uid in all_uids_reversed if int(uid) not in cached_uids]
-
-        # Determine which UIDs to fetch (page + new)
-        to_fetch_uids = all_uids_reversed[offset:offset + limit]
-        for uid in new_uids[:500]:
-            if int(uid) not in {int(u) for u in to_fetch_uids}:
-                to_fetch_uids = list(to_fetch_uids) + [uid]
-
-        log.info(f"[SentFolder] Fetching {len(to_fetch_uids)} emails via UID")
-
+        fetch_window = max(limit + offset, 100)
         results: list[dict] = []
-        for uid_str in to_fetch_uids:
-            try:
-                # Fetch by UID to get both UID and RFC822 content
-                status, msg_data = conn.uid('FETCH', uid_str, '(UID RFC822)')
-                if status != 'OK' or not msg_data or not msg_data[0]:
-                    continue
 
-                # Parse UID from response
-                uid_match = re.search(rb'UID (\d+)', msg_data[0][0] if isinstance(msg_data[0], bytes) else msg_data[0][0].encode())
-                actual_uid = int(uid_match.group(1)) if uid_match else int(uid_str)
-
-                # Parse message
-                msg_bytes = msg_data[0][1]
-                msg = email.message_from_bytes(msg_bytes)
-                parsed = parse_email_message(msg)
-
-                from_field = parsed['from']
-                from_match = re.search(r'<([^>]+)>', from_field)
-                from_email = from_match.group(1) if from_match else ''
-                if not from_email:
-                    email_match = re.search(r'[\w\.-]+@[\w\.-]+', from_field)
-                    from_email = email_match.group(0) if email_match else from_field
-
-                entry = {
-                    'id': actual_uid,
-                    'message_id': parsed['message_id'],
-                    'from_email': from_email,
-                    'from_name': re.sub(r'<.+?>', '', parsed['from']).strip(),
-                    'to_email': parsed['to'],
-                    'subject': parsed['subject'],
-                    'body': parsed['body_text'][:2000],
-                    'date': parsed['date'],
-                }
-                results.append(entry)
-
-                # Save to cache with real UID (stable across sessions)
-                async with get_db() as db:
-                    await db.execute(
-                        """INSERT OR REPLACE INTO email_sent_cache
-                           (uid, message_id, from_email, from_name, to_email,
-                            subject, body, date, fetched_at)
-                           VALUES (?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))""",
-                        (actual_uid, entry['message_id'], entry['from_email'],
-                         entry['from_name'], entry['to_email'], entry['subject'],
-                         entry['body'], entry['date'])
-                    )
-                    await db.commit()
-            except Exception as e:
-                log.error(f"[SentFolder] Error fetching UID {uid_str}: {e}")
+        for mailbox in mailboxes:
+            conn = get_imap_connection(mailbox)
+            if not conn:
                 continue
 
-        conn.close()
-        conn.logout()
-        log.info(f"[SentFolder] Blocking fetch complete: {len(results)} emails fetched, {len(raw_uids)} total")
-        return results, len(raw_uids)
+            try:
+                sent_folder = _find_sent_folder(conn)
+                if not sent_folder:
+                    log.error("[SentFolder] Could not find Sent folder for %s", mailbox['mailbox_email'])
+                    continue
+
+                log.info("[SentFolder] Selecting folder %s for %s", sent_folder, mailbox['mailbox_email'])
+                status, _ = conn.select(f'"{sent_folder}"')
+                if status != 'OK':
+                    log.error("[SentFolder] Failed to select folder for %s: %s", mailbox['mailbox_email'], status)
+                    continue
+
+                try:
+                    status, messages = conn.uid('SEARCH', None, 'ALL')
+                    fetch_mode = 'uid'
+                except Exception as exc:
+                    log.warning("[SentFolder] UID SEARCH not supported for %s (%s), falling back", mailbox['mailbox_email'], exc)
+                    status, messages = conn.search(None, 'ALL')
+                    fetch_mode = 'sequence'
+
+                if status != 'OK':
+                    log.error("[SentFolder] IMAP search failed for %s: %s", mailbox['mailbox_email'], status)
+                    continue
+
+                raw_uids = _decode_imap_id_list(messages)
+                cached_uids = await _get_cached_mailbox_uids('email_sent_cache', mailbox['mailbox_email'])
+                all_uids_reversed = raw_uids[::-1]
+                recent_uids = all_uids_reversed[:fetch_window]
+                new_uids = [uid for uid in all_uids_reversed if int(uid) not in cached_uids][:500]
+                to_fetch_uids = list(dict.fromkeys([*recent_uids, *new_uids]))
+
+                log.info(
+                    "[SentFolder] Mailbox %s total=%s cached=%s fetching=%s",
+                    mailbox['mailbox_email'], len(raw_uids), len(cached_uids), len(to_fetch_uids),
+                )
+
+                for uid_str in to_fetch_uids:
+                    try:
+                        if fetch_mode == 'uid':
+                            status, msg_data = conn.uid('FETCH', uid_str, '(UID RFC822)')
+                        else:
+                            status, msg_data = conn.fetch(uid_str, '(RFC822)')
+                        if status != 'OK' or not msg_data or not msg_data[0]:
+                            continue
+
+                        actual_uid = _extract_uid_from_fetch_payload(msg_data, uid_str) if fetch_mode == 'uid' else int(uid_str)
+                        msg_bytes = msg_data[0][1]
+                        msg = email.message_from_bytes(msg_bytes)
+                        parsed = parse_email_message(msg)
+                        results.append(_build_sent_email_entry(mailbox['mailbox_email'], actual_uid, parsed))
+                    except Exception as exc:
+                        log.error("[SentFolder] Error fetching UID %s for %s: %s", uid_str, mailbox['mailbox_email'], exc)
+                        continue
+            finally:
+                _safe_close_imap_connection(conn)
+
+        await _store_sent_entries(results)
+        cached_results, total = await _fetch_sent_from_cache(limit, offset)
+        log.info("[SentFolder] Blocking fetch complete: %s emails fetched across %s mailbox(es)", len(results), len(mailboxes))
+        return cached_results, total
 
     except Exception as e:
         log.error(f"[SentFolder] Error in blocking fetch: {e}")
-        try:
-            conn.close()
-            conn.logout()
-        except Exception:
-            pass
         return None
 
 
@@ -2797,86 +3219,63 @@ async def _refresh_sent_cache_background():
     global _sent_cache_running
     try:
         log.info("[SentFolder] Background refresh starting")
-        conn = get_imap_connection()
-        if not conn:
-            return
+        new_entries: list[dict] = []
 
-        sent_folder = _find_sent_folder(conn)
-        if not sent_folder:
-            conn.close()
-            conn.logout()
-            return
-
-        status, _ = conn.select(f'"{sent_folder}"')
-        if status != 'OK':
-            conn.close()
-            conn.logout()
-            return
-
-        # Use UID SEARCH for stable IDs (not sequence numbers)
-        try:
-            status, messages = conn.uid('SEARCH', None, 'ALL')
-        except Exception as e:
-            log.warning(f"[SentFolder] UID SEARCH not supported ({e}), skipping background refresh")
-            return
-
-        if status != 'OK':
-            return
-
-        raw_uids = messages[0].decode().split() if messages[0] else []
-        log.info(f"[SentFolder] Background refresh: {len(raw_uids)} total emails")
-
-        # Get cached UIDs
-        cached_uids: set[int] = set()
-        async with get_db() as db:
-            cursor = await db.execute("SELECT uid FROM email_sent_cache")
-            for r in await cursor.fetchall():
-                cached_uids.add(r[0])
-
-        new_uids = [uid for uid in raw_uids if int(uid) not in cached_uids][:500]
-
-        if not new_uids:
-            log.info("[SentFolder] Background refresh: no new emails")
-            return
-
-        log.info(f"[SentFolder] Background refresh: fetching {len(new_uids)} new emails")
-
-        for uid_str in new_uids:
-            try:
-                status, msg_data = conn.uid('FETCH', uid_str, '(UID RFC822)')
-                if status != 'OK' or not msg_data or not msg_data[0]:
-                    continue
-
-                uid_match = re.search(rb'UID (\d+)', msg_data[0][0] if isinstance(msg_data[0], bytes) else msg_data[0][0].encode())
-                actual_uid = int(uid_match.group(1)) if uid_match else int(uid_str)
-
-                msg = email.message_from_bytes(msg_data[0][1])
-                parsed = parse_email_message(msg)
-
-                from_field = parsed['from']
-                from_match = re.search(r'<([^>]+)>', from_field)
-                from_email = from_match.group(1) if from_match else ''
-                if not from_email:
-                    email_match = re.search(r'[\w\.-]+@[\w\.-]+', from_field)
-                    from_email = email_match.group(0) if email_match else from_field
-
-                async with get_db() as db:
-                    await db.execute(
-                        """INSERT OR REPLACE INTO email_sent_cache
-                           (uid, message_id, from_email, from_name, to_email,
-                            subject, body, date, fetched_at)
-                           VALUES (?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))""",
-                        (actual_uid, parsed['message_id'], from_email,
-                         re.sub(r'<.+?>', '', parsed['from']).strip(),
-                         parsed['to'], parsed['subject'],
-                         parsed['body_text'][:2000], parsed['date'])
-                    )
-            except Exception as e:
-                log.warning(f"[SentFolder] Background refresh error for UID {uid_str}: {e}")
+        for mailbox in get_imap_mailboxes():
+            conn = get_imap_connection(mailbox)
+            if not conn:
                 continue
 
-        async with get_db() as db:
-            await db.commit()
+            try:
+                sent_folder = _find_sent_folder(conn)
+                if not sent_folder:
+                    continue
+
+                status, _ = conn.select(f'"{sent_folder}"')
+                if status != 'OK':
+                    continue
+
+                try:
+                    status, messages = conn.uid('SEARCH', None, 'ALL')
+                    fetch_mode = 'uid'
+                except Exception as exc:
+                    log.warning("[SentFolder] UID SEARCH not supported for %s (%s), falling back", mailbox['mailbox_email'], exc)
+                    status, messages = conn.search(None, 'ALL')
+                    fetch_mode = 'sequence'
+
+                if status != 'OK':
+                    continue
+
+                raw_uids = _decode_imap_id_list(messages)
+                cached_uids = await _get_cached_mailbox_uids('email_sent_cache', mailbox['mailbox_email'])
+                new_uids = [uid for uid in raw_uids[::-1] if int(uid) not in cached_uids][:500]
+
+                if not new_uids:
+                    log.info("[SentFolder] Mailbox %s: no new emails", mailbox['mailbox_email'])
+                    continue
+
+                log.info("[SentFolder] Mailbox %s: fetching %s new emails", mailbox['mailbox_email'], len(new_uids))
+
+                for uid_str in new_uids:
+                    try:
+                        if fetch_mode == 'uid':
+                            status, msg_data = conn.uid('FETCH', uid_str, '(UID RFC822)')
+                        else:
+                            status, msg_data = conn.fetch(uid_str, '(RFC822)')
+                        if status != 'OK' or not msg_data or not msg_data[0]:
+                            continue
+
+                        actual_uid = _extract_uid_from_fetch_payload(msg_data, uid_str) if fetch_mode == 'uid' else int(uid_str)
+                        msg = email.message_from_bytes(msg_data[0][1])
+                        parsed = parse_email_message(msg)
+                        new_entries.append(_build_sent_email_entry(mailbox['mailbox_email'], actual_uid, parsed))
+                    except Exception as e:
+                        log.warning(f"[SentFolder] Background refresh error for UID {uid_str}: {e}")
+                        continue
+            finally:
+                _safe_close_imap_connection(conn)
+
+        await _store_sent_entries(new_entries)
         log.info("[SentFolder] Background refresh complete")
     except Exception as e:
         log.error(f"[SentFolder] Background refresh error: {e}")
@@ -3020,16 +3419,20 @@ async def send_test_email(
 
     # Send email
     smtp_client = SMTPClient()
+    sender_email = str(final_from_email or "sekretariat@asosiasi.ai")
+    sender_name = str(final_from_name or "Sekretariat Asosiasi AI")
     try:
-        success, error = smtp_client.send_email(
+        success, error, send_context = smtp_client.send_email_with_context(
             to_email,
             rendered_subject,
             rendered_msg,
-            final_from_email or "sekretariat@asosiasi.ai",
+            _resolve_from_email_for_send(final_from_email) or "sekretariat@asosiasi.ai",
             final_from_name or "Sekretariat Asosiasi AI",
             attachment_path=final_attachment,
             attachment_filename=clean_attachment_filename,
         )
+
+        sender_email, sender_name = _get_sender_identity(send_context, final_from_email, final_from_name)
 
         if success:
             log.info(f"[EmailBlast] Test email sent to {to_email}")
@@ -3037,9 +3440,9 @@ async def send_test_email(
             async with get_db() as db:
                 outbox_cursor = await db.execute(
                     """INSERT INTO email_outbox
-                       (campaign_id, source, email, rendered_subject, rendered_message, status, error_message)
-                       VALUES (?, 'test', ?, ?, ?, 'sent', NULL)""",
-                    (campaign_id, to_email, rendered_subject, rendered_msg)
+                       (campaign_id, source, email, from_email, from_name, rendered_subject, rendered_message, status, error_message)
+                       VALUES (?, 'test', ?, ?, ?, ?, ?, 'sent', NULL)""",
+                    (campaign_id, to_email, sender_email, sender_name, rendered_subject, rendered_msg)
                 )
                 await db.commit()
             await broadcast_outbox_logged(
@@ -3048,6 +3451,8 @@ async def send_test_email(
                     "campaign_id": campaign_id,
                     "email": to_email,
                     "university_name": None,
+                    "from_email": sender_email,
+                    "from_name": sender_name,
                     "subject": rendered_subject,
                     "body": rendered_msg,
                     "status": "sent",
@@ -3069,9 +3474,9 @@ async def send_test_email(
             async with get_db() as db:
                 outbox_cursor = await db.execute(
                     """INSERT INTO email_outbox
-                       (campaign_id, source, email, rendered_subject, status, error_message)
-                       VALUES (?, 'test', ?, ?, 'failed', ?)""",
-                    (campaign_id, to_email, rendered_subject or '', error)
+                       (campaign_id, source, email, from_email, from_name, rendered_subject, status, error_message)
+                       VALUES (?, 'test', ?, ?, ?, ?, 'failed', ?)""",
+                    (campaign_id, to_email, sender_email, sender_name, rendered_subject or '', error)
                 )
                 await db.commit()
             await broadcast_outbox_logged(
@@ -3080,6 +3485,8 @@ async def send_test_email(
                     "campaign_id": campaign_id,
                     "email": to_email,
                     "university_name": None,
+                    "from_email": sender_email,
+                    "from_name": sender_name,
                     "subject": rendered_subject or '',
                     "body": None,
                     "status": "failed",

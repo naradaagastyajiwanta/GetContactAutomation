@@ -495,7 +495,10 @@ CREATE TABLE IF NOT EXISTS email_blast_letter_config (
 );
 
 CREATE TABLE IF NOT EXISTS email_inbox_cache (
-    uid INTEGER PRIMARY KEY,
+    cache_key TEXT PRIMARY KEY,
+    mailbox_email TEXT NOT NULL,
+    uid INTEGER NOT NULL,
+    sort_ts INTEGER NOT NULL DEFAULT 0,
     message_id TEXT,
     in_reply_to TEXT,
     from_email TEXT,
@@ -514,9 +517,12 @@ CREATE INDEX IF NOT EXISTS idx_inbox_cache_fetched ON email_inbox_cache(fetched_
 CREATE TABLE IF NOT EXISTS email_outbox (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     campaign_id INTEGER REFERENCES email_blast_campaigns(id),
+    recipient_id INTEGER REFERENCES email_blast_recipients(id),
     source TEXT NOT NULL DEFAULT 'campaign',  -- 'campaign' or 'test'
     email TEXT NOT NULL,
     university_name TEXT,
+    from_email TEXT,
+    from_name TEXT,
     rendered_subject TEXT,
     rendered_message TEXT,
     status TEXT NOT NULL DEFAULT 'sent',  -- 'sent', 'failed'
@@ -529,7 +535,10 @@ CREATE INDEX IF NOT EXISTS idx_outbox_campaign ON email_outbox(campaign_id);
 
 -- Cache for IMAP Sent folder
 CREATE TABLE IF NOT EXISTS email_sent_cache (
-    uid INTEGER PRIMARY KEY,
+    cache_key TEXT PRIMARY KEY,
+    mailbox_email TEXT NOT NULL,
+    uid INTEGER NOT NULL,
+    sort_ts INTEGER NOT NULL DEFAULT 0,
     message_id TEXT,
     from_email TEXT,
     from_name TEXT,
@@ -825,6 +834,77 @@ async def init_db() -> None:
         await db.executescript(_INDEXES_CRM)
         await db.executescript(_DDL_UNIVERSITY_GROUPS)
         await db.executescript(_INDEXES_UNIVERSITY_GROUPS)
+
+        async def _rebuild_email_cache_table_if_needed(table_name: str, recreate_script: str) -> None:
+            cursor = await db.execute(f"PRAGMA table_info({table_name})")
+            columns = {row[1] for row in await cursor.fetchall()}
+            required_columns = {"cache_key", "mailbox_email", "uid", "sort_ts"}
+
+            if required_columns.issubset(columns):
+                return
+
+            await db.execute(f"DROP TABLE IF EXISTS {table_name}")
+            await db.executescript(recreate_script)
+            await db.commit()
+
+        await _rebuild_email_cache_table_if_needed(
+            "email_inbox_cache",
+            """
+            CREATE TABLE IF NOT EXISTS email_inbox_cache (
+                cache_key TEXT PRIMARY KEY,
+                mailbox_email TEXT NOT NULL,
+                uid INTEGER NOT NULL,
+                sort_ts INTEGER NOT NULL DEFAULT 0,
+                message_id TEXT,
+                in_reply_to TEXT,
+                from_email TEXT,
+                from_name TEXT,
+                to_email TEXT,
+                subject TEXT,
+                body TEXT,
+                date TEXT,
+                is_read INTEGER DEFAULT 0,
+                fetched_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            );
+            CREATE INDEX IF NOT EXISTS idx_inbox_cache_fetched ON email_inbox_cache(fetched_at DESC);
+            CREATE INDEX IF NOT EXISTS idx_inbox_cache_sort ON email_inbox_cache(sort_ts DESC, uid DESC);
+            CREATE INDEX IF NOT EXISTS idx_inbox_cache_mailbox_uid ON email_inbox_cache(mailbox_email, uid DESC);
+            """,
+        )
+
+        await _rebuild_email_cache_table_if_needed(
+            "email_sent_cache",
+            """
+            CREATE TABLE IF NOT EXISTS email_sent_cache (
+                cache_key TEXT PRIMARY KEY,
+                mailbox_email TEXT NOT NULL,
+                uid INTEGER NOT NULL,
+                sort_ts INTEGER NOT NULL DEFAULT 0,
+                message_id TEXT,
+                from_email TEXT,
+                from_name TEXT,
+                to_email TEXT,
+                subject TEXT,
+                body TEXT,
+                date TEXT,
+                fetched_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            );
+            CREATE INDEX IF NOT EXISTS idx_sent_cache_fetched ON email_sent_cache(fetched_at DESC);
+            CREATE INDEX IF NOT EXISTS idx_sent_cache_sort ON email_sent_cache(sort_ts DESC, uid DESC);
+            CREATE INDEX IF NOT EXISTS idx_sent_cache_mailbox_uid ON email_sent_cache(mailbox_email, uid DESC);
+            """,
+        )
+
+        await db.executescript(
+            """
+            CREATE INDEX IF NOT EXISTS idx_inbox_cache_sort ON email_inbox_cache(sort_ts DESC, uid DESC);
+            CREATE INDEX IF NOT EXISTS idx_inbox_cache_mailbox_uid ON email_inbox_cache(mailbox_email, uid DESC);
+            CREATE INDEX IF NOT EXISTS idx_sent_cache_sort ON email_sent_cache(sort_ts DESC, uid DESC);
+            CREATE INDEX IF NOT EXISTS idx_sent_cache_mailbox_uid ON email_sent_cache(mailbox_email, uid DESC);
+            """
+        )
+        await db.commit()
+
         # Migration: add agent_reasoning column to conversations (idempotent)
         try:
             await db.execute(
@@ -1085,6 +1165,55 @@ async def init_db() -> None:
             await db.commit()
         except Exception:
             pass  # Column already exists
+
+        # Migration: enrich outbox rows with sender attribution and recipient linkage
+        try:
+            await db.execute(
+                "ALTER TABLE email_outbox ADD COLUMN recipient_id INTEGER"
+            )
+            await db.commit()
+        except Exception:
+            pass  # Column already exists
+        try:
+            await db.execute(
+                "ALTER TABLE email_outbox ADD COLUMN from_email TEXT"
+            )
+            await db.commit()
+        except Exception:
+            pass  # Column already exists
+        try:
+            await db.execute(
+                "ALTER TABLE email_outbox ADD COLUMN from_name TEXT"
+            )
+            await db.commit()
+        except Exception:
+            pass  # Column already exists
+
+        await db.execute(
+            """UPDATE email_outbox
+               SET from_email = COALESCE(
+                   from_email,
+                   (SELECT c.from_email FROM email_blast_campaigns c WHERE c.id = email_outbox.campaign_id),
+                   'sekretariat@asosiasi.ai'
+               )
+               WHERE from_email IS NULL OR trim(from_email) = ''"""
+        )
+        await db.execute(
+            """UPDATE email_outbox
+               SET from_name = COALESCE(
+                   from_name,
+                   (SELECT c.from_name FROM email_blast_campaigns c WHERE c.id = email_outbox.campaign_id),
+                   'Sekretariat Asosiasi AI'
+               )
+               WHERE from_name IS NULL OR trim(from_name) = ''"""
+        )
+        await db.executescript(
+            """
+            CREATE INDEX IF NOT EXISTS idx_outbox_recipient ON email_outbox(recipient_id);
+            CREATE INDEX IF NOT EXISTS idx_outbox_from_email ON email_outbox(from_email);
+            """
+        )
+        await db.commit()
         try:
             await db.execute(
                 "ALTER TABLE email_blast_campaigns ADD COLUMN created_by_email TEXT"

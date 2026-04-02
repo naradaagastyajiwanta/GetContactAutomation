@@ -1,315 +1,470 @@
-# React + TypeScript Conventions
+---
+name: react-conventions
+description: >
+  Standar dan konvensi penulisan kode React/Next.js untuk tim.
+  Gunakan setiap kali fe-developer menulis atau memodifikasi
+  kode frontend — pages, components, hooks, stores, services,
+  dan utilities. Wajib diikuti agar UI konsisten.
+---
 
-## Stack
-- React 18
-- TypeScript 5
-- Vite
-- React Router 6
-- TanStack Query 5
-- Tailwind CSS 3
-- Lucide React icons
+# React / Next.js Conventions
 
-## File Structure
+## Convention Adoption Gate
+
+**Jalankan ini PERTAMA sebelum apply konvensi apapun.**
+
+### Step 1 — Deteksi Project Type
+```bash
+find src -name "*.jsx" -o -name "*.tsx" -o -name "*.js" 2>/dev/null | wc -l
 ```
-frontend/src/
-├── App.tsx              # Router setup
-├── main.tsx             # Entry point
-├── pages/
-│   ├── DashboardPage.tsx
-│   ├── UniversitiesPage.tsx
-│   └── ...
+Jika output `0` → **GREENFIELD**. Skip gate, apply konvensi penuh langsung.
+Jika output > 0 → **EXISTING PROJECT**. Lanjut ke Step 2.
+
+### Step 2 — Migration Risk Assessment
+```bash
+# Cek framework + versi
+cat package.json 2>/dev/null | grep -E '"react"|"next"|"vite"' | head -3
+# Cek TypeScript
+ls tsconfig.json 2>/dev/null && echo "HAS_TS" || echo "NO_TS"
+# Cek router (Pages vs App)
+ls pages/ 2>/dev/null && echo "PAGES_ROUTER" || ls app/ 2>/dev/null && echo "APP_ROUTER" || echo "NOT_NEXTJS"
+# Cek test suite
+cat package.json 2>/dev/null | grep '"test"' | grep -v "no test\|echo" && echo "HAS_TESTS" || echo "NO_TESTS"
+# Jumlah komponen
+find src -name "*.jsx" -o -name "*.tsx" 2>/dev/null | wc -l
+```
+
+### Step 3 — Hitung Risk Score
+```
++40  Pages Router existing dan butuh migrasi ke App Router
++30  Tidak ada test suite
++20  > 20 komponen yang harus diubah
++20  Tidak ada TypeScript dan codebase besar (> 15 file)
++10  Class components masih dipakai
+```
+
+### Step 4 — Decision
+```
+< 40%  → Apply konvensi penuh.
+40-79% → STOP. Tampilkan ke programmer:
+         "⚠️ Convention migration risk: [N]%
+          Impact: [N] components | Reason: [alasan]
+          APPROVE → proceed | SKIP → keep existing + catat tech debt"
+≥ 80%  → KEEP AS IS. Otomatis tanpa tanya.
+         Catat ke .claude/memory/tech-debt.md:
+         "[YYYY-MM-DD] React convention migration skipped — risk [N]% ([alasan])"
+         Tampilkan: "ℹ️ Convention migration skipped (risk [N]%). Pakai konvensi existing."
+```
+
+---
+
+## Prinsip Utama
+- Gunakan TypeScript — tidak boleh ada implicit `any`
+- Gunakan functional components + hooks, bukan class components
+- Gunakan App Router (Next.js 13+), bukan Pages Router
+- Pisahkan UI dari logic: komponen tipis, logic di hooks/services
+- Server Components by default, Client Components hanya bila perlu
+
+---
+
+## Struktur Folder
+
+```
+src/
+├── app/                    ← Next.js App Router
+│   ├── layout.tsx          ← root layout
+│   ├── page.tsx            ← halaman utama
+│   ├── (auth)/             ← route group (tidak jadi URL)
+│   │   ├── login/
+│   │   │   └── page.tsx
+│   │   └── register/
+│   │       └── page.tsx
+│   └── dashboard/
+│       ├── layout.tsx
+│       └── page.tsx
 ├── components/
-│   ├── ui/              # Reusable UI components
-│   └── ...
-├── hooks/
-│   ├── useUniversities.ts
-│   └── ...
-├── services/
-│   └── api.ts           # Axios instance
-├── types/
-│   └── index.ts
-└── utils/
-    └── ...
+│   ├── ui/                 ← komponen generik (Button, Input, Modal)
+│   ├── layout/             ← Navbar, Sidebar, Footer
+│   └── features/           ← komponen spesifik fitur
+│       └── users/
+│           ├── UserCard.tsx
+│           ├── UserList.tsx
+│           └── UserForm.tsx
+├── hooks/                  ← custom hooks
+│   ├── useAuth.ts
+│   └── useUsers.ts
+├── services/               ← API calls
+│   └── user.service.ts
+├── stores/                 ← Zustand stores
+│   └── auth.store.ts
+├── types/                  ← TypeScript interfaces
+│   └── user.types.ts
+├── lib/                    ← konfigurasi library (axios, queryClient)
+│   ├── axios.ts
+│   └── query-client.ts
+└── utils/                  ← helper functions
+    └── format.ts
 ```
 
-## Component Pattern
+---
 
-### Functional Component
+## Naming Convention
+
+```
+Komponen    : PascalCase          → UserCard.tsx, LoginForm.tsx
+Hook        : camelCase + use     → useAuth.ts, useUsers.ts
+Service     : camelCase + Service → user.service.ts
+Store       : camelCase + Store   → auth.store.ts
+Type/Interface : PascalCase + I   → IUser, ICreateUserDto
+Page file   : page.tsx            → selalu nama ini (Next.js)
+Layout file : layout.tsx          → selalu nama ini (Next.js)
+```
+
+---
+
+## Komponen — Aturan Dasar
+
 ```tsx
-import { useState, useEffect } from 'react';
-import { Button } from '@/components/ui/Button';
-
-interface ComponentProps {
-  title: string;
-  data: DataType;
-  onSave: (data: Data) => void;
+// ✅ BENAR — functional component dengan TypeScript
+interface UserCardProps {
+  user: IUser;
+  onDelete?: (id: number) => void;
+  className?: string;
 }
 
-export function Component({ title, data, onSave }: ComponentProps) {
-  const [isLoading, setIsLoading] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-
-  const handleSave = async () => {
-    setIsLoading(true);
-    try {
-      await onSave(data);
-    } catch (err) {
-      setError(err instanceof Error ? err.message : 'Unknown error');
-    } finally {
-      setIsLoading(false);
-    }
-  };
-
+export function UserCard({ user, onDelete, className }: UserCardProps) {
   return (
-    <div className="p-4 border rounded-lg">
-      <h2 className="text-xl font-semibold mb-4">{title}</h2>
-      {error && <div className="text-red-600">{error}</div>}
-      <Button onClick={handleSave} disabled={isLoading}>
-        {isLoading ? 'Saving...' : 'Save'}
-      </Button>
+    <div className={cn('rounded-lg border p-4', className)}>
+      <h3 className="font-semibold">{user.name}</h3>
+      <p className="text-sm text-gray-500">{user.email}</p>
+      {onDelete && (
+        <button onClick={() => onDelete(user.id)}>
+          Delete
+        </button>
+      )}
     </div>
   );
 }
+
+// ❌ SALAH — default export tanpa nama (susah debug)
+export default function ({ user }) { ... }
+
+// ❌ SALAH — props tanpa type
+function UserCard(props) { ... }
 ```
 
-### Type Exports
+---
+
+## Server vs Client Component
+
 ```tsx
-// Export types for reuse
-export type DataType = {
-  id: string;
-  name: string;
-  createdAt: string;
-};
+// Server Component (default) — TIDAK ada 'use client'
+// Gunakan untuk: data fetching, static content, layout
+// src/app/dashboard/page.tsx
+import { getUsersAction } from '@/app/actions/user.actions';
+import { UserList } from '@/components/features/users/UserList';
 
-export interface ComponentProps {
-  data: DataType;
-}
-```
-
-## TanStack Query
-
-### Query Hook
-```tsx
-// hooks/useResource.ts
-import { useQuery } from '@tanstack/react-query';
-import axios from 'axios';
-
-const API_URL = import.meta.env.VITE_API_URL;
-
-export function useResource(id: string) {
-  return useQuery({
-    queryKey: ['resource', id],
-    queryFn: async () => {
-      const { data } = await axios.get(`${API_URL}/api/v1/resource/${id}`);
-      return data.data;
-    },
-    staleTime: 5000,
-  });
-}
-```
-
-### Mutation Hook
-```tsx
-export function useCreateResource() {
-  const queryClient = useQueryClient();
-
-  return useMutation({
-    mutationFn: async (data: CreateData) => {
-      const response = await axios.post(`${API_URL}/api/v1/resource`, data);
-      return response.data.data;
-    },
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['resource'] });
-    },
-    onError: (error) => {
-      console.error('Mutation error:', error);
-    },
-  });
-}
-```
-
-### Using Hook in Component
-```tsx
-export function ResourcePage() {
-  const { data, isLoading, error } = useResource('id');
-  const createMutation = useCreateResource();
-
-  if (isLoading) return <div>Loading...</div>;
-  if (error) return <div>Error: {error.message}</div>;
+export default async function DashboardPage() {
+  const users = await getUsersAction(); // fetch di server
 
   return (
-    <div>
-      <h1>{data?.name}</h1>
-      <button onClick={() => createMutation.mutate({...})}>
-        Create
-      </button>
-    </div>
+    <main>
+      <h1>Dashboard</h1>
+      <UserList users={users} />
+    </main>
   );
 }
 ```
 
-## React Router
-
-### Route Setup
 ```tsx
-// App.tsx
-import { BrowserRouter, Routes, Route } from 'react-router-dom';
-import { Layout } from './components/Layout';
-import { UniversitiesPage } from './pages/UniversitiesPage';
-import { DashboardPage } from './pages/DashboardPage';
+// Client Component — tambah 'use client' di baris pertama
+// Gunakan untuk: onClick, useState, useEffect, form input
+// src/components/features/users/UserForm.tsx
+'use client';
 
-export function App() {
-  return (
-    <BrowserRouter>
-      <Routes>
-        <Route path="/" element={<Layout />}>
-          <Route index element={<DashboardPage />} />
-          <Route path="universities" element={<UniversitiesPage />} />
-          <Route path="universities/:id" element={<UniversityDetailPage />} />
-        </Route>
-      </Routes>
-    </BrowserRouter>
-  );
+import { useState } from 'react';
+import { useCreateUser } from '@/hooks/useUsers';
+
+interface UserFormProps {
+  onSuccess?: () => void;
 }
-```
 
-### Route Params
-```tsx
-import { useParams } from 'react-router-dom';
+export function UserForm({ onSuccess }: UserFormProps) {
+  const { mutate: createUser, isPending } = useCreateUser();
 
-export function UniversityDetailPage() {
-  const { id } = useParams<{ id: string }>();
-  const { data } = useUniversity(id!);
-
-  return <div>{data?.name}</div>;
-}
-```
-
-## Tailwind CSS
-
-### Common Patterns
-```tsx
-// Container
-<div className="container mx-auto px-4 py-8">
-
-// Card
-<div className="bg-white rounded-lg shadow p-6">
-
-// Button
-<button className="px-4 py-2 bg-blue-600 text-white rounded hover:bg-blue-700">
-
-// Grid
-<div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-
-// Flex
-<div className="flex items-center justify-between">
-
-// Form
-<input
-  className="w-full px-3 py-2 border rounded-lg focus:ring-2 focus:ring-blue-500"
-  type="text"
-  placeholder="Enter text"
-/>
-```
-
-### Responsive
-```tsx
-// Responsive spacing
-<div className="px-4 py-2 md:px-6 md:py-4 lg:px-8 lg:py-6">
-
-// Hide on mobile
-<div className="hidden md:block">
-
-// Hide on desktop
-<div className="md:hidden">
-```
-
-## Icons (Lucide React)
-```tsx
-import { Search, Plus, Trash2, Check } from 'lucide-react';
-
-<Search className="w-5 h-5" />
-<Plus className="w-4 h-4 text-green-600" />
-<Trash2 className="w-5 h-5 text-red-600 cursor-pointer" />
-```
-
-## Form Handling
-```tsx
-export function Form() {
-  const [formData, setFormData] = useState({
-    name: '',
-    email: '',
-  });
-
-  const handleChange = (e: React.ChangeEvent<HTMLInputElement>) => {
-    setFormData(prev => ({
-      ...prev,
-      [e.target.name]: e.target.value,
-    }));
-  };
-
-  const handleSubmit = async (e: React.FormEvent) => {
+  const handleSubmit = (e: React.FormEvent<HTMLFormElement>) => {
     e.preventDefault();
-    await createMutation.mutate(formData);
-    setFormData({ name: '', email: '' });
+    const formData = new FormData(e.currentTarget);
+    createUser(
+      {
+        name: formData.get('name') as string,
+        email: formData.get('email') as string,
+      },
+      { onSuccess }
+    );
   };
 
   return (
     <form onSubmit={handleSubmit}>
-      <input
-        name="name"
-        value={formData.name}
-        onChange={handleChange}
-      />
-      <button type="submit">Submit</button>
+      <input name="name" placeholder="Name" required />
+      <input name="email" type="email" placeholder="Email" required />
+      <button type="submit" disabled={isPending}>
+        {isPending ? 'Saving...' : 'Save'}
+      </button>
     </form>
   );
 }
 ```
 
-## TypeScript Best Practices
+---
 
-### Avoid `any`
-```tsx
-// ❌ Bad
-function process(data: any) {
-  return data.value;
+## Custom Hook
+
+```typescript
+// src/hooks/useUsers.ts
+import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
+import { userService } from '@/services/user.service';
+import { ICreateUserDto, IUser } from '@/types/user.types';
+
+// Query keys — selalu definisikan sebagai konstanta
+export const userKeys = {
+  all: ['users'] as const,
+  lists: () => [...userKeys.all, 'list'] as const,
+  list: (page: number) => [...userKeys.lists(), { page }] as const,
+  detail: (id: number) => [...userKeys.all, 'detail', id] as const,
+};
+
+export function useUsers(page: number = 1) {
+  return useQuery({
+    queryKey: userKeys.list(page),
+    queryFn: () => userService.getAll(page),
+  });
 }
 
-// ✅ Good
-interface Data {
-  value: string;
+export function useUser(id: number) {
+  return useQuery({
+    queryKey: userKeys.detail(id),
+    queryFn: () => userService.getById(id),
+    enabled: !!id, // hanya fetch jika id ada
+  });
 }
 
-function process(data: Data) {
-  return data.value;
+export function useCreateUser() {
+  const queryClient = useQueryClient();
+
+  return useMutation({
+    mutationFn: (data: ICreateUserDto) => userService.create(data),
+    onSuccess: () => {
+      // Invalidate semua list queries setelah create
+      queryClient.invalidateQueries({ queryKey: userKeys.lists() });
+    },
+  });
+}
+
+export function useDeleteUser() {
+  const queryClient = useQueryClient();
+
+  return useMutation({
+    mutationFn: (id: number) => userService.delete(id),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: userKeys.lists() });
+    },
+  });
 }
 ```
 
-### Type Guards
-```tsx
-function isString(value: unknown): value is string {
-  return typeof value === 'string';
+---
+
+## Service (API Calls)
+
+```typescript
+// src/services/user.service.ts
+import { api } from '@/lib/axios';
+import { IUser, ICreateUserDto, IUpdateUserDto } from '@/types/user.types';
+
+interface PaginatedResponse<T> {
+  data: T[];
+  total: number;
+  page: number;
+  limit: number;
 }
 
-if (isString(data)) {
-  // TypeScript knows data is string here
-}
+export const userService = {
+  async getAll(page = 1, limit = 15): Promise<PaginatedResponse<IUser>> {
+    const { data } = await api.get('/users', { params: { page, limit } });
+    return data;
+  },
+
+  async getById(id: number): Promise<IUser> {
+    const { data } = await api.get(`/users/${id}`);
+    return data;
+  },
+
+  async create(payload: ICreateUserDto): Promise<IUser> {
+    const { data } = await api.post('/users', payload);
+    return data;
+  },
+
+  async update(id: number, payload: IUpdateUserDto): Promise<IUser> {
+    const { data } = await api.put(`/users/${id}`, payload);
+    return data;
+  },
+
+  async delete(id: number): Promise<void> {
+    await api.delete(`/users/${id}`);
+  },
+};
 ```
 
-## Error Boundaries
-```tsx
-// ErrorBoundary.tsx
-class ErrorBoundary extends Component<Props, State> {
-  componentDidCatch(error: Error, errorInfo: ErrorInfo) {
-    console.error('Error:', error, errorInfo);
+---
+
+## Axios Instance
+
+```typescript
+// src/lib/axios.ts
+import axios from 'axios';
+
+export const api = axios.create({
+  baseURL: process.env.NEXT_PUBLIC_API_URL + '/api/v1',
+  headers: {
+    'Content-Type': 'application/json',
+  },
+});
+
+// Request interceptor — tambah auth token
+api.interceptors.request.use((config) => {
+  const token = localStorage.getItem('token');
+  if (token) {
+    config.headers.Authorization = `Bearer ${token}`;
   }
+  return config;
+});
 
-  render() {
-    if (this.state.hasError) {
-      return <div>Something went wrong</div>;
+// Response interceptor — handle error global
+api.interceptors.response.use(
+  (response) => response,
+  (error) => {
+    if (error.response?.status === 401) {
+      // Redirect ke login
+      window.location.href = '/login';
     }
-    return this.props.children;
+    return Promise.reject(error);
   }
+);
+```
+
+---
+
+## Store (Zustand)
+
+```typescript
+// src/stores/auth.store.ts
+import { create } from 'zustand';
+import { IUser } from '@/types/user.types';
+
+interface AuthState {
+  user: IUser | null;
+  token: string | null;
+  isAuthenticated: boolean;
+  setUser: (user: IUser, token: string) => void;
+  logout: () => void;
+}
+
+export const useAuthStore = create<AuthState>((set) => ({
+  user: null,
+  token: null,
+  isAuthenticated: false,
+
+  setUser: (user, token) => {
+    localStorage.setItem('token', token);
+    set({ user, token, isAuthenticated: true });
+  },
+
+  logout: () => {
+    localStorage.removeItem('token');
+    set({ user: null, token: null, isAuthenticated: false });
+  },
+}));
+```
+
+---
+
+## Types
+
+```typescript
+// src/types/user.types.ts
+export interface IUser {
+  id: number;
+  name: string;
+  email: string;
+  isActive: boolean;
+  createdAt: string;
+}
+
+export interface ICreateUserDto {
+  name: string;
+  email: string;
+  password: string;
+}
+
+export interface IUpdateUserDto {
+  name?: string;
+  email?: string;
+  isActive?: boolean;
 }
 ```
+
+---
+
+## Handle States di Komponen
+
+```tsx
+// Selalu handle semua state: loading, error, empty, data
+export function UserList() {
+  const { data, isLoading, isError } = useUsers();
+
+  if (isLoading) return <LoadingSpinner />;
+  if (isError) return <ErrorMessage message="Failed to load users" />;
+  if (!data?.data.length) return <EmptyState message="No users found" />;
+
+  return (
+    <div>
+      {data.data.map((user) => (
+        <UserCard key={user.id} user={user} />
+      ))}
+    </div>
+  );
+}
+```
+
+---
+
+## Environment Variables (Next.js)
+
+```
+# .env.local
+NEXT_PUBLIC_API_URL=http://localhost:8000   ← expose ke browser (prefix NEXT_PUBLIC_)
+DATABASE_URL=...                            ← server only (tanpa prefix)
+```
+
+```typescript
+// Akses di kode
+process.env.NEXT_PUBLIC_API_URL  // ✅ bisa di client & server
+process.env.DATABASE_URL          // ✅ hanya di server
+```
+
+---
+
+## Checklist Sebelum Commit
+
+- [ ] Semua komponen punya TypeScript props interface
+- [ ] Tidak ada `any` type yang tidak perlu
+- [ ] Client component punya `'use client'` di baris pertama
+- [ ] Semua state: loading, error, empty sudah dihandle
+- [ ] Tidak ada API call langsung di komponen (pakai service)
+- [ ] Tidak ada hardcoded URL API (pakai env var)
+- [ ] Tidak ada `console.log` tertinggal
+- [ ] Komponen tidak terlalu besar (max ~150 baris, pecah jika lebih)
+- [ ] Query keys konsisten menggunakan konstanta
+- [ ] Jalankan: `docker compose exec frontend pnpm lint`
+- [ ] Jalankan: `docker compose exec frontend pnpm build`

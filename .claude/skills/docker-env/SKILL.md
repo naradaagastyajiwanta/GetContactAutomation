@@ -1,216 +1,91 @@
 ---
 name: docker-env
 description: >
-  Panduan operasi Docker untuk GetContactAIAgent.
+  Panduan operasi Docker untuk project content_automation.
   Gunakan setiap kali perlu menjalankan perintah install,
   run, test, atau migrate di dalam environment yang terisolasi.
+  WAJIB digunakan oleh be-developer, fe-developer, qa-tester.
 allowed-tools: Bash
 ---
 
-# Docker Environment — GetContactAIAgent
-
-## Services
-- **orchestrator** - Python FastAPI (port 8000)
-- **whatsapp-service** - Node.js Baileys (port 3100)
-- **frontend** - React + Vite (port 5173)
-- **postgres** - PostgreSQL (optional, jika migrate dari SQLite)
+# Docker Environment — content_automation
 
 ## Aturan Utama
-JANGAN pernah jalankan pip, npm, atau python langsung di host.
-Selalu jalankan di dalam container dengan `docker compose exec`.
-
----
+JANGAN pernah jalankan pip, npm, composer, atau python
+langsung di WSL host. Selalu jalankan di dalam container.
 
 ## Cek Status Container
-
 ```bash
 docker compose ps
 ```
 
-Expected output:
-```
-NAME                    STATUS          PORTS
-getcontact-orchestrator   Up             0.0.0.0:8000->8000/tcp
-getcontact-whatsapp       Up             0.0.0.0:3100->3100/tcp
-getcontact-frontend       Up             0.0.0.0:5173->5173/tcp
-```
+## Menjalankan Perintah di Container
 
----
-
-## Python / Orchestrator
-
-### Install packages
+### PHP / Laravel
 ```bash
-docker compose exec orchestrator pip install package-name
+# Install packages
+docker compose exec php composer require package-name
 
-# Update requirements.txt
-docker compose exec orchestrator pip freeze > requirements.txt
+# Artisan commands
+docker compose exec php php artisan migrate
+docker compose exec php php artisan make:model NamaModel
+
+# Jalankan server (jika belum running)
+docker compose up -d php
 ```
 
-### Run Python script
+### Node.js / Express
 ```bash
-docker compose exec orchestrator python scripts/script_name.py
+# Install packages
+docker compose exec node pnpm add package-name
+
+# Jalankan server
+docker compose up -d node
 ```
 
-### Database operations
+### Python
 ```bash
-# Run migration
-docker compose exec orchestrator python scripts/setup_db.py
+# Install packages (venv sudah aktif di dalam container)
+docker compose exec python pip install package-name
 
-# Export data
-docker compose exec orchestrator python scripts/export_results.py
+# Update requirements.txt setelah install
+docker compose exec python pip freeze > requirements.txt
+
+# Jalankan script
+docker compose exec python python script.py
 ```
 
-### Run tests
+### React / Next.js
 ```bash
-docker compose exec orchestrator python -m pytest tests/ -v
-```
-
----
-
-## Node.js / WhatsApp Service
-
-### Install packages
-```bash
-docker compose exec whatsapp-service npm install package-name
-
-# Or with pnpm (if using)
-docker compose exec whatsapp-service pnpm add package-name
-```
-
-### Run TypeScript
-```bash
-docker compose exec whatsapp-service npx ts-node src/index.ts
-```
-
-### Build
-```bash
-docker compose exec whatsapp-service npm run build
-```
-
----
-
-## React / Frontend
-
-### Install packages
-```bash
-docker compose exec frontend npm install package-name
-
-# Or with pnpm
+# Install packages
 docker compose exec frontend pnpm add package-name
+
+# Build
+docker compose exec frontend pnpm build
 ```
 
-### Run dev server (usually auto-running)
+## Start / Stop Semua Services
 ```bash
-docker compose exec frontend npm run dev
-```
-
-### Build for production
-```bash
-docker compose exec frontend npm run build
-```
-
-### Run tests
-```bash
-docker compose exec frontend npm test
-```
-
----
-
-## Start / Stop Services
-
-```bash
-# Start semua services
+# Start semua
 docker compose up -d
 
-# Stop semua services
+# Stop semua
 docker compose down
-
-# Restart specific service
-docker compose restart orchestrator
 
 # Rebuild jika Dockerfile berubah
 docker compose up -d --build
 ```
 
----
-
 ## Cek Logs
-
 ```bash
-# Stream logs (real-time)
-docker compose logs -f orchestrator
-docker compose logs -f whatsapp-service
+docker compose logs -f php
+docker compose logs -f node
+docker compose logs -f python
 docker compose logs -f frontend
-
-# All logs
-docker compose logs -f
-
-# Last 50 lines
-docker compose logs --tail=50 orchestrator
 ```
-
----
-
-## Database Access (SQLite)
-
-### Check database
-```bash
-docker compose exec orchestrator sqlite3 data/getcontact.db
-```
-
-### SQLite commands
-```sql
-.tables          -- List semua tabel
-.schema          -- Lihat schema
-.schema table    -- Lihat schema tabel spesifik
-SELECT * FROM table LIMIT 10;
-.quit            -- Keluar
-```
-
----
 
 ## Troubleshooting
-
-### Container tidak bisa start
-```bash
-# 1. Cek logs
-docker compose logs orchestrator
-
-# 2. Rebuild
-docker compose down
-docker compose up -d --build
-
-# 3. Cek port conflict
-netstat -ano | findstr :8000
-```
-
-### Database locked
-```bash
-# Pastikan tidak ada process yang hold DB connection
-docker compose ps
-docker compose restart orchestrator
-```
-
-### Volume corrupt (hapus semua data)
-```bash
-# HATI-HATI: Ini akan hapus database!
-docker compose down -v
-docker compose up -d
-```
-
----
-
-## Environment Variables
-
-### Check env di container
-```bash
-docker compose exec orchestrator env | grep API_KEY
-docker compose exec orchestrator cat .env
-```
-
-### Restart after env change
-```bash
-docker compose down
-docker compose up -d
-```
+Jika container tidak bisa start:
+1. `docker compose logs <service>` — baca error
+2. `docker compose down && docker compose up -d --build`
+3. Jika volume corrupt: `docker compose down -v` (hati-hati: hapus data DB)

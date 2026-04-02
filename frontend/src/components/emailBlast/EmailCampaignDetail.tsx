@@ -1268,6 +1268,7 @@ function SentTab({ campaignId, campaign }: { campaignId: number; campaign: Email
                 <div className="min-w-0 flex-1">
                   <p className="truncate text-[13px] font-medium text-gray-900 dark:text-gray-100">{email.university_name || email.email}</p>
                   <p className="truncate text-[11px] text-gray-400">{email.subject}</p>
+                  {email.from_email ? <p className="mt-0.5 truncate text-[11px] text-gray-400">Dari {email.from_name || email.from_email}</p> : null}
                   {operatorName && (
                     <p className="mt-0.5 truncate text-[11px] text-gray-400">Dijalankan oleh {operatorName}</p>
                   )}
@@ -1313,6 +1314,7 @@ function CampaignInboxTab({ campaignId }: { campaignId: number }) {
                 <div className="min-w-0 flex-1">
                   <p className="text-[13px] font-medium text-gray-900 dark:text-gray-100">{email.from_name || email.from_email}</p>
                   <p className="text-[11px] text-gray-500 dark:text-gray-400">{email.from_email}</p>
+                  {email.mailbox_email ? <p className="text-[11px] text-gray-400 dark:text-gray-500">Mailbox: {email.mailbox_email}</p> : null}
                   <p className="mt-1 truncate text-[12px] text-gray-600 dark:text-gray-300">{email.subject || '(no subject)'}</p>
                   <p className="mt-0.5 line-clamp-2 text-[12px] text-gray-400 dark:text-gray-500">{email.body?.replace(/<[^>]+>/g, '').slice(0, 120)}</p>
                 </div>

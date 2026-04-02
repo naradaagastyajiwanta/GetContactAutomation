@@ -1,246 +1,233 @@
-# Codebase Explorer Skill
+---
+name: codebase-explorer
+description: >
+  Eksplorasi dan analisa struktur codebase existing di repository. Gunakan saat perlu memahami arsitektur project, menemukan file yang relevan, mengidentifikasi pattern yang dipakai, atau memetakan area yang akan terdampak oleh perubahan baru. Digunakan oleh codebase-scout agent.
+allowed-tools: Bash, Read, Glob, Grep
+---
 
-## Purpose
-This skill teaches agents how to quickly explore and understand the GetContactAIAgent codebase.
+## Codebase Explorer Skill
+Skill ini memandu cara membaca dan memahami codebase existing
+secara sistematis — tanpa mengubah apapun.
 
-## Quick Exploration Strategy
+⚠️ **Aturan Utama**: Ini adalah READ ONLY mission.
+JANGAN create, edit, atau delete file apapun selama eksplorasi. Fokus hanya pada pemahaman struktur, pola, dan dependensi kode yang sudah ada.
 
-### Step 1: Understand Structure
+## Langkah Eksplorasi (Urutan Wajib)
+# Langkah 1 — Gambaran Umum Struktur Project
 ```bash
-# List top-level directories
-ls -la
+# Lihat struktur top-level (2 level dalam)
+find . -maxdepth 2 -not -path '*/\.*' \
+       -not -path '*/node_modules/*' \
+       -not -path '*/vendor/*' \
+       -not -path '*/__pycache__/*' \
+       -not -path '*/storage/*' \
+       | sort
 
-# Expected output:
-orchestrator/    # Python FastAPI backend
-whatsapp-service/  # Node.js WhatsApp bridge
-frontend/        # React dashboard
-data/            # SQLite database
-scripts/         # Utility scripts
+# Atau gunakan tree jika tersedia
+tree -L 2 -I 'node_modules|vendor|.git|storage|__pycache__'
 ```
+Dari output ini, identifikasi:
 
-### Step 2: Scan Key Files (Backend)
+- Ini monorepo atau single project?
+- Folder utama untuk backend, frontend, config
+- Ada berapa sub-project / service?
+
+# Langkah 2 — Deteksi Stack & Framework
 ```bash
-# Use Glob to find main Python files
-**/main.py        # FastAPI entry point
-**/db.py          # Database schema
-**/conversation.py # State machine
-**/config.py      # Configuration
+# PHP / Laravel
+cat composer.json 2>/dev/null | grep -E '"laravel|"require' | head -20
 
-# Use Read on each to understand patterns
+# Node.js / Express
+cat package.json 2>/dev/null | grep -E '"dependencies|"express|"next' | head -20
+
+# Python
+cat requirements.txt 2>/dev/null | head -20
+cat pyproject.toml 2>/dev/null | head -20
+cat setup.py 2>/dev/null | head -10
+
+# React / Next.js
+cat package.json 2>/dev/null | grep -E '"react|"next' | head -10  
 ```
 
-### Step 3: Scan Key Files (Frontend)
+Catat versi framework yang digunakan — ini penting untuk
+memastikan kode baru kompatibel.
+
+# Langkah 3 — Pahami Arsitektur & Pattern
+
+# Untuk Laravel / PHP
 ```bash
-# Use Glob to find React structure
-**/App.tsx        # Router setup
-**/pages/**/*.tsx # Page components
-**/components/**/*.tsx  # UI components
+# Lihat struktur MVC
+ls app/Models/
+ls app/Http/Controllers/
+ls app/Services/ 2>/dev/null || echo "No Services layer"
+ls app/Repositories/ 2>/dev/null || echo "No Repository layer"
 
-# Read a few to understand patterns
+# Lihat routes
+cat routes/web.php | head -50
+cat routes/api.php | head -50
+
+# Lihat migrations (pahami skema DB)
+ls database/migrations/ | sort
+
+# Lihat contoh Controller untuk pahami pattern
+ls app/Http/Controllers/ | head -5
+# Baca satu controller sebagai referensi pattern
 ```
 
-### Step 4: Find Similar Patterns
-When implementing new feature, find existing similar code:
-
+# Untuk Node.js / Express
 ```bash
-# Use Grep to search for patterns
-grep -r "async def create_" orchestrator/  # Find create functions
-grep -r "interface.*Props" frontend/src/   # Find component props
+# Entry point
+cat server.js 2>/dev/null || cat app.js 2>/dev/null || cat index.js 2>/dev/null | head -50
+
+# Struktur routes & controllers
+ls src/routes/ 2>/dev/null || ls routes/ 2>/dev/null
+ls src/controllers/ 2>/dev/null || ls controllers/ 2>/dev/null
+ls src/services/ 2>/dev/null || ls services/ 2>/dev/null
+ls src/models/ 2>/dev/null || ls models/ 2>/dev/null
+
+# Middleware yang dipakai
+ls src/middleware/ 2>/dev/null || ls middleware/ 2>/dev/null
 ```
-
-## Specific Patterns to Look For
-
-### Backend Patterns
-
-#### API Endpoint Pattern
-```python
-# In orchestrator/main.py
-@router.get("/api/v1/universities")
-async def get_universities(
-    skip: int = 0,
-    limit: int = 100
-) -> Dict[str, Any]:
-    """Get all universities with pagination."""
-    try:
-        async with aiosqlite.connect(DATABASE_PATH) as db:
-            async with db.execute(
-                "SELECT * FROM universities LIMIT ? OFFSET ?",
-                (limit, skip)
-            ) as cursor:
-                rows = await cursor.fetchall()
-                return {
-                    "status": "success",
-                    "data": [dict(row) for row in rows]
-                }
-    except Exception as e:
-        logger.error(f"Error fetching universities: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
-```
-
-#### Database Query Pattern
-```python
-# In orchestrator/db.py or services
-async with aiosqlite.connect(DATABASE_PATH) as db:
-    # Single row
-    async with db.execute(
-        "SELECT * FROM table WHERE id = ?", (id,)
-    ) as cursor:
-        row = await cursor.fetchone()
-        return dict(row) if row else None
-
-    # Multiple rows
-    async with db.execute(
-        "SELECT * FROM table WHERE status = ?", (status,)
-    ) as cursor:
-        rows = await cursor.fetchall()
-        return [dict(row) for row in rows]
-
-    # Insert
-    await db.execute(
-        "INSERT INTO table (col1, col2) VALUES (?, ?)",
-        (val1, val2)
-    )
-    await db.commit()
-```
-
-### Frontend Patterns
-
-#### Component Pattern
-```tsx
-// In frontend/src/components/ or pages/
-import { useState } from 'react';
-import { useQuery } from '@tanstack/react-query';
-
-interface ComponentProps {
-  id: string;
-}
-
-export function Component({ id }: ComponentProps) {
-  const { data, isLoading, error } = useQuery({
-    queryKey: ['resource', id],
-    queryFn: () => fetchResource(id),
-  });
-
-  if (isLoading) return <div>Loading...</div>;
-  if (error) return <div>Error</div>;
-
-  return <div>{data?.name}</div>;
-}
-```
-
-#### Service Layer Pattern
-```tsx
-// In frontend/src/services/
-import axios from 'axios';
-
-const API_URL = import.meta.env.VITE_API_URL;
-
-export const resourceService = {
-  getAll: async () => {
-    const { data } = await axios.get(`${API_URL}/api/v1/resource`);
-    return data.data;
-  },
-
-  getById: async (id: string) => {
-    const { data } = await axios.get(`${API_URL}/api/v1/resource/${id}`);
-    return data.data;
-  },
-
-  create: async (payload: CreateData) => {
-    const { data } = await axios.post(`${API_URL}/api/v1/resource`, payload);
-    return data.data;
-  },
-};
-```
-
-## Tools Strategy
-
-### Glob Usage
+# Untuk Python
 ```bash
-# Find all Python files
-**/*.py
+# Deteksi framework (Flask/FastAPI/Django)
+grep -r "from flask\|import flask\|from fastapi\|import django" \
+     --include="*.py" -l | head -5
 
-# Find all React components
-**/*.tsx
-
-# Find test files
-**/*.test.tsx
-**/test_*.py
-
-# Find configuration files
-**/config.py
-**/vite.config.ts
+# Struktur utama
+ls app/ 2>/dev/null || ls src/ 2>/dev/null
+find . -name "*.py" -not -path '*/\.*' \
+       -not -path '*/__pycache__/*' \
+       -not -path '*/.venv/*' \
+       | head -30 
 ```
 
-### Grep Usage
+# Untuk React / Next.js
 ```bash
-# Find function definitions
-grep -r "async def " orchestrator/
+# Deteksi apakah Next.js atau pure React
+cat next.config.js 2>/dev/null && echo ">> Next.js project"
+cat vite.config.js 2>/dev/null && echo ">> Vite/React project"
 
-# Find interface definitions
-grep -r "interface " frontend/src/
+# Struktur halaman & komponen
+ls src/pages/ 2>/dev/null || ls app/ 2>/dev/null   # Next.js app router
+ls src/components/ 2>/dev/null || ls components/ 2>/dev/null
+ls src/hooks/ 2>/dev/null
+ls src/store/ 2>/dev/null || ls src/context/ 2>/dev/null
 
-# Find TODO comments
-grep -r "TODO" .
-
-# Find imports to understand dependencies
-grep -r "from fastapi" orchestrator/
-grep -r "import.*React" frontend/src/
+# State management
+grep -r "redux\|zustand\|jotai\|recoil\|context" \
+     package.json | head -5
 ```
 
-### Read Strategy
-1. **Read main entry points first:**
-   - `orchestrator/main.py`
-   - `frontend/src/App.tsx`
-   - `whatsapp-service/src/index.ts`
-
-2. **Read one example of each pattern:**
-   - One controller/endpoint
-   - One service class
-   - One database query
-   - One React page
-   - One React component
-
-3. **Read files related to the feature being built:**
-   - If building university feature: read university-related files
-   - If building conversation feature: read conversation.py
-
-## Common Gotchas
-
-### Backend
-- **Async/await:** All database operations must use async/await
-- **SQL injection:** Never use f-strings in SQL, always use `?` placeholders
-- **Error handling:** Always wrap in try-except, log errors, raise HTTPException
-
-### Frontend
-- **Type safety:** Avoid `any`, define proper interfaces
-- **API URL:** Use `import.meta.env.VITE_API_URL`, don't hardcode
-- **Loading states:** Always handle loading and error states in async operations
-
-## Quick Reference Commands
+# Langkah 4 — Identifikasi Konvensi Tim
 
 ```bash
-# Count lines of code (rough estimate)
-find orchestrator/ -name "*.py" | xargs wc -l
-find frontend/src/ -name "*.tsx" -o -name "*.ts" | xargs wc -l
+# Naming convention — lihat contoh file yang ada
+ls app/Models/ | head -10          # PascalCase? snake_case?
+ls app/Http/Controllers/ | head -10
 
-# Find all routes/endpoints
-grep -r "@router\." orchestrator/
+# Code style config
+cat .eslintrc* 2>/dev/null | head -30
+cat .prettierrc* 2>/dev/null | head -20
+cat phpcs.xml 2>/dev/null | head -20
+cat .flake8 2>/dev/null | head -20
 
-# Find all React routes
-grep -r "path=" frontend/src/
+# Git hooks / pre-commit
+cat .husky/pre-commit 2>/dev/null | head -20
+cat .pre-commit-config.yaml 2>/dev/null | head -20
 
-# Check database schema
-grep -r "CREATE TABLE" orchestrator/
+# Environment variables yang digunakan
+cat .env.example 2>/dev/null || cat .env.sample 2>/dev/null
+```
+# Langkah 5 — Identifikasi Touch Points
+Berdasarkan requirement dari brief, cari file/area yang
+akan terdampak:
+```bash
+# Cari berdasarkan keyword dari brief
+grep -r "KEYWORD_DARI_BRIEF" \
+     --include="*.php" --include="*.js" \
+     --include="*.ts" --include="*.py" \
+     -l | head -20
+
+# Cari model / tabel yang relevan
+grep -r "NAMA_ENTITAS" \
+     --include="*.php" --include="*.py" \
+     -l | head -10
+
+# Cari route yang relevan
+grep -r "NAMA_ROUTE_ATAU_ENDPOINT" \
+     routes/ src/routes/ --include="*.php" \
+     --include="*.js" --include="*.ts" | head -10
+```
+Ganti `KEYWORD_DARI_BRIEF` dengan kata kunci spesifik
+dari requirement yang sedang dianalisa.
+
+# Langkah 6 — Catat Technical Debt yang Relevan
+Perhatikan hal-hal ini saat membaca kode:
+```bash
+# Cari TODO / FIXME / HACK yang relevan dengan area yang akan diubah
+grep -r "TODO\|FIXME\|HACK\|XXX" \
+     --include="*.php" --include="*.js" \
+     --include="*.ts" --include="*.py" \
+     -n | grep -i "KEYWORD" | head -20
+
+# Cari deprecated usage
+grep -r "deprecated\|@deprecated" \
+     --include="*.php" --include="*.js" \
+     --include="*.ts" -n | head -10
 ```
 
-## Document Findings
+**Format Output Codebase Report**
+Setelah eksplorasi selesai, buat laporan dengan format ini:
+```markdown
+## Codebase Context Report
 
-After exploration, create/update `docs/codebase-context-report.md` with:
+### 1. Stack & Versi
+- Backend: Laravel X.X / Node.js vX.X / Python X.X
+- Frontend: React X.X / Next.js X.X
+- Database: MySQL / PostgreSQL
+- State Management: Redux / Zustand / Context API
 
-1. **Project structure** - directories and key files
-2. **Tech stack confirmation** - frameworks, libraries
-3. **Conventions found** - patterns used in codebase
-4. **Touch points** - files that need modification for new feature
-5. **Reusable components** - existing code that can be reused
-6. **Risks** - potential breaking changes
+### 2. Arsitektur
+- Pattern: MVC / Service-Repository / dll
+- Folder struktur utama: [deskripsi singkat]
+- API style: REST / GraphQL
+
+### 3. Konvensi yang Dipakai
+- Naming: PascalCase untuk Model, camelCase untuk method, dll
+- Branch naming: feat/xxx, fix/xxx
+- Commit style: conventional commits / lainnya
+
+### 4. Touch Points yang Terdampak
+- File A — alasan terdampak
+- File B — alasan terdampak
+- Tabel X — perlu migration baru / perubahan
+
+### 5. Dependencies Relevan yang Sudah Ada
+- Package A (vX.X) — bisa dipakai untuk requirement Y
+- Package B (vX.X) — bisa dipakai untuk requirement Z
+
+### 6. Technical Debt yang Perlu Diperhatikan
+- TODO di file X baris Y — relevan karena...
+- Pattern lama di module Z — perlu disesuaikan
+
+### 7. Hal yang Perlu Dikonfirmasi ke Programmer
+- Pertanyaan 1
+- Pertanyaan 2
+```
+
+Tips Eksplorasi Efisien
+Baca file dalam urutan ini untuk memahami paling cepat:
+
+1. README.md — gambaran umum project
+2. .env.example — pahami semua config yang dibutuhkan
+3. routes/api.php atau src/routes/ — peta semua endpoint
+4. Satu Model + Migration sebagai referensi pattern
+5. Satu Controller/Service sebagai referensi pattern
+6. Satu komponen frontend sebagai referensi pattern UI
+
+Jangan baca semua file — cukup yang representatif
+untuk memahami pattern, sisanya bisa di-grep saat dibutuhkan.
+
+
+

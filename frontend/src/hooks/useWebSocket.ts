@@ -3,7 +3,7 @@ import { useQueryClient } from '@tanstack/react-query'
 import { queryKeys } from '../lib/queryKeys'
 import toast from 'react-hot-toast'
 import { useNotifications } from './useNotifications'
-import type { EmailBlastRecipient, InboundEmail, SentEmail } from '../api/emailBlast'
+import type { EmailBlastRecipient, EmailCacheRowId, InboundEmail, ManagedSMTPAccount, SentEmail } from '../api/emailBlast'
 export type { Notification } from './useNotifications'
 
 type WSEvent =
@@ -31,6 +31,10 @@ type WSEvent =
   | { type: 'email_recipient_updated'; campaign_id: number; recipient: EmailBlastRecipient & { letter_number?: string | null } }
   | { type: 'email_outbox_logged'; email: SentEmail & { campaign_id?: number | null } }
   | { type: 'email_inbox_received'; email: InboundEmail; campaign_ids: number[] }
+  | {
+      type: 'email_smtp_account_health'
+      account: Pick<ManagedSMTPAccount, 'id' | 'enabled' | 'health_status' | 'health_message' | 'last_checked_at' | 'last_healthy_at' | 'last_error_at'>
+    }
   | { type: 'email_quota_updated'; sent_today: number; daily_limit: number; remaining: number; is_exhausted: boolean; campaign_id: number }
   | { type: 'quota_exhausted'; campaign_id: number; remaining: number; daily_limit: number; pending_count: number }
   | { type: 'log_line'; ts: string; level: string; text: string }
@@ -65,7 +69,7 @@ function publishConnectionState(connected: boolean) {
   _connectionSubscribers.forEach((callback) => callback(connected))
 }
 
-function upsertById<T extends { id: number }>(items: T[], item: T, prepend: boolean = false): T[] {
+function upsertById<T extends { id: EmailCacheRowId | number }>(items: T[], item: T, prepend: boolean = false): T[] {
   const index = items.findIndex((entry) => entry.id === item.id)
   if (index === -1) {
     return prepend ? [item, ...items] : [...items, item]
@@ -218,6 +222,27 @@ function updateAllSentInfiniteCache(
           },
           ...restPages,
         ],
+      }
+    },
+  )
+}
+
+function updateManagedSMTPAccountHealthCache(
+  qc: ReturnType<typeof useQueryClient>,
+  account: Pick<ManagedSMTPAccount, 'id' | 'enabled' | 'health_status' | 'health_message' | 'last_checked_at' | 'last_healthy_at' | 'last_error_at'>,
+) {
+  qc.setQueryData(
+    ['email-smtp-accounts'],
+    (old: { accounts: ManagedSMTPAccount[] } | undefined) => {
+      if (!old) {
+        return old
+      }
+
+      return {
+        ...old,
+        accounts: old.accounts.map((entry) => (
+          entry.id === account.id ? { ...entry, ...account } : entry
+        )),
       }
     },
   )
@@ -462,6 +487,9 @@ function handleEventQuery(data: WSEvent, qc: ReturnType<typeof useQueryClient>) 
       if (data.campaign_ids.length > 0) {
         updateCampaignInboxCaches(qc, data.campaign_ids, data.email)
       }
+      break
+    case 'email_smtp_account_health':
+      updateManagedSMTPAccountHealthCache(qc, data.account)
       break
     case 'blast_completed': {
       const failedCount = data.failed?.length || 0

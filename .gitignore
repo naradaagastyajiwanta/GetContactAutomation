@@ -1,4 +1,6 @@
+# =============================================================================
 # Python
+# =============================================================================
 __pycache__/
 *.py[cod]
 *$py.class
@@ -9,66 +11,183 @@ build/
 *.egg
 venv/
 .venv/
+.venv.bak/
+*.pyc
+*.pyo
 
-# Node.js
+# Coverage
+htmlcov/
+.coverage
+.coverage.*
+coverage.xml
+*.cover
+
+# =============================================================================
+# Node.js / Frontend / WhatsApp Service
+# =============================================================================
 node_modules/
 dist/
 *.js.map
+*.d.ts
+*.tsbuildinfo
 
-# Environment
+# Frontend
+frontend/dist/
+frontend/dist.zip
+frontend/node_modules/
+
+# WhatsApp Service
+whatsapp-service/dist/
+whatsapp-service/node_modules/
+
+# =============================================================================
+# Environment & Secrets
+# =============================================================================
 .env
+.env.local
+.env.development
+.env.staging
+.env.production
+!.env.example
+!.env.production.example
 
+# =============================================================================
 # Database
+# =============================================================================
+# Orchestrator
 data/*.db
 data/*.db-journal
 data/*.db-shm
 data/*.db-wal
 
-# WhatsApp session
+# WhatsApp Service
+whatsapp-service/data/*.db
+whatsapp-service/data/*.db-journal
+whatsapp-service/data/*.db-shm
+whatsapp-service/data/*.db-wal
+
+# Dedicated backup DBs
+data/getcontact_backup*.db
+data/getcontact_vps.db
+
+# =============================================================================
+# WhatsApp Session / Auth Store
+# =============================================================================
 whatsapp-service/auth_store/
 whatsapp-service/auth_store_backup/
+whatsapp-service/auth_store_device_*/
+whatsapp-service/data/antiban-state.json
 
+# =============================================================================
+# Claude Code
+# =============================================================================
+.claude/
+.claude.bak/
+!.claude/README.md
+
+# =============================================================================
 # IDE
+# =============================================================================
 .vscode/
 .idea/
 *.swp
 *.swo
+*.swn
+*.sublime-workspace
+*.sublime-project
 
+# =============================================================================
 # OS
+# =============================================================================
 .DS_Store
 Thumbs.db
+ehthumbs.db
+Desktop.ini
+$RECYCLE.BIN/
 
+# =============================================================================
 # Logs
+# =============================================================================
 *.log
+logs/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+lerna-debug.log*
 
-# Production env (contains secrets)
-.env.production
+# =============================================================================
+# Build & Deploy Scripts (local/dev only — use CI/CD in .gitlab-ci.yml)
+# =============================================================================
+deploy-fast.ps1
+deploy.sh
+docker-compose.override.yml
+docker-compose_backup.yml
+docker-compose_backup/
+docker-compose.*.yml
+*backup*
+sync-to-vps.ps1
+sync-to-vps.sh
+start-all.bat
+stop-all.bat
+ecosystem.config.cjs
 
-# Certbot certs
-certbot/
+# =============================================================================
+# Email Blast Runtime Data
+# =============================================================================
+data/email_attachments/
+whatsapp-service/webhook_url.txt
 
-# Instaloader cache
-.instaloader/
-
-# Google Sheets credentials
-credentials.json
-token.json
-
-# Git worktrees
-.worktrees/
-
-# Playwright sessions
-data/pw_sessions/
-
-# Export directories
+# =============================================================================
+# Temporary / Scratch / Export Data
+# =============================================================================
 data/export_*/
-
-# Scraps / experimental files
+data/pw_sessions/
+data/_tmp_*/
+data/templates/
+data/audiensi_docs/
 scraps/
 data/test_out.txt
 _playwright_test/
+test-results/
+whatsapp-service/data/
 
-# Ad-hoc scripts and local text outputs
+# =============================================================================
+# Instaloader / Scrape Cache
+# =============================================================================
+.instaloader/
+
+# =============================================================================
+# Google Sheets / External API Credentials
+# =============================================================================
+credentials.json
+token.json
+service_account.json
+*.pem
+*.key
+
+# =============================================================================
+# Git
+# =============================================================================
+.worktrees/
+.git/
+!.gitkeep
+
+# =============================================================================
+# Docker
+# =============================================================================
+certbot/
+
+# =============================================================================
+# Docs Internal / Agent Artifacts (not user-facing)
+# =============================================================================
+docs/pipeline-flow/
+docs/hook-analytics.md
+docs/token-reports/
+agentGuide.md
+
+# =============================================================================
+# Local Scripts (adhoc, not project-owned)
+# =============================================================================
 /check_*.py
 /patch_*.py
 /parse_*.py
@@ -79,23 +198,4 @@ _playwright_test/
 /*log*.txt
 /*_logs.txt
 /*.html
-
-# Local Test & Remote DB dumps
 /*.db
-
-# Deployment and Docker overrides
-docker-compose.override.yml
-docker-compose_backup.yml
-*backup*
-/deploy*.sh
-/deploy*.ps1
-/sync-*.ps1
-/sync-*.sh
-/start-all.bat
-/stop-all.bat
-
-# Test artifacts
-test-results/
-
-# Pipeline flow documentation (internal — not committed)
-docs/pipeline-flow/

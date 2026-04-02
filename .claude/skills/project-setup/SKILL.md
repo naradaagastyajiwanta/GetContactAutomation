@@ -1,307 +1,323 @@
 ---
 name: project-setup
 description: >
-  Panduan menginisialisasi project untuk GetContactAIAgent.
-  Focus pada Python FastAPI, React, dan Node.js setup.
+  Panduan menginisialisasi project baru dari nol untuk setiap
+  framework dalam stack. Gunakan saat project-initializer perlu
+  menjalankan perintah init, install base dependencies, dan
+  setup struktur folder awal. Semua perintah via Docker exec.
 allowed-tools: Bash
 ---
 
-# Project Setup Skill — GetContactAIAgent
+# Project Setup Skill
 
 ## ⚠️ Aturan Utama
 Semua perintah dijalankan via `docker compose exec`.
-TIDAK BOLEH langsung di host.
+TIDAK BOLEH langsung di WSL host.
 
 ---
 
-## Python / FastAPI (Orchestrator)
+## Laravel / PHP
 
-### Base Dependencies
+### Inisialisasi Project Baru
 ```bash
-docker compose exec orchestrator pip install \
-  fastapi \
-  uvicorn[standard] \
-  python-dotenv \
-  pydantic \
-  pydantic-settings \
-  aiosqlite \
-  openai \
-  apscheduler \
-  httpx \
-  phonenumbers \
-  pddiktipy
+# Jika folder masih kosong
+docker compose exec php composer create-project \
+  laravel/laravel . --prefer-dist
+
+# Generate app key
+docker compose exec php php artisan key:generate
 ```
 
-### Development Dependencies
+### Base Dependencies Umum
 ```bash
-docker compose exec orchestrator pip install \
-  pytest \
-  pytest-asyncio \
-  httpx \
-  black \
-  mypy
+# Autentikasi API (Sanctum)
+docker compose exec php composer require laravel/sanctum
+docker compose exec php php artisan vendor:publish \
+  --provider="Laravel\Sanctum\SanctumServiceProvider"
+
+# Query builder helper
+docker compose exec php composer require spatie/laravel-query-builder
+
+# Media / file upload
+docker compose exec php composer require spatie/laravel-medialibrary
+
+# Role & permission
+docker compose exec php composer require spatie/laravel-permission
+
+# Dev tools
+docker compose exec php composer require --dev \
+  laravel/telescope \
+  barryvdh/laravel-debugbar
 ```
 
-### Save to requirements
+### Setup Folder Tambahan (jika pakai Service-Repository pattern)
 ```bash
-docker compose exec orchestrator pip freeze > requirements.txt
+docker compose exec php mkdir -p \
+  app/Services \
+  app/Repositories \
+  app/Interfaces \
+  app/DTOs \
+  app/Enums \
+  app/Traits \
+  app/Exceptions
 ```
 
-### Setup Folder Structure
+### Verifikasi
 ```bash
-mkdir -p \
-  orchestrator/agents \
-  orchestrator/migrations \
-  data \
-  scripts \
-  tests
+docker compose exec php php artisan --version
+docker compose exec php php artisan migrate:status
 ```
 
 ---
 
-## Node.js / WhatsApp Service
+## Node.js / Express
 
-### Init (if not already)
+### Inisialisasi Project Baru
 ```bash
-docker compose exec whatsapp-service npm init -y
-```
+# Init package.json
+docker compose exec node pnpm init
 
-### Dependencies
-```bash
-docker compose exec whatsapp-service npm install \
-  @whiskeysockets/baileys \
-  pino \
+# Install Express & core dependencies
+docker compose exec node pnpm add \
   express \
   dotenv \
-  axios
+  cors \
+  helmet \
+  morgan \
+  express-validator
 ```
 
-### Dev Dependencies
+### Jika Pakai TypeScript
 ```bash
-docker compose exec whatsapp-service npm install -D \
+docker compose exec node pnpm add -D \
   typescript \
   ts-node \
   @types/node \
   @types/express \
   nodemon
+
+# Init tsconfig
+docker compose exec node npx tsc --init
 ```
 
-### TypeScript Config
+### ORM & Database
 ```bash
-docker compose exec whatsapp-service npx tsc --init
+# Prisma (recommended)
+docker compose exec node pnpm add prisma @prisma/client
+docker compose exec node npx prisma init
+
+# Atau Sequelize
+docker compose exec node pnpm add sequelize mysql2
+docker compose exec node pnpm add -D sequelize-cli
 ```
 
 ### Setup Folder Structure
 ```bash
-mkdir -p \
-  whatsapp-service/src \
-  whatsapp-service/dist
+docker compose exec node mkdir -p \
+  src/routes \
+  src/controllers \
+  src/services \
+  src/repositories \
+  src/middleware \
+  src/models \
+  src/utils \
+  src/types \
+  src/config
+```
+
+### Verifikasi
+```bash
+docker compose exec node node --version
+docker compose exec node pnpm --version
 ```
 
 ---
 
-## React / Frontend
+## Python (FastAPI / Flask)
 
-### Init (if using Vite + React)
+### FastAPI (Recommended untuk API)
 ```bash
-# If folder empty
-docker compose exec frontend npm create vite@latest . -- --template react-ts
+# Install FastAPI + server
+docker compose exec python pip install \
+  fastapi \
+  uvicorn[standard] \
+  python-dotenv \
+  pydantic \
+  pydantic-settings
+
+# ORM
+docker compose exec python pip install \
+  sqlalchemy \
+  alembic \
+  pymysql
+
+# Auth
+docker compose exec python pip install \
+  python-jose[cryptography] \
+  passlib[bcrypt] \
+  python-multipart
+
+# Simpan ke requirements
+docker compose exec python pip freeze > requirements.txt
 ```
 
-### Base Dependencies
+### Flask (Jika sudah familiar)
 ```bash
-docker compose exec frontend npm install \
-  react-router-dom \
-  @tanstack/react-query \
-  axios \
-  lucide-react \
+docker compose exec python pip install \
+  flask \
+  flask-sqlalchemy \
+  flask-migrate \
+  flask-jwt-extended \
+  python-dotenv \
+  marshmallow
+
+docker compose exec python pip freeze > requirements.txt
+```
+
+### Setup Folder Structure (FastAPI)
+```bash
+mkdir -p \
+  app/api/v1/endpoints \
+  app/core \
+  app/db \
+  app/models \
+  app/schemas \
+  app/services \
+  app/repositories \
+  app/utils
+touch app/__init__.py app/main.py app/core/config.py
+```
+
+### Verifikasi
+```bash
+docker compose exec python python --version
+docker compose exec python pip list | grep -E "fastapi|flask"
+```
+
+---
+
+## React / Next.js
+
+### Next.js (Recommended — App Router)
+```bash
+# Jika folder masih kosong
+docker compose exec frontend pnpm create next-app . \
+  --typescript \
+  --tailwind \
+  --eslint \
+  --app \
+  --src-dir \
+  --import-alias "@/*"
+```
+
+### Base Dependencies Umum
+```bash
+# State management
+docker compose exec frontend pnpm add zustand
+
+# Data fetching
+docker compose exec frontend pnpm add @tanstack/react-query
+
+# Form handling
+docker compose exec frontend pnpm add \
+  react-hook-form \
+  @hookform/resolvers \
+  zod
+
+# UI Components (pilih salah satu)
+docker compose exec frontend pnpm add \
+  @radix-ui/react-dialog \
+  @radix-ui/react-dropdown-menu \
+  class-variance-authority \
   clsx \
   tailwind-merge
+
+# HTTP client
+docker compose exec frontend pnpm add axios
+
+# Icons
+docker compose exec frontend pnpm add lucide-react
 ```
 
-### Dev Dependencies
-```bash
-docker compose exec frontend npm install -D \
-  @types/react \
-  @types/react-dom \
-  tailwindcss \
-  postcss \
-  autoprefixer \
-  @vitejs/plugin-react
-```
-
-### Setup Tailwind
-```bash
-docker compose exec frontend npx tailwindcss init -p
-```
-
-### Setup Folder Structure
+### Setup Folder Structure (Next.js App Router)
 ```bash
 mkdir -p \
-  frontend/src/pages \
-  frontend/src/components \
-  frontend/src/components/ui \
-  frontend/src/hooks \
-  frontend/src/services \
-  frontend/src/types \
-  frontend/src/utils
+  src/components/ui \
+  src/components/layout \
+  src/components/features \
+  src/hooks \
+  src/lib \
+  src/services \
+  src/stores \
+  src/types \
+  src/utils
+```
+
+### Verifikasi
+```bash
+docker compose exec frontend node --version
+docker compose exec frontend pnpm --version
+docker compose exec frontend pnpm build 2>&1 | tail -5
 ```
 
 ---
 
-## Environment Setup
+## Git Setup (Setelah Semua Framework Diinit)
 
-### Create .env.example
+### Init Repository
 ```bash
-cat > .env.example << 'EOF'
-# OpenAI
-OPENAI_API_KEY=your_openai_api_key_here
+# Di WSL host (bukan di container)
+git init
+git add .
+git commit -m "chore: initial project setup"
 
-# Serper (Google Search)
-SERPER_API_KEY=your_serper_api_key_here
-
-# Instagram (optional)
-IG_USERNAME=
-IG_PASSWORD=
-APIFY_API_KEY=
-
-# WhatsApp Service
-WHATSAPP_SERVICE_URL=http://whatsapp-service:3100
-
-# Database
-DATABASE_PATH=data/getcontact.db
-
-# Outreach Hours (WIB = UTC+7)
-OUTREACH_START_HOUR=9
-OUTREACH_END_HOUR=17
-
-# Rate Limiting
-MAX_CONCURRENT_CONVERSATIONS=3
-MESSAGE_INTERVAL_MIN=30
-MESSAGE_INTERVAL_MAX=60
-
-# Frontend
-VITE_API_URL=http://localhost:8000
-EOF
+# Hubungkan ke GitLab remote
+git remote add origin https://gitlab.com/org/nama-repo.git
+git push -u origin main
 ```
 
-### Create .env (actual)
+### Setup `.gitignore` Lengkap
 ```bash
-cp .env.example .env
-# Edit .env dengan actual values
-```
+# Download gitignore yang sesuai stack
+# Laravel
+curl -o .gitignore https://raw.githubusercontent.com/github/gitignore/main/Laravel.gitignore
 
----
+# Node.js
+curl -o backend/.gitignore https://raw.githubusercontent.com/github/gitignore/main/Node.gitignore
 
-## Git Setup
-
-### .gitignore
-```bash
-cat > .gitignore << 'EOF'
 # Python
-__pycache__/
-*.py[cod]
-*$py.class
-*.so
-.Python
-env/
-venv/
-.venv/
-*.egg-info/
-.pytest_cache/
+curl -o python/.gitignore https://raw.githubusercontent.com/github/gitignore/main/Python.gitignore
 
-# Node
-node_modules/
-npm-debug.log*
-yarn-debug.log*
-yarn-error.log*
-.pnpm-debug.log*
-dist/
+# Next.js / React
+curl -o frontend/.gitignore https://raw.githubusercontent.com/github/gitignore/main/Node.gitignore
+```
 
+### Tambahkan ke `.gitignore`
+```
 # Environment
 .env
 .env.local
 .env.*.local
 
-# IDE
-.vscode/
-.idea/
-*.swp
-*.swo
-*~
+# Docker volumes (jangan commit data)
+docker/data/
 
 # OS
 .DS_Store
 Thumbs.db
-
-# Database (optional, if want to ignore DB)
-# data/*.db
-
-# Logs
-*.log
-logs/
-EOF
-```
-
-### Init Git (if not already)
-```bash
-git init
-git add .
-git commit -m "chore: initial project setup"
-git remote add origin https://gitlab.com/your-org/getcontact-ai-agent.git
-git push -u origin main
 ```
 
 ---
 
-## Verification Checklist
+## Checklist Verifikasi Akhir
 
-### Python
-```bash
-docker compose exec orchestrator python --version
-docker compose exec orchestrator pip list | grep -E "fastapi|openai"
-```
+Sebelum laporkan ke programmer (Checkpoint 4):
 
-### Node.js
-```bash
-docker compose exec whatsapp-service node --version
-docker compose exec whatsapp-service npm list --depth=0
-```
-
-### Frontend
-```bash
-docker compose exec frontend node --version
-docker compose exec frontend npm list --depth=0 | grep react
-```
-
-### All Services
-```bash
-docker compose ps
-```
-
-All should show "Up" status.
-
----
-
-## Common Issues
-
-### Port already in use
-```bash
-# Windows
-netstat -ano | findstr :8000
-# Kill the PID if needed
-
-# Or change port in docker-compose.yml
-```
-
-### Module not found
-```bash
-# Reinstall dependencies
-docker compose exec orchestrator pip install -r requirements.txt
-docker compose exec frontend npm install
-```
-
-### Permission issues (Linux/WSL)
-```bash
-sudo chown -R $USER:$USER .
-```
+- [ ] Semua Docker container status `Up`
+- [ ] `docker compose logs` tidak ada error
+- [ ] Framework berhasil terinstall di container
+- [ ] Struktur folder sesuai `architecture-blueprint.md`
+- [ ] `.env.example` sudah dibuat
+- [ ] `.gitignore` sudah benar (tidak ada `.env` ter-commit)
+- [ ] Initial commit sudah di-push ke GitLab
+- [ ] Database migration bisa berjalan tanpa error
