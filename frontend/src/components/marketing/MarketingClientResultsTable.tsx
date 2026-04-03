@@ -30,6 +30,7 @@ import {
   useDeleteMarketingClient,
   useAddMarketingClient,
   useRetryMarketingClientInstagramScrape,
+  useRetryMarketingClientInstagramContactExtraction,
   useRetryMarketingClientSearch,
 } from '../../hooks/useMarketing'
 import toast from 'react-hot-toast'
@@ -63,6 +64,16 @@ const IG_SOURCE_LABELS: Record<string, string> = {
   ddg_search: 'DDG',
 }
 
+const CONTACT_SOURCE_LABELS: Record<string, string> = {
+  ig_post: 'Instagram Post',
+  ig_caption: 'Instagram Caption',
+  ddg_result_page: 'DDG Result Page',
+  ddg_result_snippet: 'DDG Snippet',
+  official_website: 'Website Resmi',
+  website_social: 'Website Social',
+  web_search_fallback: 'Web Search Fallback',
+}
+
 function formatDateTime(date: string | null | undefined): string {
   if (!date) return '-'
   return new Intl.DateTimeFormat('id-ID', {
@@ -78,6 +89,31 @@ function truncateText(value: string | null | undefined, maxLength = 180): string
   if (!value) return ''
   if (value.length <= maxLength) return value
   return `${value.slice(0, maxLength).trimEnd()}...`
+}
+
+function getContactSourceLabel(sourceType: string | null | undefined): string {
+  if (!sourceType) return '—'
+  return CONTACT_SOURCE_LABELS[sourceType] ?? sourceType.replace(/_/g, ' ')
+}
+
+function getContactSourceDisplayUrl(sourceUrl: string | null | undefined): string {
+  if (!sourceUrl) return '—'
+  try {
+    const url = new URL(sourceUrl)
+    return url.hostname.replace(/^www\./, '')
+  } catch {
+    return truncateText(sourceUrl, 36) || sourceUrl
+  }
+}
+
+function findContactSourcePost(
+  posts: MarketingInstagramPost[],
+  contact: MarketingContact,
+): MarketingInstagramPost | null {
+  const sourceUrl = (contact.source_url ?? '').trim()
+  if (!sourceUrl) return null
+
+  return posts.find((post) => post.post_url === sourceUrl || post.image_url === sourceUrl) ?? null
 }
 
 function getSelectedInstagramCandidates(client: MarketingClient): MarketingInstagramCandidate[] {
@@ -123,10 +159,17 @@ function getVisibleInstagramHandles(client: MarketingClient): Array<{
 
 
 function hasInstagramScrapeWarning(client: MarketingClient): boolean {
-  return client.search_status === 'found' && Boolean(client.ig_handle) && (client.ig_posts?.length ?? 0) === 0
+  if (!client.ig_handle || (client.ig_posts?.length ?? 0) > 0) {
+    return false
+  }
+
+  return client.ig_post_scrape_status === 'empty' || client.ig_post_scrape_status === 'failed'
 }
 
 function getInstagramScrapeDiagnosticMessage(client: MarketingClient): string | null {
+  if (client.ig_post_scrape_status === 'audit_only') {
+    return 'Handle IG disimpan untuk audit ranking, tetapi scrape post sengaja tidak dijalankan karena website resmi sudah cukup.'
+  }
   if (client.ig_post_scrape_error) return client.ig_post_scrape_error
   if (hasInstagramScrapeWarning(client)) {
     return 'Handle IG sudah tervalidasi, tetapi provider scrape post belum mengembalikan post apa pun.'
@@ -148,6 +191,12 @@ function getInstagramScrapeStatusLabel(client: MarketingClient): {
     return {
       label: 'IG Scrape Failed',
       className: 'bg-red-50 text-red-700 dark:bg-red-900/30 dark:text-red-300',
+    }
+  }
+  if (client.ig_post_scrape_status === 'audit_only') {
+    return {
+      label: 'IG Audit Only',
+      className: 'bg-emerald-50 text-emerald-700 dark:bg-emerald-900/30 dark:text-emerald-300',
     }
   }
   if (client.ig_post_scrape_status === 'empty' && hasInstagramScrapeWarning(client)) {
@@ -384,6 +433,8 @@ function MarketingContactsPanel({
   canManage,
   onApprove,
   onEdit,
+  onRetryExtractContacts,
+  retryingExtractContacts,
   onRetrySearch,
   retryingSearch,
 }: {
@@ -392,6 +443,8 @@ function MarketingContactsPanel({
   canManage: boolean
   onApprove: (id: number, approved: boolean) => void
   onEdit: (id: number, value: string) => void
+  onRetryExtractContacts: () => void
+  retryingExtractContacts: boolean
   onRetrySearch: () => void
   retryingSearch: boolean
 }) {
@@ -405,6 +458,8 @@ function MarketingContactsPanel({
           client={client}
           groupId={groupId}
           canManage={canManage}
+          onRetryExtractContacts={onRetryExtractContacts}
+          retryingExtractContacts={retryingExtractContacts}
           onRetrySearch={onRetrySearch}
           retryingSearch={retryingSearch}
         />
@@ -430,6 +485,7 @@ function MarketingContactsPanel({
           <ContactRow
             key={contact.id}
             contact={contact}
+            sourcePost={findContactSourcePost(client.ig_posts ?? [], contact)}
             onApprove={onApprove}
             onEdit={onEdit}
           />
@@ -485,7 +541,9 @@ function InstagramDiscoveryPanel({ client }: { client: MarketingClient }) {
           </div>
           <p className="text-xs text-gray-600 dark:text-gray-300">
             {candidates.length > 0
-              ? `${candidates.length} kandidat IG dievaluasi, ${selectedCandidates.length} akun dipilih untuk scraping.`
+              ? client.ig_post_scrape_status === 'audit_only'
+                ? `${candidates.length} kandidat IG dievaluasi, ${selectedCandidates.length} akun dipilih untuk audit handle tanpa scrape post.`
+                : `${candidates.length} kandidat IG dievaluasi, ${selectedCandidates.length} akun dipilih untuk scraping.`
               : postHandles.length > 1
                 ? `${posts.length} post tersimpan dari ${postHandles.length} akun IG yang berhasil discrape.`
               : posts.length > 0
@@ -716,16 +774,21 @@ function InstagramPostCard({ post }: { post: MarketingInstagramPost }) {
 
 function ContactRow({
   contact,
+  sourcePost,
   onApprove,
   onEdit,
 }: {
   contact: MarketingContact
+  sourcePost: MarketingInstagramPost | null
   onApprove: (id: number, approved: boolean) => void
   onEdit: (id: number, value: string) => void
 }) {
   const [editing, setEditing] = useState(false)
   const [editValue, setEditValue] = useState(contact.edited_value ?? contact.value ?? '')
   const Icon = CONTACT_ICONS[contact.contact_type] ?? Circle
+  const sourceUrl = contact.source_url?.trim() || null
+  const sourceLabel = getContactSourceLabel(contact.source_type)
+  const sourceDisplayUrl = getContactSourceDisplayUrl(sourceUrl)
 
   function commitEdit() {
     if (editValue !== (contact.edited_value ?? contact.value ?? '')) {
@@ -771,8 +834,51 @@ function ContactRow({
           </span>
         )}
       </td>
-      <td className="px-3 py-2 text-xs text-gray-500 dark:text-gray-400 max-w-32 truncate">
-        {contact.source_url ?? contact.source_type ?? '—'}
+      <td className="px-3 py-2 text-xs text-gray-500 dark:text-gray-400 min-w-[220px]">
+        <div className="flex items-start gap-2">
+          {sourcePost?.image_url ? (
+            <a
+              href={sourceUrl ?? sourcePost.post_url}
+              target="_blank"
+              rel="noreferrer"
+              className="block flex-shrink-0 overflow-hidden rounded-md border border-gray-200 transition-opacity hover:opacity-85 dark:border-gray-700"
+              title="Buka post sumber"
+            >
+              <img
+                src={sourcePost.image_url}
+                alt="Source post"
+                loading="lazy"
+                referrerPolicy="no-referrer"
+                className="h-11 w-11 object-cover"
+              />
+            </a>
+          ) : (
+            <div className="flex h-11 w-11 flex-shrink-0 items-center justify-center rounded-md bg-gray-100 text-gray-400 dark:bg-gray-800 dark:text-gray-500">
+              <ExternalLink className="h-4 w-4" />
+            </div>
+          )}
+
+          <div className="min-w-0 space-y-1">
+            <div className="font-medium text-gray-700 dark:text-gray-200">{sourceLabel}</div>
+            {sourcePost?.ig_handle && (
+              <div className="text-[11px] text-gray-500 dark:text-gray-400">@{sourcePost.ig_handle}</div>
+            )}
+            {sourceUrl ? (
+              <a
+                href={sourceUrl}
+                target="_blank"
+                rel="noreferrer"
+                className="inline-flex items-center gap-1 text-[11px] font-medium text-indigo-600 hover:text-indigo-800 dark:text-indigo-400 dark:hover:text-indigo-300"
+                title={sourceUrl}
+              >
+                {sourcePost ? 'Lihat Post' : sourceDisplayUrl}
+                <ExternalLink className="h-3 w-3" />
+              </a>
+            ) : (
+              <span className="text-[11px] text-gray-400 dark:text-gray-500">Tidak ada link sumber</span>
+            )}
+          </div>
+        </div>
       </td>
       <td className="px-3 py-2 text-xs text-gray-500 dark:text-gray-400">
         {contact.confidence != null ? `${Math.round(contact.confidence * 100)}%` : '—'}
@@ -847,12 +953,16 @@ function EmptyClientState({
   client,
   groupId,
   canManage,
+  onRetryExtractContacts,
+  retryingExtractContacts,
   onRetrySearch,
   retryingSearch,
 }: {
   client: MarketingClient
   groupId: number
   canManage: boolean
+  onRetryExtractContacts: () => void
+  retryingExtractContacts: boolean
   onRetrySearch: () => void
   retryingSearch: boolean
 }) {
@@ -863,10 +973,23 @@ function EmptyClientState({
   void addClient
 
   const isError = client.search_status === 'error'
+  const hasStoredInstagramPosts = (client.ig_posts ?? []).length > 0
 
   if (!show) {
     return (
       <div className="mt-2 flex flex-wrap gap-2">
+        {hasStoredInstagramPosts && canManage && (
+          <Button
+            size="sm"
+            variant="outline"
+            onClick={onRetryExtractContacts}
+            loading={retryingExtractContacts}
+            className="text-xs"
+          >
+            <Instagram className="h-3 w-3" />
+            Extract Contacts from Posts
+          </Button>
+        )}
         {(client.search_status === 'not_found' || client.search_status === 'error') && canManage && (
           <Button
             size="sm"
@@ -940,6 +1063,7 @@ function ClientCard({
   const updateContact = useUpdateMarketingContact()
   const deleteClient = useDeleteMarketingClient()
   const retryInstagramScrape = useRetryMarketingClientInstagramScrape()
+  const retryInstagramContactExtraction = useRetryMarketingClientInstagramContactExtraction()
   const retryClientSearch = useRetryMarketingClientSearch()
 
   function handleApprove(contactId: number, approved: boolean) {
@@ -958,11 +1082,27 @@ function ClientCard({
   async function handleRetryInstagramScrape() {
     try {
       const result = await retryInstagramScrape.mutateAsync({ clientId: client.id, groupId })
-      toast.success(result.message)
+      if (result.posts > 0 && result.contacts_added === 0) {
+        toast.success(`${result.message}. Post tersimpan, tapi kontak belum terdeteksi.`)
+      } else {
+        toast.success(result.message)
+      }
       setExpanded(true)
-      setActiveTab('posts')
+      setActiveTab(result.posts > 0 ? 'contacts' : 'posts')
     } catch (error) {
       const message = error instanceof Error ? error.message : 'Gagal retry IG post scrape'
+      toast.error(message)
+    }
+  }
+
+  async function handleRetryInstagramContactExtraction() {
+    try {
+      const result = await retryInstagramContactExtraction.mutateAsync({ clientId: client.id, groupId })
+      toast.success(result.message)
+      setExpanded(true)
+      setActiveTab('contacts')
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Gagal extract contact dari post Instagram'
       toast.error(message)
     }
   }
@@ -988,6 +1128,7 @@ function ClientCard({
   const headerInstagramCandidates = visibleInstagramHandles.slice(0, 3)
   const remainingInstagramCandidateCount = Math.max(0, visibleInstagramHandles.length - headerInstagramCandidates.length)
   const retrying = retryInstagramScrape.isPending
+  const retryingExtractContacts = retryInstagramContactExtraction.isPending
   const retryingSearch = retryClientSearch.isPending
   const statusBadge = getInstagramScrapeStatusLabel(client)
   const tabs: Array<{ key: ClientDetailTab; label: string; count: number }> = [
@@ -1131,6 +1272,8 @@ function ClientCard({
               canManage={canManage}
               onApprove={handleApprove}
               onEdit={handleEdit}
+              onRetryExtractContacts={handleRetryInstagramContactExtraction}
+              retryingExtractContacts={retryingExtractContacts}
               onRetrySearch={handleRetrySearch}
               retryingSearch={retryingSearch}
             />

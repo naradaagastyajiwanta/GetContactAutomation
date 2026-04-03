@@ -5,6 +5,7 @@ import io
 import json
 from datetime import datetime
 from typing import Any
+from urllib.parse import urlparse
 
 import aiosqlite
 
@@ -119,6 +120,14 @@ async def delete_group(group_id: int) -> bool:
         # Delete results for all clients
         if client_ids:
             placeholders = ",".join("?" * len(client_ids))
+            await db.execute(
+                f"DELETE FROM marketing_orchestration_evidence WHERE client_id IN ({placeholders})",
+                client_ids,
+            )
+            await db.execute(
+                f"DELETE FROM marketing_orchestration_runs WHERE client_id IN ({placeholders})",
+                client_ids,
+            )
             await db.execute(
                 f"DELETE FROM marketing_contact_results WHERE client_id IN ({placeholders})",
                 client_ids,
@@ -303,6 +312,9 @@ async def list_clients(group_id: int) -> list[dict[str, Any]]:
             "created_at": row[22],
         })
 
+    for client in clients_map.values():
+        client["contacts"] = _filter_visible_contact_results(client["contacts"])
+
     return list(clients_map.values())
 
 
@@ -313,6 +325,8 @@ async def get_client(client_id: int) -> dict[str, Any] | None:
             """
             SELECT
                 c.id, c.group_id, c.name, c.extra_data, c.search_status,
+                c.error_message,
+                c.orchestration_state, c.orchestration_stage, c.orchestration_summary, c.current_run_id,
                 c.ig_handle, c.ig_profile_url, c.ig_last_scraped_at,
                 c.ig_post_scrape_status, c.ig_post_scrape_error, c.ig_post_scrape_last_attempt_at,
                 c.created_at,
@@ -332,6 +346,8 @@ async def get_client(client_id: int) -> dict[str, Any] | None:
 async def delete_client(client_id: int) -> bool:
     """Delete a client (cascade deletes results)."""
     async with aiosqlite.connect(DATABASE_PATH) as db:
+        await db.execute("DELETE FROM marketing_orchestration_evidence WHERE client_id = ?", (client_id,))
+        await db.execute("DELETE FROM marketing_orchestration_runs WHERE client_id = ?", (client_id,))
         await db.execute("DELETE FROM marketing_ig_posts WHERE client_id = ?", (client_id,))
         await db.execute("DELETE FROM marketing_ig_candidates WHERE client_id = ?", (client_id,))
         cursor = await db.execute("DELETE FROM marketing_clients WHERE id = ?", (client_id,))
@@ -347,6 +363,228 @@ async def update_client_search_status(client_id: int, status: str) -> None:
             (status, client_id),
         )
         await db.commit()
+
+
+async def update_client_orchestration_state(
+    client_id: int,
+    state: str,
+    *,
+    stage: str | None = None,
+    summary: dict[str, Any] | None = None,
+    current_run_id: int | None = None,
+) -> None:
+    """Persist orchestration state metadata on a marketing client."""
+    async with aiosqlite.connect(DATABASE_PATH) as db:
+        await db.execute(
+            """
+            UPDATE marketing_clients
+            SET orchestration_state = ?,
+                orchestration_stage = ?,
+                orchestration_summary = ?,
+                current_run_id = COALESCE(?, current_run_id)
+            WHERE id = ?
+            """,
+            (
+                state,
+                stage,
+                json.dumps(summary) if summary is not None else None,
+                current_run_id,
+                client_id,
+            ),
+        )
+        await db.commit()
+
+
+async def create_orchestration_run(
+    client_id: int,
+    group_id: int,
+    mode: str,
+    trigger_type: str,
+    *,
+    state: str = "queued",
+    current_stage: str | None = None,
+    plan: dict[str, Any] | None = None,
+) -> int:
+    """Create a new orchestration run for a marketing client."""
+    now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    async with aiosqlite.connect(DATABASE_PATH) as db:
+        cursor = await db.execute(
+            """
+            INSERT INTO marketing_orchestration_runs (
+                client_id, group_id, mode, trigger_type, state, current_stage, plan_json, started_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                client_id,
+                group_id,
+                mode,
+                trigger_type,
+                state,
+                current_stage,
+                json.dumps(plan) if plan else None,
+                now,
+            ),
+        )
+        await db.commit()
+        return int(cursor.lastrowid)
+
+
+async def update_orchestration_run(
+    run_id: int,
+    *,
+    state: str | None = None,
+    current_stage: str | None = None,
+    summary: dict[str, Any] | None = None,
+    error_message: str | None = None,
+    completed: bool = False,
+) -> None:
+    """Update the state of an orchestration run."""
+    fields: list[str] = []
+    params: list[Any] = []
+
+    if state is not None:
+        fields.append("state = ?")
+        params.append(state)
+    if current_stage is not None:
+        fields.append("current_stage = ?")
+        params.append(current_stage)
+    if summary is not None:
+        fields.append("summary_json = ?")
+        params.append(json.dumps(summary))
+    if error_message is not None:
+        fields.append("error_message = ?")
+        params.append(error_message)
+
+    if completed:
+        now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        async with aiosqlite.connect(DATABASE_PATH) as db:
+            cursor = await db.execute(
+                "SELECT started_at FROM marketing_orchestration_runs WHERE id = ?",
+                (run_id,),
+            )
+            row = await cursor.fetchone()
+            duration_seconds: float | None = None
+            if row and row[0]:
+                try:
+                    started_at = datetime.strptime(str(row[0])[:19], "%Y-%m-%d %H:%M:%S")
+                    completed_at = datetime.strptime(now, "%Y-%m-%d %H:%M:%S")
+                    duration_seconds = max((completed_at - started_at).total_seconds(), 0.0)
+                except ValueError:
+                    duration_seconds = None
+            fields.extend(["completed_at = ?", "duration_seconds = ?"])
+            params.extend([now, duration_seconds])
+            params.append(run_id)
+            await db.execute(
+                f"UPDATE marketing_orchestration_runs SET {', '.join(fields)} WHERE id = ?",
+                params,
+            )
+            await db.commit()
+        return
+
+    if not fields:
+        return
+
+    params.append(run_id)
+    async with aiosqlite.connect(DATABASE_PATH) as db:
+        await db.execute(
+            f"UPDATE marketing_orchestration_runs SET {', '.join(fields)} WHERE id = ?",
+            params,
+        )
+        await db.commit()
+
+
+async def add_orchestration_evidence(
+    run_id: int,
+    client_id: int,
+    stage: str,
+    evidence_type: str,
+    *,
+    source_type: str | None = None,
+    source_url: str | None = None,
+    value: str | None = None,
+    confidence: float = 0.0,
+    status: str = "observed",
+    reason: str | None = None,
+    payload: dict[str, Any] | list[Any] | None = None,
+) -> int:
+    """Persist a single evidence record for an orchestration run."""
+    async with aiosqlite.connect(DATABASE_PATH) as db:
+        cursor = await db.execute(
+            """
+            INSERT INTO marketing_orchestration_evidence (
+                run_id, client_id, stage, evidence_type, source_type, source_url,
+                value, confidence, status, reason, payload_json
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                run_id,
+                client_id,
+                stage,
+                evidence_type,
+                source_type,
+                source_url,
+                value,
+                confidence,
+                status,
+                reason,
+                json.dumps(payload) if payload is not None else None,
+            ),
+        )
+        await db.commit()
+        return int(cursor.lastrowid)
+
+
+async def list_orchestration_runs(client_id: int, limit: int = 20) -> list[dict[str, Any]]:
+    """Return recent orchestration runs for a client."""
+    async with aiosqlite.connect(DATABASE_PATH) as db:
+        cursor = await db.execute(
+            """
+            SELECT id, client_id, group_id, mode, trigger_type, state, current_stage,
+                   plan_json, summary_json, error_message, started_at, completed_at, duration_seconds
+            FROM marketing_orchestration_runs
+            WHERE client_id = ?
+            ORDER BY started_at DESC, id DESC
+            LIMIT ?
+            """,
+            (client_id, limit),
+        )
+        rows = await cursor.fetchall()
+    return [_row_to_orchestration_run(row) for row in rows]
+
+
+async def get_orchestration_run(run_id: int) -> dict[str, Any] | None:
+    """Return one orchestration run by id."""
+    async with aiosqlite.connect(DATABASE_PATH) as db:
+        cursor = await db.execute(
+            """
+            SELECT id, client_id, group_id, mode, trigger_type, state, current_stage,
+                   plan_json, summary_json, error_message, started_at, completed_at, duration_seconds
+            FROM marketing_orchestration_runs
+            WHERE id = ?
+            """,
+            (run_id,),
+        )
+        row = await cursor.fetchone()
+    if row is None:
+        return None
+    return _row_to_orchestration_run(row)
+
+
+async def list_orchestration_evidence(run_id: int) -> list[dict[str, Any]]:
+    """Return orchestration evidence rows for a run."""
+    async with aiosqlite.connect(DATABASE_PATH) as db:
+        cursor = await db.execute(
+            """
+            SELECT id, run_id, client_id, stage, evidence_type, source_type, source_url,
+                   value, confidence, status, reason, payload_json, created_at
+            FROM marketing_orchestration_evidence
+            WHERE run_id = ?
+            ORDER BY created_at ASC, id ASC
+            """,
+            (run_id,),
+        )
+        rows = await cursor.fetchall()
+    return [_row_to_orchestration_evidence(row) for row in rows]
 
 
 async def reset_client_search_state(client_id: int) -> None:
@@ -369,6 +607,10 @@ async def reset_client_search_state(client_id: int) -> None:
             UPDATE marketing_clients
             SET search_status = 'pending',
                 error_message = NULL,
+                orchestration_state = 'idle',
+                orchestration_stage = NULL,
+                orchestration_summary = NULL,
+                current_run_id = NULL,
                 ig_handle = NULL,
                 ig_profile_url = NULL,
                 ig_last_scraped_at = NULL,
@@ -408,6 +650,22 @@ async def save_client_instagram_profile(
             WHERE id = ?
             """,
             (ig_handle, ig_profile_url, client_id),
+        )
+        await db.commit()
+
+
+async def clear_client_instagram_profile(client_id: int) -> None:
+    """Clear the resolved Instagram profile for a marketing client."""
+    async with aiosqlite.connect(DATABASE_PATH) as db:
+        await db.execute(
+            """
+            UPDATE marketing_clients
+            SET ig_handle = NULL,
+                ig_profile_url = NULL,
+                ig_last_scraped_at = NULL
+            WHERE id = ?
+            """,
+            (client_id,),
         )
         await db.commit()
 
@@ -456,6 +714,103 @@ async def get_selected_instagram_handles_for_client(client_id: int) -> list[str]
         if row and row[0]:
             return [row[0]]
         return []
+
+
+async def get_client_ig_posts(client_id: int) -> list[dict[str, Any]]:
+    """Return stored Instagram posts for one marketing client."""
+    async with aiosqlite.connect(DATABASE_PATH) as db:
+        cursor = await db.execute(
+            """
+            SELECT id, client_id, ig_handle, post_url, image_url, caption,
+                   post_timestamp, source, created_at
+            FROM marketing_ig_posts
+            WHERE client_id = ?
+            ORDER BY COALESCE(post_timestamp, created_at) DESC, created_at DESC
+            """,
+            (client_id,),
+        )
+        rows = await cursor.fetchall()
+
+    return [
+        {
+            "id": row[0],
+            "client_id": row[1],
+            "ig_handle": row[2],
+            "post_url": row[3],
+            "image_url": row[4],
+            "caption": row[5],
+            "post_timestamp": row[6],
+            "source": row[7],
+            "created_at": row[8],
+        }
+        for row in rows
+    ]
+
+
+async def clear_client_contact_results_by_source_types(
+    client_id: int,
+    source_types: list[str],
+) -> None:
+    """Delete contact results and dependent handoffs for the given client/source types."""
+    normalized_source_types = [source_type for source_type in source_types if source_type]
+    if not normalized_source_types:
+        return
+
+    placeholders = ",".join("?" * len(normalized_source_types))
+    params: list[Any] = [client_id, *normalized_source_types]
+
+    async with aiosqlite.connect(DATABASE_PATH) as db:
+        await db.execute(
+            f"""
+            DELETE FROM marketing_contact_handoffs
+            WHERE result_id IN (
+                SELECT id FROM marketing_contact_results
+                WHERE client_id = ? AND source_type IN ({placeholders})
+            )
+            """,
+            params,
+        )
+        await db.execute(
+            f"""
+            DELETE FROM marketing_contact_results
+            WHERE client_id = ? AND source_type IN ({placeholders})
+            """,
+            params,
+        )
+        await db.commit()
+
+
+async def delete_client_contact_results_by_ids(
+    client_id: int,
+    result_ids: list[int],
+) -> None:
+    """Delete specific contact results and dependent handoffs for a client."""
+    normalized_result_ids = [int(result_id) for result_id in result_ids]
+    if not normalized_result_ids:
+        return
+
+    placeholders = ",".join("?" * len(normalized_result_ids))
+    params: list[Any] = [client_id, *normalized_result_ids]
+
+    async with aiosqlite.connect(DATABASE_PATH) as db:
+        await db.execute(
+            f"""
+            DELETE FROM marketing_contact_handoffs
+            WHERE result_id IN (
+                SELECT id FROM marketing_contact_results
+                WHERE client_id = ? AND id IN ({placeholders})
+            )
+            """,
+            params,
+        )
+        await db.execute(
+            f"""
+            DELETE FROM marketing_contact_results
+            WHERE client_id = ? AND id IN ({placeholders})
+            """,
+            params,
+        )
+        await db.commit()
 
 
 async def replace_client_ig_posts(
@@ -598,7 +953,7 @@ async def get_contact_results_for_client(client_id: int) -> list[dict[str, Any]]
             (client_id,),
         )
         rows = await cursor.fetchall()
-        return [_row_to_contact_result(r) for r in rows]
+        return _filter_visible_contact_results([_row_to_contact_result(r) for r in rows])
 
 
 async def update_contact_result(
@@ -637,17 +992,19 @@ async def get_group_stats(group_id: int) -> dict[str, int]:
         cursor = await db.execute(
             """
             SELECT
-                COUNT(c.id) AS total,
-                SUM(CASE WHEN c.search_status = 'found' THEN 1 ELSE 0 END) AS found,
-                SUM(CASE WHEN c.search_status = 'not_found' THEN 1 ELSE 0 END) AS not_found,
-                SUM(CASE WHEN c.search_status = 'error' THEN 1 ELSE 0 END) AS error_count,
-                SUM(CASE WHEN c.search_status IN ('pending','searching') THEN 1 ELSE 0 END) AS pending,
-                SUM(CASE WHEN r.is_approved = 1 THEN 1 ELSE 0 END) AS approved
-            FROM marketing_clients c
-            LEFT JOIN marketing_contact_results r ON r.client_id = c.id
-            WHERE c.group_id = ?
+                (SELECT COUNT(*) FROM marketing_clients WHERE group_id = ?) AS total,
+                (SELECT COUNT(*) FROM marketing_clients WHERE group_id = ? AND search_status = 'found') AS found,
+                (SELECT COUNT(*) FROM marketing_clients WHERE group_id = ? AND search_status = 'not_found') AS not_found,
+                (SELECT COUNT(*) FROM marketing_clients WHERE group_id = ? AND search_status = 'error') AS error_count,
+                (SELECT COUNT(*) FROM marketing_clients WHERE group_id = ? AND search_status IN ('pending','searching')) AS pending,
+                (
+                    SELECT COUNT(*)
+                    FROM marketing_contact_results r
+                    JOIN marketing_clients c ON c.id = r.client_id
+                    WHERE c.group_id = ? AND r.is_approved = 1
+                ) AS approved
             """,
-            (group_id,),
+            (group_id, group_id, group_id, group_id, group_id, group_id),
         )
         row = await cursor.fetchone()
         return {
@@ -679,18 +1036,20 @@ async def get_group_search_status(group_id: int) -> dict[str, Any]:
         cursor = await db.execute(
             """
             SELECT
-                COUNT(*) AS total,
-                SUM(CASE WHEN c.search_status = 'pending' THEN 1 ELSE 0 END) AS pending,
-                SUM(CASE WHEN c.search_status = 'searching' THEN 1 ELSE 0 END) AS searching,
-                SUM(CASE WHEN c.search_status = 'found' THEN 1 ELSE 0 END) AS found,
-                SUM(CASE WHEN c.search_status = 'not_found' THEN 1 ELSE 0 END) AS not_found,
-                SUM(CASE WHEN c.search_status = 'error' THEN 1 ELSE 0 END) AS error_count,
-                SUM(CASE WHEN r.is_approved = 1 THEN 1 ELSE 0 END) AS approved
-            FROM marketing_clients c
-            LEFT JOIN marketing_contact_results r ON r.client_id = c.id
-            WHERE c.group_id = ?
+                (SELECT COUNT(*) FROM marketing_clients WHERE group_id = ?) AS total,
+                (SELECT COUNT(*) FROM marketing_clients WHERE group_id = ? AND search_status = 'pending') AS pending,
+                (SELECT COUNT(*) FROM marketing_clients WHERE group_id = ? AND search_status = 'searching') AS searching,
+                (SELECT COUNT(*) FROM marketing_clients WHERE group_id = ? AND search_status = 'found') AS found,
+                (SELECT COUNT(*) FROM marketing_clients WHERE group_id = ? AND search_status = 'not_found') AS not_found,
+                (SELECT COUNT(*) FROM marketing_clients WHERE group_id = ? AND search_status = 'error') AS error_count,
+                (
+                    SELECT COUNT(*)
+                    FROM marketing_contact_results r
+                    JOIN marketing_clients c ON c.id = r.client_id
+                    WHERE c.group_id = ? AND r.is_approved = 1
+                ) AS approved
             """,
-            (group_id,),
+            (group_id, group_id, group_id, group_id, group_id, group_id, group_id),
         )
         row = await cursor.fetchone()
 
@@ -807,16 +1166,90 @@ def _row_to_client_out(row: tuple[Any, ...]) -> dict[str, Any]:
         "name": row[2],
         "extra_data": json.loads(row[3]) if row[3] else None,
         "search_status": row[4],
-        "ig_handle": row[5],
-        "ig_profile_url": row[6],
-        "ig_last_scraped_at": row[7],
-        "ig_post_scrape_status": row[8],
-        "ig_post_scrape_error": row[9],
-        "ig_post_scrape_last_attempt_at": row[10],
-        "created_at": row[11],
-        "contact_count": row[12] or 0,
-        "ig_post_count": row[13] or 0,
+        "error_message": row[5],
+        "orchestration_state": row[6] or "idle",
+        "orchestration_stage": row[7],
+        "orchestration_summary": json.loads(row[8]) if row[8] else None,
+        "current_run_id": row[9],
+        "ig_handle": row[10],
+        "ig_profile_url": row[11],
+        "ig_last_scraped_at": row[12],
+        "ig_post_scrape_status": row[13],
+        "ig_post_scrape_error": row[14],
+        "ig_post_scrape_last_attempt_at": row[15],
+        "created_at": row[16],
+        "contact_count": row[17] or 0,
+        "ig_post_count": row[18] or 0,
     }
+
+
+def _contact_result_source_signature(contact: dict[str, Any]) -> tuple[str, str]:
+    source_type = str(contact.get("source_type") or "").strip().lower()
+    source_url = str(contact.get("source_url") or "").strip()
+    host = urlparse(source_url).netloc.lower().removeprefix("www.")
+    return (source_type, host)
+
+
+def _contact_result_source_trust(contact: dict[str, Any]) -> int:
+    from . import search as mkt_search
+
+    value = str(contact.get("edited_value") or contact.get("value") or "").strip()
+    result = mkt_search.ContactResult(
+        contact_type=str(contact.get("contact_type") or "").strip(),
+        value=value,
+        source_url=str(contact.get("source_url") or "").strip() or None,
+        source_type=str(contact.get("source_type") or "").strip() or None,
+        confidence=float(contact.get("confidence") or 0.0),
+    )
+    return mkt_search._contact_source_trust(result)
+
+
+def _filter_visible_contact_results(contacts: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    from . import search as mkt_search
+
+    if not contacts:
+        return contacts
+
+    support_map: dict[tuple[str, str], set[tuple[str, str]]] = {}
+    sanitized: list[dict[str, Any]] = []
+    for contact in contacts:
+        normalized = dict(contact)
+        normalized["value"] = str(contact.get("edited_value") or contact.get("value") or "").strip()
+        normalized["source_url"] = str(contact.get("source_url") or "").strip()
+        normalized["source_type"] = str(contact.get("source_type") or "").strip()
+
+        if not normalized["value"]:
+            continue
+        if mkt_search._should_prune_persisted_contact(normalized):
+            continue
+
+        key = (str(normalized.get("contact_type") or ""), normalized["value"])
+        support_map.setdefault(key, set()).add(_contact_result_source_signature(normalized))
+        sanitized.append(normalized)
+
+    trusted_types = {
+        str(contact.get("contact_type") or "")
+        for contact in sanitized
+        if _contact_result_source_trust(contact) >= 3
+    }
+
+    visible: list[dict[str, Any]] = []
+    for contact in sanitized:
+        contact_type = str(contact.get("contact_type") or "")
+        value = str(contact.get("value") or "")
+        support_count = len(support_map.get((contact_type, value), set()))
+        trust = _contact_result_source_trust(contact)
+
+        if trust == 0:
+            continue
+        if trust < 3 and contact_type in trusted_types:
+            continue
+        if trust == 1 and support_count < 2:
+            continue
+
+        visible.append(contact)
+
+    return visible
 
 
 def _row_to_contact_result(row: tuple[Any, ...]) -> dict[str, Any]:
@@ -832,4 +1265,40 @@ def _row_to_contact_result(row: tuple[Any, ...]) -> dict[str, Any]:
         "is_selected": bool(row[8]),
         "edited_value": row[9],
         "created_at": row[10],
+    }
+
+
+def _row_to_orchestration_run(row: tuple[Any, ...]) -> dict[str, Any]:
+    return {
+        "id": row[0],
+        "client_id": row[1],
+        "group_id": row[2],
+        "mode": row[3],
+        "trigger_type": row[4],
+        "state": row[5],
+        "current_stage": row[6],
+        "plan": json.loads(row[7]) if row[7] else None,
+        "summary": json.loads(row[8]) if row[8] else None,
+        "error_message": row[9],
+        "started_at": row[10],
+        "completed_at": row[11],
+        "duration_seconds": row[12],
+    }
+
+
+def _row_to_orchestration_evidence(row: tuple[Any, ...]) -> dict[str, Any]:
+    return {
+        "id": row[0],
+        "run_id": row[1],
+        "client_id": row[2],
+        "stage": row[3],
+        "evidence_type": row[4],
+        "source_type": row[5],
+        "source_url": row[6],
+        "value": row[7],
+        "confidence": row[8] or 0.0,
+        "status": row[9],
+        "reason": row[10],
+        "payload": json.loads(row[11]) if row[11] else None,
+        "created_at": row[12],
     }

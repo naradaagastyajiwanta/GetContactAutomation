@@ -102,6 +102,36 @@ async def list_clients(request: Request, group_id: int):
     return {"success": True, "clients": clients}
 
 
+@router.get("/clients/{client_id}/orchestration", response_model=dict)
+async def get_client_orchestration(request: Request, client_id: int):
+    """Get orchestration state and recent runs for a marketing client."""
+    await require_permission(request, "marketing.view")
+    client = await mkt.get_client(client_id)
+    if client is None:
+        raise HTTPException(status_code=404, detail="Client not found")
+    runs = await mkt.list_orchestration_runs(client_id)
+    evidence: list[dict] = []
+    if client.get("current_run_id"):
+        evidence = await mkt.list_orchestration_evidence(int(client["current_run_id"]))
+    return {
+        "success": True,
+        "client": client,
+        "runs": runs,
+        "current_evidence": evidence,
+    }
+
+
+@router.get("/orchestration/runs/{run_id}", response_model=dict)
+async def get_orchestration_run(request: Request, run_id: int):
+    """Get one orchestration run with all evidence rows."""
+    await require_permission(request, "marketing.view")
+    run = await mkt.get_orchestration_run(run_id)
+    if run is None:
+        raise HTTPException(status_code=404, detail="Orchestration run not found")
+    evidence = await mkt.list_orchestration_evidence(run_id)
+    return {"success": True, "run": run, "evidence": evidence}
+
+
 @router.post("/clients/{client_id}/instagram/retry", response_model=dict)
 async def retry_client_instagram_scrape(request: Request, client_id: int):
     """Retry Instagram post scraping for one marketing client."""
@@ -112,6 +142,22 @@ async def retry_client_instagram_scrape(request: Request, client_id: int):
 
     try:
         result = await mkt_search.retry_client_instagram_scrape(client_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    return {"success": True, **result}
+
+
+@router.post("/clients/{client_id}/instagram/contacts/retry", response_model=dict)
+async def retry_client_instagram_contact_extraction(request: Request, client_id: int):
+    """Re-extract contacts from stored Instagram posts for one marketing client."""
+    await require_permission(request, "marketing.manage")
+    client = await mkt.get_client(client_id)
+    if client is None:
+        raise HTTPException(status_code=404, detail="Client not found")
+
+    try:
+        result = await mkt_search.retry_client_instagram_contact_extraction(client_id)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
@@ -131,6 +177,8 @@ async def retry_client_search(
         raise HTTPException(status_code=404, detail="Client not found")
     if client["search_status"] == "searching":
         raise HTTPException(status_code=400, detail="Client is already being searched")
+    if client.get("orchestration_state") in {"planning", "collecting", "verifying", "resolving", "deciding", "repairing"}:
+        raise HTTPException(status_code=400, detail="Client orchestration already in progress")
 
     await mkt.reset_client_search_state(client_id)
     await mkt.update_group_status(client["group_id"], "searching")

@@ -816,6 +816,10 @@ CREATE TABLE IF NOT EXISTS marketing_clients (
     extra_data TEXT,
     search_status TEXT DEFAULT 'pending',
     error_message TEXT,
+    orchestration_state TEXT DEFAULT 'idle',
+    orchestration_stage TEXT,
+    orchestration_summary TEXT,
+    current_run_id INTEGER,
     ig_handle TEXT,
     ig_profile_url TEXT,
     ig_last_scraped_at DATETIME,
@@ -887,11 +891,44 @@ CREATE TABLE IF NOT EXISTS marketing_ig_candidates (
     created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
     UNIQUE(client_id, handle)
 );
+
+CREATE TABLE IF NOT EXISTS marketing_orchestration_runs (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    client_id INTEGER NOT NULL REFERENCES marketing_clients(id) ON DELETE CASCADE,
+    group_id INTEGER NOT NULL REFERENCES marketing_groups(id) ON DELETE CASCADE,
+    mode TEXT NOT NULL,
+    trigger_type TEXT NOT NULL DEFAULT 'manual',
+    state TEXT NOT NULL DEFAULT 'queued',
+    current_stage TEXT,
+    plan_json TEXT,
+    summary_json TEXT,
+    error_message TEXT,
+    started_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    completed_at DATETIME,
+    duration_seconds REAL
+);
+
+CREATE TABLE IF NOT EXISTS marketing_orchestration_evidence (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    run_id INTEGER NOT NULL REFERENCES marketing_orchestration_runs(id) ON DELETE CASCADE,
+    client_id INTEGER NOT NULL REFERENCES marketing_clients(id) ON DELETE CASCADE,
+    stage TEXT NOT NULL,
+    evidence_type TEXT NOT NULL,
+    source_type TEXT,
+    source_url TEXT,
+    value TEXT,
+    confidence REAL DEFAULT 0.0,
+    status TEXT DEFAULT 'observed',
+    reason TEXT,
+    payload_json TEXT,
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+);
 """
 
 _INDEXES_MARKETING = """
 CREATE INDEX IF NOT EXISTS idx_mc_group ON marketing_clients(group_id);
 CREATE INDEX IF NOT EXISTS idx_mc_status ON marketing_clients(search_status);
+CREATE INDEX IF NOT EXISTS idx_mc_orchestration_state ON marketing_clients(orchestration_state);
 CREATE INDEX IF NOT EXISTS idx_mcr_client ON marketing_contact_results(client_id);
 CREATE INDEX IF NOT EXISTS idx_mcr_type ON marketing_contact_results(contact_type);
 CREATE INDEX IF NOT EXISTS idx_mch_group ON marketing_contact_handoffs(group_id);
@@ -900,6 +937,11 @@ CREATE INDEX IF NOT EXISTS idx_mip_client ON marketing_ig_posts(client_id);
 CREATE INDEX IF NOT EXISTS idx_mip_handle ON marketing_ig_posts(ig_handle);
 CREATE INDEX IF NOT EXISTS idx_mic_client ON marketing_ig_candidates(client_id);
 CREATE INDEX IF NOT EXISTS idx_mic_selected ON marketing_ig_candidates(client_id, is_selected, rank_order);
+CREATE INDEX IF NOT EXISTS idx_mor_client ON marketing_orchestration_runs(client_id, started_at DESC);
+CREATE INDEX IF NOT EXISTS idx_mor_group ON marketing_orchestration_runs(group_id, started_at DESC);
+CREATE INDEX IF NOT EXISTS idx_mor_state ON marketing_orchestration_runs(state, current_stage);
+CREATE INDEX IF NOT EXISTS idx_moe_run ON marketing_orchestration_evidence(run_id, stage, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_moe_client ON marketing_orchestration_evidence(client_id, stage, created_at DESC);
 """
 
 # ---------------------------------------------------------------------------
@@ -939,7 +981,6 @@ async def init_db() -> None:
         await db.executescript(_DDL_UNIVERSITY_GROUPS)
         await db.executescript(_INDEXES_UNIVERSITY_GROUPS)
         await db.executescript(_DDL_MARKETING)
-        await db.executescript(_INDEXES_MARKETING)
 
         # Migration: add error_message column to marketing_clients if missing
         cursor = await db.execute("PRAGMA table_info(marketing_clients)")
@@ -947,6 +988,22 @@ async def init_db() -> None:
         if "error_message" not in columns:
             await db.execute(
                 "ALTER TABLE marketing_clients ADD COLUMN error_message TEXT"
+            )
+        if "orchestration_state" not in columns:
+            await db.execute(
+                "ALTER TABLE marketing_clients ADD COLUMN orchestration_state TEXT DEFAULT 'idle'"
+            )
+        if "orchestration_stage" not in columns:
+            await db.execute(
+                "ALTER TABLE marketing_clients ADD COLUMN orchestration_stage TEXT"
+            )
+        if "orchestration_summary" not in columns:
+            await db.execute(
+                "ALTER TABLE marketing_clients ADD COLUMN orchestration_summary TEXT"
+            )
+        if "current_run_id" not in columns:
+            await db.execute(
+                "ALTER TABLE marketing_clients ADD COLUMN current_run_id INTEGER"
             )
         if "ig_handle" not in columns:
             await db.execute(
@@ -979,6 +1036,8 @@ async def init_db() -> None:
             await db.execute(
                 "ALTER TABLE marketing_ig_candidates ADD COLUMN affinity_score REAL DEFAULT 0.0"
             )
+
+        await db.executescript(_INDEXES_MARKETING)
 
         async def _rebuild_email_cache_table_if_needed(table_name: str, recreate_script: str) -> None:
             cursor = await db.execute(f"PRAGMA table_info({table_name})")

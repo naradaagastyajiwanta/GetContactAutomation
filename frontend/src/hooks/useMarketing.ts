@@ -8,6 +8,7 @@ import {
   addMarketingClient,
   deleteMarketingClient,
   retryMarketingClientInstagramScrape,
+  retryMarketingClientInstagramContactExtraction,
   retryMarketingClientSearch,
   updateMarketingContact,
   bulkApproveGroupContacts,
@@ -113,6 +114,18 @@ export function useRetryMarketingClientInstagramScrape() {
     mutationFn: ({ clientId }: { clientId: number }) =>
       retryMarketingClientInstagramScrape(clientId),
     onSuccess: (_data, { clientId: _clientId, groupId }: { clientId: number; groupId: number }) => {
+      qc.invalidateQueries({ queryKey: mkKeys.groupClients(groupId) })
+      qc.invalidateQueries({ queryKey: mkKeys.groupDetail(groupId) })
+    },
+  })
+}
+
+export function useRetryMarketingClientInstagramContactExtraction() {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: ({ clientId }: { clientId: number }) =>
+      retryMarketingClientInstagramContactExtraction(clientId),
+    onSuccess: (_data, { groupId }: { clientId: number; groupId: number }) => {
       qc.invalidateQueries({ queryKey: mkKeys.groupClients(groupId) })
       qc.invalidateQueries({ queryKey: mkKeys.groupDetail(groupId) })
     },

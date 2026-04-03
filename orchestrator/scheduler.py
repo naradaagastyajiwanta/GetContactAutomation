@@ -777,6 +777,20 @@ def reschedule_outreach_jobs() -> None:
     log.info("Rescheduled outreach jobs to hours %s", hour_range)
 
 
+async def _run_marketing_search_queue():
+    """Run marketing client orchestration for groups that still have pending clients."""
+    from orchestrator.marketing.search import process_search_queue
+    from orchestrator.marketing.groups import get_group_search_status, list_groups
+
+    groups = await list_groups()
+    for group in groups:
+        if group["status"] not in {"draft", "searching"}:
+            continue
+        status = await get_group_search_status(group["id"])
+        if status["pending"] > 0:
+            asyncio.create_task(process_search_queue(group["id"]))
+
+
 def setup_scheduler():
     """Configure and start the APScheduler."""
     hour_range = _outreach_hour_range()
@@ -946,6 +960,18 @@ def setup_scheduler():
                 misfire_grace_time=300,
             )
 
+    scheduler.add_job(
+        _run_marketing_search_queue,
+        "cron",
+        hour="8-22",
+        minute=0,
+        timezone=WIB,
+        id="marketing_search_queue",
+        replace_existing=True,
+        max_instances=1,
+        misfire_grace_time=600,
+    )
+
     # DMS Audiensi Research — daily H-1 research via Gemini AI
     if cfg.get("DMS_RESEARCH_ENABLED", False):
         research_hour = cfg.get("DMS_RESEARCH_HOUR", 18)
@@ -969,32 +995,6 @@ def setup_scheduler():
             minute=30,
             timezone=WIB,
             id="dms_research_safety_check",
-            replace_existing=True,
-            max_instances=1,
-            misfire_grace_time=600,
-        )
-
-        # Marketing client search — run every hour, process all groups with pending clients
-        async def _run_marketing_search_queue():
-            # Lazy import to avoid circular imports
-            from orchestrator.marketing.search import process_search_queue
-            from orchestrator.marketing.groups import get_group_search_status, list_groups
-
-            groups = await list_groups()
-            for g in groups:
-                if g["status"] == "draft":
-                    # Auto-start search for draft groups with pending clients
-                    status = await get_group_search_status(g["id"])
-                    if status["pending"] > 0:
-                        asyncio.create_task(process_search_queue(g["id"]))
-
-        scheduler.add_job(
-            _run_marketing_search_queue,
-            "cron",
-            hour="8-22",  # Only during active hours
-            minute=0,
-            timezone=WIB,
-            id="marketing_search_queue",
             replace_existing=True,
             max_instances=1,
             misfire_grace_time=600,

@@ -72,6 +72,20 @@ _CORPORATE_SOURCE_BONUS = {
 }
 _CORPORATE_MAX_CANDIDATES = 8
 _CORPORATE_MAX_SELECTED_HANDLES = 3
+_MARKETING_BLOCKED_CONTACT_SOURCE_DOMAINS = {
+    "signalhire.com",
+    "locallead.ai",
+    "rocketreach.co",
+    "rocketreach.io",
+    "zoominfo.com",
+    "apollo.io",
+    "lusha.com",
+    "seamless.ai",
+    "contactout.com",
+    "aeroleads.com",
+    "skrapp.io",
+    "growjo.com",
+}
 _INSTAGRAM_URL_PATTERN = re.compile(
     r'https?:\\?/\\?/(?:www\\.)?instagram\.com\\?/[^\s"\'<>\\]+|'
     r'https?://(?:www\.)?instagram\.com/[^\s"\'<>]+|'
@@ -86,32 +100,41 @@ _LANDLINE_PREFIXES = (
     "038", "041", "042", "043", "044", "045", "046", "047",
     "048", "051", "052", "053", "054", "055", "061", "062",
     "063", "064", "065", "071", "072", "073", "074", "075",
-    "076", "077", "078", "079", "0811", "0812", "0813", "0814",
-    "0815", "0816", "0817", "0818", "0819", "0821", "0822",
-    "0823", "0824", "0825", "0826", "0827", "0828", "0829",
-    "0851", "0852", "0853", "0854", "0855", "0856", "0857",
-    "0858", "0859", "0861", "0862", "0863", "0864", "0865",
-    "0866", "0867", "0868", "0869", "0895", "0896", "0897",
-    "0898", "0899",
+    "076", "077", "078", "079",
 )
+
+_HIGH_TRUST_CONTACT_SOURCE_TYPES = {
+    "website",
+    "website_social",
+    "ig_post",
+    "ig_caption",
+}
+
+_MEDIUM_TRUST_CONTACT_SOURCE_TYPES = {
+    "ddg_result_page",
+    "web_mention",
+}
 
 
 def is_mobile_phone(phone: str) -> bool:
     """Return True if phone is a mobile Indonesian number (not landline)."""
     digits = re.sub(r"\D", "", phone)
-    # Mobile: starts with 08, +628, 628 (10-14 digits total)
     if len(digits) < 10 or len(digits) > 14:
         return False
-    if digits.startswith("62") and len(digits) == 12:
-        return True  # +62 8xx
-    if digits.startswith("0") and digits[1] == "8":
-        return True  # 08xx
-    if digits.startswith("8") and len(digits) == 9:
-        return True  # 8xx (without leading 0)
-    # Landline checks
+
+    normalized = digits
+    if digits.startswith("0"):
+        normalized = f"62{digits[1:]}"
+    elif digits.startswith("8"):
+        normalized = f"62{digits}"
+
+    if not normalized.startswith("628"):
+        return False
+
     for prefix in _LANDLINE_PREFIXES:
         if digits.startswith(prefix) and len(digits) >= 10:
             return False
+
     return True
 
 
@@ -166,6 +189,78 @@ def _is_likely_official_company_domain(company_name: str, url: str) -> bool:
         return True
 
     return False
+
+
+def _is_blocked_marketing_contact_source(url: str) -> bool:
+    host = urlparse(url).netloc.lower().removeprefix("www.")
+    if not host:
+        return False
+    return any(host == blocked or host.endswith(f".{blocked}") for blocked in _MARKETING_BLOCKED_CONTACT_SOURCE_DOMAINS)
+
+
+def _is_blocked_marketing_email(email: str) -> bool:
+    _, _, domain = (email or "").strip().lower().partition("@")
+    if not domain:
+        return False
+    return any(domain == blocked or domain.endswith(f".{blocked}") for blocked in _MARKETING_BLOCKED_CONTACT_SOURCE_DOMAINS)
+
+
+def _should_prune_persisted_contact(contact: dict[str, Any]) -> bool:
+    source_url = str(contact.get("source_url") or "").strip()
+    value = str(contact.get("edited_value") or contact.get("value") or "").strip()
+    contact_type = str(contact.get("contact_type") or "").strip()
+
+    if source_url and _is_blocked_marketing_contact_source(source_url):
+        return True
+
+    if contact_type == "email" and value and _is_blocked_marketing_email(value):
+        return True
+
+    if contact_type == "wa_phone" and value and not is_mobile_phone(value):
+        return True
+
+    return False
+
+
+async def _prune_stale_client_contacts(client_id: int) -> int:
+    from . import groups as mkt
+
+    contacts = await mkt.get_contact_results_for_client(client_id)
+    stale_contact_ids = [
+        int(contact["id"])
+        for contact in contacts
+        if contact.get("id") is not None and _should_prune_persisted_contact(contact)
+    ]
+    if not stale_contact_ids:
+        return 0
+
+    await mkt.delete_client_contact_results_by_ids(client_id, stale_contact_ids)
+    return len(stale_contact_ids)
+
+
+def _contact_source_signature(result: "ContactResult") -> tuple[str, str]:
+    source_type = (result.source_type or "").strip().lower()
+    host = urlparse((result.source_url or "").strip()).netloc.lower().removeprefix("www.")
+    return (source_type, host)
+
+
+def _contact_source_trust(result: "ContactResult") -> int:
+    source_type = (result.source_type or "").strip().lower()
+    source_url = (result.source_url or "").strip()
+
+    if source_url and _is_blocked_marketing_contact_source(source_url):
+        return 0
+
+    if source_type in _HIGH_TRUST_CONTACT_SOURCE_TYPES:
+        return 3
+
+    if source_type in _MEDIUM_TRUST_CONTACT_SOURCE_TYPES:
+        return 2
+
+    if source_type:
+        return 1
+
+    return 0
 
 
 def _build_company_search_aliases(company_name: str) -> list[str]:
@@ -752,6 +847,9 @@ class SearchDependencyError(RuntimeError):
     """Raised when a required external search backend is unavailable."""
 
 
+_MARKETING_MIN_POSTS_PER_CLIENT = 50
+
+
 def _results_from_page_content(
     *,
     html: str,
@@ -915,17 +1013,55 @@ async def _extract_marketing_contacts_from_posts(posts: list[dict]) -> list[Cont
     return _dedupe_results(results)
 
 
+async def _replace_ig_contact_results_for_client(
+    client_id: int,
+    contacts: list[ContactResult],
+) -> int:
+    from . import groups as mkt
+
+    await mkt.clear_client_contact_results_by_source_types(client_id, ["ig_post", "ig_caption"])
+
+    inserted_contacts = 0
+    for result in contacts:
+        await mkt.upsert_contact_result(
+            client_id=client_id,
+            contact_type=result.contact_type,
+            value=result.value,
+            source_url=result.source_url,
+            source_type=result.source_type,
+            confidence=result.confidence,
+        )
+        inserted_contacts += 1
+
+        if result.pic_name:
+            await mkt.upsert_contact_result(
+                client_id=client_id,
+                contact_type="pic_name",
+                value=result.pic_name,
+                source_url=result.source_url or "",
+                source_type=result.source_type or "",
+                confidence=result.confidence,
+            )
+
+    return inserted_contacts
+
+
 def _scrape_instagram_posts_for_handles(handles: list[str], primary_handle: str | None = None) -> tuple[list[dict], str | None]:
     all_posts: list[dict] = []
     seen_post_urls: set[str] = set()
     diagnostics_by_handle: dict[str, str] = {}
+    target_post_count = _MARKETING_MIN_POSTS_PER_CLIENT
 
     for handle in handles:
         clean_handle = (handle or "").strip()
         if not clean_handle:
             continue
 
-        max_posts = 6 if clean_handle == primary_handle else 4
+        remaining_target = max(target_post_count - len(all_posts), 0)
+        if remaining_target <= 0:
+            break
+
+        max_posts = remaining_target if clean_handle == primary_handle else max(remaining_target, 12)
         posts, diagnostics = scrape_ig_posts_with_fallback(
             clean_handle,
             max_posts,
@@ -942,6 +1078,9 @@ def _scrape_instagram_posts_for_handles(handles: list[str], primary_handle: str 
                 seen_post_urls.add(post_url)
             post["ig_handle"] = clean_handle
             all_posts.append(post)
+
+        if len(all_posts) >= target_post_count:
+            break
 
     if all_posts:
         return all_posts, None
@@ -1010,109 +1149,59 @@ async def ig_discovery(client_name: str) -> InstagramDiscoveryResult:
     )
 
 
-async def retry_client_instagram_scrape(client_id: int) -> dict[str, Any]:
-    """Retry Instagram post scraping for a single marketing client without rerunning the whole group."""
-    from . import groups as mkt
+async def ig_handle_audit_discovery(client_name: str) -> InstagramDiscoveryResult:
+    """Resolve and rank Instagram handles without scraping posts."""
+    candidates = await _evaluate_corporate_ig_candidates(client_name)
+    selected_candidates = [candidate for candidate in candidates if candidate.get("is_selected")]
+    primary_candidate = next((candidate for candidate in candidates if candidate.get("is_primary")), None)
 
-    client = await mkt.get_client(client_id)
-    if client is None:
-        raise ValueError("Client not found")
-
-    handles = await mkt.get_selected_instagram_handles_for_client(client_id)
-    if not handles:
-        raise ValueError("No selected Instagram handle available for retry")
-
-    primary_handle = handles[0]
-    await mkt.update_client_ig_post_scrape_diagnostic(client_id, "scraping", None)
-    try:
-        loop = asyncio.get_running_loop()
-        posts, scrape_error = await loop.run_in_executor(
-            None,
-            partial(_scrape_instagram_posts_for_handles, handles, primary_handle),
+    if not selected_candidates:
+        return InstagramDiscoveryResult(
+            candidates=candidates,
+            scrape_status="not_found",
+            scrape_error="No Instagram candidate matched strongly enough for audit persistence",
         )
 
-        if posts:
-            await mkt.replace_client_ig_posts(client_id, primary_handle, posts)
-            contacts = await _extract_marketing_contacts_from_posts(posts)
-            inserted_contacts = 0
-            for result in contacts:
-                await mkt.upsert_contact_result(
-                    client_id=client_id,
-                    contact_type=result.contact_type,
-                    value=result.value,
-                    source_url=result.source_url,
-                    source_type=result.source_type,
-                    confidence=result.confidence,
-                )
-                inserted_contacts += 1
-                if result.pic_name:
-                    await mkt.upsert_contact_result(
-                        client_id=client_id,
-                        contact_type="pic_name",
-                        value=result.pic_name,
-                        source_url=result.source_url or "",
-                        source_type=result.source_type or "",
-                        confidence=result.confidence,
-                    )
+    return InstagramDiscoveryResult(
+        handle=primary_candidate.get("handle") if primary_candidate else None,
+        profile_url=primary_candidate.get("url") if primary_candidate else None,
+        candidates=candidates,
+        scrape_status="audit_only",
+        scrape_error="Instagram post scrape skipped because website already produced the required contact set",
+    )
 
-            await mkt.update_client_ig_post_scrape_diagnostic(client_id, "success", None)
-            return {
-                "client_id": client_id,
-                "status": "success",
-                "handles": handles,
-                "posts": len(posts),
-                "contacts_added": inserted_contacts,
-                "message": f"Scraped {len(posts)} Instagram post(s)",
-            }
 
-        diagnostic = scrape_error or _build_ig_scrape_diagnostic(primary_handle)
-        await mkt.update_client_ig_post_scrape_diagnostic(client_id, "empty", diagnostic)
-        return {
-            "client_id": client_id,
-            "status": "empty",
-            "handles": handles,
-            "posts": 0,
-            "contacts_added": 0,
-            "message": diagnostic,
-        }
-    except Exception as exc:
-        diagnostic = str(exc)[:500] or type(exc).__name__
-        await mkt.update_client_ig_post_scrape_diagnostic(client_id, "failed", diagnostic)
-        raise
+async def retry_client_instagram_scrape(client_id: int) -> dict[str, Any]:
+    """Retry Instagram post scraping for a single marketing client without rerunning the whole group."""
+    from . import orchestration as mkt_orchestration
+
+    return await mkt_orchestration.run_client_orchestration(
+        client_id,
+        mode="instagram_scrape_retry",
+        trigger_type="manual",
+    )
+
+
+async def retry_client_instagram_contact_extraction(client_id: int) -> dict[str, Any]:
+    """Re-extract contacts from already stored Instagram posts for one marketing client."""
+    from . import orchestration as mkt_orchestration
+
+    return await mkt_orchestration.run_client_orchestration(
+        client_id,
+        mode="instagram_contact_retry",
+        trigger_type="manual",
+    )
 
 
 async def retry_client_search(client_id: int) -> dict[str, Any]:
     """Retry the full marketing search pipeline for a single client."""
-    from . import groups as mkt
+    from . import orchestration as mkt_orchestration
 
-    client = await mkt.get_client(client_id)
-    if client is None:
-        raise ValueError("Client not found")
-    if client["search_status"] == "searching":
-        raise ValueError("Client is already being searched")
-
-    group_id = int(client["group_id"])
-
-    async def update_status(inner_client_id: int, status: str) -> None:
-        await mkt.update_client_search_status(inner_client_id, status)
-
-    await _search_single_client(
-        client_id=client_id,
-        client_name=client["name"],
-        extra_data=client.get("extra_data"),
-        update_fn=update_status,
+    return await mkt_orchestration.run_client_orchestration(
+        client_id,
+        mode="full_search",
+        trigger_type="manual",
     )
-
-    group_status = await mkt.get_group_search_status(group_id)
-    next_status = "searching" if (group_status["pending"] or group_status["searching"]) else "done"
-    await mkt.update_group_status(group_id, next_status)
-
-    return {
-        "client_id": client_id,
-        "group_id": group_id,
-        "status": "queued",
-        "message": f"Retry search queued for {client['name']}",
-    }
 
 
 # ---------------------------------------------------------------------------
@@ -1133,6 +1222,9 @@ async def web_search_fallback(client_name: str) -> list[ContactResult]:
 
     all_text = ""
     for r in ddg_results:
+        link = (r.get("link") or "").strip()
+        if link and _is_blocked_marketing_contact_source(link):
+            continue
         snippet = r.get("snippet", "")
         if snippet:
             all_text += snippet + "\n"
@@ -1160,6 +1252,8 @@ async def web_search_fallback(client_name: str) -> list[ContactResult]:
     for result in ddg_results:
         link = (result.get("link") or "").strip()
         if not link or link in seen_links:
+            continue
+        if _is_blocked_marketing_contact_source(link):
             continue
         seen_links.add(link)
         page_fetches.append((link, "ddg_result_page"))
@@ -1190,15 +1284,72 @@ async def web_search_fallback(client_name: str) -> list[ContactResult]:
 
 def _dedupe_results(results: list[ContactResult]) -> list[ContactResult]:
     """Remove duplicates by (contact_type, value)."""
+    sanitized_results: list[ContactResult] = []
+    support_map: dict[tuple[str, str], set[tuple[str, str]]] = {}
+    for result in results:
+        value = (result.value or "").strip()
+        if not value:
+            continue
+
+        source_url = (result.source_url or "").strip()
+        if source_url and _is_blocked_marketing_contact_source(source_url):
+            continue
+
+        if result.contact_type == "email" and _is_blocked_marketing_email(value):
+            continue
+
+        if result.contact_type == "wa_phone" and not is_mobile_phone(value):
+            continue
+
+        if value != result.value or source_url != (result.source_url or ""):
+            normalized_result = ContactResult(
+                contact_type=result.contact_type,
+                value=value,
+                source_url=source_url,
+                source_type=result.source_type,
+                confidence=result.confidence,
+                pic_name=result.pic_name,
+                pic_title=result.pic_title,
+            )
+        else:
+            normalized_result = result
+
+        sanitized_results.append(normalized_result)
+        support_key = (normalized_result.contact_type, normalized_result.value)
+        support_map.setdefault(support_key, set()).add(_contact_source_signature(normalized_result))
+
     seen: set[tuple[str, str]] = set()
     deduped: list[ContactResult] = []
-    for r in results:
+    for r in sanitized_results:
         key = (r.contact_type, r.value)
         if key not in seen:
             seen.add(key)
             deduped.append(r)
 
-    email_results = [result for result in deduped if result.contact_type == "email" and result.value]
+    trusted_types = {
+        result.contact_type
+        for result in deduped
+        if _contact_source_trust(result) >= 3
+    }
+
+    trust_filtered: list[ContactResult] = []
+    for result in deduped:
+        trust = _contact_source_trust(result)
+        support_key = (result.contact_type, result.value)
+        support_count = len(support_map.get(support_key, set()))
+
+        if trust == 0:
+            continue
+
+        if trust < 3 and result.contact_type in trusted_types:
+            continue
+
+        if trust == 1 and support_count < 2:
+            continue
+
+        trust_filtered.append(result)
+
+    email_results = [result for result in trust_filtered if result.contact_type == "email" and result.value]
     suppressed_emails: set[str] = set()
     for result in email_results:
         local_part, _, domain = result.value.lower().partition("@")
@@ -1217,10 +1368,10 @@ def _dedupe_results(results: list[ContactResult]) -> list[ContactResult]:
                 break
 
     if not suppressed_emails:
-        return deduped
+        return trust_filtered
 
     return [
-        result for result in deduped
+        result for result in trust_filtered
         if result.contact_type != "email" or result.value not in suppressed_emails
     ]
 
@@ -1239,91 +1390,26 @@ async def _search_single_client(
     extra_data: dict | None,
     update_fn: Callable[[int, str], None],
 ) -> None:
-    """Run all 3 stages for a single client."""
+    """Legacy compatibility wrapper; route all single-client searches through orchestration."""
+    from . import orchestration as mkt_orchestration
+
     async with _search_semaphore:
         await update_fn(client_id, "searching")
-
-        # Import here to avoid circular
-        from . import groups as mkt
-
         try:
-            stage1 = await website_discovery(client_name, extra_data)
-            stage2 = await ig_discovery(client_name)
-            stage3 = await web_search_fallback(client_name)
-
-            await mkt.replace_client_ig_candidates(client_id, stage2.candidates)
-
-            if stage2.handle:
-                await mkt.save_client_instagram_profile(
-                    client_id,
-                    stage2.handle,
-                    stage2.profile_url,
-                )
-                await mkt.replace_client_ig_posts(client_id, stage2.handle, stage2.posts)
-
-            if stage2.scrape_status:
-                await mkt.update_client_ig_post_scrape_diagnostic(
-                    client_id,
-                    stage2.scrape_status,
-                    stage2.scrape_error,
-                )
-
-            all_results = _dedupe_results(stage1 + stage2.contacts + stage3)
-            status = "found" if all_results else "not_found"
-
-            for r in all_results:
-                await mkt.upsert_contact_result(
-                    client_id=client_id,
-                    contact_type=r.contact_type,
-                    value=r.value,
-                    source_url=r.source_url,
-                    source_type=r.source_type,
-                    confidence=r.confidence,
-                )
-
-                # Also store pic_name/pic_title if present
-                if r.pic_name:
-                    await mkt.upsert_contact_result(
-                        client_id=client_id,
-                        contact_type="pic_name",
-                        value=r.pic_name,
-                        source_url=r.source_url or "",
-                        source_type=r.source_type or "",
-                        confidence=r.confidence,
-                    )
-
-            await mkt.update_client_search_status(client_id, status)
-
+            await mkt_orchestration.run_client_orchestration(
+                client_id,
+                mode="full_search",
+                trigger_type="legacy_wrapper",
+            )
         except Exception as e:
             error_msg = str(e) or type(e).__name__
             log.warning(f"[Marketing Search] Client {client_id} ({client_name}) failed: {error_msg}")
+            from . import groups as mkt
             await mkt.update_client_error_message(client_id, error_msg)
 
 
 async def process_search_queue(group_id: int) -> None:
     """Process all pending clients in a group with concurrency control."""
-    from . import groups as mkt
+    from . import orchestration as mkt_orchestration
 
-    # Update group status
-    await mkt.update_group_status(group_id, "searching")
-
-    pending = await mkt.get_pending_clients(group_id)
-
-    async def update_status(client_id: int, status: str) -> None:
-        await mkt.update_client_search_status(client_id, status)
-
-    tasks = [
-        _search_single_client(
-            client_id=c["id"],
-            client_name=c["name"],
-            extra_data=c.get("extra_data"),
-            update_fn=update_status,
-        )
-        for c in pending
-    ]
-
-    if tasks:
-        await asyncio.gather(*tasks)
-
-    # Update group status
-    await mkt.update_group_status(group_id, "done")
+    await mkt_orchestration.process_group_orchestration_queue(group_id, trigger_type="scheduler")

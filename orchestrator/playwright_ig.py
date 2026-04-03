@@ -2397,120 +2397,145 @@ def pw_get_posts(handle: str, max_posts: int = 12) -> list[dict]:
                     total_available = media.get("count", 0)
                     user_id = user.get("id")
 
-                    if max_posts <= 12 or not user_id:
-                        # Initial response has enough posts — no pagination needed
-                        all_edges = initial_edges
-                        pagination_done = True
-                        log.info("[Playwright] API @%s (acct @%s): %d posts available, %d in response",
-                                 handle, acct_label, total_available, len(all_edges))
-                    else:
-                        # Need pagination — use /api/v1/feed/user/ endpoint.
-                        # If this account is rate-limited (401), mark it and
-                        # retry with the next healthy account.
-                        all_edges = []
-                        next_max_id = ""
-                        pagination_failed = False
-                        for page_num in range(1, (max_posts // 12) + 3):
-                            if len(all_edges) >= max_posts:
-                                break
-                            _human_delay(2, 5)
-                            feed = browser.ig_get_user_feed(
-                                user_id, max_id=next_max_id,
-                                count=min(max_posts - len(all_edges), 12),
-                            )
-                            if not feed:
-                                # 401 or other error — mark account as rate-limited
-                                pagination_failed = True
-                                break
-                            new_edges = feed.get("edges") or []
-                            if not new_edges:
-                                break
-                            all_edges.extend(new_edges)
-                            pi = feed.get("page_info") or {}
-                            if not pi.get("has_next_page"):
-                                break
-                            next_max_id = pi.get("end_cursor", "")
-                            if not next_max_id:
-                                break
-                            log.debug("[Playwright] API @%s (acct @%s): page %d, cumulative %d edges",
-                                      handle, acct_label, page_num, len(all_edges))
+                    if total_available and not initial_edges:
+                        recovered_feed = browser.ig_get_user_feed(
+                            user_id,
+                            count=min(max_posts, 12),
+                        ) if user_id else None
+                        recovered_edges = list((recovered_feed or {}).get("edges") or [])
 
-                        if pagination_failed and not all_edges:
-                            # Pagination failed on first page — mark this account
-                            # as rate-limited and try the next one.
-                            _account_pool.mark_rate_limited(acct_label)
+                        if recovered_edges:
+                            initial_edges = recovered_edges
                             log.info(
-                                "[Playwright] @%s rate-limited on pagination for @%s, "
-                                "trying next account (%d/%d)...",
-                                acct_label, handle, account_attempts, max_account_retries,
+                                "[Playwright] API @%s (acct @%s): profile timeline empty, recovered %d posts from feed fallback",
+                                handle,
+                                acct_label,
+                                len(initial_edges),
                             )
-                            # Fall back to initial 12 if no more accounts
-                            if not _account_pool.has_healthy_account() or account_attempts >= max_account_retries:
-                                all_edges = initial_edges
-                                pagination_done = True
-                                log.info("[Playwright] No more healthy accounts, using %d initial posts for @%s",
-                                         len(all_edges), handle)
-                            else:
-                                continue  # retry with next account
-                        elif all_edges:
-                            pagination_done = True
-                            log.info("[Playwright] API @%s (acct @%s): %d posts available, %d fetched (paginated)",
-                                     handle, acct_label, total_available, len(all_edges))
                         else:
-                            # Pagination returned 0 edges without error — unusual
+                            log.info(
+                                "[Playwright] API @%s (acct @%s): profile resolved but timeline empty (count=%d), falling back to DOM",
+                                handle,
+                                acct_label,
+                                total_available,
+                            )
+                            user = None
+
+                    if user is not None:
+                        if max_posts <= 12 or not user_id:
+                            # Initial response has enough posts — no pagination needed
                             all_edges = initial_edges
                             pagination_done = True
-                            log.info("[Playwright] API @%s: pagination empty, using %d initial posts",
-                                     handle, len(all_edges))
-
-                    for edge in all_edges[:max_posts]:
-                        node = edge.get("node") or {}
-                        shortcode = node.get("shortcode", "")
-                        if not shortcode:
-                            continue
-
-                        # Caption
-                        caption = ""
-                        caption_edges = (node.get("edge_media_to_caption") or {}).get("edges") or []
-                        if caption_edges:
-                            caption = (caption_edges[0].get("node") or {}).get("text", "")
-
-                        # Image
-                        image_url = node.get("display_url", "")
-
-                        # Timestamp
-                        timestamp = None
-                        taken_at = node.get("taken_at_timestamp")
-                        if taken_at:
-                            try:
-                                timestamp = datetime.fromtimestamp(int(taken_at), tz=timezone.utc).isoformat()
-                            except (ValueError, OSError):
-                                pass
-
-                        # Determine post vs reel
-                        is_video = node.get("is_video", False)
-                        typename = node.get("__typename", "")
-                        if is_video and typename == "GraphVideo":
-                            post_url = f"https://www.instagram.com/reel/{shortcode}/"
+                            log.info("[Playwright] API @%s (acct @%s): %d posts available, %d in response",
+                                     handle, acct_label, total_available, len(all_edges))
                         else:
-                            post_url = f"https://www.instagram.com/p/{shortcode}/"
+                            # Need pagination — use /api/v1/feed/user/ endpoint.
+                            # If this account is rate-limited (401), mark it and
+                            # retry with the next healthy account.
+                            all_edges = []
+                            next_max_id = ""
+                            pagination_failed = False
+                            for page_num in range(1, (max_posts // 12) + 3):
+                                if len(all_edges) >= max_posts:
+                                    break
+                                _human_delay(2, 5)
+                                feed = browser.ig_get_user_feed(
+                                    user_id, max_id=next_max_id,
+                                    count=min(max_posts - len(all_edges), 12),
+                                )
+                                if not feed:
+                                    # 401 or other error — mark account as rate-limited
+                                    pagination_failed = True
+                                    break
+                                new_edges = feed.get("edges") or []
+                                if not new_edges:
+                                    break
+                                all_edges.extend(new_edges)
+                                pi = feed.get("page_info") or {}
+                                if not pi.get("has_next_page"):
+                                    break
+                                next_max_id = pi.get("end_cursor", "")
+                                if not next_max_id:
+                                    break
+                                log.debug("[Playwright] API @%s (acct @%s): page %d, cumulative %d edges",
+                                          handle, acct_label, page_num, len(all_edges))
 
-                        posts.append({
-                            "post_url": post_url,
-                            "image_url": image_url,
-                            "caption": caption,
-                            "timestamp": timestamp,
-                            "source": "playwright",
-                        })
+                            if pagination_failed and not all_edges:
+                                # Pagination failed on first page — mark this account
+                                # as rate-limited and try the next one.
+                                _account_pool.mark_rate_limited(acct_label)
+                                log.info(
+                                    "[Playwright] @%s rate-limited on pagination for @%s, "
+                                    "trying next account (%d/%d)...",
+                                    acct_label, handle, account_attempts, max_account_retries,
+                                )
+                                # Fall back to initial 12 if no more accounts
+                                if not _account_pool.has_healthy_account() or account_attempts >= max_account_retries:
+                                    all_edges = initial_edges
+                                    pagination_done = True
+                                    log.info("[Playwright] No more healthy accounts, using %d initial posts for @%s",
+                                             len(all_edges), handle)
+                                else:
+                                    continue  # retry with next account
+                            elif all_edges:
+                                pagination_done = True
+                                log.info("[Playwright] API @%s (acct @%s): %d posts available, %d fetched (paginated)",
+                                         handle, acct_label, total_available, len(all_edges))
+                            else:
+                                # Pagination returned 0 edges without error — unusual
+                                all_edges = initial_edges
+                                pagination_done = True
+                                log.info("[Playwright] API @%s: pagination empty, using %d initial posts",
+                                         handle, len(all_edges))
 
-                    _pw_status["profiles_today"] += 1
-                    if account:
-                        account.profiles_today += 1
-                    _pw_status["ok"] = True
-                    _pw_status["error"] = None
-                    pagination_done = True  # ensure we exit the while loop
+                        for edge in all_edges[:max_posts]:
+                            node = edge.get("node") or {}
+                            shortcode = node.get("shortcode", "")
+                            if not shortcode:
+                                continue
 
-                else:
+                            # Caption
+                            caption = ""
+                            caption_edges = (node.get("edge_media_to_caption") or {}).get("edges") or []
+                            if caption_edges:
+                                caption = (caption_edges[0].get("node") or {}).get("text", "")
+
+                            # Image
+                            image_url = node.get("display_url", "")
+
+                            # Timestamp
+                            timestamp = None
+                            taken_at = node.get("taken_at_timestamp")
+                            if taken_at:
+                                try:
+                                    timestamp = datetime.fromtimestamp(int(taken_at), tz=timezone.utc).isoformat()
+                                except (ValueError, OSError):
+                                    pass
+
+                            # Determine post vs reel
+                            is_video = node.get("is_video", False)
+                            typename = node.get("__typename", "")
+                            if is_video and typename == "GraphVideo":
+                                post_url = f"https://www.instagram.com/reel/{shortcode}/"
+                            else:
+                                post_url = f"https://www.instagram.com/p/{shortcode}/"
+
+                            posts.append({
+                                "post_url": post_url,
+                                "image_url": image_url,
+                                "caption": caption,
+                                "timestamp": timestamp,
+                                "source": "playwright",
+                            })
+
+                        _pw_status["profiles_today"] += 1
+                        if account:
+                            account.profiles_today += 1
+                        _pw_status["ok"] = True
+                        _pw_status["error"] = None
+                        pagination_done = True  # ensure we exit the while loop
+
+                if user is None:
                     # ---- DOM fallback (if API fails) ----
                     log.info("[Playwright] API failed for @%s posts, falling back to HTML", handle)
                     if not browser.navigate(f"https://www.instagram.com/{handle}/"):

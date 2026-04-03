@@ -26,7 +26,7 @@ export type GroupStatus = 'draft' | 'searching' | 'done'
 export type ContactType = 'wa_phone' | 'email' | 'office_phone' | 'pic_name' | 'pic_title'
 
 export type ClientSearchStatus = 'pending' | 'searching' | 'found' | 'not_found' | 'error'
-export type InstagramPostScrapeStatus = 'scraping' | 'success' | 'empty' | 'failed'
+export type InstagramPostScrapeStatus = 'scraping' | 'success' | 'empty' | 'failed' | 'skipped' | 'audit_only' | 'not_found'
 
 export interface MarketingGroup {
   id: number
@@ -64,6 +64,14 @@ export interface RetryInstagramScrapeResult {
   client_id: number
   status: InstagramPostScrapeStatus
   handles: string[]
+  posts: number
+  contacts_added: number
+  message: string
+}
+
+export interface RetryInstagramContactExtractionResult {
+  success: boolean
+  client_id: number
   posts: number
   contacts_added: number
   message: string
@@ -216,6 +224,13 @@ export async function retryMarketingClientInstagramScrape(
   clientId: number
 ): Promise<RetryInstagramScrapeResult> {
   const { data } = await apiClient.post(`/marketing/clients/${clientId}/instagram/retry`)
+  return data
+}
+
+export async function retryMarketingClientInstagramContactExtraction(
+  clientId: number
+): Promise<RetryInstagramContactExtractionResult> {
+  const { data } = await apiClient.post(`/marketing/clients/${clientId}/instagram/contacts/retry`)
   return data
 }
 
