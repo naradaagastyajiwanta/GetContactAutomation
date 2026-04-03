@@ -200,8 +200,8 @@ async def list_clients(group_id: int) -> list[dict[str, Any]]:
             placeholders = ",".join("?" * len(client_ids))
             ig_cursor = await db.execute(
                 f"""
-                SELECT id, client_id, ig_handle, post_url, image_url, caption,
-                       post_timestamp, source, created_at
+                  SELECT id, client_id, ig_handle, post_url, image_url, caption,
+                      post_timestamp, source, phone_extracted, phones_found, created_at
                 FROM marketing_ig_posts
                 WHERE client_id IN ({placeholders})
                 ORDER BY COALESCE(post_timestamp, created_at) DESC, created_at DESC
@@ -278,7 +278,9 @@ async def list_clients(group_id: int) -> list[dict[str, Any]]:
             "caption": row[5],
             "post_timestamp": row[6],
             "source": row[7],
-            "created_at": row[8],
+            "phone_extracted": bool(row[8]),
+            "phones_found": int(row[9] or 0),
+            "created_at": row[10],
         })
 
     for row in candidate_rows:
@@ -722,7 +724,7 @@ async def get_client_ig_posts(client_id: int) -> list[dict[str, Any]]:
         cursor = await db.execute(
             """
             SELECT id, client_id, ig_handle, post_url, image_url, caption,
-                   post_timestamp, source, created_at
+                   post_timestamp, source, phone_extracted, phones_found, created_at
             FROM marketing_ig_posts
             WHERE client_id = ?
             ORDER BY COALESCE(post_timestamp, created_at) DESC, created_at DESC
@@ -741,7 +743,9 @@ async def get_client_ig_posts(client_id: int) -> list[dict[str, Any]]:
             "caption": row[5],
             "post_timestamp": row[6],
             "source": row[7],
-            "created_at": row[8],
+            "phone_extracted": bool(row[8]),
+            "phones_found": int(row[9] or 0),
+            "created_at": row[10],
         }
         for row in rows
     ]
@@ -831,6 +835,8 @@ async def replace_client_ig_posts(
                 post.get("caption"),
                 post.get("timestamp"),
                 post.get("source"),
+                0,
+                0,
             )
             for post in posts
             if post.get("post_url")
@@ -839,10 +845,38 @@ async def replace_client_ig_posts(
             await db.executemany(
                 """
                 INSERT OR IGNORE INTO marketing_ig_posts
-                    (client_id, ig_handle, post_url, image_url, caption, post_timestamp, source)
-                VALUES (?, ?, ?, ?, ?, ?, ?)
+                    (client_id, ig_handle, post_url, image_url, caption, post_timestamp, source, phone_extracted, phones_found)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 rows,
+            )
+
+        await db.commit()
+
+
+async def mark_client_ig_posts_extracted(
+    client_id: int,
+    posts: list[dict[str, Any]],
+    phones_found_by_post: dict[str, int],
+) -> None:
+    """Mark stored marketing IG posts as processed by the phone extractor."""
+    if not posts:
+        return
+
+    async with aiosqlite.connect(DATABASE_PATH) as db:
+        for post in posts:
+            post_url = str(post.get("post_url") or "").strip()
+            if not post_url:
+                continue
+
+            await db.execute(
+                """
+                UPDATE marketing_ig_posts
+                SET phone_extracted = 1,
+                    phones_found = ?
+                WHERE client_id = ? AND post_url = ?
+                """,
+                (int(phones_found_by_post.get(post_url, 0)), client_id, post_url),
             )
 
         await db.commit()

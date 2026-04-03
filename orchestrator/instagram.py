@@ -18,6 +18,7 @@ When direct sessions fail/expire, Apify is tried automatically.
 If Apify also fails, Scraping-Bot is used as the final fallback.
 """
 import base64
+import asyncio
 import json
 import os
 import re

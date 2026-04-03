@@ -105,6 +105,8 @@ _LANDLINE_PREFIXES = (
 
 _HIGH_TRUST_CONTACT_SOURCE_TYPES = {
     "website",
+    "official_website",
+    "contact_page",
     "website_social",
     "ig_post",
     "ig_caption",
@@ -154,6 +156,38 @@ def _extract_mobile_phones_from_html(html: str) -> list[str]:
     return filter_mobile_phones(phones)
 
 
+def _extract_office_phones_from_text(text: str) -> list[str]:
+    area_codes = "|".join(sorted({prefix.removeprefix("0") for prefix in _LANDLINE_PREFIXES}))
+    pattern = re.compile(
+        rf"(?:(?:\+62|62|0)\s*(?:{area_codes}))(?:[\s\-.()]*(?:\d{{2,4}})){{2,4}}"
+    )
+    phones: list[str] = []
+    seen: set[str] = set()
+
+    for match in pattern.findall(text):
+        cleaned = re.sub(r"[()]", " ", match)
+        cleaned = re.sub(r"\s+", " ", cleaned).strip(" ,.;:-")
+        digits = re.sub(r"\D", "", cleaned)
+        if len(digits) < 9 or len(digits) > 14:
+            continue
+
+        normalized = digits
+        if digits.startswith("62"):
+            normalized = f"0{digits[2:]}"
+        elif not digits.startswith("0"):
+            normalized = f"0{digits}"
+
+        if not any(normalized.startswith(prefix) for prefix in _LANDLINE_PREFIXES):
+            continue
+        if normalized in seen:
+            continue
+
+        seen.add(normalized)
+        phones.append(cleaned)
+
+    return phones
+
+
 def _normalize_company_tokens(company_name: str) -> list[str]:
     tokens = re.findall(r"[a-z0-9]+", company_name.lower())
     return [token for token in tokens if len(token) > 2 and token not in _CORPORATE_GENERIC_WORDS]
@@ -169,6 +203,30 @@ def _build_company_abbreviation(company_name: str) -> str:
 def _primary_company_token(company_name: str) -> str:
     tokens = _normalize_company_tokens(company_name)
     return tokens[0] if tokens else ""
+
+
+def _canonical_company_page_roots(url: str) -> list[str]:
+    parsed = urlparse(url)
+    if not parsed.netloc:
+        return []
+
+    scheme = parsed.scheme or "https"
+    root = f"{scheme}://{parsed.netloc}"
+    roots = [root.rstrip("/")]
+
+    path = parsed.path.rstrip("/")
+    if path:
+        roots.append(f"{roots[0]}{path}")
+
+    seen: set[str] = set()
+    ordered: list[str] = []
+    for candidate in roots:
+        normalized = candidate.rstrip("/")
+        if normalized in seen:
+            continue
+        seen.add(normalized)
+        ordered.append(normalized)
+    return ordered
 
 
 def _is_likely_official_company_domain(company_name: str, url: str) -> bool:
@@ -580,10 +638,14 @@ async def _company_pages_to_check(client_name: str) -> list[tuple[str, str]]:
         if not _is_likely_official_company_domain(client_name, url):
             continue
 
-        candidates = [(url, "website")]
-        base = url.rstrip("/")
-        for path in ("/contact", "/contact-us", "/about", "/tentang-kami", "/hubungi-kami"):
-            candidates.append((base + path, "contact_page"))
+        candidates: list[tuple[str, str]] = []
+        canonical_roots = _canonical_company_page_roots(url)
+        for index, base in enumerate(canonical_roots):
+            candidates.append((base, "website" if index == 0 else "contact_page"))
+            if index != 0 or urlparse(base).path.rstrip("/"):
+                continue
+            for path in ("/contact", "/contact-us", "/about", "/tentang-kami", "/hubungi-kami"):
+                candidates.append((base + path, "contact_page"))
 
         for candidate_url, source_type in candidates:
             if candidate_url in seen_urls:
@@ -882,6 +944,15 @@ def _results_from_page_content(
             confidence=phone_confidence,
         ))
 
+    for phone in _extract_office_phones_from_text(text):
+        results.append(ContactResult(
+            contact_type="office_phone",
+            value=phone,
+            source_url=source_url,
+            source_type=source_type,
+            confidence=phone_confidence,
+        ))
+
     return _dedupe_results(results)
 
 
@@ -918,6 +989,17 @@ async def website_discovery(client_name: str, extra_data: dict | None = None) ->
     pages_to_check = await _company_pages_to_check(client_name)
     if not pages_to_check:
         return results
+
+    for url, source_type in pages_to_check:
+        if source_type != "website":
+            continue
+        results.append(ContactResult(
+            contact_type="website",
+            value=url,
+            source_url=url,
+            source_type="official_website",
+            confidence=0.9,
+        ))
 
     for url, source_type in pages_to_check:
         html = await fetch_page(url)
@@ -1011,6 +1093,45 @@ async def _extract_marketing_contacts_from_posts(posts: list[dict]) -> list[Cont
                 log.warning("[Marketing IG] Caption extract failed: %s", exc)
 
     return _dedupe_results(results)
+
+
+def _count_marketing_phones_found_by_post(
+    posts: list[dict[str, Any]],
+    contacts: list[ContactResult],
+) -> dict[str, int]:
+    """Count extracted IG phone contacts per stored post URL."""
+    phones_by_post: dict[str, set[str]] = {
+        str(post.get("post_url") or "").strip(): set()
+        for post in posts
+        if str(post.get("post_url") or "").strip()
+    }
+    image_to_post_url = {
+        str(post.get("image_url") or "").strip(): str(post.get("post_url") or "").strip()
+        for post in posts
+        if str(post.get("image_url") or "").strip() and str(post.get("post_url") or "").strip()
+    }
+
+    for contact in contacts:
+        if contact.contact_type != "wa_phone":
+            continue
+
+        source_url = str(contact.source_url or "").strip()
+        if not source_url:
+            continue
+
+        normalized_phone = re.sub(r"\D", "", contact.value or "")
+        if not normalized_phone:
+            continue
+
+        post_url = source_url
+        if post_url not in phones_by_post:
+            post_url = image_to_post_url.get(source_url, "")
+        if not post_url or post_url not in phones_by_post:
+            continue
+
+        phones_by_post[post_url].add(normalized_phone)
+
+    return {post_url: len(phones) for post_url, phones in phones_by_post.items()}
 
 
 async def _replace_ig_contact_results_for_client(

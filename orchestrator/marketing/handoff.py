@@ -49,6 +49,19 @@ async def _get_approved_selected_contacts(
             query += " AND r.contact_type = ?"
             params.append(contact_type)
 
+        if contact_type == "wa_phone":
+            query += """
+                AND EXISTS (
+                    SELECT 1
+                    FROM marketing_contact_results n
+                    WHERE n.client_id = r.client_id
+                      AND n.contact_type = 'pic_name'
+                      AND TRIM(COALESCE(n.edited_value, n.value, '')) != ''
+                      AND COALESCE(n.source_url, '') = COALESCE(r.source_url, '')
+                      AND COALESCE(n.source_type, '') = COALESCE(r.source_type, '')
+                )
+            """
+
         cursor = await db.execute(query, params)
         rows = await cursor.fetchall()
         return [

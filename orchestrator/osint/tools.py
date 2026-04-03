@@ -373,9 +373,37 @@ def _is_truncated_email_variant(email: str, other: str) -> bool:
     return other_local.endswith(local)
 
 
+def _decode_cloudflare_email(encoded: str) -> str | None:
+    encoded = (encoded or "").strip()
+    if len(encoded) < 4 or len(encoded) % 2 != 0:
+        return None
+
+    try:
+        key = int(encoded[:2], 16)
+        chars = [chr(int(encoded[index:index + 2], 16) ^ key) for index in range(2, len(encoded), 2)]
+    except ValueError:
+        return None
+
+    email = "".join(chars).strip()
+    if "@" not in email:
+        return None
+    return email
+
+
+def _extract_cloudflare_protected_emails(text: str) -> list[str]:
+    matches = re.findall(r'data-cfemail=["\']([0-9a-fA-F]+)["\']', text or "")
+    emails: list[str] = []
+    for match in matches:
+        decoded = _decode_cloudflare_email(match)
+        if decoded:
+            emails.append(decoded)
+    return emails
+
+
 def extract_emails(text: str) -> list[str]:
     """Extract email addresses from text with basic validation."""
     emails = _EMAIL_PATTERN.findall(text)
+    emails.extend(_extract_cloudflare_protected_emails(text))
     # Filter out invalid emails
     valid_emails: list[str] = []
     seen_lower: set[str] = set()

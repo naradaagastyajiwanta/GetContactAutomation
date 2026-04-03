@@ -19,6 +19,7 @@ import {
   ExternalLink,
   Image as ImageIcon,
   Clock3,
+  Globe,
 } from 'lucide-react'
 import { cn } from '../../lib/utils'
 import { Button } from '../ui/Button'
@@ -43,6 +44,7 @@ import type {
 } from '../../api/marketing'
 
 const CONTACT_ICONS: Record<ContactType, React.ElementType> = {
+  website: Globe,
   wa_phone: Wifi,
   email: Mail,
   office_phone: Phone,
@@ -51,12 +53,22 @@ const CONTACT_ICONS: Record<ContactType, React.ElementType> = {
 }
 
 const CONTACT_TYPE_OPTIONS = [
+  { value: 'website', label: 'Website' },
   { value: 'wa_phone', label: 'WA' },
   { value: 'email', label: 'Email' },
   { value: 'office_phone', label: 'Telp Kantor' },
   { value: 'pic_name', label: 'Nama PIC' },
   { value: 'pic_title', label: 'Jabatan PIC' },
 ]
+
+const CONTACT_TYPE_LABELS: Record<ContactType, string> = {
+  website: 'Website',
+  wa_phone: 'WA',
+  email: 'Email',
+  office_phone: 'Telp Kantor',
+  pic_name: 'Nama PIC',
+  pic_title: 'Jabatan PIC',
+}
 
 const IG_SOURCE_LABELS: Record<string, string> = {
   website_social: 'Website Resmi',
@@ -69,7 +81,9 @@ const CONTACT_SOURCE_LABELS: Record<string, string> = {
   ig_caption: 'Instagram Caption',
   ddg_result_page: 'DDG Result Page',
   ddg_result_snippet: 'DDG Snippet',
+  website: 'Website Resmi',
   official_website: 'Website Resmi',
+  contact_page: 'Halaman Kontak',
   website_social: 'Website Social',
   web_search_fallback: 'Web Search Fallback',
 }
@@ -96,6 +110,44 @@ function getContactSourceLabel(sourceType: string | null | undefined): string {
   return CONTACT_SOURCE_LABELS[sourceType] ?? sourceType.replace(/_/g, ' ')
 }
 
+function getContactTypeLabel(contactType: ContactType): string {
+  return CONTACT_TYPE_LABELS[contactType] ?? contactType
+}
+
+function getContactDisplayValue(contact: MarketingContact): string {
+  return (contact.edited_value ?? contact.value ?? '').trim()
+}
+
+function isMobilePhoneValue(value: string | null | undefined): boolean {
+  const digits = (value ?? '').replace(/\D/g, '')
+  if (digits.length < 10 || digits.length > 14) return false
+
+  let normalized = digits
+  if (digits.startsWith('0')) {
+    normalized = `62${digits.slice(1)}`
+  } else if (digits.startsWith('8')) {
+    normalized = `62${digits}`
+  }
+
+  return normalized.startsWith('628')
+}
+
+function isMobileMarketingContact(contact: MarketingContact): boolean {
+  if (contact.contact_type !== 'wa_phone' && contact.contact_type !== 'office_phone') {
+    return false
+  }
+
+  return isMobilePhoneValue(getContactDisplayValue(contact))
+}
+
+function getDisplayedContactLabel(contact: MarketingContact): string {
+  if (contact.contact_type === 'office_phone' && isMobileMarketingContact(contact)) {
+    return 'No. HP'
+  }
+
+  return getContactTypeLabel(contact.contact_type)
+}
+
 function getContactSourceDisplayUrl(sourceUrl: string | null | undefined): string {
   if (!sourceUrl) return '—'
   try {
@@ -104,6 +156,38 @@ function getContactSourceDisplayUrl(sourceUrl: string | null | undefined): strin
   } catch {
     return truncateText(sourceUrl, 36) || sourceUrl
   }
+}
+
+function getMarketingContactSourceIdentity(contact: MarketingContact): string {
+  return [
+    contact.client_id,
+    (contact.source_type ?? '').trim().toLowerCase(),
+    (contact.source_url ?? '').trim(),
+  ].join('::')
+}
+
+function hasMarketingContactNamePair(
+  contact: MarketingContact,
+  contacts: MarketingContact[],
+): boolean {
+  if (contact.contact_type !== 'wa_phone') return false
+
+  const targetSourceIdentity = getMarketingContactSourceIdentity(contact)
+  return contacts.some(
+    (candidate) =>
+      candidate.contact_type === 'pic_name' &&
+      Boolean((candidate.edited_value ?? candidate.value ?? '').trim()) &&
+      getMarketingContactSourceIdentity(candidate) === targetSourceIdentity,
+  )
+}
+
+function shouldHideMarketingContact(
+  contact: MarketingContact,
+  contacts: MarketingContact[],
+): boolean {
+  if (contact.contact_type === 'office_phone') return !isMobileMarketingContact(contact)
+  if (contact.contact_type === 'wa_phone') return !hasMarketingContactNamePair(contact, contacts)
+  return false
 }
 
 function findContactSourcePost(
@@ -377,6 +461,8 @@ function MarketingInstagramPostsPanel({
           <TableHead>Account</TableHead>
           <TableHead>Caption</TableHead>
           <TableHead>Source</TableHead>
+          <TableHead>Phones Found</TableHead>
+          <TableHead>Extracted</TableHead>
           <TableHead>Date</TableHead>
           <TableHead>Link</TableHead>
         </TableRow>
@@ -408,6 +494,18 @@ function MarketingInstagramPostsPanel({
               <span className="block truncate">{truncateText(post.caption, 90) || 'Tanpa caption'}</span>
             </TableCell>
             <TableCell className="text-xs text-gray-500 dark:text-gray-400">{post.source || '—'}</TableCell>
+            <TableCell>{post.phones_found ?? 0}</TableCell>
+            <TableCell>
+              {post.phone_extracted ? (
+                <Badge className="bg-green-100 text-green-700 dark:bg-green-900/50 dark:text-green-300">
+                  Yes
+                </Badge>
+              ) : (
+                <Badge className="bg-gray-100 text-gray-700 dark:bg-gray-700 dark:text-gray-300">
+                  No
+                </Badge>
+              )}
+            </TableCell>
             <TableCell>{formatDateTime(post.post_timestamp ?? post.created_at)}</TableCell>
             <TableCell>
               <a
@@ -448,7 +546,13 @@ function MarketingContactsPanel({
   onRetrySearch: () => void
   retryingSearch: boolean
 }) {
-  const hasContacts = (client.contacts ?? []).length > 0
+  const [showAllContacts, setShowAllContacts] = useState(false)
+  const allContacts = client.contacts ?? []
+  const filteredContacts = showAllContacts
+    ? allContacts
+    : allContacts.filter((contact) => !shouldHideMarketingContact(contact, allContacts))
+  const hiddenContactsCount = allContacts.length - filteredContacts.length
+  const hasContacts = allContacts.length > 0
 
   if (!hasContacts) {
     return (
@@ -468,30 +572,52 @@ function MarketingContactsPanel({
   }
 
   return (
-    <Table>
-      <TableHeader>
-        <TableRow>
-          <TableHead>Tipe</TableHead>
-          <TableHead>Nilai</TableHead>
-          <TableHead>Sumber</TableHead>
-          <TableHead>Confidence</TableHead>
-          <TableHead className="text-center">Approved</TableHead>
-          <TableHead className="text-center">Selected</TableHead>
-          <TableHead>Aksi</TableHead>
-        </TableRow>
-      </TableHeader>
-      <tbody className="divide-y divide-gray-100 dark:divide-gray-800">
-        {client.contacts.map((contact) => (
-          <ContactRow
-            key={contact.id}
-            contact={contact}
-            sourcePost={findContactSourcePost(client.ig_posts ?? [], contact)}
-            onApprove={onApprove}
-            onEdit={onEdit}
-          />
-        ))}
-      </tbody>
-    </Table>
+    <div className="space-y-3">
+      {hiddenContactsCount > 0 && (
+        <div className="flex justify-start">
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={() => setShowAllContacts((value) => !value)}
+          >
+            {showAllContacts
+              ? 'Hide Hidden Contacts'
+              : `Show All Contacts (${hiddenContactsCount} hidden)`}
+          </Button>
+        </div>
+      )}
+
+      {filteredContacts.length === 0 ? (
+        <div className="rounded-lg border border-dashed border-gray-200 px-4 py-6 text-sm text-gray-500 dark:border-gray-700 dark:text-gray-400">
+          Tidak ada kontak yang terlihat. Klik `Show All Contacts` untuk melihat nomor yang disembunyikan.
+        </div>
+      ) : (
+        <Table>
+          <TableHeader>
+            <TableRow>
+              <TableHead>Tipe</TableHead>
+              <TableHead>Nilai</TableHead>
+              <TableHead>Sumber</TableHead>
+              <TableHead>Confidence</TableHead>
+              <TableHead className="text-center">Approved</TableHead>
+              <TableHead className="text-center">Selected</TableHead>
+              <TableHead>Aksi</TableHead>
+            </TableRow>
+          </TableHeader>
+          <tbody className="divide-y divide-gray-100 dark:divide-gray-800">
+            {filteredContacts.map((contact) => (
+              <ContactRow
+                key={contact.id}
+                contact={contact}
+                sourcePost={findContactSourcePost(client.ig_posts ?? [], contact)}
+                onApprove={onApprove}
+                onEdit={onEdit}
+              />
+            ))}
+          </tbody>
+        </Table>
+      )}
+    </div>
   )
 }
 
@@ -789,6 +915,7 @@ function ContactRow({
   const sourceUrl = contact.source_url?.trim() || null
   const sourceLabel = getContactSourceLabel(contact.source_type)
   const sourceDisplayUrl = getContactSourceDisplayUrl(sourceUrl)
+  const displayLabel = getDisplayedContactLabel(contact)
 
   function commitEdit() {
     if (editValue !== (contact.edited_value ?? contact.value ?? '')) {
@@ -803,7 +930,7 @@ function ContactRow({
         <div className="flex items-center gap-2">
           <Icon className="h-3.5 w-3.5 flex-shrink-0 text-gray-400" />
           <span className="text-xs font-medium text-gray-500 dark:text-gray-400">
-            {contact.contact_type}
+            {displayLabel}
           </span>
         </div>
       </td>

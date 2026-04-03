@@ -23,7 +23,7 @@ export const CLIENT_TYPE_LABELS: Record<ClientType, string> = {
 
 export type GroupStatus = 'draft' | 'searching' | 'done'
 
-export type ContactType = 'wa_phone' | 'email' | 'office_phone' | 'pic_name' | 'pic_title'
+export type ContactType = 'website' | 'wa_phone' | 'email' | 'office_phone' | 'pic_name' | 'pic_title'
 
 export type ClientSearchStatus = 'pending' | 'searching' | 'found' | 'not_found' | 'error'
 export type InstagramPostScrapeStatus = 'scraping' | 'success' | 'empty' | 'failed' | 'skipped' | 'audit_only' | 'not_found'
@@ -120,6 +120,8 @@ export interface MarketingInstagramPost {
   caption: string | null
   post_timestamp: string | null
   source: string | null
+  phone_extracted: boolean
+  phones_found: number
   created_at: string
 }
 

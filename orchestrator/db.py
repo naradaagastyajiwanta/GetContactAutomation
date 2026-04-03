@@ -861,6 +861,8 @@ CREATE TABLE IF NOT EXISTS marketing_ig_posts (
     caption TEXT,
     post_timestamp TEXT,
     source TEXT,
+    phone_extracted INTEGER DEFAULT 0,
+    phones_found INTEGER DEFAULT 0,
     created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
     UNIQUE(client_id, post_url)
 );
@@ -1035,6 +1037,17 @@ async def init_db() -> None:
         if "affinity_score" not in candidate_columns:
             await db.execute(
                 "ALTER TABLE marketing_ig_candidates ADD COLUMN affinity_score REAL DEFAULT 0.0"
+            )
+
+        cursor = await db.execute("PRAGMA table_info(marketing_ig_posts)")
+        ig_post_columns = {row[1] for row in await cursor.fetchall()}
+        if "phone_extracted" not in ig_post_columns:
+            await db.execute(
+                "ALTER TABLE marketing_ig_posts ADD COLUMN phone_extracted INTEGER DEFAULT 0"
+            )
+        if "phones_found" not in ig_post_columns:
+            await db.execute(
+                "ALTER TABLE marketing_ig_posts ADD COLUMN phones_found INTEGER DEFAULT 0"
             )
 
         await db.executescript(_INDEXES_MARKETING)

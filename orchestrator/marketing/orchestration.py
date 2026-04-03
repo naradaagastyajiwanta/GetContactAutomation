@@ -359,6 +359,8 @@ async def _run_instagram_scrape_retry(client: dict[str, Any], run_id: int, plan:
 
     await mkt.replace_client_ig_posts(client_id, primary_handle, posts)
     contacts = await search_flow._extract_marketing_contacts_from_posts(posts)
+    phones_found_by_post = search_flow._count_marketing_phones_found_by_post(posts, contacts)
+    await mkt.mark_client_ig_posts_extracted(client_id, posts, phones_found_by_post)
     await _record_contacts(run_id, client_id, "instagram", contacts, status="accepted")
     inserted_contacts = await search_flow._replace_ig_contact_results_for_client(client_id, contacts)
     pruned_contacts = await search_flow._prune_stale_client_contacts(client_id)
@@ -386,6 +388,8 @@ async def _run_instagram_contact_retry(client: dict[str, Any], run_id: int, plan
 
     await _set_client_stage(client_id, run_id, "collecting", "instagram_contact_extract")
     contacts = await search_flow._extract_marketing_contacts_from_posts(posts)
+    phones_found_by_post = search_flow._count_marketing_phones_found_by_post(posts, contacts)
+    await mkt.mark_client_ig_posts_extracted(client_id, posts, phones_found_by_post)
     await _record_stage_summary(
         run_id,
         client_id,
