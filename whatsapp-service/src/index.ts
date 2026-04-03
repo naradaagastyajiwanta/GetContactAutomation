@@ -327,6 +327,7 @@ function handleDeviceCredentialsUpdated(deviceId: string): void {
  */
 async function initializeDevices(): Promise<void> {
   const messageQueue = getMessageQueue();
+  const devicesToAutoConnect: string[] = [];
 
   const devices = [
     { id: 'device_1', name: 'WhatsApp Device 1' },
@@ -340,6 +341,10 @@ async function initializeDevices(): Promise<void> {
     const authPath = path.join(__dirname, '..', `auth_store_${device.id}`);
     deviceManager.registerDevice(device.id, device.name, authPath);
     messageQueue.registerDevice(device.id, device.name, authPath);
+    const hasPersistedAuth = fs.existsSync(authPath) && fs.readdirSync(authPath).length > 0;
+    if (hasPersistedAuth) {
+      devicesToAutoConnect.push(device.id);
+    }
   }
 
   logger.info({ count: devices.length }, 'Devices registered');
@@ -353,7 +358,19 @@ async function initializeDevices(): Promise<void> {
   }
 
   logger.info('Device initialization complete');
-  logger.info('Devices are ready. Connect them via the frontend when needed.');
+
+  if (devicesToAutoConnect.length > 0) {
+    logger.info({ deviceIds: devicesToAutoConnect }, 'Auto-connecting devices with persisted auth');
+    await Promise.allSettled(
+      devicesToAutoConnect.map((deviceId) =>
+        deviceManager.connectDevice(deviceId).catch((err) => {
+          logger.error({ err, deviceId }, 'Failed to auto-connect device with persisted auth');
+        })
+      )
+    );
+  }
+
+  logger.info('Devices are ready. Persisted sessions reconnect automatically; empty slots can be connected from the frontend when needed.');
 }
 
 // ---------------------------------------------------------------------------
@@ -1566,8 +1583,9 @@ async function gracefulShutdown(signal: string): Promise<void> {
     // Clear all pending messages and their timers
     clearAllPendingMessages();
 
-    // Disconnect all devices
-    await deviceManager.disconnectAll();
+    // Preserve active sessions on deploy/restart; the process exit will close sockets.
+    // Explicit disconnect here forces every connected device into a stopped state.
+    deviceManager.clearAllReconnectTimers();
 
     logger.info('Graceful shutdown completed');
   } catch (err) {

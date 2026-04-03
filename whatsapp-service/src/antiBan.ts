@@ -221,6 +221,16 @@ function riskMeetsThreshold(risk: BanRiskLevel, threshold: BanRiskLevel): boolea
   return order[risk] >= order[threshold];
 }
 
+function is401Reason(reason: string): boolean {
+  const normalized = reason.trim().toLowerCase();
+  return normalized === '401' || normalized.includes('401') || normalized.includes('loggedout');
+}
+
+function is403Reason(reason: string): boolean {
+  const normalized = reason.trim().toLowerCase();
+  return normalized === '403' || normalized.includes('403') || normalized.includes('forbidden');
+}
+
 function toLocalDayKey(timestamp: number): string {
   const date = new Date(timestamp);
   const year = date.getFullYear();
@@ -463,9 +473,9 @@ export class AntiBanManager {
       state.timelock.enforcementType = '463';
       this.deferUntil(state, (state.timelock.expiresAt ?? now) + this.config.timelock.resumeBufferMs);
     } else if (errorText.includes('403')) {
-      this.deferUntil(state, now + 6 * HOUR_MS);
+      this.deferUntil(state, now + HOUR_MS);
     } else if (errorText.includes('401')) {
-      this.deferUntil(state, now + 12 * HOUR_MS);
+      this.deferUntil(state, now + this.config.health.cooldownMs);
     } else if (errorText.includes('rate limit') || errorText.includes('429')) {
       this.deferUntil(state, now + 5 * MINUTE_MS);
     }
@@ -490,10 +500,28 @@ export class AntiBanManager {
 
   recordReconnect(deviceId: string): void {
     const state = this.getDeviceState(deviceId);
-    if (state.nextAllowedAt && state.nextAllowedAt < Date.now()) {
+    const now = Date.now();
+
+    state.disconnectEvents = state.disconnectEvents.filter(
+      (event) => !(is401Reason(event.reason) && now - event.at <= HOUR_MS),
+    );
+    state.failedEvents = state.failedEvents.filter(
+      (event) => !(is401Reason(event.error) && now - event.at <= HOUR_MS),
+    );
+
+    const health = this.computeHealth(state, now);
+    const warmUp = this.computeWarmUp(state, now);
+    const recent = this.getRecentSendStats(state, now, null);
+    const onlyStaleAuthCooldown = !health.paused
+      && !state.timelock.isActive
+      && recent.lastMinute === 0
+      && recent.lastHour === 0
+      && warmUp.todaySent < warmUp.todayLimit;
+
+    if ((state.nextAllowedAt && state.nextAllowedAt < now) || onlyStaleAuthCooldown) {
       state.nextAllowedAt = null;
     }
-    this.pruneState(state, Date.now());
+    this.pruneState(state, now);
     this.saveState();
   }
 
@@ -642,8 +670,8 @@ export class AntiBanManager {
     ) + HOUR_MS;
 
     state.sendEvents = state.sendEvents.filter((event) => now - event.at <= retentionWindow);
-    state.failedEvents = state.failedEvents.filter((event) => now - event.at <= DAY_MS);
-    state.disconnectEvents = state.disconnectEvents.filter((event) => now - event.at <= DAY_MS);
+    state.failedEvents = state.failedEvents.filter((event) => now - event.at <= 6 * HOUR_MS);
+    state.disconnectEvents = state.disconnectEvents.filter((event) => now - event.at <= 6 * HOUR_MS);
     state.knownChats = Array.from(new Set(state.knownChats.map((jid) => normalizeJid(jid))));
 
     const oldestWarmUpKey = toLocalDayKey(now - 30 * DAY_MS);
@@ -702,8 +730,8 @@ export class AntiBanManager {
     const reasons: string[] = [];
 
     const disconnectsLastHour = state.disconnectEvents.filter((event) => now - event.at <= HOUR_MS);
-    const disconnect403 = state.disconnectEvents.filter((event) => now - event.at <= DAY_MS && event.reason.includes('403'));
-    const disconnect401 = state.disconnectEvents.filter((event) => now - event.at <= DAY_MS && event.reason.includes('401'));
+    const disconnect403 = disconnectsLastHour.filter((event) => is403Reason(event.reason));
+    const disconnect401 = disconnectsLastHour.filter((event) => is401Reason(event.reason));
     const failedLastHour = state.failedEvents.filter((event) => now - event.at <= HOUR_MS);
 
     if (disconnectsLastHour.length >= this.config.health.disconnectCriticalThreshold) {

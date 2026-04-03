@@ -193,6 +193,29 @@ def render_campaign_message(campaign: dict, recipient: dict) -> str:
     return _apply_content_variation(base_message, campaign["id"], recipient)
 
 
+def _format_antiban_pause_reason(result: Any) -> str:
+    reason = result.error or "Blocked by anti-ban policy"
+    anti_ban = result.anti_ban or {}
+    health = anti_ban.get("health") or {}
+    risk = health.get("risk")
+    reasons = health.get("reasons") or []
+    recommendation = health.get("recommendation")
+
+    detail = reasons[0] if reasons else recommendation
+    if not risk and not detail:
+        return reason
+
+    fragments = []
+    if risk:
+        fragments.append(f"risk={risk}")
+    if detail:
+        fragments.append(str(detail))
+
+    if not fragments:
+        return reason
+    return f"{reason} [{' | '.join(fragments)}]"
+
+
 # ---------------------------------------------------------------------------
 # Campaign CRUD
 # ---------------------------------------------------------------------------
@@ -932,7 +955,7 @@ async def _blast_worker(campaign_id: int) -> None:
                     )
                 elif result.blocked:
                     retry_after_ms = result.retry_after_ms or 0
-                    paused_reason = result.error or "Blocked by anti-ban policy"
+                    paused_reason = _format_antiban_pause_reason(result)
                     auto_resume_at = None
                     if current.get("auto_resume_enabled") and retry_after_ms > 0:
                         auto_resume_at = (
