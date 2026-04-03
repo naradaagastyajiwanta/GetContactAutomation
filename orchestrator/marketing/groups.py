@@ -169,7 +169,9 @@ async def list_clients(group_id: int) -> list[dict[str, Any]]:
             """
             SELECT
                 c.id, c.group_id, c.name, c.extra_data, c.search_status, c.error_message,
-                c.ig_handle, c.ig_profile_url, c.ig_last_scraped_at, c.created_at,
+                c.ig_handle, c.ig_profile_url, c.ig_last_scraped_at,
+                c.ig_post_scrape_status, c.ig_post_scrape_error, c.ig_post_scrape_last_attempt_at,
+                c.created_at,
                 r.id AS r_id, r.client_id AS r_client_id, r.contact_type,
                 r.value, r.source_url, r.source_type, r.confidence,
                 r.is_approved, r.is_selected, r.edited_value, r.created_at AS r_created_at
@@ -230,25 +232,28 @@ async def list_clients(group_id: int) -> list[dict[str, Any]]:
                 "ig_handle": row[6],
                 "ig_profile_url": row[7],
                 "ig_last_scraped_at": row[8],
-                "created_at": row[9],
+                "ig_post_scrape_status": row[9],
+                "ig_post_scrape_error": row[10],
+                "ig_post_scrape_last_attempt_at": row[11],
+                "created_at": row[12],
                 "ig_candidates": [],
                 "ig_posts": [],
                 "contacts": [],
             }
         # Append contact if present (r_id is not None)
-        if row[10] is not None:
+        if row[13] is not None:
             clients_map[cid]["contacts"].append({
-                "id": row[10],
-                "client_id": row[11],
-                "contact_type": row[12],
-                "value": row[13],
-                "source_url": row[14],
-                "source_type": row[15],
-                "confidence": row[16],
-                "is_approved": bool(row[17]),
-                "is_selected": bool(row[18]),
-                "edited_value": row[19],
-                "created_at": row[20],
+                "id": row[13],
+                "client_id": row[14],
+                "contact_type": row[15],
+                "value": row[16],
+                "source_url": row[17],
+                "source_type": row[18],
+                "confidence": row[19],
+                "is_approved": bool(row[20]),
+                "is_selected": bool(row[21]),
+                "edited_value": row[22],
+                "created_at": row[23],
             })
 
     for row in ig_rows:
@@ -308,7 +313,9 @@ async def get_client(client_id: int) -> dict[str, Any] | None:
             """
             SELECT
                 c.id, c.group_id, c.name, c.extra_data, c.search_status,
-                c.ig_handle, c.ig_profile_url, c.ig_last_scraped_at, c.created_at,
+                c.ig_handle, c.ig_profile_url, c.ig_last_scraped_at,
+                c.ig_post_scrape_status, c.ig_post_scrape_error, c.ig_post_scrape_last_attempt_at,
+                c.created_at,
                 (SELECT COUNT(*) FROM marketing_contact_results r WHERE r.client_id = c.id) AS contact_count,
                 (SELECT COUNT(*) FROM marketing_ig_posts p WHERE p.client_id = c.id) AS ig_post_count
             FROM marketing_clients c
@@ -342,6 +349,39 @@ async def update_client_search_status(client_id: int, status: str) -> None:
         await db.commit()
 
 
+async def reset_client_search_state(client_id: int) -> None:
+    """Clear previous search artifacts so a client can be retried from scratch."""
+    async with aiosqlite.connect(DATABASE_PATH) as db:
+        await db.execute(
+            """
+            DELETE FROM marketing_contact_handoffs
+            WHERE result_id IN (
+                SELECT id FROM marketing_contact_results WHERE client_id = ?
+            )
+            """,
+            (client_id,),
+        )
+        await db.execute("DELETE FROM marketing_contact_results WHERE client_id = ?", (client_id,))
+        await db.execute("DELETE FROM marketing_ig_posts WHERE client_id = ?", (client_id,))
+        await db.execute("DELETE FROM marketing_ig_candidates WHERE client_id = ?", (client_id,))
+        await db.execute(
+            """
+            UPDATE marketing_clients
+            SET search_status = 'pending',
+                error_message = NULL,
+                ig_handle = NULL,
+                ig_profile_url = NULL,
+                ig_last_scraped_at = NULL,
+                ig_post_scrape_status = NULL,
+                ig_post_scrape_error = NULL,
+                ig_post_scrape_last_attempt_at = NULL
+            WHERE id = ?
+            """,
+            (client_id,),
+        )
+        await db.commit()
+
+
 async def update_client_error_message(client_id: int, error_message: str) -> None:
     """Set error_message and status='error' for a client after a search failure."""
     async with aiosqlite.connect(DATABASE_PATH) as db:
@@ -370,6 +410,52 @@ async def save_client_instagram_profile(
             (ig_handle, ig_profile_url, client_id),
         )
         await db.commit()
+
+
+async def update_client_ig_post_scrape_diagnostic(
+    client_id: int,
+    status: str,
+    error_message: str | None = None,
+) -> None:
+    """Persist the last Instagram post scrape outcome for a marketing client."""
+    async with aiosqlite.connect(DATABASE_PATH) as db:
+        await db.execute(
+            """
+            UPDATE marketing_clients
+            SET ig_post_scrape_status = ?,
+                ig_post_scrape_error = ?,
+                ig_post_scrape_last_attempt_at = CURRENT_TIMESTAMP
+            WHERE id = ?
+            """,
+            (status, error_message, client_id),
+        )
+        await db.commit()
+
+
+async def get_selected_instagram_handles_for_client(client_id: int) -> list[str]:
+    """Return selected IG candidate handles ordered by primary/rank, with profile handle fallback."""
+    async with aiosqlite.connect(DATABASE_PATH) as db:
+        cursor = await db.execute(
+            """
+            SELECT handle
+            FROM marketing_ig_candidates
+            WHERE client_id = ? AND is_selected = 1
+            ORDER BY is_primary DESC, COALESCE(rank_order, 999999) ASC, final_score DESC
+            """,
+            (client_id,),
+        )
+        handles = [row[0] for row in await cursor.fetchall() if row[0]]
+        if handles:
+            return handles
+
+        cursor = await db.execute(
+            "SELECT ig_handle FROM marketing_clients WHERE id = ?",
+            (client_id,),
+        )
+        row = await cursor.fetchone()
+        if row and row[0]:
+            return [row[0]]
+        return []
 
 
 async def replace_client_ig_posts(
@@ -470,6 +556,23 @@ async def upsert_contact_result(
 ) -> int:
     """Insert a contact result for a client. Returns result id."""
     async with aiosqlite.connect(DATABASE_PATH) as db:
+        cursor = await db.execute(
+            """
+            SELECT id
+            FROM marketing_contact_results
+            WHERE client_id = ?
+              AND contact_type = ?
+              AND value = ?
+              AND COALESCE(source_url, '') = COALESCE(?, '')
+              AND COALESCE(source_type, '') = COALESCE(?, '')
+            LIMIT 1
+            """,
+            (client_id, contact_type, value, source_url, source_type),
+        )
+        existing = await cursor.fetchone()
+        if existing is not None:
+            return int(existing[0])
+
         now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         cursor = await db.execute(
             """INSERT INTO marketing_contact_results
@@ -707,9 +810,12 @@ def _row_to_client_out(row: tuple[Any, ...]) -> dict[str, Any]:
         "ig_handle": row[5],
         "ig_profile_url": row[6],
         "ig_last_scraped_at": row[7],
-        "created_at": row[8],
-        "contact_count": row[9] or 0,
-        "ig_post_count": row[10] or 0,
+        "ig_post_scrape_status": row[8],
+        "ig_post_scrape_error": row[9],
+        "ig_post_scrape_last_attempt_at": row[10],
+        "created_at": row[11],
+        "contact_count": row[12] or 0,
+        "ig_post_count": row[13] or 0,
     }
 
 

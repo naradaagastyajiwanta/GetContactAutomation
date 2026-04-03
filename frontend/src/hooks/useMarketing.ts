@@ -7,6 +7,8 @@ import {
   getMarketingClients,
   addMarketingClient,
   deleteMarketingClient,
+  retryMarketingClientInstagramScrape,
+  retryMarketingClientSearch,
   updateMarketingContact,
   bulkApproveGroupContacts,
   importPreview,
@@ -101,6 +103,32 @@ export function useDeleteMarketingClient() {
       qc.invalidateQueries({ queryKey: mkKeys.groupClients(groupId) })
       qc.invalidateQueries({ queryKey: mkKeys.groupDetail(groupId) })
       qc.invalidateQueries({ queryKey: ['marketing', 'groups'] })
+    },
+  })
+}
+
+export function useRetryMarketingClientInstagramScrape() {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: ({ clientId }: { clientId: number }) =>
+      retryMarketingClientInstagramScrape(clientId),
+    onSuccess: (_data, { clientId: _clientId, groupId }: { clientId: number; groupId: number }) => {
+      qc.invalidateQueries({ queryKey: mkKeys.groupClients(groupId) })
+      qc.invalidateQueries({ queryKey: mkKeys.groupDetail(groupId) })
+    },
+  })
+}
+
+export function useRetryMarketingClientSearch() {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: ({ clientId }: { clientId: number }) =>
+      retryMarketingClientSearch(clientId),
+    onSuccess: (_data, { groupId }: { clientId: number; groupId: number }) => {
+      qc.invalidateQueries({ queryKey: mkKeys.groupClients(groupId) })
+      qc.invalidateQueries({ queryKey: mkKeys.groupDetail(groupId) })
+      qc.invalidateQueries({ queryKey: mkKeys.searchStatus(groupId) })
+      qc.invalidateQueries({ queryKey: mkKeys.all })
     },
   })
 }

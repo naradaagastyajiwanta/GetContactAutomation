@@ -26,6 +26,7 @@ export type GroupStatus = 'draft' | 'searching' | 'done'
 export type ContactType = 'wa_phone' | 'email' | 'office_phone' | 'pic_name' | 'pic_title'
 
 export type ClientSearchStatus = 'pending' | 'searching' | 'found' | 'not_found' | 'error'
+export type InstagramPostScrapeStatus = 'scraping' | 'success' | 'empty' | 'failed'
 
 export interface MarketingGroup {
   id: number
@@ -49,10 +50,31 @@ export interface MarketingClient {
   ig_handle?: string | null
   ig_profile_url?: string | null
   ig_last_scraped_at?: string | null
+  ig_post_scrape_status?: InstagramPostScrapeStatus | null
+  ig_post_scrape_error?: string | null
+  ig_post_scrape_last_attempt_at?: string | null
   created_at: string
   ig_candidates: MarketingInstagramCandidate[]
   ig_posts: MarketingInstagramPost[]
   contacts: MarketingContact[]
+}
+
+export interface RetryInstagramScrapeResult {
+  success: boolean
+  client_id: number
+  status: InstagramPostScrapeStatus
+  handles: string[]
+  posts: number
+  contacts_added: number
+  message: string
+}
+
+export interface RetryMarketingSearchResult {
+  success: boolean
+  client_id: number
+  group_id: number
+  status: 'queued'
+  message: string
 }
 
 export interface MarketingInstagramCandidate {
@@ -188,6 +210,20 @@ export async function addMarketingClient(
 
 export async function deleteMarketingClient(clientId: number): Promise<void> {
   await apiClient.delete(`/marketing/clients/${clientId}`)
+}
+
+export async function retryMarketingClientInstagramScrape(
+  clientId: number
+): Promise<RetryInstagramScrapeResult> {
+  const { data } = await apiClient.post(`/marketing/clients/${clientId}/instagram/retry`)
+  return data
+}
+
+export async function retryMarketingClientSearch(
+  clientId: number
+): Promise<RetryMarketingSearchResult> {
+  const { data } = await apiClient.post(`/marketing/clients/${clientId}/search/retry`)
+  return data
 }
 
 // ── Contact API ────────────────────────────────────────────────────────────

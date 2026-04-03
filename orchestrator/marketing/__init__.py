@@ -102,6 +102,49 @@ async def list_clients(request: Request, group_id: int):
     return {"success": True, "clients": clients}
 
 
+@router.post("/clients/{client_id}/instagram/retry", response_model=dict)
+async def retry_client_instagram_scrape(request: Request, client_id: int):
+    """Retry Instagram post scraping for one marketing client."""
+    await require_permission(request, "marketing.manage")
+    client = await mkt.get_client(client_id)
+    if client is None:
+        raise HTTPException(status_code=404, detail="Client not found")
+
+    try:
+        result = await mkt_search.retry_client_instagram_scrape(client_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    return {"success": True, **result}
+
+
+@router.post("/clients/{client_id}/search/retry", response_model=dict)
+async def retry_client_search(
+    request: Request,
+    client_id: int,
+    background_tasks: BackgroundTasks,
+):
+    """Retry the full marketing search for one client."""
+    await require_permission(request, "marketing.manage")
+    client = await mkt.get_client(client_id)
+    if client is None:
+        raise HTTPException(status_code=404, detail="Client not found")
+    if client["search_status"] == "searching":
+        raise HTTPException(status_code=400, detail="Client is already being searched")
+
+    await mkt.reset_client_search_state(client_id)
+    await mkt.update_group_status(client["group_id"], "searching")
+    background_tasks.add_task(mkt_search.retry_client_search, client_id)
+
+    return {
+        "success": True,
+        "client_id": client_id,
+        "group_id": client["group_id"],
+        "status": "queued",
+        "message": f"Retry search queued for {client['name']}",
+    }
+
+
 # ---------------------------------------------------------------------------
 # Contact Results
 # ---------------------------------------------------------------------------

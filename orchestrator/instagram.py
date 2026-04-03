@@ -1587,7 +1587,8 @@ def scrape_ig_posts_with_fallback(
     max_posts: int | None = None,
     deeper: bool = False,
     known_post_urls: set[str] | None = None,
-) -> list[dict]:
+    include_diagnostics: bool = False,
+) -> list[dict] | tuple[list[dict], dict[str, object]]:
     """
     Smart scrape with 4-tier fallback.
 
@@ -1601,10 +1602,26 @@ def scrape_ig_posts_with_fallback(
     Known post URLs are filtered out before returning.
 
     Returns list of {"post_url", "image_url", "caption", "timestamp", "source"}.
+    When include_diagnostics=True, returns (posts, diagnostics).
     """
     handle = ig_handle.lstrip("@")
     effective_max = max_posts or IG_MAX_POSTS_PER_PROFILE
     known = known_post_urls or set()
+    diagnostics: dict[str, object] = {
+        "reason": None,
+        "playwright_attempted": False,
+        "playwright_error": None,
+        "session_configured": False,
+        "session_error": None,
+        "scrapingbot_configured": scrapingbot_client.is_configured(),
+    }
+
+    def _result(posts: list[dict], reason: str | None = None):
+        if reason:
+            diagnostics["reason"] = reason
+        if include_diagnostics:
+            return posts, diagnostics
+        return posts
 
     # For Apify/ScrapingBot we do NOT inflate fetch_count â€” they can only
     # return the N most-recent posts and don't support cursor pagination.
@@ -1621,6 +1638,7 @@ def scrape_ig_posts_with_fallback(
     # Tier 0: Playwright Stealth Browser (free, ban-resistant)
     if playwright_ig.is_available():
         log.info("[Tier0-Playwright] @%s: attempting scrape (max %d posts)", handle, effective_max)
+        diagnostics["playwright_attempted"] = True
         try:
             posts = playwright_ig.pw_get_posts(handle, max_posts=effective_max)
             if posts:
@@ -1639,27 +1657,37 @@ def scrape_ig_posts_with_fallback(
                 # we have -- even an empty list means "scrape worked, nothing
                 # new".  Do NOT cascade to paid tiers just because all posts
                 # are already in the DB; that wastes credits.
-                return posts
+                return _result(posts)
             else:
                 log.info("[Tier0-Playwright] @%s: returned 0 posts, falling through to next tier", handle)
+                pw_status = playwright_ig.get_status()
+                diagnostics["playwright_error"] = pw_status.get("error") or "returned 0 posts"
         except Exception as e:
             log.warning("[Tier0-Playwright] @%s failed: %s", handle, e)
+            diagnostics["playwright_error"] = str(e)
     else:
         log.info("[Tier0-Playwright] Skipping -- not available (daily_used=%d)",
                  playwright_ig._pw_status.get("profiles_today", 0))
+        diagnostics["playwright_error"] = "not available"
 
     # Tier 1: Direct IG session
+    session_status = get_ig_session_status()
+    diagnostics["session_configured"] = bool(session_status.get("healthy"))
+    diagnostics["session_error"] = session_status.get("error")
     if _ig_pool.get_current_session_id():
         try:
             results = scrape_ig_posts_sync(ig_handle, max_posts, deeper, known_post_urls)
             if results:
                 log.info("[Tier1-Direct] @%s: got %d posts", handle, len(results))
-                return results
+                return _result(results)
             # If zero results but no error, session might still be OK
+            diagnostics["session_error"] = diagnostics.get("session_error") or "returned 0 posts"
         except Exception as e:
             log.warning("[Tier1-Direct] @%s failed: %s", handle, e)
+            diagnostics["session_error"] = str(e)
     else:
         log.info("[Tier1-Direct] Skipping â€” no healthy IG sessions")
+        diagnostics["session_error"] = diagnostics.get("session_error") or "no healthy IG sessions"
 
         # Tier 2: Apify — DISABLED (no longer in use)
     # if apify_client.is_configured():
@@ -1685,14 +1713,16 @@ def scrape_ig_posts_with_fallback(
                 else:
                     log.info("[Tier3-ScrapingBot] @%s: got %d posts", handle, len(posts))
                 if posts:
-                    return posts
+                    return _result(posts)
         except Exception as e:
             log.warning("[Tier3-ScrapingBot] @%s failed: %s", handle, e)
+            diagnostics["scrapingbot_error"] = str(e)
     else:
         log.debug("[Tier3-ScrapingBot] Skipping â€” not configured")
+        diagnostics["scrapingbot_error"] = "not configured"
 
     log.warning("[Fallback] @%s: all tiers failed or 0 new posts", handle)
-    return []
+    return _result([], "all tiers failed or returned 0 posts")
 
 
 def search_ig_handle_with_fallback(
@@ -1769,37 +1799,53 @@ def verify_ig_handle_with_fallback(handle: str, university_name: str) -> dict:
 
     Returns: {"verified": bool, "confidence_boost": float, "bio": str, "reason": str}
     """
-    # Tier 0: Playwright Stealth Browser (free, ban-resistant)
-    if playwright_ig.is_available():
-        try:
-            profile = playwright_ig.pw_get_profile(handle)
-            if profile:
-                return _verify_from_profile_data(handle, university_name, profile)
-        except Exception as e:
-            log.warning("[Tier0-Playwright] Verify failed for @%s: %s", handle, e)
-    else:
-        log.debug("[Tier0-Playwright] Skipping verify - not available")
-
-    # Tier 1: Direct IG session
-    if _ig_pool.get_current_session_id():
-        try:
-            result = verify_ig_handle(handle, university_name)
-            if result.get("reason") != "no session":
-                return result
-        except Exception as e:
-            log.warning("[Tier1-Direct] Verify failed for @%s: %s", handle, e)
-
-    # Apify fallback intentionally disabled for handle verification.
-    # Tier 2: Scraping-Bot profile fetch
-    if scrapingbot_client.is_configured():
-        try:
-            profile = scrapingbot_client.scrapingbot_get_profile(handle, posts_number=0)
-            if profile:
-                return _verify_from_profile_data(handle, university_name, profile)
-        except Exception as e:
-            log.warning("[Tier2-ScrapingBot] Verify failed for @%s: %s", handle, e)
+    profile = _fetch_profile_with_fallback(handle)
+    if profile:
+        return _verify_from_profile_data(handle, university_name, profile)
 
     return {"verified": True, "confidence_boost": 0, "bio": "", "reason": "all providers failed (skipped)"}
+
+
+def _fetch_profile_with_fallback(handle: str) -> dict | None:
+    """Fetch an Instagram profile using the same provider order as handle verification.
+
+    Returns a normalized profile dict with ``bio``, ``full_name``,
+    ``external_url``, and ``is_verified`` when any provider succeeds.
+    """
+    normalized_handle = handle.lstrip("@")
+
+    if playwright_ig.is_available():
+        try:
+            profile = playwright_ig.pw_get_profile(normalized_handle)
+            if profile:
+                return profile
+        except Exception as exc:
+            log.warning("[Tier0-Playwright] Profile fetch failed for @%s: %s", normalized_handle, exc)
+    else:
+        log.debug("[Tier0-Playwright] Skipping profile fetch - not available")
+
+    if _ig_pool.get_current_session_id():
+        client: httpx.Client | None = None
+        try:
+            client = _get_ig_web_client()
+            profile = _ig_web_fetch_profile(client, normalized_handle)
+            if profile:
+                return profile
+        except Exception as exc:
+            log.warning("[Tier1-Direct] Profile fetch failed for @%s: %s", normalized_handle, exc)
+        finally:
+            if client is not None:
+                client.close()
+
+    if scrapingbot_client.is_configured():
+        try:
+            profile = scrapingbot_client.scrapingbot_get_profile(normalized_handle, posts_number=0)
+            if profile:
+                return profile
+        except Exception as exc:
+            log.warning("[Tier2-ScrapingBot] Profile fetch failed for @%s: %s", normalized_handle, exc)
+
+    return None
 
 
 def _verify_from_profile_data(handle: str, university_name: str, profile: dict) -> dict:
@@ -2898,8 +2944,8 @@ def fetch_bios_for_candidates(
 
     Strategy:
       1. Enrich the top-ranked candidates, or all candidates when requested.
-      2. Prefer Playwright profile fetch (more ban-resistant).
-      3. Fall back to session-cookie API only for unresolved candidates.
+            2. Use the same fallback order as handle verification.
+            3. Preserve existing ranking metadata while filling profile evidence.
 
     Returns a new list with the same candidates augmented by ``bio``.
     Sync function — call from executor in async context.
@@ -2911,87 +2957,50 @@ def fetch_bios_for_candidates(
         max_candidates = len(candidates)
 
     max_candidates = min(len(candidates), max_candidates)
-    playwright_enabled = playwright_ig.is_available()
-    session_enabled = bool(_ig_pool.get_current_session_id())
 
     enriched: list[dict] = [{**c, "bio": c.get("bio", "") or ""} for c in candidates]
-    unresolved_indexes = list(range(max_candidates))
-    playwright_hits = 0
-    session_hits = 0
 
-    if playwright_enabled:
-        next_unresolved: list[int] = []
-        for idx in unresolved_indexes:
-            candidate = enriched[idx]
-            handle = candidate.get("handle", "")
-            if not handle:
-                continue
+    for idx in range(max_candidates):
+        candidate = enriched[idx]
+        handle = candidate.get("handle", "")
+        if not handle:
+            continue
 
-            profile = playwright_ig.pw_get_profile(handle)
-            if not profile:
-                next_unresolved.append(idx)
-                continue
+        if any(
+            str(candidate.get(field_name) or "").strip()
+            for field_name in ("bio", "full_name", "external_url")
+        ):
+            continue
 
-            bio = profile.get("bio", "") or ""
-            full_name = profile.get("full_name", "") or ""
-            external_url = profile.get("external_url", "") or ""
-            if bio:
-                candidate["bio"] = bio
-                playwright_hits += 1
-            # Prefer profile data over search-result titles/snippets.
-            if full_name:
-                candidate["full_name"] = full_name
-            if external_url:
-                candidate["external_url"] = external_url
+        profile = _fetch_profile_with_fallback(handle)
+        if not profile:
+            continue
 
-            if not bio and not full_name:
-                next_unresolved.append(idx)
+        bio = profile.get("bio", "") or ""
+        full_name = profile.get("full_name", "") or ""
+        external_url = profile.get("external_url", "") or ""
+        is_verified = bool(profile.get("is_verified", False))
 
-        unresolved_indexes = next_unresolved
+        if bio:
+            candidate["bio"] = bio
+        if full_name:
+            candidate["full_name"] = full_name
+        if external_url:
+            candidate["external_url"] = external_url
+        if is_verified:
+            candidate["is_verified"] = True
 
-    if unresolved_indexes and session_enabled:
-        rate_limited = False
-        try:
-            client = _get_ig_web_client()
-        except RuntimeError:
-            client = None
-
-        if client is not None:
-            try:
-                for idx in unresolved_indexes:
-                    candidate = enriched[idx]
-                    handle = candidate.get("handle", "")
-                    if not handle or rate_limited:
-                        continue
-
-                    profile = _ig_web_fetch_profile(client, handle)
-                    if profile is None:
-                        # Stop after the first session-side 429/401 to avoid cascading limits.
-                        rate_limited = True
-                        log.warning("[BEM-Bio] Session error for @%s — stopping session fallback", handle)
-                        continue
-                    if not profile:
-                        continue
-
-                    bio = profile.get("bio", "") or ""
-                    full_name = profile.get("full_name", "") or ""
-                    external_url = profile.get("external_url", "") or ""
-                    if bio:
-                        candidate["bio"] = bio
-                        session_hits += 1
-                    # Prefer profile data over search-result titles/snippets.
-                    if full_name:
-                        candidate["full_name"] = full_name
-                    if external_url:
-                        candidate["external_url"] = external_url
-                    _time.sleep(2)
-            finally:
-                client.close()
-
-    fetched = sum(1 for c in enriched if c.get("bio"))
+    fetched = sum(
+        1
+        for candidate in enriched[:max_candidates]
+        if any(
+            str(candidate.get(field_name) or "").strip()
+            for field_name in ("bio", "full_name", "external_url")
+        )
+    )
     log.info(
-        "[BEM-Bio] Fetched bio for %d/%d candidates (target=%d, playwright=%d, session=%d)",
-        fetched, len(enriched), max_candidates, playwright_hits, session_hits,
+        "[IG-Profile] Fetched profile evidence for %d/%d candidates (target=%d)",
+        fetched, len(enriched), max_candidates,
     )
     return enriched
 

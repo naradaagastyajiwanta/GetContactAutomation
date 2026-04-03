@@ -7,6 +7,7 @@ Stage 3: Web search fallback (DDG broad search → parse snippets)
 import asyncio
 import json
 import re
+from typing import Any, Iterable
 from urllib.parse import urlparse
 from collections.abc import Callable
 from dataclasses import dataclass, field
@@ -14,6 +15,7 @@ from functools import partial
 
 from orchestrator.config import log
 from orchestrator.duckduckgo_client import get_status as get_ddg_status
+from orchestrator import playwright_ig, scrapingbot_client
 from orchestrator.osint.tools import (
     ddg_search,
     fetch_page,
@@ -29,6 +31,8 @@ from orchestrator.instagram import (
     fetch_bios_for_candidates,
     llm_verify_company_ig_handle,
     search_ig_handle_with_fallback,
+    get_ig_session_status,
+    scrape_ig_posts_with_fallback,
 )
 
 _WHATSAPP_URL_PATTERNS = (
@@ -372,6 +376,19 @@ def _candidate_sort_score(candidate: dict) -> float:
     return float(candidate.get("final_score", 0.0)) + source_bonus + llm_bonus + affinity_bonus
 
 
+def _candidate_has_profile_evidence(candidate: dict) -> bool:
+    return any(
+        str(candidate.get(field_name) or "").strip()
+        for field_name in ("bio", "full_name", "external_url", "external_domain")
+    )
+
+
+def _candidate_has_non_llm_selection_evidence(candidate: dict) -> bool:
+    if _candidate_has_profile_evidence(candidate):
+        return True
+    return candidate.get("source") == "website_social"
+
+
 def _has_strong_company_match(candidate: dict, company_name: str) -> bool:
     tokens = _normalize_company_tokens(company_name)
     abbreviation = _build_company_abbreviation(company_name)
@@ -396,6 +413,35 @@ def _has_strong_company_match(candidate: dict, company_name: str) -> bool:
 
     exact_phrase = company_name.lower()
     return exact_phrase in text
+
+
+def _select_ranked_corporate_candidates(ranked: list[dict], company_name: str) -> list[dict]:
+    selected: list[dict] = []
+
+    for candidate in ranked:
+        if candidate.get("llm_is_correct") is False:
+            continue
+        if candidate.get("llm_is_correct") is True:
+            selected.append(candidate)
+        elif (
+            _candidate_has_non_llm_selection_evidence(candidate)
+            and _candidate_sort_score(candidate) >= 0.45
+            and _has_strong_company_match(candidate, company_name)
+        ):
+            selected.append(candidate)
+
+        if len(selected) >= _CORPORATE_MAX_SELECTED_HANDLES:
+            break
+
+    if selected:
+        return selected[:_CORPORATE_MAX_SELECTED_HANDLES]
+
+    if not ranked:
+        return []
+
+    # No candidate has sufficient evidence. Keep a single primary fallback so the
+    # scraper can still probe one account, but avoid selecting multiple weak matches.
+    return [ranked[0]]
 
 
 def _upsert_company_candidate(candidates_by_handle: dict[str, dict], candidate: dict) -> None:
@@ -663,19 +709,7 @@ async def _evaluate_corporate_ig_candidates(client_name: str) -> list[dict]:
 
     ranked = sorted(enriched, key=_candidate_sort_score, reverse=True)
 
-    selected: list[dict] = []
-    for candidate in ranked:
-        if candidate.get("llm_is_correct") is False:
-            continue
-        if candidate.get("llm_is_correct") is True:
-            selected.append(candidate)
-        elif _candidate_sort_score(candidate) >= 0.45 and _has_strong_company_match(candidate, client_name):
-            selected.append(candidate)
-        if len(selected) >= _CORPORATE_MAX_SELECTED_HANDLES:
-            break
-
-    if not selected and ranked:
-        selected.append(ranked[0])
+    selected = _select_ranked_corporate_candidates(ranked, client_name)
 
     selected_handles = {candidate.get("handle") for candidate in selected}
     primary_handle = selected[0].get("handle") if selected else None
@@ -710,6 +744,8 @@ class InstagramDiscoveryResult:
     posts: list[dict] = field(default_factory=list)
     contacts: list[ContactResult] = field(default_factory=list)
     candidates: list[dict] = field(default_factory=list)
+    scrape_status: str | None = None
+    scrape_error: str | None = None
 
 
 class SearchDependencyError(RuntimeError):
@@ -805,6 +841,119 @@ async def website_discovery(client_name: str, extra_data: dict | None = None) ->
     return _dedupe_results(results)
 
 
+def _build_ig_scrape_diagnostic(handle: str, diagnostics: dict | None = None) -> str:
+    diagnostics = diagnostics or {}
+    parts: list[str] = []
+
+    if diagnostics.get("reason"):
+        parts.append(str(diagnostics["reason"]))
+
+    playwright_error = diagnostics.get("playwright_error")
+    if playwright_error:
+        parts.append(f"playwright={playwright_error}")
+
+    session_error = diagnostics.get("session_error")
+    if session_error:
+        parts.append(f"ig_session={session_error}")
+    elif diagnostics.get("session_configured") is False:
+        parts.append("ig_session=no_sessions")
+
+    if diagnostics.get("scrapingbot_configured") is False:
+        parts.append("scrapingbot=not_configured")
+
+    message = "; ".join(part for part in parts if part)
+    if message:
+        return message[:500]
+    return f"No Instagram posts could be fetched for @{handle}"
+
+
+async def _extract_marketing_contacts_from_posts(posts: list[dict]) -> list[ContactResult]:
+    results: list[ContactResult] = []
+
+    for post in posts:
+        image_url = post.get("image_url", "")
+        caption = post.get("caption", "")
+        post_url = post.get("post_url", "")
+
+        if image_url:
+            try:
+                phone_contacts = await extract_phone_from_image(
+                    image_url,
+                    caption,
+                    require_person_name=False,
+                )
+                for phone_contact in phone_contacts:
+                    results.append(ContactResult(
+                        contact_type="wa_phone",
+                        value=phone_contact["phone"],
+                        source_url=post_url or image_url,
+                        source_type="ig_post",
+                        confidence=0.8,
+                        pic_name=phone_contact.get("name"),
+                    ))
+            except Exception as exc:
+                log.warning("[Marketing IG] Vision extract failed for %s: %s", image_url, exc)
+
+        if caption:
+            try:
+                named_contacts = await extract_named_contacts_from_text(
+                    caption,
+                    require_person_name=False,
+                )
+                for named_contact in named_contacts:
+                    results.append(ContactResult(
+                        contact_type="wa_phone",
+                        value=named_contact["phone"],
+                        source_url=post_url,
+                        source_type="ig_caption",
+                        confidence=0.5,
+                        pic_name=named_contact.get("name"),
+                    ))
+            except Exception as exc:
+                log.warning("[Marketing IG] Caption extract failed: %s", exc)
+
+    return _dedupe_results(results)
+
+
+def _scrape_instagram_posts_for_handles(handles: list[str], primary_handle: str | None = None) -> tuple[list[dict], str | None]:
+    all_posts: list[dict] = []
+    seen_post_urls: set[str] = set()
+    diagnostics_by_handle: dict[str, str] = {}
+
+    for handle in handles:
+        clean_handle = (handle or "").strip()
+        if not clean_handle:
+            continue
+
+        max_posts = 6 if clean_handle == primary_handle else 4
+        posts, diagnostics = scrape_ig_posts_with_fallback(
+            clean_handle,
+            max_posts,
+            include_diagnostics=True,
+        )
+        if diagnostics.get("reason"):
+            diagnostics_by_handle[clean_handle] = _build_ig_scrape_diagnostic(clean_handle, diagnostics)
+
+        for post in posts:
+            post_url = post.get("post_url")
+            if post_url and post_url in seen_post_urls:
+                continue
+            if post_url:
+                seen_post_urls.add(post_url)
+            post["ig_handle"] = clean_handle
+            all_posts.append(post)
+
+    if all_posts:
+        return all_posts, None
+
+    if diagnostics_by_handle:
+        return [], " | ".join(
+            f"@{handle}: {message}" for handle, message in diagnostics_by_handle.items()
+        )[:1000]
+
+    return [], None
+
+
 # ---------------------------------------------------------------------------
 # Stage 2 — Instagram Discovery
 # ---------------------------------------------------------------------------
@@ -821,85 +970,34 @@ async def ig_discovery(client_name: str) -> InstagramDiscoveryResult:
     if not selected_candidates:
         return InstagramDiscoveryResult(candidates=candidates)
 
-    all_posts: list[dict] = []
-    seen_post_urls: set[str] = set()
+    selected_handles = [candidate.get("handle") for candidate in selected_candidates if candidate.get("handle")]
+    primary_handle = primary_candidate.get("handle") if primary_candidate else None
     loop = asyncio.get_running_loop()
 
-    for candidate in selected_candidates:
-        ig_handle = candidate.get("handle")
-        if not ig_handle:
-            continue
-
-        max_posts = 6 if candidate.get("is_primary") else 4
-        try:
-            posts = await loop.run_in_executor(
-                None, partial(scrape_ig_posts_with_fallback, ig_handle, max_posts)
-            )
-        except Exception as e:
-            log.warning("[Marketing IG Discovery] scrape failed for %s: %s", ig_handle, e)
-            continue
-
-        for post in posts:
-            post_url = post.get("post_url")
-            if post_url and post_url in seen_post_urls:
-                continue
-            if post_url:
-                seen_post_urls.add(post_url)
-            post["ig_handle"] = ig_handle
-            all_posts.append(post)
+    try:
+        all_posts, scrape_error = await loop.run_in_executor(
+            None,
+            partial(_scrape_instagram_posts_for_handles, selected_handles, primary_handle),
+        )
+    except Exception as exc:
+        log.warning("[Marketing IG Discovery] scrape batch failed for %s: %s", client_name, exc)
+        return InstagramDiscoveryResult(
+            handle=primary_handle,
+            profile_url=primary_candidate.get("url") if primary_candidate else None,
+            candidates=candidates,
+            scrape_status="failed",
+            scrape_error=str(exc) or type(exc).__name__,
+        )
 
     if not all_posts:
         return InstagramDiscoveryResult(
             handle=primary_candidate.get("handle") if primary_candidate else None,
             profile_url=primary_candidate.get("url") if primary_candidate else None,
             candidates=candidates,
+            scrape_status="empty",
+            scrape_error=scrape_error,
         )
-
-    for post in all_posts:
-        image_url = post.get("image_url", "")
-        caption = post.get("caption", "")
-        post_url = post.get("post_url", "")
-
-        if not image_url:
-            continue
-
-        # Extract phones from post image via GPT Vision
-        try:
-            phone_contacts = await extract_phone_from_image(
-                image_url,
-                caption,
-                require_person_name=False,
-            )
-            for pc in phone_contacts:
-                results.append(ContactResult(
-                    contact_type="wa_phone",
-                    value=pc["phone"],
-                    source_url=post_url or image_url,
-                    source_type="ig_post",
-                    confidence=0.8,
-                    pic_name=pc.get("name"),
-                ))
-        except Exception as e:
-            log.warning(f"[Marketing IG] Vision extract failed for {image_url}: {e}")
-
-        # Extract named contacts from caption
-        if caption:
-            try:
-                named_contacts = await extract_named_contacts_from_text(
-                    caption,
-                    require_person_name=False,
-                )
-                for nc in named_contacts:
-                    results.append(ContactResult(
-                        contact_type="wa_phone",
-                        value=nc["phone"],
-                        source_url=post_url,
-                        source_type="ig_caption",
-                        confidence=0.5,
-                        pic_name=nc.get("name"),
-                    ))
-            except Exception as e:
-                log.warning(f"[Marketing IG] Caption extract failed: {e}")
+    results = await _extract_marketing_contacts_from_posts(all_posts)
 
     return InstagramDiscoveryResult(
         handle=primary_candidate.get("handle") if primary_candidate else None,
@@ -907,7 +1005,114 @@ async def ig_discovery(client_name: str) -> InstagramDiscoveryResult:
         posts=all_posts,
         contacts=_dedupe_results(results),
         candidates=candidates,
+        scrape_status="success",
+        scrape_error=None,
     )
+
+
+async def retry_client_instagram_scrape(client_id: int) -> dict[str, Any]:
+    """Retry Instagram post scraping for a single marketing client without rerunning the whole group."""
+    from . import groups as mkt
+
+    client = await mkt.get_client(client_id)
+    if client is None:
+        raise ValueError("Client not found")
+
+    handles = await mkt.get_selected_instagram_handles_for_client(client_id)
+    if not handles:
+        raise ValueError("No selected Instagram handle available for retry")
+
+    primary_handle = handles[0]
+    await mkt.update_client_ig_post_scrape_diagnostic(client_id, "scraping", None)
+    try:
+        loop = asyncio.get_running_loop()
+        posts, scrape_error = await loop.run_in_executor(
+            None,
+            partial(_scrape_instagram_posts_for_handles, handles, primary_handle),
+        )
+
+        if posts:
+            await mkt.replace_client_ig_posts(client_id, primary_handle, posts)
+            contacts = await _extract_marketing_contacts_from_posts(posts)
+            inserted_contacts = 0
+            for result in contacts:
+                await mkt.upsert_contact_result(
+                    client_id=client_id,
+                    contact_type=result.contact_type,
+                    value=result.value,
+                    source_url=result.source_url,
+                    source_type=result.source_type,
+                    confidence=result.confidence,
+                )
+                inserted_contacts += 1
+                if result.pic_name:
+                    await mkt.upsert_contact_result(
+                        client_id=client_id,
+                        contact_type="pic_name",
+                        value=result.pic_name,
+                        source_url=result.source_url or "",
+                        source_type=result.source_type or "",
+                        confidence=result.confidence,
+                    )
+
+            await mkt.update_client_ig_post_scrape_diagnostic(client_id, "success", None)
+            return {
+                "client_id": client_id,
+                "status": "success",
+                "handles": handles,
+                "posts": len(posts),
+                "contacts_added": inserted_contacts,
+                "message": f"Scraped {len(posts)} Instagram post(s)",
+            }
+
+        diagnostic = scrape_error or _build_ig_scrape_diagnostic(primary_handle)
+        await mkt.update_client_ig_post_scrape_diagnostic(client_id, "empty", diagnostic)
+        return {
+            "client_id": client_id,
+            "status": "empty",
+            "handles": handles,
+            "posts": 0,
+            "contacts_added": 0,
+            "message": diagnostic,
+        }
+    except Exception as exc:
+        diagnostic = str(exc)[:500] or type(exc).__name__
+        await mkt.update_client_ig_post_scrape_diagnostic(client_id, "failed", diagnostic)
+        raise
+
+
+async def retry_client_search(client_id: int) -> dict[str, Any]:
+    """Retry the full marketing search pipeline for a single client."""
+    from . import groups as mkt
+
+    client = await mkt.get_client(client_id)
+    if client is None:
+        raise ValueError("Client not found")
+    if client["search_status"] == "searching":
+        raise ValueError("Client is already being searched")
+
+    group_id = int(client["group_id"])
+
+    async def update_status(inner_client_id: int, status: str) -> None:
+        await mkt.update_client_search_status(inner_client_id, status)
+
+    await _search_single_client(
+        client_id=client_id,
+        client_name=client["name"],
+        extra_data=client.get("extra_data"),
+        update_fn=update_status,
+    )
+
+    group_status = await mkt.get_group_search_status(group_id)
+    next_status = "searching" if (group_status["pending"] or group_status["searching"]) else "done"
+    await mkt.update_group_status(group_id, next_status)
+
+    return {
+        "client_id": client_id,
+        "group_id": group_id,
+        "status": "queued",
+        "message": f"Retry search queued for {client['name']}",
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -1055,6 +1260,13 @@ async def _search_single_client(
                     stage2.profile_url,
                 )
                 await mkt.replace_client_ig_posts(client_id, stage2.handle, stage2.posts)
+
+            if stage2.scrape_status:
+                await mkt.update_client_ig_post_scrape_diagnostic(
+                    client_id,
+                    stage2.scrape_status,
+                    stage2.scrape_error,
+                )
 
             all_results = _dedupe_results(stage1 + stage2.contacts + stage3)
             status = "found" if all_results else "not_found"

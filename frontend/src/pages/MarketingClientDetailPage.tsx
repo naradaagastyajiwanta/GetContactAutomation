@@ -159,6 +159,12 @@ function AddClientInlineForm({
   )
 }
 
+function getGroupIgScrapeIncompleteCount(clients: Array<{ search_status: string; ig_handle?: string | null; ig_posts?: unknown[] }>): number {
+  return clients.filter(
+    (client) => client.search_status === 'found' && Boolean(client.ig_handle) && (client.ig_posts?.length ?? 0) === 0
+  ).length
+}
+
 export default function MarketingClientDetailPage() {
   const { id } = useParams<{ id: string }>()
   const navigate = useNavigate()
@@ -173,11 +179,12 @@ export default function MarketingClientDetailPage() {
   const { data: clientsData } = useMarketingClients(groupId, {
     refetchInterval: data?.group.status === 'searching' ? 3_000 : false,
   })
-  const canManage = hasPermission('marketing.manage') || hasPermission('blast.manage')
+  const canManage = hasPermission('marketing.manage')
 
   const group = data?.group
   const stats = data?.stats
   const clients = clientsData?.clients ?? []
+  const igScrapeIncompleteCount = getGroupIgScrapeIncompleteCount(clients)
 
   // Poll search status while searching
   const searchStatusEnabled = group?.status === 'searching'
@@ -188,6 +195,7 @@ export default function MarketingClientDetailPage() {
   const exportMutation = useExportGroupClients()
 
   const statusCfg = statusConfig[group?.status ?? 'draft']
+  const showDoneWarning = (group?.status === 'done') && igScrapeIncompleteCount > 0
 
   useEffect(() => {
     if (searchStatus?.status !== 'done') return
@@ -282,14 +290,22 @@ export default function MarketingClientDetailPage() {
               <span
                 className={cn(
                   'inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-xs font-semibold',
-                  statusCfg.bg,
-                  statusCfg.color
+                  showDoneWarning
+                    ? 'bg-amber-50 text-amber-700 dark:bg-amber-900/30 dark:text-amber-300'
+                    : statusCfg.bg,
+                  showDoneWarning
+                    ? 'border border-amber-200 dark:border-amber-800'
+                    : statusCfg.color
                 )}
               >
-                <statusCfg.icon
-                  className={cn('h-3 w-3', isSearching && 'animate-spin')}
-                />
-                {statusCfg.label}
+                {showDoneWarning ? (
+                  <XCircle className="h-3 w-3" />
+                ) : (
+                  <statusCfg.icon
+                    className={cn('h-3 w-3', isSearching && 'animate-spin')}
+                  />
+                )}
+                {showDoneWarning ? 'Done with IG warnings' : statusCfg.label}
               </span>
               <span className="text-xs text-gray-400">
                 {formatDate(group.created_at)}
@@ -390,6 +406,22 @@ export default function MarketingClientDetailPage() {
           {searchStatus.error_message && (
             <p className="mt-2 text-xs text-red-500">{searchStatus.error_message}</p>
           )}
+        </Card>
+      )}
+
+      {showDoneWarning && (
+        <Card className="border-amber-200 bg-amber-50/70 dark:border-amber-900/60 dark:bg-amber-950/20">
+          <div className="flex items-start gap-3">
+            <XCircle className="mt-0.5 h-4 w-4 flex-shrink-0 text-amber-600 dark:text-amber-300" />
+            <div className="space-y-1">
+              <p className="text-sm font-semibold text-amber-900 dark:text-amber-100">
+                Search selesai, tapi sebagian IG post belum berhasil discrape
+              </p>
+              <p className="text-xs text-amber-800 dark:text-amber-200">
+                {igScrapeIncompleteCount} client sudah punya handle IG, tetapi belum punya post tersimpan. Ini biasanya berarti handle ditemukan, namun provider post scrape tidak mengembalikan data.
+              </p>
+            </div>
+          </div>
         </Card>
       )}
 

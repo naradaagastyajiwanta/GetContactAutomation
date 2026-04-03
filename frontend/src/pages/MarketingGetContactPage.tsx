@@ -143,7 +143,7 @@ export default function MarketingGetContactPage() {
   const { hasPermission } = useAuth()
   const [clientTypeFilter, setClientTypeFilter] = useState<ClientType | ''>('')
   const [createModalOpen, setCreateModalOpen] = useState(false)
-  const canManage = hasPermission('marketing.manage') || hasPermission('blast.manage')
+  const canManage = hasPermission('marketing.manage')
 
   const { data, isLoading } = useMarketingGroups(
     clientTypeFilter ? { client_type: clientTypeFilter } : {}

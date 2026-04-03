@@ -87,8 +87,8 @@ export default function App() {
                       <Route path="crm" element={<PermissionGuard permission="crm.view"><ErrorBoundary><CrmPage /></ErrorBoundary></PermissionGuard>} />
                       <Route path="crm/:id" element={<PermissionGuard permission="crm.view"><ErrorBoundary><CrmDetailPage /></ErrorBoundary></PermissionGuard>} />
                       <Route path="university-groups" element={<PermissionGuard permission="universities.view"><ErrorBoundary><UniversityGroupsPage /></ErrorBoundary></PermissionGuard>} />
-                      <Route path="marketing" element={<PermissionGuard permission="blast.view"><ErrorBoundary><MarketingGetContactPage /></ErrorBoundary></PermissionGuard>} />
-                      <Route path="marketing/groups/:id" element={<PermissionGuard permission="blast.view"><ErrorBoundary><MarketingClientDetailPage /></ErrorBoundary></PermissionGuard>} />
+                      <Route path="marketing" element={<PermissionGuard permission="marketing.view"><ErrorBoundary><MarketingGetContactPage /></ErrorBoundary></PermissionGuard>} />
+                      <Route path="marketing/groups/:id" element={<PermissionGuard permission="marketing.view"><ErrorBoundary><MarketingClientDetailPage /></ErrorBoundary></PermissionGuard>} />
                       <Route path="settings" element={<PermissionGuard permission="settings.manage"><ErrorBoundary><SettingsPage /></ErrorBoundary></PermissionGuard>} />
                     </Route>
                   </Route>

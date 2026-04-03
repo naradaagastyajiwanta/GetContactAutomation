@@ -2519,10 +2519,7 @@ def pw_get_posts(handle: str, max_posts: int = 12) -> list[dict]:
                     _human_delay(3, 6)
 
                     content = browser.get_page_content()
-                    if browser.check_login_wall():
-                        _pw_status["error"] = "login_wall_after_nav"
-                        pagination_done = True
-                        break
+                    login_wall_after_nav = browser.check_login_wall()
                     if "Sorry, this page isn't available" in content:
                         pagination_done = True
                         break
@@ -2531,7 +2528,47 @@ def pw_get_posts(handle: str, max_posts: int = 12) -> list[dict]:
                     _human_delay(2, 4)
                     content = browser.get_page_content()
 
-                    post_links = re.findall(r'href="(/(?:p|reel)/[A-Za-z0-9_-]+/)"', content)
+                    dom_posts = _extract_posts_from_profile_dom(browser, max_posts)
+                    if dom_posts:
+                        posts.extend(dom_posts)
+                        _pw_status["profiles_today"] += 1
+                        if account:
+                            account.profiles_today += 1
+                        _pw_status["ok"] = True
+                        _pw_status["error"] = None
+                        pagination_done = True
+                        log.info(
+                            "[Playwright] DOM @%s: extracted %d rendered grid posts",
+                            handle,
+                            len(dom_posts),
+                        )
+                        continue
+
+                    if login_wall_after_nav:
+                        _pw_status["error"] = "login_wall_after_nav"
+                        pagination_done = True
+                        break
+
+                    preview_posts = _extract_posts_from_profile_html(content, handle, max_posts)
+                    if preview_posts:
+                        posts.extend(preview_posts)
+                        _pw_status["profiles_today"] += 1
+                        if account:
+                            account.profiles_today += 1
+                        _pw_status["ok"] = True
+                        _pw_status["error"] = None
+                        pagination_done = True
+                        log.info(
+                            "[Playwright] DOM @%s: extracted %d grid posts without opening post pages",
+                            handle,
+                            len(preview_posts),
+                        )
+                        continue
+
+                    post_links = re.findall(
+                        r'href="(/(?:[^"/]+/)?(?:p|reel)/[A-Za-z0-9_-]+/)"',
+                        content,
+                    )
                     post_links = list(dict.fromkeys(post_links))
                     log.info("[Playwright] DOM @%s: found %d post/reel links", handle, len(post_links))
 
@@ -2564,6 +2601,53 @@ def pw_get_posts(handle: str, max_posts: int = 12) -> list[dict]:
             pagination_done = True  # don't retry on unexpected errors
 
     log.info("[Playwright] @%s: scraped %d posts total", handle, len(posts))
+    return posts
+
+
+def _extract_posts_from_profile_dom(browser, max_posts: int) -> list[dict]:
+    """Extract visible post previews from the rendered profile grid DOM."""
+    try:
+        anchors = browser.page.locator('a[href*="/p/"], a[href*="/reel/"]')
+        anchor_count = anchors.count()
+    except Exception:
+        return []
+
+    posts: list[dict] = []
+    seen_urls: set[str] = set()
+
+    for index in range(min(anchor_count, max_posts)):
+        try:
+            anchor = anchors.nth(index)
+            href = anchor.get_attribute("href") or ""
+            if not href:
+                continue
+
+            post_url = href if href.startswith("http") else f"https://www.instagram.com{href}"
+            if post_url in seen_urls:
+                continue
+            seen_urls.add(post_url)
+
+            image_url = ""
+            caption = ""
+
+            try:
+                image = anchor.locator("img").first
+                image_url = image.get_attribute("src") or ""
+                caption = image.get_attribute("alt") or ""
+            except Exception:
+                image_url = ""
+                caption = ""
+
+            posts.append({
+                "post_url": post_url,
+                "image_url": image_url,
+                "caption": caption,
+                "timestamp": None,
+                "source": "playwright",
+            })
+        except Exception:
+            continue
+
     return posts
 
 
@@ -2914,6 +2998,92 @@ def _extract_post_from_html(html: str, post_url: str) -> dict | None:
         "caption": caption,
         "timestamp": timestamp,
     }
+
+
+def _extract_posts_from_profile_html(html: str, handle: str, max_posts: int) -> list[dict]:
+    """Extract visible post previews from an Instagram profile page HTML snapshot.
+
+    This is a lighter fallback than opening each post page individually and is
+    good enough for downstream OCR because the grid often exposes the image URL.
+    """
+    if not html:
+        return []
+
+    posts: list[dict] = []
+    seen_shortcodes: set[str] = set()
+    pattern = re.compile(
+        r'"shortcode":"(?P<shortcode>[A-Za-z0-9_-]+)"'
+        r'.{0,4000}?'
+        r'"display_url":"(?P<image_url>https:[^"\\]+(?:\\/[^"\\]+)*)"'
+        r'.{0,2500}?'
+        r'(?:"taken_at_timestamp":(?P<timestamp>\d+))?'
+        r'.{0,2500}?'
+        r'(?:"accessibility_caption":"(?P<caption>(?:\\.|[^"\\])*)")?',
+        re.DOTALL,
+    )
+
+    for match in pattern.finditer(html):
+        shortcode = match.group("shortcode")
+        if not shortcode or shortcode in seen_shortcodes:
+            continue
+        seen_shortcodes.add(shortcode)
+
+        raw_image_url = match.group("image_url") or ""
+        image_url = raw_image_url.replace("\\/", "/")
+        raw_caption = match.group("caption") or ""
+        caption = raw_caption.encode().decode("unicode_escape", errors="ignore")
+
+        timestamp = None
+        raw_timestamp = match.group("timestamp")
+        if raw_timestamp:
+            try:
+                timestamp = datetime.fromtimestamp(int(raw_timestamp), tz=timezone.utc).isoformat()
+            except (ValueError, OSError):
+                timestamp = None
+
+        posts.append({
+            "post_url": f"https://www.instagram.com/p/{shortcode}/",
+            "image_url": image_url,
+            "caption": caption,
+            "timestamp": timestamp,
+            "source": "playwright",
+        })
+
+        if len(posts) >= max_posts:
+            break
+
+    if posts:
+        return posts
+
+    link_pattern = re.compile(
+        r'href="/(?:[^"/]+/)?(?P<kind>p|reel)/(?P<shortcode>[A-Za-z0-9_-]+)/"[^>]*>'
+        r'.{0,2500}?'
+        r'<img[^>]+src="(?P<image_url>[^"]+)"'
+        r'(?:[^>]+alt="(?P<caption>[^"]*)")?',
+        re.DOTALL,
+    )
+
+    for match in link_pattern.finditer(html):
+        shortcode = match.group("shortcode")
+        if not shortcode or shortcode in seen_shortcodes:
+            continue
+        seen_shortcodes.add(shortcode)
+
+        kind = match.group("kind") or "p"
+        image_url = _html.unescape(match.group("image_url") or "")
+        caption = _html.unescape(match.group("caption") or "")
+        posts.append({
+            "post_url": f"https://www.instagram.com/{kind}/{shortcode}/",
+            "image_url": image_url,
+            "caption": caption,
+            "timestamp": None,
+            "source": "playwright",
+        })
+
+        if len(posts) >= max_posts:
+            break
+
+    return posts
 
 
 def _extract_meta_content(html: str, *meta_names: str) -> str:

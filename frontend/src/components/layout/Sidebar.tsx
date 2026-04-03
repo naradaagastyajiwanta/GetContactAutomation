@@ -77,7 +77,7 @@ const NAV_SECTIONS: NavSection[] = [
       { to: '/whatsapp', label: 'WhatsApp', icon: Smartphone, permission: 'whatsapp.view' },
       { to: '/blast', label: 'WA Blast', icon: Megaphone, permission: 'blast.view' },
       { to: '/email-blast', label: 'Email Blast', icon: Mail, permission: 'blast.view' },
-      { to: '/marketing', label: 'Marketing Get Contact', icon: Search, permission: 'blast.view' },
+      { to: '/marketing', label: 'Marketing Get Contact', icon: Search, permission: 'marketing.view' },
     ],
   },
   {

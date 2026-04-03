@@ -3,6 +3,7 @@ import {
   CheckCircle2,
   Circle,
   Pencil,
+  RotateCcw,
   X,
   Plus,
   ChevronDown,
@@ -28,6 +29,8 @@ import {
   useUpdateMarketingContact,
   useDeleteMarketingClient,
   useAddMarketingClient,
+  useRetryMarketingClientInstagramScrape,
+  useRetryMarketingClientSearch,
 } from '../../hooks/useMarketing'
 import toast from 'react-hot-toast'
 import type {
@@ -116,6 +119,44 @@ function getVisibleInstagramHandles(client: MarketingClient): Array<{
   }
 
   return []
+}
+
+
+function hasInstagramScrapeWarning(client: MarketingClient): boolean {
+  return client.search_status === 'found' && Boolean(client.ig_handle) && (client.ig_posts?.length ?? 0) === 0
+}
+
+function getInstagramScrapeDiagnosticMessage(client: MarketingClient): string | null {
+  if (client.ig_post_scrape_error) return client.ig_post_scrape_error
+  if (hasInstagramScrapeWarning(client)) {
+    return 'Handle IG sudah tervalidasi, tetapi provider scrape post belum mengembalikan post apa pun.'
+  }
+  return null
+}
+
+function getInstagramScrapeStatusLabel(client: MarketingClient): {
+  label: string
+  className: string
+} | null {
+  if (client.ig_post_scrape_status === 'scraping') {
+    return {
+      label: 'Retry Scrape Berjalan',
+      className: 'bg-blue-50 text-blue-700 dark:bg-blue-900/30 dark:text-blue-300',
+    }
+  }
+  if (client.ig_post_scrape_status === 'failed') {
+    return {
+      label: 'IG Scrape Failed',
+      className: 'bg-red-50 text-red-700 dark:bg-red-900/30 dark:text-red-300',
+    }
+  }
+  if (client.ig_post_scrape_status === 'empty' && hasInstagramScrapeWarning(client)) {
+    return {
+      label: 'IG Post Kosong',
+      className: 'bg-amber-50 text-amber-700 dark:bg-amber-900/30 dark:text-amber-300',
+    }
+  }
+  return null
 }
 
 type ClientDetailTab = 'contacts' | 'posts' | 'instagram'
@@ -237,11 +278,44 @@ function MarketingInstagramAccountsPanel({ client }: { client: MarketingClient }
   )
 }
 
-function MarketingInstagramPostsPanel({ posts }: { posts: MarketingInstagramPost[] }) {
+function MarketingInstagramPostsPanel({
+  client,
+  canManage,
+  onRetry,
+  retrying,
+}: {
+  client: MarketingClient
+  canManage: boolean
+  onRetry: () => void
+  retrying: boolean
+}) {
+  const posts = client.ig_posts ?? []
+  const diagnosticMessage = getInstagramScrapeDiagnosticMessage(client)
+
   if (posts.length === 0) {
     return (
-      <div className="px-4 py-5 text-sm text-gray-500 dark:text-gray-400">
-        Belum ada post Instagram yang tersimpan.
+      <div className="space-y-2 px-4 py-5">
+        <p className="text-sm text-gray-500 dark:text-gray-400">
+          Belum ada post Instagram yang tersimpan.
+        </p>
+        {diagnosticMessage && (
+          <div className="rounded-lg border border-amber-200 bg-amber-50/70 p-3 text-xs text-amber-800 dark:border-amber-900/60 dark:bg-amber-950/20 dark:text-amber-200">
+            <p className="font-medium">Diagnostik scrape</p>
+            <p className="mt-1 break-words">{diagnosticMessage}</p>
+            {client.ig_post_scrape_last_attempt_at && (
+              <p className="mt-2 inline-flex items-center gap-1 text-[11px] text-amber-700/90 dark:text-amber-300">
+                <Clock3 className="h-3 w-3" /> Percobaan terakhir {formatDateTime(client.ig_post_scrape_last_attempt_at)}
+              </p>
+            )}
+          </div>
+        )}
+        {canManage && Boolean(client.ig_handle) && (
+          <div>
+            <Button size="sm" variant="outline" onClick={onRetry} loading={retrying}>
+              Retry IG Post Scrape
+            </Button>
+          </div>
+        )}
       </div>
     )
   }
@@ -307,13 +381,19 @@ function MarketingInstagramPostsPanel({ posts }: { posts: MarketingInstagramPost
 function MarketingContactsPanel({
   client,
   groupId,
+  canManage,
   onApprove,
   onEdit,
+  onRetrySearch,
+  retryingSearch,
 }: {
   client: MarketingClient
   groupId: number
+  canManage: boolean
   onApprove: (id: number, approved: boolean) => void
   onEdit: (id: number, value: string) => void
+  onRetrySearch: () => void
+  retryingSearch: boolean
 }) {
   const hasContacts = (client.contacts ?? []).length > 0
 
@@ -321,7 +401,13 @@ function MarketingContactsPanel({
     return (
       <div className="p-4">
         <p className="mb-2 text-sm text-gray-500 dark:text-gray-400">Belum ada kontak</p>
-        <EmptyClientState client={client} groupId={groupId} />
+        <EmptyClientState
+          client={client}
+          groupId={groupId}
+          canManage={canManage}
+          onRetrySearch={onRetrySearch}
+          retryingSearch={retryingSearch}
+        />
       </div>
     )
   }
@@ -360,6 +446,9 @@ function InstagramDiscoveryPanel({ client }: { client: MarketingClient }) {
   const visibleHandles = getVisibleInstagramHandles(client)
   const postHandles = getInstagramHandlesFromPosts(posts)
   const hasInstagramData = Boolean(client.ig_handle) || posts.length > 0 || candidates.length > 0
+  const scrapeWarning = hasInstagramScrapeWarning(client)
+  const statusBadge = getInstagramScrapeStatusLabel(client)
+  const diagnosticMessage = getInstagramScrapeDiagnosticMessage(client)
 
   if (!hasInstagramData) {
     return null
@@ -374,6 +463,7 @@ function InstagramDiscoveryPanel({ client }: { client: MarketingClient }) {
             <p className="text-sm font-semibold text-gray-900 dark:text-gray-100">
               Instagram Discovery
             </p>
+            {statusBadge && <Badge className={statusBadge.className}>{statusBadge.label}</Badge>}
           </div>
           <div className="flex flex-wrap gap-1.5">
             {visibleHandles.length > 0
@@ -402,6 +492,18 @@ function InstagramDiscoveryPanel({ client }: { client: MarketingClient }) {
                 ? `${posts.length} post tersimpan dari akun IG ini untuk audit flow pencarian.`
                 : 'Handle IG sudah tersimpan, tapi belum ada post yang berhasil discrape.'}
           </p>
+          {scrapeWarning && (
+            <div className="space-y-1">
+              <p className="text-[11px] text-amber-700 dark:text-amber-300">
+                Scrape post belum berhasil walau akun IG sudah tervalidasi. Search group tetap bisa selesai karena contact ditemukan dari website atau web fallback.
+              </p>
+              {diagnosticMessage && (
+                <p className="text-[11px] text-amber-800 dark:text-amber-200">
+                  {diagnosticMessage}
+                </p>
+              )}
+            </div>
+          )}
           {client.ig_last_scraped_at && (
             <div className="flex items-center gap-1 text-[11px] text-gray-500 dark:text-gray-400">
               <Clock3 className="h-3 w-3" />
@@ -744,9 +846,15 @@ function ContactRow({
 function EmptyClientState({
   client,
   groupId,
+  canManage,
+  onRetrySearch,
+  retryingSearch,
 }: {
   client: MarketingClient
   groupId: number
+  canManage: boolean
+  onRetrySearch: () => void
+  retryingSearch: boolean
 }) {
   const [show, setShow] = useState(false)
   const addClient = useAddMarketingClient()
@@ -758,7 +866,19 @@ function EmptyClientState({
 
   if (!show) {
     return (
-      <div className="mt-2">
+      <div className="mt-2 flex flex-wrap gap-2">
+        {(client.search_status === 'not_found' || client.search_status === 'error') && canManage && (
+          <Button
+            size="sm"
+            variant="outline"
+            onClick={onRetrySearch}
+            loading={retryingSearch}
+            className="text-xs"
+          >
+            <RotateCcw className="h-3 w-3" />
+            Retry Search
+          </Button>
+        )}
         <Button
           size="sm"
           variant="outline"
@@ -819,6 +939,8 @@ function ClientCard({
   const [activeTab, setActiveTab] = useState<ClientDetailTab>('contacts')
   const updateContact = useUpdateMarketingContact()
   const deleteClient = useDeleteMarketingClient()
+  const retryInstagramScrape = useRetryMarketingClientInstagramScrape()
+  const retryClientSearch = useRetryMarketingClientSearch()
 
   function handleApprove(contactId: number, approved: boolean) {
     updateContact.mutate({ contactId, payload: { is_approved: approved } })
@@ -833,13 +955,41 @@ function ClientCard({
     deleteClient.mutate({ clientId: client.id, groupId })
   }
 
+  async function handleRetryInstagramScrape() {
+    try {
+      const result = await retryInstagramScrape.mutateAsync({ clientId: client.id, groupId })
+      toast.success(result.message)
+      setExpanded(true)
+      setActiveTab('posts')
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Gagal retry IG post scrape'
+      toast.error(message)
+    }
+  }
+
+  async function handleRetrySearch() {
+    try {
+      const result = await retryClientSearch.mutateAsync({ clientId: client.id, groupId })
+      toast.success(result.message)
+      setExpanded(true)
+      setActiveTab('contacts')
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Gagal retry search client'
+      toast.error(message)
+    }
+  }
+
   const hasContacts = (client.contacts ?? []).length > 0
   const hasApproved = (client.contacts ?? []).some((c) => c.is_approved)
   const igCandidateCount = client.ig_candidates?.length ?? 0
   const igPostCount = client.ig_posts?.length ?? 0
+  const igScrapeWarning = hasInstagramScrapeWarning(client)
   const visibleInstagramHandles = getVisibleInstagramHandles(client)
   const headerInstagramCandidates = visibleInstagramHandles.slice(0, 3)
   const remainingInstagramCandidateCount = Math.max(0, visibleInstagramHandles.length - headerInstagramCandidates.length)
+  const retrying = retryInstagramScrape.isPending
+  const retryingSearch = retryClientSearch.isPending
+  const statusBadge = getInstagramScrapeStatusLabel(client)
   const tabs: Array<{ key: ClientDetailTab; label: string; count: number }> = [
     { key: 'contacts', label: 'Contacts', count: client.contacts?.length ?? 0 },
     { key: 'posts', label: 'Posts', count: client.ig_posts?.length ?? 0 },
@@ -877,6 +1027,14 @@ function ClientCard({
               <span className="inline-flex items-center gap-1 rounded-full bg-green-50 px-2 py-0.5 text-[10px] font-semibold text-green-600 dark:bg-green-900/30 dark:text-green-400">
                 <CheckCircle2 className="h-3 w-3" /> Ditemukan
               </span>
+            )}
+            {igScrapeWarning && (
+              <span className="inline-flex items-center gap-1 rounded-full bg-amber-50 px-2 py-0.5 text-[10px] font-semibold text-amber-700 dark:bg-amber-900/30 dark:text-amber-300">
+                <AlertTriangle className="h-3 w-3" /> IG Post Belum Terscrape
+              </span>
+            )}
+            {statusBadge && !igScrapeWarning && (
+              <Badge className={cn('text-[10px]', statusBadge.className)}>{statusBadge.label}</Badge>
             )}
             {client.search_status === 'searching' && (
               <span className="inline-flex items-center gap-1 rounded-full bg-blue-50 px-2 py-0.5 text-[10px] font-semibold text-blue-600 dark:bg-blue-900/30 dark:text-blue-400">
@@ -970,12 +1128,20 @@ function ClientCard({
             <MarketingContactsPanel
               client={client}
               groupId={groupId}
+              canManage={canManage}
               onApprove={handleApprove}
               onEdit={handleEdit}
+              onRetrySearch={handleRetrySearch}
+              retryingSearch={retryingSearch}
             />
           )}
           {activeTab === 'posts' && (
-            <MarketingInstagramPostsPanel posts={client.ig_posts ?? []} />
+            <MarketingInstagramPostsPanel
+              client={client}
+              canManage={canManage}
+              onRetry={handleRetryInstagramScrape}
+              retrying={retrying}
+            />
           )}
           {activeTab === 'instagram' && (
             <MarketingInstagramAccountsPanel client={client} />

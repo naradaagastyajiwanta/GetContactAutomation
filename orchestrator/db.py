@@ -819,6 +819,9 @@ CREATE TABLE IF NOT EXISTS marketing_clients (
     ig_handle TEXT,
     ig_profile_url TEXT,
     ig_last_scraped_at DATETIME,
+    ig_post_scrape_status TEXT,
+    ig_post_scrape_error TEXT,
+    ig_post_scrape_last_attempt_at DATETIME,
     created_at DATETIME DEFAULT CURRENT_TIMESTAMP
 );
 
@@ -956,6 +959,18 @@ async def init_db() -> None:
         if "ig_last_scraped_at" not in columns:
             await db.execute(
                 "ALTER TABLE marketing_clients ADD COLUMN ig_last_scraped_at DATETIME"
+            )
+        if "ig_post_scrape_status" not in columns:
+            await db.execute(
+                "ALTER TABLE marketing_clients ADD COLUMN ig_post_scrape_status TEXT"
+            )
+        if "ig_post_scrape_error" not in columns:
+            await db.execute(
+                "ALTER TABLE marketing_clients ADD COLUMN ig_post_scrape_error TEXT"
+            )
+        if "ig_post_scrape_last_attempt_at" not in columns:
+            await db.execute(
+                "ALTER TABLE marketing_clients ADD COLUMN ig_post_scrape_last_attempt_at DATETIME"
             )
 
         cursor = await db.execute("PRAGMA table_info(marketing_ig_candidates)")
