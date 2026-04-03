@@ -230,6 +230,12 @@ CONFIG_DEFINITIONS: list[ConfigDef] = [
         label="Agent Planning Enabled",
         description="Pre-compute a strategy plan before the ReAct loop (uses gpt-4o-mini).",
     ),
+    ConfigDef(
+        key="MARKETING_GEMINI_ENABLED",
+        type=ConfigType.BOOL, default=True, group=ConfigGroup.AI_AGENT,
+        label="Marketing Gemini Grounding",
+        description="Enable Gemini with Google Search grounding as a final gap-fill stage in the marketing contact discovery pipeline.",
+    ),
     # --- Message Queue ---
     ConfigDef(
         key="MAX_AI_CONCURRENT",

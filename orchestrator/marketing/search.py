@@ -13,7 +13,7 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 from functools import partial
 
-from orchestrator.config import log
+from orchestrator.config import log, cfg
 from orchestrator.duckduckgo_client import get_status as get_ddg_status
 from orchestrator import playwright_ig, scrapingbot_client
 from orchestrator.osint.tools import (
@@ -115,6 +115,7 @@ _HIGH_TRUST_CONTACT_SOURCE_TYPES = {
 _MEDIUM_TRUST_CONTACT_SOURCE_TYPES = {
     "ddg_result_page",
     "web_mention",
+    "gemini_grounded",
 }
 
 
@@ -905,11 +906,322 @@ class InstagramDiscoveryResult:
     scrape_error: str | None = None
 
 
+@dataclass
+class GeminiGroundedDiscoveryResult:
+    contacts: list[ContactResult] = field(default_factory=list)
+    grounded_urls: list[str] = field(default_factory=list)
+    notes: str | None = None
+    unresolved_gaps: list[str] = field(default_factory=list)
+    parse_failed: bool = False
+
+
 class SearchDependencyError(RuntimeError):
     """Raised when a required external search backend is unavailable."""
 
 
 _MARKETING_MIN_POSTS_PER_CLIENT = 50
+
+
+def is_marketing_gemini_enabled() -> bool:
+    """Return True when the marketing pipeline may use Gemini grounding."""
+    return bool(cfg.get("MARKETING_GEMINI_ENABLED", True)) and bool(cfg.get("GEMINI_API_KEY", ""))
+
+
+def needs_gemini_grounded_enrichment(results: list[ContactResult]) -> bool:
+    """Return True when the current result set is still missing key contact data."""
+    has_email = any(result.contact_type == "email" and (result.value or "").strip() for result in results)
+    has_wa_phone = any(result.contact_type == "wa_phone" and (result.value or "").strip() for result in results)
+    has_website = any(result.contact_type == "website" and (result.value or "").strip() for result in results)
+    return not (has_email and has_wa_phone and has_website)
+
+
+def _marketing_known_contact_summary(results: list[ContactResult]) -> dict[str, list[str]]:
+    summary: dict[str, list[str]] = {
+        "websites": [],
+        "emails": [],
+        "mobile_phones": [],
+        "office_phones": [],
+        "pic_names": [],
+        "pic_titles": [],
+    }
+    seen: set[tuple[str, str]] = set()
+
+    for result in results:
+        value = (result.value or "").strip()
+        if not value:
+            continue
+        key = (result.contact_type, value)
+        if key in seen:
+            continue
+        seen.add(key)
+        if result.contact_type == "website":
+            summary["websites"].append(value)
+        elif result.contact_type == "email":
+            summary["emails"].append(value)
+        elif result.contact_type == "wa_phone":
+            summary["mobile_phones"].append(value)
+        elif result.contact_type == "office_phone":
+            summary["office_phones"].append(value)
+        elif result.contact_type == "pic_name":
+            summary["pic_names"].append(value)
+        elif result.contact_type == "pic_title":
+            summary["pic_titles"].append(value)
+
+    for key, values in summary.items():
+        summary[key] = values[:5]
+
+    return summary
+
+
+def _normalize_grounded_items(raw_items: Any) -> list[dict[str, Any]]:
+    if not isinstance(raw_items, list):
+        return []
+
+    normalized: list[dict[str, Any]] = []
+    for item in raw_items:
+        if isinstance(item, str):
+            value = item.strip()
+            if value:
+                normalized.append({"value": value})
+            continue
+        if isinstance(item, dict):
+            normalized.append(item)
+    return normalized
+
+
+def _clamp_contact_confidence(value: Any, default: float) -> float:
+    try:
+        confidence = float(value)
+    except (TypeError, ValueError):
+        return default
+    return max(0.0, min(confidence, 1.0))
+
+
+def _normalize_candidate_url(value: str | None) -> str | None:
+    candidate = (value or "").strip()
+    if not candidate:
+        return None
+    if not re.match(r"^https?://", candidate, re.IGNORECASE):
+        candidate = f"https://{candidate.lstrip('/')}"
+    parsed = urlparse(candidate)
+    if not parsed.netloc:
+        return None
+    return f"{parsed.scheme or 'https'}://{parsed.netloc}{parsed.path or ''}".rstrip("/")
+
+
+def _select_grounded_source_url(candidate_url: str | None, grounded_urls: list[str]) -> str | None:
+    explicit = _normalize_candidate_url(candidate_url)
+    if explicit:
+        return explicit
+
+    return grounded_urls[0] if grounded_urls else None
+
+
+def _append_standalone_person_results(
+    results: list[ContactResult],
+    *,
+    source_url: str | None,
+    source_type: str,
+    confidence: float,
+    name: str | None,
+    title: str | None,
+) -> None:
+    clean_name = (name or "").strip()
+    clean_title = (title or "").strip()
+    if clean_name:
+        results.append(ContactResult(
+            contact_type="pic_name",
+            value=clean_name,
+            source_url=source_url,
+            source_type=source_type,
+            confidence=confidence,
+        ))
+    if clean_title:
+        results.append(ContactResult(
+            contact_type="pic_title",
+            value=clean_title,
+            source_url=source_url,
+            source_type=source_type,
+            confidence=confidence,
+        ))
+
+
+def _build_gemini_grounded_prompt(
+    client_name: str,
+    extra_data: dict | None,
+    known_results: list[ContactResult],
+) -> str:
+    known_summary = _marketing_known_contact_summary(known_results)
+    missing_targets: list[str] = []
+    if not known_summary["websites"]:
+        missing_targets.append("official website")
+    if not known_summary["emails"]:
+        missing_targets.append("official email")
+    if not known_summary["mobile_phones"]:
+        missing_targets.append("mobile phone / WhatsApp number")
+
+    condensed_extra_data = extra_data if isinstance(extra_data, dict) else {}
+
+    return (
+        f"Cari kontak publik resmi untuk perusahaan/organisasi berikut di Indonesia: {client_name}.\n\n"
+        f"Prioritas gap yang belum terisi: {', '.join(missing_targets) if missing_targets else 'tidak ada gap utama, verifikasi jika ada sinyal yang lebih resmi'}.\n\n"
+        "Konteks hasil pipeline yang SUDAH ditemukan:\n"
+        f"{json.dumps(known_summary, ensure_ascii=False)}\n\n"
+        "Konteks tambahan import/metadata klien:\n"
+        f"{json.dumps(condensed_extra_data, ensure_ascii=False)}\n\n"
+        "TUGAS:\n"
+        "1. Temukan website resmi bila ada.\n"
+        "2. Temukan email domain resmi.\n"
+        "3. Temukan nomor HP/WhatsApp MOBILE Indonesia.\n"
+        "4. Jika yang tersedia hanya telepon kantor/landline, taruh di office_phones.\n"
+        "5. Jika ada PIC yang jelas terkait nomor/email, sertakan nama dan jabatannya.\n"
+        "6. Prioritaskan kontak inti perusahaan. Hindari kontak event/campaign jika sudah ada kontak corporate yang lebih resmi.\n\n"
+        "ATURAN KETAT:\n"
+        "- Gunakan hanya fakta yang didukung Google Search grounding.\n"
+        "- Jangan mengarang. Jika tidak yakin, jangan isi.\n"
+        "- Prioritaskan domain resmi perusahaan, halaman kontak, regulator, atau berita kredibel yang menyebutkan kontak resmi.\n"
+        "- Nomor mobile Indonesia harus format HP, bukan landline.\n"
+        "- Jangan mengembalikan direktori broker/lead database sebagai sumber resmi.\n"
+        "- supporting_url harus berupa satu URL publik yang mendukung item tersebut.\n"
+        "- Batasi output: maksimal 1 official_websites, 2 emails, 2 mobile_phones, 2 office_phones, 2 contact_people.\n"
+        "- Jika tidak ada data, pakai array kosong.\n"
+        "- notes maksimal 1 kalimat singkat.\n\n"
+        "BALAS HANYA JSON valid dengan schema berikut:\n"
+        "{\n"
+        '  "official_websites": [{"value": "https://...", "supporting_url": "https://...", "confidence": 0.0}],\n'
+        '  "emails": [{"value": "info@example.com", "supporting_url": "https://...", "confidence": 0.0, "contact_name": "", "contact_title": ""}],\n'
+        '  "mobile_phones": [{"value": "+628...", "supporting_url": "https://...", "confidence": 0.0, "contact_name": "", "contact_title": ""}],\n'
+        '  "office_phones": [{"value": "+62 21 ...", "supporting_url": "https://...", "confidence": 0.0, "contact_name": "", "contact_title": ""}],\n'
+        '  "contact_people": [{"name": "", "title": "", "supporting_url": "https://...", "confidence": 0.0}],\n'
+        '  "notes": ""\n'
+        "}"
+    )
+
+
+def _build_grounded_contact_results(
+    payload: dict[str, Any],
+    grounded_urls: list[str],
+) -> list[ContactResult]:
+    results: list[ContactResult] = []
+    source_type = "gemini_grounded"
+
+    for item in _normalize_grounded_items(payload.get("official_websites")):
+        value = _normalize_candidate_url(str(item.get("value") or ""))
+        if not value:
+            continue
+        source_url = _select_grounded_source_url(str(item.get("supporting_url") or value), grounded_urls)
+        results.append(ContactResult(
+            contact_type="website",
+            value=value,
+            source_url=source_url or value,
+            source_type=source_type,
+            confidence=_clamp_contact_confidence(item.get("confidence"), 0.7),
+        ))
+
+    for item in _normalize_grounded_items(payload.get("emails")):
+        value = str(item.get("value") or "").strip()
+        if not value:
+            continue
+        source_url = _select_grounded_source_url(str(item.get("supporting_url") or ""), grounded_urls)
+        results.append(ContactResult(
+            contact_type="email",
+            value=value,
+            source_url=source_url,
+            source_type=source_type,
+            confidence=_clamp_contact_confidence(item.get("confidence"), 0.6),
+            pic_name=str(item.get("contact_name") or "").strip() or None,
+            pic_title=str(item.get("contact_title") or "").strip() or None,
+        ))
+
+    for item in _normalize_grounded_items(payload.get("mobile_phones")):
+        value = str(item.get("value") or "").strip()
+        if not value:
+            continue
+        source_url = _select_grounded_source_url(str(item.get("supporting_url") or ""), grounded_urls)
+        results.append(ContactResult(
+            contact_type="wa_phone",
+            value=value,
+            source_url=source_url,
+            source_type=source_type,
+            confidence=_clamp_contact_confidence(item.get("confidence"), 0.65),
+            pic_name=str(item.get("contact_name") or "").strip() or None,
+            pic_title=str(item.get("contact_title") or "").strip() or None,
+        ))
+
+    for item in _normalize_grounded_items(payload.get("office_phones")):
+        value = str(item.get("value") or "").strip()
+        if not value:
+            continue
+        source_url = _select_grounded_source_url(str(item.get("supporting_url") or ""), grounded_urls)
+        results.append(ContactResult(
+            contact_type="office_phone",
+            value=value,
+            source_url=source_url,
+            source_type=source_type,
+            confidence=_clamp_contact_confidence(item.get("confidence"), 0.55),
+            pic_name=str(item.get("contact_name") or "").strip() or None,
+            pic_title=str(item.get("contact_title") or "").strip() or None,
+        ))
+
+    for item in _normalize_grounded_items(payload.get("contact_people")):
+        source_url = _select_grounded_source_url(str(item.get("supporting_url") or ""), grounded_urls)
+        confidence = _clamp_contact_confidence(item.get("confidence"), 0.5)
+        _append_standalone_person_results(
+            results,
+            source_url=source_url,
+            source_type=source_type,
+            confidence=confidence,
+            name=str(item.get("name") or "").strip() or None,
+            title=str(item.get("title") or "").strip() or None,
+        )
+
+    return _dedupe_results(results)
+
+
+async def gemini_grounded_discovery(
+    client_name: str,
+    extra_data: dict | None,
+    known_results: list[ContactResult],
+) -> GeminiGroundedDiscoveryResult:
+    """Run a Gemini grounded search pass to fill gaps after deterministic stages."""
+    from orchestrator.research_agents.gemini_caller import call_gemini
+
+    prompt = _build_gemini_grounded_prompt(client_name, extra_data, known_results)
+    parsed, grounded_urls = await call_gemini(prompt, use_search_grounding=True)
+
+    if not isinstance(parsed, dict):
+        return GeminiGroundedDiscoveryResult(
+            contacts=[],
+            grounded_urls=grounded_urls,
+            notes="Gemini grounded response was not a JSON object",
+            unresolved_gaps=[],
+            parse_failed=True,
+        )
+
+    parse_failed = bool(parsed.get("_parse_failed"))
+    if parse_failed:
+        return GeminiGroundedDiscoveryResult(
+            contacts=[],
+            grounded_urls=grounded_urls,
+            notes="Gemini grounded response could not be parsed into the expected JSON schema",
+            unresolved_gaps=[],
+            parse_failed=True,
+        )
+
+    notes = str(parsed.get("notes") or "").strip() or None
+    unresolved_gaps = [
+        str(item).strip()
+        for item in (parsed.get("unresolved_gaps") or [])
+        if str(item).strip()
+    ]
+    contacts = _build_grounded_contact_results(parsed, grounded_urls)
+    return GeminiGroundedDiscoveryResult(
+        contacts=contacts,
+        grounded_urls=grounded_urls,
+        notes=notes,
+        unresolved_gaps=unresolved_gaps,
+        parse_failed=False,
+    )
 
 
 def _results_from_page_content(

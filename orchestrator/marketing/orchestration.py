@@ -40,13 +40,14 @@ def _build_plan(client: dict[str, Any], mode: str) -> dict[str, Any]:
     }
 
     if mode == "full_search":
-        plan["stages"] = ["website", "instagram", "web_fallback", "finalize"]
+        plan["stages"] = ["website", "instagram", "web_fallback", "gemini_grounded", "finalize"]
         plan["stop_when"] = {
             "has_email": True,
             "has_wa_phone": True,
         }
         plan["instagram_policy"] = "always_run_full_instagram_discovery"
         plan["web_fallback_policy"] = "run_if_website_and_instagram_still_missing_required_contact"
+        plan["gemini_policy"] = "run_grounded_gap_fill_when_key_contacts_or_website_are_missing"
         return plan
 
     if mode == "instagram_scrape_retry":
@@ -145,6 +146,7 @@ async def _persist_final_results(
     stage1: list[search_flow.ContactResult],
     stage2: search_flow.InstagramDiscoveryResult,
     stage3: list[search_flow.ContactResult],
+    stage4: list[search_flow.ContactResult],
 ) -> tuple[list[search_flow.ContactResult], int]:
     await mkt.replace_client_ig_candidates(client_id, stage2.candidates)
     await mkt.replace_client_ig_posts(client_id, stage2.handle or "", stage2.posts)
@@ -165,7 +167,7 @@ async def _persist_final_results(
             stage2.scrape_error,
         )
 
-    all_results = search_flow._dedupe_results(stage1 + stage2.contacts + stage3)
+    all_results = search_flow._dedupe_results(stage1 + stage2.contacts + stage3 + stage4)
     for result in all_results:
         await mkt.upsert_contact_result(
             client_id=client_id,
@@ -180,6 +182,15 @@ async def _persist_final_results(
                 client_id=client_id,
                 contact_type="pic_name",
                 value=result.pic_name,
+                source_url=result.source_url or "",
+                source_type=result.source_type or "",
+                confidence=result.confidence,
+            )
+        if result.pic_title:
+            await mkt.upsert_contact_result(
+                client_id=client_id,
+                contact_type="pic_title",
+                value=result.pic_title,
                 source_url=result.source_url or "",
                 source_type=result.source_type or "",
                 confidence=result.confidence,
@@ -296,8 +307,110 @@ async def _run_full_search(client: dict[str, Any], run_id: int, plan: dict[str, 
             value="web_fallback",
         )
 
+    combined_results = search_flow._dedupe_results(stage1 + stage2.contacts + stage3)
+    if search_flow.needs_gemini_grounded_enrichment(combined_results):
+        if search_flow.is_marketing_gemini_enabled():
+            await _record_stage_summary(
+                run_id,
+                client_id,
+                "planning",
+                "stage_decision",
+                status="continue",
+                reason="Run Gemini grounded gap fill to close remaining contact gaps",
+                payload={
+                    "has_email": _has_contact(combined_results, "email"),
+                    "has_wa_phone": _has_contact(combined_results, "wa_phone"),
+                    "has_website": _has_contact(combined_results, "website"),
+                },
+                value="gemini_grounded",
+            )
+            await _set_client_stage(client_id, run_id, "collecting", "gemini_grounded")
+            try:
+                stage4_result = await search_flow.gemini_grounded_discovery(
+                    client_name,
+                    client.get("extra_data"),
+                    combined_results,
+                )
+            except Exception as exc:
+                stage4 = []
+                await _record_stage_summary(
+                    run_id,
+                    client_id,
+                    "gemini_grounded",
+                    "stage_summary",
+                    status="failed",
+                    reason=str(exc) or type(exc).__name__,
+                    payload={"contacts_found": 0, "grounded_urls": []},
+                )
+            else:
+                await _record_stage_summary(
+                    run_id,
+                    client_id,
+                    "gemini_grounded",
+                    "stage_summary",
+                    status="completed" if not stage4_result.parse_failed else "failed",
+                    reason=stage4_result.notes,
+                    payload={
+                        "contacts_found": len(stage4_result.contacts),
+                        "grounded_urls": stage4_result.grounded_urls,
+                        "unresolved_gaps": stage4_result.unresolved_gaps,
+                        "parse_failed": stage4_result.parse_failed,
+                    },
+                )
+                for grounded_url in stage4_result.grounded_urls:
+                    await _record_stage_summary(
+                        run_id,
+                        client_id,
+                        "gemini_grounded",
+                        "grounded_source",
+                        status="observed",
+                        source_url=grounded_url,
+                        value=grounded_url,
+                    )
+                await _record_contacts(
+                    run_id,
+                    client_id,
+                    "gemini_grounded",
+                    stage4_result.contacts,
+                    status="accepted",
+                    reason=stage4_result.notes,
+                )
+                stage4 = stage4_result.contacts
+        else:
+            stage4 = []
+            await _record_stage_summary(
+                run_id,
+                client_id,
+                "planning",
+                "stage_decision",
+                status="skipped",
+                reason="Gemini grounded stage skipped because marketing Gemini is disabled or GEMINI_API_KEY is missing",
+                payload={
+                    "has_email": _has_contact(combined_results, "email"),
+                    "has_wa_phone": _has_contact(combined_results, "wa_phone"),
+                    "has_website": _has_contact(combined_results, "website"),
+                },
+                value="gemini_grounded",
+            )
+    else:
+        stage4 = []
+        await _record_stage_summary(
+            run_id,
+            client_id,
+            "planning",
+            "stage_decision",
+            status="skipped",
+            reason="Current results already include website, email, and WhatsApp/mobile contact",
+            payload={
+                "has_email": _has_contact(combined_results, "email"),
+                "has_wa_phone": _has_contact(combined_results, "wa_phone"),
+                "has_website": _has_contact(combined_results, "website"),
+            },
+            value="gemini_grounded",
+        )
+
     await _set_client_stage(client_id, run_id, "resolving", "finalize")
-    final_results, pruned_contacts = await _persist_final_results(client_id, stage1, stage2, stage3)
+    final_results, pruned_contacts = await _persist_final_results(client_id, stage1, stage2, stage3, stage4)
     final_status = "found" if final_results else "not_found"
     await mkt.update_client_search_status(client_id, final_status)
 
@@ -309,6 +422,7 @@ async def _run_full_search(client: dict[str, Any], run_id: int, plan: dict[str, 
         "website_contacts": len(stage1),
         "instagram_contacts": len(stage2.contacts),
         "web_fallback_contacts": len(stage3),
+        "gemini_contacts": len(stage4),
         "instagram_handle": stage2.handle,
         "instagram_scrape_status": stage2.scrape_status,
         "instagram_post_count": len(stage2.posts),
