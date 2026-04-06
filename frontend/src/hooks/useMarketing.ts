@@ -325,7 +325,7 @@ export function useSearchStatus(groupId: number, enabled = false) {
     queryKey: mkKeys.searchStatus(groupId),
     queryFn: () => getSearchStatus(groupId),
     enabled,
-    refetchInterval: 3_000,
+    refetchInterval: 10_000,
     retry: 2,
   });
 }

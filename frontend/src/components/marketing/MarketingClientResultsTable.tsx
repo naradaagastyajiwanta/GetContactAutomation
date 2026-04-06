@@ -20,6 +20,7 @@ import {
   Image as ImageIcon,
   Clock3,
   Globe,
+  Loader2,
 } from "lucide-react";
 import { cn } from "../../lib/utils";
 import { Button } from "../ui/Button";
@@ -690,13 +691,10 @@ function MarketingContactsPanel({
         <Table>
           <TableHeader>
             <TableRow>
-              <TableHead>Tipe</TableHead>
-              <TableHead>Nilai</TableHead>
+              <TableHead>Kontak</TableHead>
               <TableHead>Sumber</TableHead>
-              <TableHead>Confidence</TableHead>
-              <TableHead className="text-center">Approved</TableHead>
-              <TableHead className="text-center">Selected</TableHead>
-              <TableHead>Aksi</TableHead>
+              <TableHead className="text-center w-16">Approved</TableHead>
+              <TableHead className="w-12">Aksi</TableHead>
             </TableRow>
           </TableHeader>
           <tbody className="divide-y divide-gray-100 dark:divide-gray-800">
@@ -1050,107 +1048,76 @@ function ContactRow({
 
   return (
     <tr className="border-t border-gray-100 dark:border-gray-800 hover:bg-gray-50 dark:hover:bg-gray-800/50">
-      <td className="px-3 py-2">
-        <div className="flex items-center gap-2">
-          <Icon className="h-3.5 w-3.5 flex-shrink-0 text-gray-400" />
-          <span className="text-xs font-medium text-gray-500 dark:text-gray-400">
-            {displayLabel}
-          </span>
-        </div>
-      </td>
-      <td className="px-3 py-2 min-w-0">
-        {editing ? (
-          <input
-            autoFocus
-            value={editValue}
-            onChange={(e) => setEditValue(e.target.value)}
-            onKeyDown={(e) => {
-              if (e.key === "Enter") commitEdit();
-              if (e.key === "Escape") {
-                setEditing(false);
-                setEditValue(contact.edited_value ?? contact.value ?? "");
-              }
-            }}
-            className="w-full rounded border border-indigo-500 bg-white px-2 py-1 text-sm
-              focus:outline-none focus:ring-1 focus:ring-indigo-500
-              dark:border-indigo-400 dark:bg-gray-700 dark:text-gray-100"
-          />
-        ) : (
-          <span
-            className={cn(
-              "text-sm",
-              contact.edited_value
-                ? "text-indigo-700 dark:text-indigo-300 font-medium"
-                : "text-gray-900 dark:text-gray-100",
-            )}
-          >
-            {contact.value ?? <span className="italic text-gray-400">—</span>}
-            {contact.contact_type === "wa_phone" && contact.pic_name && (
-              <span className="ml-2 text-xs font-normal text-gray-400">
-                — {contact.pic_name}
-              </span>
-            )}
-          </span>
-        )}
-      </td>
-      <td className="px-3 py-2 text-xs text-gray-500 dark:text-gray-400 min-w-[220px]">
+      {/* Col 1: Type + Value merged */}
+      <td className="px-3 py-2.5 min-w-0">
         <div className="flex items-start gap-2">
-          {sourcePost?.image_url ? (
-            <a
-              href={sourceUrl ?? sourcePost.post_url}
-              target="_blank"
-              rel="noreferrer"
-              className="block flex-shrink-0 overflow-hidden rounded-md border border-gray-200 transition-opacity hover:opacity-85 dark:border-gray-700"
-              title="Buka post sumber"
-            >
-              <img
-                src={sourcePost.image_url}
-                alt="Source post"
-                loading="lazy"
-                referrerPolicy="no-referrer"
-                className="h-11 w-11 object-cover"
+          <Icon className="mt-0.5 h-3.5 w-3.5 flex-shrink-0 text-gray-400" />
+          <div className="min-w-0">
+            <div className="text-[10px] font-medium uppercase tracking-wide text-gray-400 dark:text-gray-500">
+              {displayLabel}
+            </div>
+            {editing ? (
+              <input
+                autoFocus
+                value={editValue}
+                onChange={(e) => setEditValue(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter") commitEdit();
+                  if (e.key === "Escape") {
+                    setEditing(false);
+                    setEditValue(contact.edited_value ?? contact.value ?? "");
+                  }
+                }}
+                className="mt-0.5 w-full rounded border border-indigo-500 bg-white px-2 py-1 text-sm
+                  focus:outline-none focus:ring-1 focus:ring-indigo-500
+                  dark:border-indigo-400 dark:bg-gray-700 dark:text-gray-100"
               />
-            </a>
-          ) : (
-            <div className="flex h-11 w-11 flex-shrink-0 items-center justify-center rounded-md bg-gray-100 text-gray-400 dark:bg-gray-800 dark:text-gray-500">
-              <ExternalLink className="h-4 w-4" />
-            </div>
-          )}
-
-          <div className="min-w-0 space-y-1">
-            <div className="font-medium text-gray-700 dark:text-gray-200">
-              {sourceLabel}
-            </div>
-            {sourcePost?.ig_handle && (
-              <div className="text-[11px] text-gray-500 dark:text-gray-400">
-                @{sourcePost.ig_handle}
-              </div>
-            )}
-            {sourceUrl ? (
-              <a
-                href={sourceUrl}
-                target="_blank"
-                rel="noreferrer"
-                className="inline-flex items-center gap-1 text-[11px] font-medium text-indigo-600 hover:text-indigo-800 dark:text-indigo-400 dark:hover:text-indigo-300"
-                title={sourceUrl}
-              >
-                {sourcePost ? "Lihat Post" : sourceDisplayUrl}
-                <ExternalLink className="h-3 w-3" />
-              </a>
             ) : (
-              <span className="text-[11px] text-gray-400 dark:text-gray-500">
-                Tidak ada link sumber
+              <span
+                className={cn(
+                  "text-sm font-medium",
+                  contact.edited_value
+                    ? "text-indigo-700 dark:text-indigo-300"
+                    : "text-gray-900 dark:text-gray-100",
+                )}
+              >
+                {contact.value ?? (
+                  <span className="italic font-normal text-gray-400">—</span>
+                )}
+                {contact.contact_type === "wa_phone" && contact.pic_name && (
+                  <span className="ml-2 text-xs font-normal text-gray-400">
+                    — {contact.pic_name}
+                  </span>
+                )}
               </span>
             )}
           </div>
         </div>
       </td>
-      <td className="px-3 py-2 text-xs text-gray-500 dark:text-gray-400">
-        {contact.confidence != null
-          ? `${Math.round(contact.confidence * 100)}%`
-          : "—"}
+      {/* Col 2: Source — label + optional link */}
+      <td className="px-3 py-2.5 text-xs text-gray-500 dark:text-gray-400">
+        <div className="text-xs font-medium text-gray-600 dark:text-gray-300">
+          {sourceLabel}
+        </div>
+        {sourceUrl ? (
+          <a
+            href={sourceUrl}
+            target="_blank"
+            rel="noreferrer"
+            className="inline-flex items-center gap-1 text-[11px] text-indigo-500 hover:text-indigo-700 dark:text-indigo-400"
+            title={sourceUrl}
+          >
+            {sourcePost ? "Lihat Post" : sourceDisplayUrl}
+            <ExternalLink className="h-3 w-3" />
+          </a>
+        ) : (
+          <span className="text-[11px] text-gray-300 dark:text-gray-600">
+            —
+          </span>
+        )}
       </td>
-      <td className="px-3 py-2 text-center">
+      {/* Col 3: Approved toggle */}
+      <td className="px-3 py-2.5 text-center">
         <button
           type="button"
           onClick={() => onApprove(contact.id, !contact.is_approved)}
@@ -1158,7 +1125,7 @@ function ContactRow({
             "transition-colors",
             contact.is_approved
               ? "text-green-600 hover:text-green-700 dark:text-green-400"
-              : "text-gray-300 hover:text-green-600 dark:text-gray-600 dark:hover:text-green-400",
+              : "text-gray-300 hover:text-green-500 dark:text-gray-600 dark:hover:text-green-400",
           )}
           title={contact.is_approved ? "Batalkan approve" : "Approve"}
         >
@@ -1169,12 +1136,8 @@ function ContactRow({
           )}
         </button>
       </td>
-      <td className="px-3 py-2 text-center">
-        <span className="text-xs text-gray-400">
-          {contact.is_approved ? "—" : "Unchecked"}
-        </span>
-      </td>
-      <td className="px-3 py-2">
+      {/* Col 4: Actions */}
+      <td className="px-3 py-2.5">
         <div className="flex items-center gap-1">
           <button
             type="button"
@@ -1182,7 +1145,7 @@ function ContactRow({
             className={cn(
               "rounded p-1 transition-colors",
               editing
-                ? "text-indigo-600 dark:text-indigo-400 bg-indigo-50 dark:bg-indigo-900/30"
+                ? "bg-indigo-50 text-indigo-600 dark:bg-indigo-900/30 dark:text-indigo-400"
                 : "text-gray-400 hover:text-indigo-600 dark:hover:text-indigo-400",
             )}
             title="Edit nilai"
@@ -1611,80 +1574,63 @@ function ClientCard({
         }}
       >
         <div className="flex-1 min-w-0">
-          <div className="flex flex-wrap items-center gap-2">
+          <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
             <p className="text-sm font-semibold text-gray-900 dark:text-gray-100 truncate">
               {client.name}
             </p>
-            {client.search_status === "not_found" && (
-              <span className="inline-flex items-center gap-1 rounded-full bg-red-50 px-2 py-0.5 text-[10px] font-semibold text-red-600 dark:bg-red-900/30 dark:text-red-400">
-                <X className="h-3 w-3" /> Tidak Ditemukan
-              </span>
-            )}
-            {client.search_status === "error" && (
-              <span className="inline-flex items-center gap-1 rounded-full bg-amber-50 px-2 py-0.5 text-[10px] font-semibold text-amber-700 dark:bg-amber-900/30 dark:text-amber-300">
-                <AlertTriangle className="h-3 w-3" /> Error Search
-              </span>
-            )}
+            {/* Single consolidated status badge */}
             {client.search_status === "found" && (
               <span className="inline-flex items-center gap-1 rounded-full bg-green-50 px-2 py-0.5 text-[10px] font-semibold text-green-600 dark:bg-green-900/30 dark:text-green-400">
                 <CheckCircle2 className="h-3 w-3" /> Ditemukan
               </span>
             )}
             {client.search_status === "partial" && (
-              <span className="inline-flex items-center gap-1 rounded-full bg-amber-50 px-2 py-0.5 text-[10px] font-semibold text-amber-700 dark:bg-amber-900/30 dark:text-amber-300">
-                <AlertTriangle className="h-3 w-3" /> Partial
+              <span className="inline-flex items-center gap-1 rounded-full bg-yellow-50 px-2 py-0.5 text-[10px] font-semibold text-yellow-700 dark:bg-yellow-900/30 dark:text-yellow-300">
+                Partial
               </span>
             )}
-            {igScrapeWarning && (
-              <span className="inline-flex items-center gap-1 rounded-full bg-amber-50 px-2 py-0.5 text-[10px] font-semibold text-amber-700 dark:bg-amber-900/30 dark:text-amber-300">
-                <AlertTriangle className="h-3 w-3" /> IG Post Belum Terscrape
+            {client.search_status === "not_found" && (
+              <span className="inline-flex items-center gap-1 rounded-full bg-red-50 px-2 py-0.5 text-[10px] font-semibold text-red-600 dark:bg-red-900/30 dark:text-red-400">
+                <X className="h-3 w-3" /> Tidak Ditemukan
               </span>
             )}
-            {statusBadge && !igScrapeWarning && (
-              <Badge className={cn("text-[10px]", statusBadge.className)}>
-                {statusBadge.label}
-              </Badge>
+            {client.search_status === "error" && (
+              <span className="inline-flex items-center gap-1 rounded-full bg-red-50 px-2 py-0.5 text-[10px] font-semibold text-red-600 dark:bg-red-900/30 dark:text-red-400">
+                <AlertTriangle className="h-3 w-3" /> Error
+              </span>
             )}
             {client.search_status === "searching" && (
               <span className="inline-flex items-center gap-1 rounded-full bg-blue-50 px-2 py-0.5 text-[10px] font-semibold text-blue-600 dark:bg-blue-900/30 dark:text-blue-400">
-                Searching...
+                <Loader2 className="h-3 w-3 animate-spin" /> Searching...
+              </span>
+            )}
+            {client.search_status === "pending" && (
+              <span className="inline-flex items-center rounded-full bg-gray-100 px-2 py-0.5 text-[10px] font-semibold text-gray-500 dark:bg-gray-800 dark:text-gray-400">
+                Pending
               </span>
             )}
           </div>
 
-          {(headerInstagramCandidates.length > 0 ||
-            client.ig_handle ||
-            remainingInstagramCandidateCount > 0) && (
-            <div className="mt-1 flex flex-wrap items-center gap-2">
-              {headerInstagramCandidates.length > 0
-                ? headerInstagramCandidates.map((candidate) => (
-                    <span
-                      key={`${candidate.source}-${candidate.handle}`}
-                      className={cn(
-                        "inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[10px] font-semibold",
-                        candidate.isPrimary
-                          ? "bg-emerald-50 text-emerald-700 dark:bg-emerald-900/30 dark:text-emerald-300"
-                          : "bg-indigo-50 text-indigo-700 dark:bg-indigo-900/30 dark:text-indigo-300",
-                      )}
-                    >
-                      <Instagram className="h-3 w-3" /> @{candidate.handle}
-                    </span>
-                  ))
-                : null}
-              {remainingInstagramCandidateCount > 0 && (
-                <span className="inline-flex items-center rounded-full bg-gray-100 px-2 py-0.5 text-[10px] font-semibold text-gray-700 dark:bg-gray-800 dark:text-gray-300">
-                  +{remainingInstagramCandidateCount} IG
-                </span>
-              )}
-            </div>
-          )}
-          <p className="mt-0.5 text-xs text-gray-500 dark:text-gray-400">
-            {hasContacts
-              ? `${(client.contacts ?? []).length} kontak · ${(client.contacts ?? []).filter((c) => c.is_approved).length} approved`
-              : "Belum ada kontak"}
-            {igCandidateCount > 0 ? ` · ${igCandidateCount} kandidat IG` : ""}
-            {igPostCount > 0 ? ` · ${igPostCount} post IG` : ""}
-          </p>
+          <div className="mt-1 flex items-center gap-3">
+            <p className="text-xs text-gray-500 dark:text-gray-400">
+              {hasContacts
+                ? `${(client.contacts ?? []).length} kontak · ${(client.contacts ?? []).filter((c) => c.is_approved).length} approved`
+                : "Belum ada kontak"}
+            </p>
+            {/* Primary IG handle only */}
+            {visibleInstagramHandles.length > 0 && (
+              <span className="inline-flex items-center gap-1 text-[11px] text-gray-400 dark:text-gray-500">
+                <Instagram className="h-3 w-3" />@
+                {visibleInstagramHandles.find((h) => h.isPrimary)?.handle ??
+                  visibleInstagramHandles[0].handle}
+                {visibleInstagramHandles.length > 1 && (
+                  <span className="text-gray-300 dark:text-gray-600">
+                    +{visibleInstagramHandles.length - 1}
+                  </span>
+                )}
+              </span>
+            )}
+          </div>
         </div>
 
         <div className="flex items-center gap-2">

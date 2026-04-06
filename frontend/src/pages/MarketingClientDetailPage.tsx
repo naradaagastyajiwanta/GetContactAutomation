@@ -10,14 +10,10 @@ import {
   Plus,
   Loader2,
   Users,
-  Wifi,
-  Mail,
-  Phone,
-  User,
-  Briefcase,
   XCircle,
   Search,
   Brain,
+  MoreHorizontal,
 } from "lucide-react";
 import { Pagination } from "../components/ui/Pagination";
 import { cn } from "../lib/utils";
@@ -30,7 +26,7 @@ import {
   useExportGroupClients,
   useAddMarketingClient,
 } from "../hooks/useMarketing";
-import { Card, CardHeader, CardTitle } from "../components/ui/Card";
+import { Card } from "../components/ui/Card";
 import { Button } from "../components/ui/Button";
 import { Spinner } from "../components/ui/Spinner";
 import { Badge } from "../components/ui/Badge";
@@ -325,6 +321,7 @@ export default function MarketingClientDetailPage() {
 
   const [importOpen, setImportOpen] = useState(false);
   const [addClientOpen, setAddClientOpen] = useState(false);
+  const [moreOpen, setMoreOpen] = useState(false);
   const [page, setPage] = useState(1);
   const [searchQuery, setSearchQuery] = useState("");
   const [searchStatusFilter, setSearchStatusFilter] = useState("");
@@ -419,8 +416,8 @@ export default function MarketingClientDetailPage() {
           </div>
         </div>
         {/* Skeleton stats cards */}
-        <div className="grid grid-cols-2 gap-4 md:grid-cols-3 lg:grid-cols-7">
-          {Array.from({ length: 7 }).map((_, i) => (
+        <div className="grid grid-cols-2 gap-4 sm:grid-cols-4">
+          {Array.from({ length: 4 }).map((_, i) => (
             <div
               key={i}
               className="h-20 animate-pulse rounded-lg bg-gray-200 dark:bg-gray-700"
@@ -508,133 +505,175 @@ export default function MarketingClientDetailPage() {
         </div>
 
         {/* Action buttons */}
-        <div className="flex flex-wrap items-center gap-2">
-          {canManage && (
-            <>
+        {canManage && (
+          <div className="flex items-center gap-2">
+            {group.status !== "searching" && (
+              <Button
+                size="sm"
+                onClick={handleStartSearch}
+                loading={startSearchMutation.isPending}
+              >
+                <Play className="h-4 w-4" />
+                Mulai Scraping
+              </Button>
+            )}
+
+            {/* More actions dropdown */}
+            <div className="relative">
               <Button
                 variant="outline"
                 size="sm"
-                onClick={handleBulkApprove}
-                loading={bulkApproveMutation.isPending}
-                disabled={clients.flatMap((c) => c.contacts ?? []).length === 0}
+                onClick={() => setMoreOpen((o) => !o)}
               >
-                <CheckCircle2 className="h-4 w-4" />
-                Approve Semua
+                <MoreHorizontal className="h-4 w-4" />
               </Button>
-              <Button
-                variant="outline"
-                size="sm"
-                onClick={handleExport}
-                loading={exportMutation.isPending}
-                disabled={clients.length === 0}
-              >
-                <Download className="h-4 w-4" />
-                Export Excel
-              </Button>
-              <Button
-                variant="outline"
-                size="sm"
-                onClick={() => setImportOpen(true)}
-              >
-                <Upload className="h-4 w-4" />
-                Upload Excel
-              </Button>
-              <Button
-                variant="outline"
-                size="sm"
-                onClick={() => setAddClientOpen(true)}
-              >
-                <Plus className="h-4 w-4" />
-                Tambah Client
-              </Button>
-              {group.status !== "searching" && (
-                <Button
-                  size="sm"
-                  onClick={handleStartSearch}
-                  loading={startSearchMutation.isPending}
-                >
-                  <Play className="h-4 w-4" />
-                  Mulai Scraping
-                </Button>
+              {moreOpen && (
+                <>
+                  {/* Backdrop */}
+                  <div
+                    className="fixed inset-0 z-10"
+                    onClick={() => setMoreOpen(false)}
+                  />
+                  <div className="absolute right-0 top-full z-20 mt-1 w-48 overflow-hidden rounded-lg border border-gray-200 bg-white shadow-lg dark:border-gray-700 dark:bg-gray-800">
+                    <button
+                      className="flex w-full items-center gap-2.5 px-3 py-2 text-sm text-gray-700 transition-colors hover:bg-gray-50 dark:text-gray-300 dark:hover:bg-gray-700/60 disabled:opacity-40"
+                      onClick={() => {
+                        void handleBulkApprove();
+                        setMoreOpen(false);
+                      }}
+                      disabled={
+                        bulkApproveMutation.isPending ||
+                        clients.flatMap((c) => c.contacts ?? []).length === 0
+                      }
+                    >
+                      <CheckCircle2 className="h-4 w-4 text-gray-400" />
+                      Approve Semua
+                    </button>
+                    <button
+                      className="flex w-full items-center gap-2.5 px-3 py-2 text-sm text-gray-700 transition-colors hover:bg-gray-50 dark:text-gray-300 dark:hover:bg-gray-700/60 disabled:opacity-40"
+                      onClick={() => {
+                        void handleExport();
+                        setMoreOpen(false);
+                      }}
+                      disabled={
+                        exportMutation.isPending || clients.length === 0
+                      }
+                    >
+                      <Download className="h-4 w-4 text-gray-400" />
+                      Export Excel
+                    </button>
+                    <button
+                      className="flex w-full items-center gap-2.5 px-3 py-2 text-sm text-gray-700 transition-colors hover:bg-gray-50 dark:text-gray-300 dark:hover:bg-gray-700/60"
+                      onClick={() => {
+                        setImportOpen(true);
+                        setMoreOpen(false);
+                      }}
+                    >
+                      <Upload className="h-4 w-4 text-gray-400" />
+                      Upload Excel
+                    </button>
+                    <div className="my-1 border-t border-gray-100 dark:border-gray-700" />
+                    <button
+                      className="flex w-full items-center gap-2.5 px-3 py-2 text-sm text-gray-700 transition-colors hover:bg-gray-50 dark:text-gray-300 dark:hover:bg-gray-700/60"
+                      onClick={() => {
+                        setAddClientOpen(true);
+                        setMoreOpen(false);
+                      }}
+                    >
+                      <Plus className="h-4 w-4 text-gray-400" />
+                      Tambah Client
+                    </button>
+                  </div>
+                </>
               )}
-            </>
-          )}
-        </div>
+            </div>
+          </div>
+        )}
       </div>
 
-      {/* Stats cards */}
+      {/* Stats + progress */}
       {stats && (
-        <div className="grid grid-cols-2 gap-4 md:grid-cols-3 lg:grid-cols-7">
-          {[
-            {
-              label: "Total",
-              value: stats.total,
-              color: "text-gray-900 dark:text-gray-100",
-            },
-            {
-              label: "Ditemukan",
-              value: stats.found,
-              color: "text-green-600 dark:text-green-400",
-            },
-            {
-              label: "Partial",
-              value: stats.partial,
-              color: "text-amber-600 dark:text-amber-400",
-            },
-            {
-              label: "Tidak Ditemukan",
-              value: stats.not_found,
-              color: "text-red-500",
-            },
-            {
-              label: "Error",
-              value: stats.error_count,
-              color: "text-amber-600 dark:text-amber-400",
-            },
-            {
-              label: "Pending",
-              value: stats.pending,
-              color: "text-blue-600 dark:text-blue-400",
-            },
-            {
-              label: "Approved",
-              value: stats.approved,
-              color: "text-indigo-600 dark:text-indigo-400",
-            },
-          ].map((s) => (
-            <Card key={s.label} padding={false}>
+        <div className="space-y-3">
+          <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
+            {/* Total */}
+            <Card padding={false}>
               <div className="p-4">
                 <p className="text-xs font-medium text-gray-500 dark:text-gray-400">
-                  {s.label}
+                  Total
                 </p>
-                <p className={cn("mt-1 text-2xl font-bold", s.color)}>
-                  {s.value}
+                <p className="mt-1 text-2xl font-bold text-gray-900 dark:text-gray-100">
+                  {stats.total}
                 </p>
               </div>
             </Card>
-          ))}
-        </div>
-      )}
+            {/* Ditemukan */}
+            <Card padding={false}>
+              <div className="p-4">
+                <p className="text-xs font-medium text-gray-500 dark:text-gray-400">
+                  Ditemukan
+                </p>
+                <p className="mt-1 text-2xl font-bold text-green-600 dark:text-green-400">
+                  {stats.found}
+                </p>
+                {(stats.partial > 0 ||
+                  stats.not_found > 0 ||
+                  stats.error_count > 0) && (
+                  <p className="mt-1 text-[11px] text-gray-400 dark:text-gray-500 leading-snug">
+                    {[
+                      stats.partial > 0 && `${stats.partial} partial`,
+                      stats.not_found > 0 && `${stats.not_found} tdk ditemukan`,
+                      stats.error_count > 0 && `${stats.error_count} error`,
+                    ]
+                      .filter(Boolean)
+                      .join(" · ")}
+                  </p>
+                )}
+              </div>
+            </Card>
+            {/* Pending */}
+            <Card padding={false}>
+              <div className="p-4">
+                <p className="text-xs font-medium text-gray-500 dark:text-gray-400">
+                  Pending
+                </p>
+                <p className="mt-1 text-2xl font-bold text-blue-600 dark:text-blue-400">
+                  {stats.pending}
+                </p>
+              </div>
+            </Card>
+            {/* Approved */}
+            <Card padding={false}>
+              <div className="p-4">
+                <p className="text-xs font-medium text-gray-500 dark:text-gray-400">
+                  Approved
+                </p>
+                <p className="mt-1 text-2xl font-bold text-indigo-600 dark:text-indigo-400">
+                  {stats.approved}
+                </p>
+              </div>
+            </Card>
+          </div>
 
-      {/* Search progress */}
-      {isSearching && searchStatus && (
-        <Card>
-          <CardHeader>
-            <CardTitle>Progress Scraping</CardTitle>
-          </CardHeader>
-          <SearchProgressBar
-            status={searchStatus.status}
-            progress={searchStatus.progress}
-            total={searchStatus.total}
-            found={searchStatus.found}
-            not_found={searchStatus.not_found}
-          />
-          {searchStatus.error_message && (
-            <p className="mt-2 text-xs text-red-500">
-              {searchStatus.error_message}
-            </p>
+          {/* Progress bar — embedded when searching */}
+          {isSearching && searchStatus && (
+            <Card padding={false}>
+              <div className="p-4">
+                <SearchProgressBar
+                  status={searchStatus.status}
+                  progress={searchStatus.progress}
+                  total={searchStatus.total}
+                  found={searchStatus.found}
+                  not_found={searchStatus.not_found}
+                />
+                {searchStatus.error_message && (
+                  <p className="mt-2 text-xs text-red-500">
+                    {searchStatus.error_message}
+                  </p>
+                )}
+              </div>
+            </Card>
           )}
-        </Card>
+        </div>
       )}
 
       {/* Group-level search error (entire background job crashed) */}

@@ -8,6 +8,7 @@ from functools import partial
 from typing import Any
 
 from orchestrator.config import log
+from orchestrator.websocket import manager as ws_manager
 
 from . import groups as mkt
 from . import search as search_flow
@@ -228,6 +229,12 @@ async def _run_full_search(client: dict[str, Any], run_id: int, plan: dict[str, 
     client_name = str(client["name"])
 
     await mkt.update_client_search_status(client_id, "searching")
+    await ws_manager.broadcast_type(
+        "marketing_client_updated",
+        client_id=client_id,
+        group_id=int(client["group_id"]),
+        search_status="searching",
+    )
     await _set_client_stage(client_id, run_id, "planning", "agent_init")
 
     try:
@@ -255,6 +262,13 @@ async def _run_full_search(client: dict[str, Any], run_id: int, plan: dict[str, 
 
         # Update client search status (agent may have already set this, but ensure it's set)
         await mkt.update_client_search_status(client_id, final_status)
+        await ws_manager.broadcast_type(
+            "marketing_client_updated",
+            client_id=client_id,
+            group_id=int(client["group_id"]),
+            search_status=final_status,
+            contacts_count=len(result.contacts_recorded or []),
+        )
 
         return {
             "mode": plan["mode"],
@@ -283,6 +297,12 @@ async def _run_full_search_legacy(client: dict[str, Any], run_id: int, plan: dic
     client_name = str(client["name"])
 
     await mkt.update_client_search_status(client_id, "searching")
+    await ws_manager.broadcast_type(
+        "marketing_client_updated",
+        client_id=client_id,
+        group_id=int(client["group_id"]),
+        search_status="searching",
+    )
 
     # Resolve client_type from the group record (client_type lives on the group, not the client)
     extra_data = client.get("extra_data") or {}
@@ -601,6 +621,13 @@ async def _run_full_search_legacy(client: dict[str, Any], run_id: int, plan: dic
     else:
         final_status = "found" if final_results else "not_found"
     await mkt.update_client_search_status(client_id, final_status)
+    await ws_manager.broadcast_type(
+        "marketing_client_updated",
+        client_id=client_id,
+        group_id=int(client["group_id"]),
+        search_status=final_status,
+        contacts_count=len(final_results),
+    )
 
     await _record_contacts(run_id, client_id, "finalize", final_results, status="accepted")
     summary = {
@@ -819,3 +846,14 @@ async def process_group_orchestration_queue(group_id: int, *, trigger_type: str 
     group_status = await mkt.get_group_search_status(group_id)
     next_status = "searching" if (group_status["pending"] or group_status["searching"]) else "done"
     await mkt.update_group_status(group_id, next_status)
+
+    if next_status == "done":
+        await ws_manager.broadcast_type(
+            "marketing_search_completed",
+            group_id=group_id,
+            total=group_status.get("total", 0),
+            found=group_status.get("found", 0),
+            not_found=group_status.get("not_found", 0),
+            partial=group_status.get("partial", 0),
+            error_count=group_status.get("error", 0),
+        )
