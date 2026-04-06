@@ -1658,7 +1658,24 @@ def scrape_ig_posts_with_fallback(
                 # we have -- even an empty list means "scrape worked, nothing
                 # new".  Do NOT cascade to paid tiers just because all posts
                 # are already in the DB; that wastes credits.
-                return _result(posts)
+                #
+                # Exception: if ALL captions are suspiciously short (<30 chars)
+                # the Playwright fallback likely only captured img alt-text
+                # (not real captions).  If ScrapingBot is available, fall through
+                # so WA phone numbers embedded in real captions are not lost.
+                if posts:
+                    meaningful = sum(1 for p in posts if len(p.get("caption", "")) >= 30)
+                    if meaningful == 0 and scrapingbot_client.is_configured():
+                        log.warning(
+                            "[Tier0-Playwright] @%s: %d posts returned but all captions <30 chars "
+                            "(likely alt-text fallback) — trying ScrapingBot for real captions",
+                            handle, len(posts),
+                        )
+                        # Fall through to ScrapingBot below
+                    else:
+                        return _result(posts)
+                else:
+                    return _result(posts)
             else:
                 log.info("[Tier0-Playwright] @%s: returned 0 posts, falling through to next tier", handle)
                 pw_status = playwright_ig.get_status()

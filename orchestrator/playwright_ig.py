@@ -2555,6 +2555,14 @@ def pw_get_posts(handle: str, max_posts: int = 12) -> list[dict]:
 
                     dom_posts = _extract_posts_from_profile_dom(browser, max_posts)
                     if dom_posts:
+                        log.info(
+                            "[Playwright] DOM @%s: extracted %d rendered grid posts — enriching captions",
+                            handle,
+                            len(dom_posts),
+                        )
+                        dom_posts = _enrich_posts_with_full_captions(
+                            browser, dom_posts, max_to_enrich=min(max_posts, 10)
+                        )
                         posts.extend(dom_posts)
                         _pw_status["profiles_today"] += 1
                         if account:
@@ -2562,11 +2570,6 @@ def pw_get_posts(handle: str, max_posts: int = 12) -> list[dict]:
                         _pw_status["ok"] = True
                         _pw_status["error"] = None
                         pagination_done = True
-                        log.info(
-                            "[Playwright] DOM @%s: extracted %d rendered grid posts",
-                            handle,
-                            len(dom_posts),
-                        )
                         continue
 
                     if login_wall_after_nav:
@@ -2576,6 +2579,14 @@ def pw_get_posts(handle: str, max_posts: int = 12) -> list[dict]:
 
                     preview_posts = _extract_posts_from_profile_html(content, handle, max_posts)
                     if preview_posts:
+                        log.info(
+                            "[Playwright] DOM @%s: extracted %d grid posts — enriching captions",
+                            handle,
+                            len(preview_posts),
+                        )
+                        preview_posts = _enrich_posts_with_full_captions(
+                            browser, preview_posts, max_to_enrich=min(max_posts, 10)
+                        )
                         posts.extend(preview_posts)
                         _pw_status["profiles_today"] += 1
                         if account:
@@ -2583,11 +2594,6 @@ def pw_get_posts(handle: str, max_posts: int = 12) -> list[dict]:
                         _pw_status["ok"] = True
                         _pw_status["error"] = None
                         pagination_done = True
-                        log.info(
-                            "[Playwright] DOM @%s: extracted %d grid posts without opening post pages",
-                            handle,
-                            len(preview_posts),
-                        )
                         continue
 
                     post_links = re.findall(
@@ -2674,6 +2680,60 @@ def _extract_posts_from_profile_dom(browser, max_posts: int) -> list[dict]:
             continue
 
     return posts
+
+
+def _enrich_posts_with_full_captions(
+    browser,
+    posts: list[dict],
+    max_to_enrich: int = 10,
+) -> list[dict]:
+    """Navigate to individual post pages to replace alt-text captions with full captions.
+
+    Used when web_profile_info API returned 401 and DOM/HTML fallback only captured
+    truncated alt-text or accessibility captions. Full captions contain WA phone numbers.
+
+    Args:
+        browser: Active _PlaywrightBrowser with valid session.
+        posts: Post dicts with post_url but potentially truncated captions.
+        max_to_enrich: Max posts to navigate (keeps runtime reasonable).
+
+    Returns:
+        List of posts with full captions where available; originals for the rest.
+    """
+    enriched: list[dict] = []
+    enriched_count = 0
+
+    for post in posts:
+        post_url = post.get("post_url", "")
+        if not post_url or enriched_count >= max_to_enrich:
+            enriched.append(post)
+            continue
+        try:
+            _human_delay(2, 4)
+            if not browser.navigate(post_url):
+                enriched.append(post)
+                continue
+            _human_delay(1, 2)
+            html = browser.get_page_content()
+            full_post = _extract_post_from_html(html, post_url)
+            if full_post and (full_post.get("caption") or full_post.get("image_url")):
+                full_post["source"] = "playwright"
+                # Preserve CDN image URL from DOM if enrichment page didn't return one
+                if post.get("image_url") and not full_post.get("image_url"):
+                    full_post["image_url"] = post["image_url"]
+                enriched.append(full_post)
+                enriched_count += 1
+                log.debug("[Playwright] Enriched caption for %s (%d chars)",
+                          post_url.split("/p/")[-1].rstrip("/"), len(full_post.get("caption", "")))
+            else:
+                enriched.append(post)
+        except Exception as exc:
+            log.debug("[Playwright] Caption enrichment failed for %s: %s", post_url[:80], exc)
+            enriched.append(post)
+
+    log.info("[Playwright] Caption enrichment: %d/%d posts enriched with full captions",
+             enriched_count, len(posts))
+    return enriched
 
 
 def pw_get_following(handle: str, max_results: int = 200) -> list[dict] | None:

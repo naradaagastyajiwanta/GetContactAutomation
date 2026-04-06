@@ -1,5 +1,5 @@
 import { useState, useEffect } from "react";
-import { useQueryClient } from "@tanstack/react-query";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { Link, useParams, useNavigate } from "react-router-dom";
 import {
   ArrowLeft,
@@ -17,6 +17,7 @@ import {
   Briefcase,
   XCircle,
   Search,
+  Brain,
 } from "lucide-react";
 import { Pagination } from "../components/ui/Pagination";
 import { cn } from "../lib/utils";
@@ -39,7 +40,12 @@ import { MarketingClientResultsTable } from "../components/marketing/MarketingCl
 import { MarketingReadyToBlastPanel } from "../components/marketing/MarketingReadyToBlastPanel";
 import { useAuth } from "../context/AuthContext";
 import toast from "react-hot-toast";
-import { type GroupStatus, CLIENT_TYPE_LABELS } from "../api/marketing";
+import {
+  type GroupStatus,
+  CLIENT_TYPE_LABELS,
+  getGroupStrategyMemo,
+  type GroupStrategyMemo,
+} from "../api/marketing";
 
 const statusConfig: Record<
   GroupStatus,
@@ -185,6 +191,129 @@ function getGroupIgScrapeIncompleteCount(
       Boolean(client.ig_handle) &&
       (client.ig_posts?.length ?? 0) === 0,
   ).length;
+}
+
+function GroupStrategyPanel({ groupId }: { groupId: number }) {
+  const [isOpen, setIsOpen] = useState(false);
+  const { data: strategy, isLoading } = useQuery({
+    queryKey: ["groupStrategy", groupId],
+    queryFn: () => getGroupStrategyMemo(groupId),
+    enabled: isOpen,
+    staleTime: 60_000,
+  });
+
+  if (!isOpen) {
+    return (
+      <button
+        onClick={() => setIsOpen(true)}
+        className="flex items-center gap-1.5 text-xs text-purple-600 dark:text-purple-400 hover:underline"
+      >
+        <Brain className="h-3.5 w-3.5" />
+        <span>Lihat AI Group Memory</span>
+      </button>
+    );
+  }
+
+  const hasData =
+    strategy && (strategy.lessons.length > 0 || strategy.completed_clients > 0);
+
+  return (
+    <div className="rounded-lg border border-purple-200 dark:border-purple-800 bg-purple-50 dark:bg-purple-950/30 p-4 mb-4">
+      <div className="flex items-center justify-between mb-3">
+        <div className="flex items-center gap-2">
+          <Brain className="h-4 w-4 text-purple-600 dark:text-purple-400" />
+          <span className="text-sm font-semibold text-purple-700 dark:text-purple-300">
+            AI Group Memory
+          </span>
+          {strategy && (
+            <span className="text-xs text-purple-500">
+              {strategy.completed_clients} klien selesai · hit rate{" "}
+              {Math.round((strategy.found_rate ?? 0) * 100)}%
+            </span>
+          )}
+        </div>
+        <button
+          onClick={() => setIsOpen(false)}
+          className="text-xs text-gray-400 hover:text-gray-600"
+        >
+          Tutup
+        </button>
+      </div>
+
+      {isLoading && <p className="text-xs text-gray-400">Memuat...</p>}
+
+      {!isLoading && !hasData && (
+        <p className="text-xs text-gray-400">
+          Belum ada AI memory untuk grup ini (mulai setelah pencarian pertama
+          selesai).
+        </p>
+      )}
+
+      {hasData && (
+        <div className="space-y-3">
+          {/* Lessons */}
+          {strategy.lessons.length > 0 && (
+            <div>
+              <p className="text-xs font-medium text-purple-600 dark:text-purple-400 mb-1">
+                Lessons:
+              </p>
+              <ul className="space-y-1">
+                {strategy.lessons.slice(0, 3).map((lesson, i) => (
+                  <li
+                    key={i}
+                    className="text-xs text-gray-600 dark:text-gray-400 flex gap-1.5"
+                  >
+                    <span className="text-purple-400 flex-shrink-0">•</span>
+                    <span className="line-clamp-2">{lesson}</span>
+                  </li>
+                ))}
+              </ul>
+            </div>
+          )}
+
+          {/* Tool success rates */}
+          {Object.keys(strategy.tool_success_rates).length > 0 && (
+            <div>
+              <p className="text-xs font-medium text-purple-600 dark:text-purple-400 mb-1">
+                Agent Success Rates:
+              </p>
+              <div className="grid grid-cols-2 gap-1">
+                {Object.entries(strategy.tool_success_rates).map(
+                  ([tool, stats]) => {
+                    const rate =
+                      stats.spawns > 0
+                        ? Math.round(
+                            (stats.produced_contacts / stats.spawns) * 100,
+                          )
+                        : 0;
+                    const label = tool
+                      .replace("spawn_", "")
+                      .replace("_agent", "")
+                      .replace("_", " ");
+                    return (
+                      <div
+                        key={tool}
+                        className="text-xs text-gray-600 dark:text-gray-400"
+                      >
+                        <span className="capitalize">{label}</span>:{" "}
+                        <span
+                          className={
+                            rate > 50 ? "text-green-500" : "text-gray-400"
+                          }
+                        >
+                          {stats.produced_contacts}/{stats.spawns}
+                        </span>
+                      </div>
+                    );
+                  },
+                )}
+              </div>
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  );
 }
 
 export default function MarketingClientDetailPage() {
@@ -558,6 +687,9 @@ export default function MarketingClientDetailPage() {
           />
         </Card>
       )}
+
+      {/* AI Group Memory */}
+      <GroupStrategyPanel groupId={groupId} />
 
       {/* Clients list */}
       <div>

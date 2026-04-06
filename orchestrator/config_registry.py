@@ -236,6 +236,25 @@ CONFIG_DEFINITIONS: list[ConfigDef] = [
         label="Marketing Gemini Grounding",
         description="Enable Gemini with Google Search grounding as a final gap-fill stage in the marketing contact discovery pipeline.",
     ),
+    ConfigDef(
+        key="MARKETING_ORCHESTRATOR_MODEL",
+        type=ConfigType.STRING, default="gemini-3.1-pro-preview", group=ConfigGroup.AI_AGENT,
+        label="Marketing Orchestrator Model",
+        description="Model for the marketing discovery orchestrator agent. Prefix 'gemini-' uses Gemini API (recommended), 'gpt-' uses OpenAI Responses API.",
+    ),
+    ConfigDef(
+        key="MARKETING_SUB_AGENT_MODEL",
+        type=ConfigType.STRING, default="gpt-4o-mini", group=ConfigGroup.AI_AGENT,
+        label="Marketing Sub-Agent Model",
+        description="OpenAI model used by marketing sub-agents (web search, registry, etc.).",
+    ),
+    ConfigDef(
+        key="MARKETING_AGENT_MAX_TOOL_ITERATIONS",
+        type=ConfigType.INT, default=15, group=ConfigGroup.AI_AGENT,
+        label="Marketing Agent Max Tool Iterations",
+        description="Max ReAct loop iterations for the marketing orchestrator agent before forcing termination.",
+        min_value=1, max_value=50,
+    ),
     # --- Message Queue ---
     ConfigDef(
         key="MAX_AI_CONCURRENT",

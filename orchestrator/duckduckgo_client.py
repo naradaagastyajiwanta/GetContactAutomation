@@ -33,6 +33,7 @@ for _noisy in ("primp", "httpx", "httpcore", "ddgs", "ddgs.ddgs"):
 # SOCKS5 proxy to bypass ISP DPI blocking (e.g. Cloudflare WARP)
 _DDG_PROXY: str | None = os.environ.get("DDG_PROXY")
 _LOCAL_WARP_PROXY = "socks5h://127.0.0.1:1080"
+_LOCAL_WARP_PROXY_ALT = "socks5h://127.0.0.1:40000"  # WARP in proxy mode (port 40000)
 _proxy_probe_checked_at: float = 0.0
 _proxy_probe_result: str | None = None
 
@@ -78,26 +79,40 @@ def _resolve_ddg_proxy() -> str | None:
     """Resolve the proxy to use for DDG queries.
 
     Priority:
-    1. Explicit DDG_PROXY env var
-    2. Host-local WARP SOCKS proxy on 127.0.0.1:1080 (for local dev)
+    1. Explicit DDG_PROXY env var — but verify it's reachable first (avoids using a dead proxy)
+    2. Host-local WARP proxy probed on port 40000 (WarpProxy mode) or 1080 (tunnel mode)
+    3. No proxy (try direct)
     """
     global _proxy_probe_checked_at, _proxy_probe_result
-
-    if _DDG_PROXY:
-        return _DDG_PROXY
 
     now = _time.monotonic()
     if now - _proxy_probe_checked_at < 15:
         return _proxy_probe_result
 
     _proxy_probe_checked_at = now
-    try:
-        with socket.create_connection(("127.0.0.1", 1080), timeout=0.5):
-            _proxy_probe_result = _LOCAL_WARP_PROXY
-    except OSError:
-        _proxy_probe_result = None
 
-    return _proxy_probe_result
+    # Build candidate list: explicit env var first, then well-known local ports
+    candidates: list[tuple[int, str]] = []
+    if _DDG_PROXY:
+        # Extract port from socks5h://host:port or socks5://host:port
+        try:
+            port = int(_DDG_PROXY.rsplit(":", 1)[-1])
+            candidates.append((port, _DDG_PROXY))
+        except (ValueError, IndexError):
+            candidates.append((1080, _DDG_PROXY))  # fallback assumption
+    # Always probe common WARP ports as fallback
+    candidates += [(40000, _LOCAL_WARP_PROXY_ALT), (1080, _LOCAL_WARP_PROXY)]
+
+    for port, proxy_url in candidates:
+        try:
+            with socket.create_connection(("127.0.0.1", port), timeout=0.5):
+                _proxy_probe_result = proxy_url
+                return _proxy_probe_result
+        except OSError:
+            continue
+
+    _proxy_probe_result = None
+    return None
 
 
 def search_text(

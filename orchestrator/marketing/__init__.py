@@ -540,6 +540,23 @@ async def search_status(request: Request, group_id: int):
 # ---------------------------------------------------------------------------
 
 
+@router.get("/clients/{client_id}/runs")
+async def get_client_runs(request: Request, client_id: int):
+    """Return recent orchestration runs with full plan + summary JSON."""
+    await require_permission(request, "marketing.view")
+    runs = await mkt.list_orchestration_runs(client_id, limit=5)
+    return {"success": True, "runs": runs}
+
+
+@router.get("/groups/{group_id}/strategy")
+async def get_group_strategy(request: Request, group_id: int):
+    """Return the AI strategy memo for a group."""
+    await require_permission(request, "marketing.view")
+    from .mkt_memory import get_group_strategy as _get_strategy
+    strategy = await _get_strategy(group_id)
+    return {"success": True, "strategy": strategy}
+
+
 @router.get("/groups/{group_id}/export")
 async def export_group_contacts(request: Request, group_id: int):
     """Export all contacts in a group as an Excel file."""

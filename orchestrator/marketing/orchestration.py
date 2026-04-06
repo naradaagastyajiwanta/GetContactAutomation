@@ -220,6 +220,65 @@ async def _persist_final_results(
 
 
 async def _run_full_search(client: dict[str, Any], run_id: int, plan: dict[str, Any]) -> dict[str, Any]:
+    """
+    AI-powered full search using MarketingDiscoveryAgent.
+    Falls back to legacy pipeline if the agent fails.
+    """
+    client_id = int(client["id"])
+    client_name = str(client["name"])
+
+    await mkt.update_client_search_status(client_id, "searching")
+    await _set_client_stage(client_id, run_id, "planning", "agent_init")
+
+    try:
+        from .marketing_agent import run_discovery
+        result = await run_discovery(client, run_id, mode="full_search")
+
+        # If the orchestrator itself errored (e.g. invalid API key, model unavailable),
+        # fall back to legacy rather than surfacing a bare "error" status with 0 contacts.
+        if result.status == "error" and not result.contacts_recorded:
+            log.warning(
+                "[Marketing Orchestration] AgentSystem returned error for %s: %s — falling back to legacy pipeline",
+                client_name, result.error_message,
+            )
+            return await _run_full_search_legacy(client, run_id, plan)
+
+        # Build summary dict compatible with legacy pipeline expectations
+        wa_found = any(c.get("contact_type") == "wa_phone" for c in result.contacts_recorded)
+        email_found = any(c.get("contact_type") == "email" for c in result.contacts_recorded)
+
+        final_status = (
+            "found" if (wa_found or email_found)
+            else "partial" if result.contacts_recorded
+            else "not_found"
+        )
+
+        # Update client search status (agent may have already set this, but ensure it's set)
+        await mkt.update_client_search_status(client_id, final_status)
+
+        return {
+            "mode": plan["mode"],
+            "final_status": final_status,
+            "contacts_found": len(result.contacts_recorded),
+            "agent_mode": True,
+            "sub_agent_calls": result.sub_agent_calls,
+            "tools_that_worked": result.tools_that_worked,
+            "tools_that_failed": result.tools_that_failed,
+            "summary": result.summary,
+            "total_tokens": result.total_tokens,
+            "duration_seconds": result.duration_seconds,
+        }
+
+    except Exception as exc:
+        log.error(
+            "[Marketing Orchestration] AgentSystem failed for %s: %s — falling back to legacy pipeline",
+            client_name, exc,
+        )
+        # Fallback to legacy pipeline
+        return await _run_full_search_legacy(client, run_id, plan)
+
+
+async def _run_full_search_legacy(client: dict[str, Any], run_id: int, plan: dict[str, Any]) -> dict[str, Any]:
     client_id = int(client["id"])
     client_name = str(client["name"])
 

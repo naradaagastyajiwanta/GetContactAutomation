@@ -521,3 +521,74 @@ export async function confirmGeneratedGroup(payload: {
   );
   return data;
 }
+
+// ── AI Agent Orchestration Types ─────────────────────────────────────────────
+
+export interface SubAgentCall {
+  agent: string; // "spawn_web_search_agent" | "spawn_instagram_agent" etc.
+  contacts_found: number;
+  ig_handle?: string;
+  summary: string;
+  success: boolean;
+  duration_seconds: number;
+}
+
+export interface OrchestrationRun {
+  id: number;
+  client_id: number;
+  mode: string;
+  state: string;
+  current_stage: string | null;
+  plan: {
+    agent_mode?: boolean;
+    sub_agent_calls?: SubAgentCall[];
+    tools_that_worked?: string[];
+    tools_that_failed?: string[];
+    summary?: string;
+    total_tokens?: number;
+  } | null;
+  summary: {
+    agent_mode?: boolean;
+    sub_agent_calls?: SubAgentCall[];
+    tools_that_worked?: string[];
+    tools_that_failed?: string[];
+    summary?: string;
+    total_tokens?: number;
+    final_status?: string;
+    contacts_found?: number;
+    duration_seconds?: number;
+  } | null;
+  error_message: string | null;
+  started_at: string;
+  completed_at: string | null;
+  duration_seconds: number | null;
+}
+
+export interface GroupStrategyMemo {
+  version?: number;
+  client_type?: string;
+  completed_clients: number;
+  total_clients?: number;
+  found_clients?: number;
+  found_rate: number;
+  lessons: string[];
+  tool_success_rates: Record<
+    string,
+    { spawns: number; produced_contacts: number }
+  >;
+  updated_at?: string;
+}
+
+export async function getClientOrchestrationRuns(
+  clientId: number,
+): Promise<OrchestrationRun[]> {
+  const { data } = await apiClient.get(`/marketing/clients/${clientId}/runs`);
+  return data.runs ?? [];
+}
+
+export async function getGroupStrategyMemo(
+  groupId: number,
+): Promise<GroupStrategyMemo | null> {
+  const { data } = await apiClient.get(`/marketing/groups/${groupId}/strategy`);
+  return data.strategy ?? null;
+}

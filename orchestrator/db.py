@@ -1059,6 +1059,18 @@ async def init_db() -> None:
                 "ALTER TABLE marketing_groups ADD COLUMN search_error TEXT"
             )
 
+        # Migration: add strategy_json to marketing_groups for AI group-level learning
+        cursor = await db.execute("PRAGMA table_info(marketing_groups)")
+        cols = {r[1] for r in await cursor.fetchall()}
+        if "strategy_json" not in cols:
+            await db.execute("ALTER TABLE marketing_groups ADD COLUMN strategy_json TEXT")
+
+        # Migration: add last_response_id to marketing_orchestration_runs for Responses API session chaining
+        cursor = await db.execute("PRAGMA table_info(marketing_orchestration_runs)")
+        cols = {r[1] for r in await cursor.fetchall()}
+        if "last_response_id" not in cols:
+            await db.execute("ALTER TABLE marketing_orchestration_runs ADD COLUMN last_response_id TEXT")
+
         await db.executescript(_INDEXES_MARKETING)
 
         async def _rebuild_email_cache_table_if_needed(table_name: str, recreate_script: str) -> None:
@@ -4415,6 +4427,16 @@ async def clear_all_response_ids(table: str) -> None:
     async with get_db() as db:
         await db.execute(
             f"UPDATE {table} SET last_response_id = NULL WHERE last_response_id IS NOT NULL"
+        )
+        await db.commit()
+
+
+async def update_marketing_run_response_id(run_id: int, response_id: str) -> None:
+    """Save a Responses API response_id for marketing orchestration run session chaining."""
+    async with aiosqlite.connect(DATABASE_PATH) as db:
+        await db.execute(
+            "UPDATE marketing_orchestration_runs SET last_response_id=? WHERE id=?",
+            (response_id, run_id),
         )
         await db.commit()
 
