@@ -181,6 +181,20 @@ async def generate_and_create_group(
 # ---------------------------------------------------------------------------
 
 
+@router.patch("/clients/{client_id}/ig-override", response_model=dict)
+async def override_client_ig_handle(request: Request, client_id: int, body: dict):
+    """Manually set IG handle for a client and trigger re-scrape."""
+    await require_permission(request, "marketing.manage")
+    client = await mkt.get_client(client_id)
+    if client is None:
+        raise HTTPException(status_code=404, detail="Client not found")
+    ig_handle = (body.get("ig_handle") or "").strip().lstrip("@")
+    if not ig_handle:
+        raise HTTPException(status_code=422, detail="ig_handle is required")
+    await mkt.set_client_ig_override(client_id, ig_handle)
+    return {"success": True, "client_id": client_id, "ig_handle": ig_handle}
+
+
 @router.delete("/clients/{client_id}", response_model=dict)
 async def delete_client(request: Request, client_id: int):
     """Delete a client (cascades to results)."""

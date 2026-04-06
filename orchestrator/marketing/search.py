@@ -32,9 +32,9 @@ from orchestrator.instagram import (
     extract_named_contacts_from_text,
     fetch_bios_for_candidates,
     llm_verify_company_ig_handle,
+    gemini_compare_corporate_ig_candidates,
     search_ig_handle_with_fallback,
     get_ig_session_status,
-    scrape_ig_posts_with_fallback,
 )
 
 _WHATSAPP_URL_PATTERNS = (
@@ -667,9 +667,24 @@ def _select_ranked_corporate_candidates(ranked: list[dict], company_name: str) -
     if not ranked:
         return []
 
-    # No candidate has sufficient evidence. Keep a single primary fallback so the
-    # scraper can still probe one account, but avoid selecting multiple weak matches.
-    return [ranked[0]]
+    # Stricter fallback: only select ranked[0] as a probe if it has at least some
+    # profile evidence and a minimum sort_score. This prevents wasting scrape credits
+    # on clearly wrong accounts when all candidates were rejected.
+    top = ranked[0]
+    top_score = _candidate_sort_score(top)
+    has_evidence = _candidate_has_profile_evidence(top)
+    if has_evidence and top_score >= 0.30:
+        log.warning(
+            "[Selection] No confident match for '%s' — weak fallback: @%s (score=%.2f)",
+            company_name, top.get("handle"), top_score,
+        )
+        return [top]
+
+    log.warning(
+        "[Selection] All candidates rejected for '%s' with no acceptable fallback (best score=%.2f, has_evidence=%s)",
+        company_name, top_score, has_evidence,
+    )
+    return []
 
 
 def _upsert_company_candidate(candidates_by_handle: dict[str, dict], candidate: dict) -> None:
@@ -889,7 +904,20 @@ async def _collect_web_mention_company_candidates(client_name: str) -> list[dict
     return candidates
 
 
-async def _evaluate_corporate_ig_candidates(client_name: str) -> list[dict]:
+def _maybe_hard_anchor_from_website(candidate: dict, known_domain: str) -> bool:
+    """Return True if this candidate is unambiguously linked from the official website."""
+    if candidate.get("source") != "website_social":
+        return False
+    ext_domain = (candidate.get("external_domain") or "").lower().strip()
+    if not known_domain or not ext_domain:
+        return False
+    # e.g. "semenindonesia.com" ↔ "semenindonesia.co.id" — normalise by stripping TLD
+    known_core = known_domain.split(".")[0]
+    ext_core = ext_domain.split(".")[0]
+    return known_core == ext_core or known_domain in ext_domain or ext_domain in known_domain
+
+
+async def _evaluate_corporate_ig_candidates(client_name: str, client_type: str = "") -> list[dict]:
     candidates_by_handle: dict[str, dict] = {}
 
     for candidate in await _collect_ddg_company_candidates(client_name):
@@ -934,22 +962,66 @@ async def _evaluate_corporate_ig_candidates(client_name: str) -> list[dict]:
         if not _is_event_account(c.get("handle", ""), c.get("bio", ""), c.get("title", ""))
     ]
 
+    # Domain hard-anchor: if any website_social candidate links back to a company domain
+    # that appears in another candidate's external_domain, mark it trusted immediately.
+    website_social_handles = {
+        c.get("handle")
+        for c in enriched
+        if c.get("source") == "website_social" and c.get("handle")
+    }
+    # Collect known domains from all enriched candidates
+    known_domains = [
+        (c.get("external_domain") or "").lower().strip()
+        for c in enriched
+        if (c.get("external_domain") or "").strip()
+    ]
+
     for candidate in enriched:
         profile_score = _boost_company_candidate_from_profile(candidate, client_name)
         affinity_score = _company_affinity_score(candidate, client_name)
         candidate["affinity_score"] = affinity_score
         candidate["profile_score"] = profile_score
         candidate["final_score"] = float(candidate.get("base_score", 0.0)) + profile_score
-        llm = await llm_verify_company_ig_handle(
-            candidate.get("handle", ""),
-            candidate.get("bio", "") or "",
-            candidate.get("full_name", "") or "",
-            client_name,
-            candidate.get("external_url", "") or "",
+
+        # Hard-anchor: website_social candidate whose bio URL matches a known domain
+        if candidate.get("source") == "website_social":
+            for known_domain in known_domains:
+                if known_domain and _maybe_hard_anchor_from_website(candidate, known_domain):
+                    log.info(
+                        "[IG-Hard-Anchor] @%s confirmed via website_social + domain '%s'",
+                        candidate.get("handle"), known_domain,
+                    )
+                    candidate["llm_is_correct"] = True
+                    candidate["llm_confidence"] = 1.0
+                    candidate["llm_reason"] = f"Linked directly from company website (domain: {known_domain})"
+                    break
+            else:
+                candidate.setdefault("llm_is_correct", None)
+                candidate.setdefault("llm_confidence", 0.0)
+                candidate.setdefault("llm_reason", "")
+        else:
+            candidate.setdefault("llm_is_correct", None)
+            candidate.setdefault("llm_confidence", 0.0)
+            candidate.setdefault("llm_reason", "")
+
+    # Candidates that still need LLM evaluation (not hard-anchored)
+    needs_llm = [c for c in enriched if c.get("llm_is_correct") is None]
+
+    if needs_llm:
+        gemini_results = await gemini_compare_corporate_ig_candidates(
+            needs_llm, client_name, client_type
         )
-        candidate["llm_is_correct"] = llm.get("is_correct")
-        candidate["llm_confidence"] = float(llm.get("confidence", 0.0))
-        candidate["llm_reason"] = llm.get("reason", "")
+        # Map results back by handle
+        gemini_by_handle = {r.get("handle", "").lower().strip(): r for r in gemini_results}
+        for candidate in needs_llm:
+            handle = (candidate.get("handle") or "").lower().strip()
+            gemini_hit = gemini_by_handle.get(handle)
+            if gemini_hit:
+                is_correct = gemini_hit.get("is_correct")
+                candidate["llm_is_correct"] = bool(is_correct) if is_correct is not None else None
+                candidate["llm_confidence"] = float(gemini_hit.get("confidence", 0.0))
+                candidate["llm_reason"] = gemini_hit.get("reason", "")
+            # else: keep defaults (None, 0.0, "")
 
     ranked = sorted(enriched, key=_candidate_sort_score, reverse=True)
 
@@ -1551,11 +1623,11 @@ def _scrape_instagram_posts_for_handles(handles: list[str], primary_handle: str 
 # ---------------------------------------------------------------------------
 
 
-async def ig_discovery(client_name: str) -> InstagramDiscoveryResult:
+async def ig_discovery(client_name: str, client_type: str = "") -> InstagramDiscoveryResult:
     """Find IG handle via DDG → scrape posts → GPT vision OCR."""
     results: list[ContactResult] = []
 
-    candidates = await _evaluate_corporate_ig_candidates(client_name)
+    candidates = await _evaluate_corporate_ig_candidates(client_name, client_type)
 
     # Collect WA contacts extracted from IG bios (done in _evaluate_corporate_ig_candidates)
     for candidate in candidates:
@@ -1617,9 +1689,9 @@ async def ig_discovery(client_name: str) -> InstagramDiscoveryResult:
     )
 
 
-async def ig_handle_audit_discovery(client_name: str) -> InstagramDiscoveryResult:
+async def ig_handle_audit_discovery(client_name: str, client_type: str = "") -> InstagramDiscoveryResult:
     """Resolve and rank Instagram handles without scraping posts."""
-    candidates = await _evaluate_corporate_ig_candidates(client_name)
+    candidates = await _evaluate_corporate_ig_candidates(client_name, client_type)
 
     # Surface WA contacts extracted from bios
     wa_contacts: list[ContactResult] = []

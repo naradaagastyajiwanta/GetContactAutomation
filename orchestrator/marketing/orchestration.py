@@ -416,7 +416,7 @@ async def _run_full_search_legacy(client: dict[str, Any], run_id: int, plan: dic
             value="instagram",
         )
         await _set_client_stage(client_id, run_id, "collecting", "instagram")
-        stage2 = await search_flow.ig_discovery(client_name)
+        stage2 = await search_flow.ig_discovery(client_name, client_type=client_type or "")
         await _record_stage_summary(
             run_id,
             client_id,

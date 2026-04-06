@@ -125,11 +125,12 @@ class InstagramSubAgent:
         self,
         company_name: str,
         website_url: str | None = None,
+        client_type: str = "",
     ) -> SubAgentResult:
         start = time.monotonic()
         log.info("[InstagramSubAgent] Starting for: %s", company_name)
         try:
-            ig_result: search_flow.InstagramDiscoveryResult = await search_flow.ig_discovery(company_name)
+            ig_result: search_flow.InstagramDiscoveryResult = await search_flow.ig_discovery(company_name, client_type=client_type)
 
             contacts = _contacts_to_serializable(ig_result.contacts)
             candidates = ig_result.candidates or []

@@ -9,6 +9,7 @@ import {
   RotateCcw,
   Trash2,
   Instagram,
+  Pencil,
 } from "lucide-react";
 import { cn } from "../lib/utils";
 import { Card } from "../components/ui/Card";
@@ -21,6 +22,7 @@ import {
   useRetryMarketingClientInstagramScrape,
   useRetryMarketingClientInstagramContactExtraction,
   useRetryMarketingClientSearch,
+  useOverrideClientIgHandle,
 } from "../hooks/useMarketing";
 import {
   MarketingContactsPanel,
@@ -41,6 +43,8 @@ export default function MarketingClientPage() {
   const canManage = hasPermission("marketing.manage");
 
   const [activeTab, setActiveTab] = useState<Tab>("contacts");
+  const [igOverrideMode, setIgOverrideMode] = useState(false);
+  const [igOverrideInput, setIgOverrideInput] = useState("");
 
   const { data: client, isLoading, error } = useMarketingClientDetail(clientId);
   const updateContact = useUpdateMarketingContact();
@@ -49,6 +53,7 @@ export default function MarketingClientPage() {
   const retryInstagramContactExtraction =
     useRetryMarketingClientInstagramContactExtraction();
   const retryClientSearch = useRetryMarketingClientSearch();
+  const overrideIg = useOverrideClientIgHandle();
 
   function handleApprove(contactId: number, approved: boolean) {
     updateContact.mutate({ contactId, payload: { is_approved: approved } });
@@ -214,10 +219,82 @@ export default function MarketingClientPage() {
               )}
             </div>
 
-            {client.ig_handle && (
-              <div className="flex items-center gap-1.5 text-sm text-gray-500 dark:text-gray-400">
-                <Instagram className="h-3.5 w-3.5" />
-                <span>@{client.ig_handle}</span>
+            {/* IG handle display + override */}
+            {igOverrideMode ? (
+              <div className="flex items-center gap-1.5">
+                <Instagram className="h-3.5 w-3.5 text-gray-400" />
+                <span className="text-xs text-gray-400">@</span>
+                <input
+                  autoFocus
+                  value={igOverrideInput}
+                  onChange={(e) =>
+                    setIgOverrideInput(e.target.value.replace("@", ""))
+                  }
+                  onKeyDown={(e) => {
+                    if (e.key === "Escape") {
+                      setIgOverrideMode(false);
+                      setIgOverrideInput("");
+                    }
+                  }}
+                  placeholder="handle_instagram"
+                  className="rounded border border-indigo-400 bg-white px-2 py-0.5 text-sm focus:outline-none focus:ring-1 focus:ring-indigo-500 dark:border-indigo-600 dark:bg-gray-800 dark:text-gray-100"
+                />
+                <Button
+                  size="sm"
+                  loading={overrideIg.isPending}
+                  disabled={!igOverrideInput.trim()}
+                  onClick={() => {
+                    overrideIg.mutate(
+                      { clientId: client.id, igHandle: igOverrideInput.trim() },
+                      {
+                        onSuccess: () => {
+                          toast.success("IG handle berhasil diperbarui");
+                          setIgOverrideMode(false);
+                          setIgOverrideInput("");
+                        },
+                        onError: () => toast.error("Gagal mengubah IG handle"),
+                      },
+                    );
+                  }}
+                >
+                  Simpan
+                </Button>
+                <Button
+                  size="sm"
+                  variant="ghost"
+                  onClick={() => {
+                    setIgOverrideMode(false);
+                    setIgOverrideInput("");
+                  }}
+                >
+                  Batal
+                </Button>
+              </div>
+            ) : (
+              <div className="flex items-center gap-1.5">
+                {client.ig_handle ? (
+                  <div className="flex items-center gap-1 text-sm text-gray-500 dark:text-gray-400">
+                    <Instagram className="h-3.5 w-3.5" />
+                    <span>@{client.ig_handle}</span>
+                  </div>
+                ) : (
+                  <span className="text-xs text-gray-400 dark:text-gray-500">
+                    Belum ada IG handle
+                  </span>
+                )}
+                {canManage && (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setIgOverrideInput(client.ig_handle ?? "");
+                      setIgOverrideMode(true);
+                    }}
+                    className="rounded p-0.5 text-gray-400 transition-colors hover:text-indigo-600 dark:hover:text-indigo-400"
+                    title="Override IG handle secara manual"
+                  >
+                    <Pencil className="h-3.5 w-3.5" />
+                  </button>
+                )}
               </div>
             )}
 

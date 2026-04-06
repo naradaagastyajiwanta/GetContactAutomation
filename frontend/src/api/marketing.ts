@@ -303,6 +303,15 @@ export async function deleteMarketingClient(clientId: number): Promise<void> {
   await apiClient.delete(`/marketing/clients/${clientId}`);
 }
 
+export async function overrideClientIgHandle(
+  clientId: number,
+  igHandle: string,
+): Promise<void> {
+  await apiClient.patch(`/marketing/clients/${clientId}/ig-override`, {
+    ig_handle: igHandle,
+  });
+}
+
 export async function bulkDeleteMarketingClients(
   groupId: number,
   clientIds: number[],

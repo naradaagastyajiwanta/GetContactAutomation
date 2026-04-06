@@ -805,6 +805,42 @@ async def save_client_instagram_profile(
         await db.commit()
 
 
+async def set_client_ig_override(client_id: int, ig_handle: str) -> None:
+    """Manually override the IG handle for a client, deselecting all existing candidates
+    and inserting a manual_override candidate as primary."""
+    handle = ig_handle.strip().lstrip("@").lower()
+    profile_url = f"https://instagram.com/{handle}/"
+    async with aiosqlite.connect(DATABASE_PATH) as db:
+        # Deselect all existing candidates
+        await db.execute(
+            "UPDATE marketing_ig_candidates SET is_primary = 0, is_selected = 0 WHERE client_id = ?",
+            (client_id,),
+        )
+        # Upsert the manual override candidate
+        await db.execute(
+            """
+            INSERT INTO marketing_ig_candidates
+                (client_id, handle, profile_url, source, is_primary, is_selected,
+                 base_score, affinity_score, profile_score, final_score,
+                 llm_is_correct, llm_confidence, llm_reason, rank_order)
+            VALUES (?, ?, ?, 'manual_override', 1, 1, 1.0, 1.0, 1.0, 1.0, 1, 1.0, 'Manual override by user', 0)
+            ON CONFLICT(client_id, handle) DO UPDATE SET
+                is_primary = 1, is_selected = 1,
+                source = 'manual_override',
+                llm_is_correct = 1, llm_confidence = 1.0,
+                llm_reason = 'Manual override by user',
+                rank_order = 0
+            """,
+            (client_id, handle, profile_url),
+        )
+        # Update the client ig_handle
+        await db.execute(
+            "UPDATE marketing_clients SET ig_handle = ?, ig_profile_url = ? WHERE id = ?",
+            (handle, profile_url, client_id),
+        )
+        await db.commit()
+
+
 async def clear_client_instagram_profile(client_id: int) -> None:
     """Clear the resolved Instagram profile for a marketing client."""
     async with aiosqlite.connect(DATABASE_PATH) as db:

@@ -3225,6 +3225,64 @@ async def llm_verify_ig_handle(handle: str, bio: str, full_name: str, university
         return {"is_correct": None, "confidence": 0.0, "reason": f"llm_error: {e}"}
 
 
+async def gemini_compare_corporate_ig_candidates(
+    candidates: list[dict],
+    company_name: str,
+    client_type: str = "",
+) -> list[dict]:
+    """Use Gemini 3.1 Pro to evaluate all IG candidates at once comparatively.
+
+    Returns a list of dicts: [{handle, is_correct, confidence, reason}].
+    Falls back to empty list on error so callers can fall through to rule-based logic.
+    """
+    if not candidates:
+        return []
+
+    from orchestrator.research_agents.gemini_caller import call_gemini
+
+    lines = []
+    for i, c in enumerate(candidates, 1):
+        bio_snippet = (c.get("bio") or "")[:120].strip()
+        lines.append(
+            f"{i}. @{c['handle']}"
+            f" | Nama: {c.get('full_name') or '-'}"
+            f" | Bio: {bio_snippet or '-'}"
+            f" | URL: {c.get('external_url') or '-'}"
+            f" | Source: {c.get('source') or '-'}"
+        )
+
+    type_hint = f" (Jenis: {client_type})" if client_type else ""
+    prompt = (
+        f"Perusahaan: {company_name}{type_hint}\n\n"
+        f"Berikut {len(candidates)} kandidat akun Instagram yang ditemukan:\n"
+        + "\n".join(lines)
+        + "\n\n"
+        "Untuk SETIAP kandidat, tentukan apakah itu akun Instagram OFFICIAL perusahaan tersebut. "
+        "Perhatikan: bio/full_name yang match nama perusahaan adalah sinyal kuat; "
+        "external URL yang sesuai domain perusahaan adalah sinyal kuat; "
+        "sumber 'website_social' = ditemukan di website resmi perusahaan (bukti terkuat). "
+        "Tolak: akun berita, fan page, komunitas tidak resmi, akun regional/anak perusahaan berbeda, "
+        "atau akun yang tidak ada kaitannya sama sekali.\n"
+        "Kembalikan JSON persis: {\"results\": ["
+        "{\"handle\": \"...\", \"is_correct\": true/false, \"confidence\": 0.0-1.0, \"reason\": \"...\"}"
+        "]}"
+    )
+
+    try:
+        result, _ = await call_gemini(prompt, use_search_grounding=False)
+        raw_results = result.get("results", [])
+        log.info(
+            "[Gemini-Compare-IG] %s: evaluated %d candidates — %d correct",
+            company_name[:40],
+            len(candidates),
+            sum(1 for r in raw_results if r.get("is_correct")),
+        )
+        return raw_results
+    except Exception as exc:
+        log.warning("[Gemini-Compare-IG] Failed for '%s': %s", company_name[:40], exc)
+        return []
+
+
 async def llm_verify_company_ig_handle(
     handle: str,
     bio: str,

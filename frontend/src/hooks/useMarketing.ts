@@ -7,6 +7,7 @@ import {
   getMarketingClientDetail,
   getMarketingClients,
   addMarketingClient,
+  overrideClientIgHandle,
   deleteMarketingClient,
   createMarketingContact,
   retryMarketingClientInstagramScrape,
@@ -102,6 +103,24 @@ export function useUpdateMarketingGroup() {
 }
 
 // ── Client Hooks ────────────────────────────────────────────────────────────
+
+export function useOverrideClientIgHandle() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({
+      clientId,
+      igHandle,
+    }: {
+      clientId: number;
+      igHandle: string;
+    }) => overrideClientIgHandle(clientId, igHandle),
+    onSuccess: (_data, { clientId }) => {
+      qc.invalidateQueries({ queryKey: ["marketing", "client", clientId] });
+      qc.invalidateQueries({ queryKey: ["marketing"] });
+    },
+    retry: 0,
+  });
+}
 
 export function useMarketingClientDetail(clientId: number) {
   return useQuery({
