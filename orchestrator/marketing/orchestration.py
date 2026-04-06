@@ -11,6 +11,22 @@ from orchestrator.config import log
 
 from . import groups as mkt
 from . import search as search_flow
+from .discovery import bnsp_discovery, jdih_discovery, asosiasi_discovery
+
+DISCOVERY_STAGES: dict[str | None, list[str]] = {
+    "lsp_p1": ["bnsp", "website", "ig", "gemini"],
+    "lsp_p2": ["bnsp", "website", "ig", "gemini"],
+    "lsp_p3": ["bnsp", "website", "ig", "gemini"],
+    "lembaga_negara": ["jdih", "website", "ig", "gemini"],
+    "kementerian": ["jdih", "website", "ig", "gemini"],
+    "asosiasi": ["asosiasi", "website", "ig", "gemini"],
+    "bumn": ["website", "annual_report", "ig", "gemini"],
+    "swasta_besar": ["website", "ig", "gemini"],
+    "lpk": ["website", "ig", "gemini"],
+    "dinas": ["website", "lkip", "ig", "gemini"],
+    # fallback for unknown types
+    None: ["website", "ig", "gemini"],
+}
 
 
 ACTIVE_ORCHESTRATION_STATES = {"planning", "collecting", "verifying", "resolving", "deciding", "repairing"}
@@ -171,31 +187,24 @@ async def _persist_final_results(
     all_results = search_flow._dedupe_results(stage1 + stage2.contacts + stage3 + stage4)
 
     # Batch upsert all contacts at once (instead of N individual DB calls)
+    # Only save: website, wa_phone, email
+    # pic_name: ONLY if contact_type=wa_phone AND pic_name is present
+    # pic_title: NEVER
     batch_results: list[dict[str, Any]] = []
     for result in all_results:
-        batch_results.append({
+        if result.contact_type not in ("website", "wa_phone", "email"):
+            continue
+        entry: dict[str, Any] = {
             "contact_type": result.contact_type,
             "value": result.value,
             "source_url": result.source_url,
             "source_type": result.source_type,
             "confidence": result.confidence,
-        })
-        if result.pic_name:
-            batch_results.append({
-                "contact_type": "pic_name",
-                "value": result.pic_name,
-                "source_url": result.source_url or None,
-                "source_type": result.source_type or None,
-                "confidence": result.confidence,
-            })
-        if result.pic_title:
-            batch_results.append({
-                "contact_type": "pic_title",
-                "value": result.pic_title,
-                "source_url": result.source_url or None,
-                "source_type": result.source_type or None,
-                "confidence": result.confidence,
-            })
+        }
+        # pic_name: only for wa_phone, stored as column on same row (not separate contact row)
+        if result.contact_type == "wa_phone" and result.pic_name:
+            entry["pic_name"] = result.pic_name
+        batch_results.append(entry)
 
     if batch_results:
         await mkt.upsert_contact_results_batch(client_id, batch_results)
@@ -216,6 +225,87 @@ async def _run_full_search(client: dict[str, Any], run_id: int, plan: dict[str, 
 
     await mkt.update_client_search_status(client_id, "searching")
 
+    # Resolve client_type from the group record (client_type lives on the group, not the client)
+    extra_data = client.get("extra_data") or {}
+    client_type: str | None = extra_data.get("client_type")
+    if not client_type:
+        group = await mkt.get_group(int(client["group_id"]))
+        if group:
+            client_type = group.get("client_type")
+    stages = DISCOVERY_STAGES.get(client_type, DISCOVERY_STAGES[None])
+
+    # --- Structured discovery stages (bnsp, jdih, asosiasi, etc.) ---
+    structured_results: list[search_flow.ContactResult] = []
+    for stage_name in stages:
+        if stage_name in ("website", "ig", "web_fallback", "gemini"):
+            continue  # handled separately below
+        if stage_name == "bnsp":
+            try:
+                from .discovery import bnsp_discovery
+                await _set_client_stage(client_id, run_id, "collecting", "bnsp")
+                bnsp_results = await bnsp_discovery(client_name)
+                structured_results = search_flow._dedupe_results(structured_results + bnsp_results)
+                await _record_stage_summary(
+                    run_id, client_id, "bnsp", "stage_summary",
+                    status="completed",
+                    payload={"contacts_found": len(bnsp_results)},
+                )
+                await _record_contacts(run_id, client_id, "bnsp", bnsp_results, status="accepted")
+            except Exception as exc:
+                log.warning("[Marketing Orchestration] bnsp stage failed for %s: %s", client_name, exc)
+                await _record_stage_summary(
+                    run_id, client_id, "bnsp", "stage_summary",
+                    status="failed", reason=str(exc),
+                    payload={"contacts_found": 0},
+                )
+        elif stage_name == "jdih":
+            try:
+                from .discovery import jdih_discovery
+                await _set_client_stage(client_id, run_id, "collecting", "jdih")
+                jdih_results = await jdih_discovery(client_name)
+                structured_results = search_flow._dedupe_results(structured_results + jdih_results)
+                await _record_stage_summary(
+                    run_id, client_id, "jdih", "stage_summary",
+                    status="completed",
+                    payload={"contacts_found": len(jdih_results)},
+                )
+                await _record_contacts(run_id, client_id, "jdih", jdih_results, status="accepted")
+            except Exception as exc:
+                log.warning("[Marketing Orchestration] jdih stage failed for %s: %s", client_name, exc)
+                await _record_stage_summary(
+                    run_id, client_id, "jdih", "stage_summary",
+                    status="failed", reason=str(exc),
+                    payload={"contacts_found": 0},
+                )
+        elif stage_name == "asosiasi":
+            try:
+                from .discovery import asosiasi_discovery
+                await _set_client_stage(client_id, run_id, "collecting", "asosiasi")
+                asosiasi_results = await asosiasi_discovery(client_name)
+                structured_results = search_flow._dedupe_results(structured_results + asosiasi_results)
+                await _record_stage_summary(
+                    run_id, client_id, "asosiasi", "stage_summary",
+                    status="completed",
+                    payload={"contacts_found": len(asosiasi_results)},
+                )
+                await _record_contacts(run_id, client_id, "asosiasi", asosiasi_results, status="accepted")
+            except Exception as exc:
+                log.warning("[Marketing Orchestration] asosiasi stage failed for %s: %s", client_name, exc)
+                await _record_stage_summary(
+                    run_id, client_id, "asosiasi", "stage_summary",
+                    status="failed", reason=str(exc),
+                    payload={"contacts_found": 0},
+                )
+        elif stage_name == "annual_report":
+            # annual_report discovery not yet implemented — skip gracefully
+            log.info("[Marketing Orchestration] annual_report stage not yet implemented, skipping")
+        elif stage_name == "lkip":
+            # lkip discovery not yet implemented — skip gracefully
+            log.info("[Marketing Orchestration] lkip stage not yet implemented, skipping")
+        else:
+            log.info("[Marketing Orchestration] Unknown stage %r for client_type=%s, skipping", stage_name, client_type)
+
+    # --- Website discovery (always runs) ---
     await _set_client_stage(client_id, run_id, "collecting", "website")
     stage1 = await search_flow.website_discovery(client_name, client.get("extra_data"))
     await _record_stage_summary(
@@ -228,57 +318,77 @@ async def _run_full_search(client: dict[str, Any], run_id: int, plan: dict[str, 
     )
     await _record_contacts(run_id, client_id, "website", stage1, status="accepted")
 
-    has_email = _has_contact(stage1, "email")
-    has_wa_phone = _has_contact(stage1, "wa_phone")
-    await _record_stage_summary(
-        run_id,
-        client_id,
-        "planning",
-        "stage_decision",
-        status="continue",
-        reason=(
-            "Website evidence missing required contact set; continue to Instagram"
-            if not (has_email and has_wa_phone)
-            else "Website already produced the required contact set, but Instagram scrape remains enabled"
-        ),
-        payload={"has_email": has_email, "has_wa_phone": has_wa_phone},
-        value="instagram",
+    # --- IG discovery runs only if no WA phone found yet ---
+    has_wa = (
+        _has_contact(structured_results, "wa_phone")
+        or _has_contact(stage1, "wa_phone")
     )
-    await _set_client_stage(client_id, run_id, "collecting", "instagram")
-    stage2 = await search_flow.ig_discovery(client_name)
-    await _record_stage_summary(
-        run_id,
-        client_id,
-        "instagram",
-        "stage_summary",
-        status=stage2.scrape_status or "completed",
-        reason=stage2.scrape_error,
-        payload={
-            "handle": stage2.handle,
-            "profile_url": stage2.profile_url,
-            "posts": len(stage2.posts),
-            "contacts_found": len(stage2.contacts),
-            "candidate_count": len(stage2.candidates),
-        },
-        value=stage2.handle,
-    )
-    for candidate in stage2.candidates:
+    if "ig" in stages and not has_wa:
+        await _record_stage_summary(
+            run_id,
+            client_id,
+            "planning",
+            "stage_decision",
+            status="continue",
+            reason=(
+                "No WA phone found from structured discovery; run IG discovery to find contacts"
+            ),
+            payload={"has_wa_phone": has_wa},
+            value="instagram",
+        )
+        await _set_client_stage(client_id, run_id, "collecting", "instagram")
+        stage2 = await search_flow.ig_discovery(client_name)
         await _record_stage_summary(
             run_id,
             client_id,
             "instagram",
-            "instagram_candidate",
-            status="selected" if candidate.get("is_selected") else "observed",
-            reason=candidate.get("llm_reason"),
-            payload=candidate,
-            source_type=candidate.get("source"),
-            source_url=candidate.get("url"),
-            value=candidate.get("handle"),
-            confidence=float(candidate.get("final_score") or 0.0),
+            "stage_summary",
+            status=stage2.scrape_status or "completed",
+            reason=stage2.scrape_error,
+            payload={
+                "handle": stage2.handle,
+                "profile_url": stage2.profile_url,
+                "posts": len(stage2.posts),
+                "contacts_found": len(stage2.contacts),
+                "candidate_count": len(stage2.candidates),
+            },
+            value=stage2.handle,
         )
-    await _record_contacts(run_id, client_id, "instagram", stage2.contacts, status="accepted")
+        for candidate in stage2.candidates:
+            await _record_stage_summary(
+                run_id,
+                client_id,
+                "instagram",
+                "instagram_candidate",
+                status="selected" if candidate.get("is_selected") else "observed",
+                reason=candidate.get("llm_reason"),
+                payload=candidate,
+                source_type=candidate.get("source"),
+                source_url=candidate.get("url"),
+                value=candidate.get("handle"),
+                confidence=float(candidate.get("final_score") or 0.0),
+            )
+        await _record_contacts(run_id, client_id, "instagram", stage2.contacts, status="accepted")
+        has_wa = has_wa or _has_contact(stage2.contacts, "wa_phone")
+    else:
+        stage2 = search_flow.InstagramDiscoveryResult()
+        ig_skipped_reason = (
+            "WA phone already found from structured discovery; skip IG discovery"
+            if has_wa
+            else f"IG stage not in selected stages for client_type={client_type}"
+        )
+        await _record_stage_summary(
+            run_id,
+            client_id,
+            "planning",
+            "stage_decision",
+            status="skipped",
+            reason=ig_skipped_reason,
+            payload={"has_wa_phone": has_wa, "client_type": client_type},
+            value="instagram",
+        )
 
-    combined_results = search_flow._dedupe_results(stage1 + stage2.contacts)
+    combined_results = search_flow._dedupe_results(structured_results + stage1 + stage2.contacts)
     has_email = _has_contact(combined_results, "email")
     has_wa_phone = _has_contact(combined_results, "wa_phone")
     should_run_web_fallback = not (has_email and has_wa_phone)
@@ -290,7 +400,7 @@ async def _run_full_search(client: dict[str, Any], run_id: int, plan: dict[str, 
             "planning",
             "stage_decision",
             status="continue",
-            reason="Website and Instagram evidence still missing required contact set; continue to web fallback",
+            reason="Evidence still missing required contact set; continue to web fallback",
             payload={"has_email": has_email, "has_wa_phone": has_wa_phone},
             value="web_fallback",
         )
@@ -313,12 +423,12 @@ async def _run_full_search(client: dict[str, Any], run_id: int, plan: dict[str, 
             "planning",
             "stage_decision",
             status="skipped",
-            reason="Website and Instagram already produced the required contact set",
+            reason="Website, structured, and Instagram already produced the required contact set",
             payload={"has_email": has_email, "has_wa_phone": has_wa_phone},
             value="web_fallback",
         )
 
-    combined_results = search_flow._dedupe_results(stage1 + stage2.contacts + stage3)
+    combined_results = search_flow._dedupe_results(structured_results + stage1 + stage2.contacts + stage3)
     if search_flow.needs_gemini_grounded_enrichment(combined_results):
         if search_flow.is_marketing_gemini_enabled():
             await _record_stage_summary(
@@ -437,8 +547,11 @@ async def _run_full_search(client: dict[str, Any], run_id: int, plan: dict[str, 
     summary = {
         "mode": plan["mode"],
         "final_status": final_status,
+        "client_type": client_type,
+        "stages_run": stages,
         "contacts_found": len(final_results),
         "website_contacts": len(stage1),
+        "structured_contacts": len(structured_results),
         "instagram_contacts": len(stage2.contacts),
         "web_fallback_contacts": len(stage3),
         "gemini_contacts": len(stage4),

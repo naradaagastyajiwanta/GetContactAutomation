@@ -163,6 +163,10 @@ function getDisplayedContactLabel(contact: MarketingContact): string {
     return "No. HP";
   }
 
+  if (contact.contact_type === "wa_phone" && contact.pic_name) {
+    return `WA — ${contact.pic_name}`;
+  }
+
   return getContactTypeLabel(contact.contact_type);
 }
 
@@ -205,10 +209,16 @@ function shouldHideMarketingContact(
   contact: MarketingContact,
   contacts: MarketingContact[],
 ): boolean {
+  // pic_name/pic_title stored as columns on wa_phone rows — never as separate rows
+  if (
+    contact.contact_type === "pic_name" ||
+    contact.contact_type === "pic_title"
+  )
+    return true;
+  // Hide non-mobile office_phones
   if (contact.contact_type === "office_phone")
     return !isMobileMarketingContact(contact);
-  if (contact.contact_type === "wa_phone")
-    return !hasMarketingContactNamePair(contact, contacts);
+  // wa_phone rows are always visible (pic_name shown inline)
   return false;
 }
 
@@ -1075,6 +1085,11 @@ function ContactRow({
             )}
           >
             {contact.value ?? <span className="italic text-gray-400">—</span>}
+            {contact.contact_type === "wa_phone" && contact.pic_name && (
+              <span className="ml-2 text-xs font-normal text-gray-400">
+                — {contact.pic_name}
+              </span>
+            )}
           </span>
         )}
       </td>

@@ -155,6 +155,7 @@ export interface MarketingContact {
   is_approved: boolean;
   is_selected: boolean;
   edited_value: string | null;
+  pic_name: string | null;
   created_at: string;
 }
 

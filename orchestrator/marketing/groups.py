@@ -1147,14 +1147,15 @@ async def upsert_contact_results_batch(
                     r.get("source_url"),
                     r.get("source_type"),
                     float(r.get("confidence", 0.0)),
+                    r.get("pic_name"),
                     now,
                 )
                 for r in results
             ]
             await db.executemany(
                 """INSERT OR IGNORE INTO marketing_contact_results
-                   (client_id, contact_type, value, source_url, source_type, confidence, is_selected, created_at)
-                   VALUES (?, ?, ?, ?, ?, ?, 0, ?)""",
+                   (client_id, contact_type, value, source_url, source_type, confidence, pic_name, is_selected, created_at)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, 0, ?)""",
                 rows_to_insert,
             )
             inserted = db.total_changes
@@ -1172,6 +1173,7 @@ async def upsert_contact_result(
     source_url: str | None = None,
     source_type: str | None = None,
     confidence: float = 0.0,
+    pic_name: str | None = None,
 ) -> int:
     """Insert a contact result for a client. Returns result id.
     Uses BEGIN IMMEDIATE transaction to avoid race-condition duplicates."""
@@ -1193,15 +1195,21 @@ async def upsert_contact_result(
             )
             existing = await cursor.fetchone()
             if existing is not None:
+                # Update pic_name if provided
+                if pic_name:
+                    await db.execute(
+                        "UPDATE marketing_contact_results SET pic_name = ? WHERE id = ?",
+                        (pic_name, int(existing[0])),
+                    )
                 await db.commit()
                 return int(existing[0])
 
             now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
             cursor = await db.execute(
                 """INSERT INTO marketing_contact_results
-                   (client_id, contact_type, value, source_url, source_type, confidence, is_selected, created_at)
-                   VALUES (?, ?, ?, ?, ?, ?, 0, ?)""",
-                (client_id, contact_type, value, source_url, source_type, confidence, now),
+                   (client_id, contact_type, value, source_url, source_type, confidence, pic_name, is_selected, created_at)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, 0, ?)""",
+                (client_id, contact_type, value, source_url, source_type, confidence, pic_name, now),
             )
             await db.commit()
             return cursor.lastrowid
@@ -1216,7 +1224,7 @@ async def get_contact_results_for_client(client_id: int) -> list[dict[str, Any]]
         cursor = await db.execute(
             """
             SELECT id, client_id, contact_type, value, source_url, source_type,
-                   confidence, is_approved, is_selected, edited_value, created_at
+                   confidence, is_approved, is_selected, edited_value, pic_name, created_at
             FROM marketing_contact_results
             WHERE client_id = ?
             ORDER BY created_at DESC
@@ -1508,6 +1516,10 @@ def _filter_visible_contact_results(contacts: list[dict[str, Any]]) -> list[dict
         normalized["source_url"] = str(contact.get("source_url") or "").strip()
         normalized["source_type"] = str(contact.get("source_type") or "").strip()
 
+        # pic_name and pic_title are stored as columns on wa_phone rows — never as separate rows
+        if normalized.get("contact_type") in ("pic_name", "pic_title"):
+            continue
+
         if not normalized["value"]:
             continue
         if mkt_search._should_prune_persisted_contact(normalized):
@@ -1554,7 +1566,8 @@ def _row_to_contact_result(row: tuple[Any, ...]) -> dict[str, Any]:
         "is_approved": bool(row[7]),
         "is_selected": bool(row[8]),
         "edited_value": row[9],
-        "created_at": row[10],
+        "pic_name": row[10],
+        "created_at": row[11],
     }
 
 

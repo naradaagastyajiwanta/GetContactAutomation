@@ -36,7 +36,8 @@ async def _get_approved_selected_contacts(
                 r.value AS raw_value,
                 r.source_url,
                 r.source_type,
-                c.name AS client_name
+                c.name AS client_name,
+                r.pic_name
             FROM marketing_contact_results r
             JOIN marketing_clients c ON c.id = r.client_id
             WHERE c.group_id = ?
@@ -50,17 +51,8 @@ async def _get_approved_selected_contacts(
             params.append(contact_type)
 
         if contact_type == "wa_phone":
-            query += """
-                AND EXISTS (
-                    SELECT 1
-                    FROM marketing_contact_results n
-                    WHERE n.client_id = r.client_id
-                      AND n.contact_type = 'pic_name'
-                      AND TRIM(COALESCE(n.edited_value, n.value, '')) != ''
-                      AND COALESCE(n.source_url, '') = COALESCE(r.source_url, '')
-                      AND COALESCE(n.source_type, '') = COALESCE(r.source_type, '')
-                )
-            """
+            # wa_phone must have a pic_name to be handed off (stored as column on same row)
+            query += " AND TRIM(COALESCE(r.pic_name, '')) != ''"
 
         cursor = await db.execute(query, params)
         rows = await cursor.fetchall()
@@ -74,6 +66,7 @@ async def _get_approved_selected_contacts(
                 "source_url": row[5],
                 "source_type": row[6],
                 "client_name": row[7],
+                "pic_name": row[8],
             }
             for row in rows
         ]

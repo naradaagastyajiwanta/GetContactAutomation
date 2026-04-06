@@ -840,6 +840,7 @@ CREATE TABLE IF NOT EXISTS marketing_contact_results (
     is_approved INTEGER DEFAULT 0,
     is_selected INTEGER DEFAULT 0,
     edited_value TEXT,
+    pic_name TEXT,
     created_at DATETIME DEFAULT CURRENT_TIMESTAMP
 );
 
@@ -1621,6 +1622,15 @@ async def init_db() -> None:
         try:
             await db.execute(
                 "ALTER TABLE blast_campaigns ADD COLUMN started_by_name TEXT"
+            )
+            await db.commit()
+        except Exception:
+            pass  # Column already exists
+
+        # Migration: add pic_name column to marketing_contact_results
+        try:
+            await db.execute(
+                "ALTER TABLE marketing_contact_results ADD COLUMN pic_name TEXT"
             )
             await db.commit()
         except Exception:

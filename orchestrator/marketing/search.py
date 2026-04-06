@@ -4,6 +4,8 @@ Stage 1: Website discovery (DDG → website → emails/phones)
 Stage 2: IG discovery (DDG → IG handle → scrape posts → GPT vision OCR)
 Stage 3: Web search fallback (DDG broad search → parse snippets)
 """
+from __future__ import annotations
+
 import asyncio
 import json
 import re
@@ -537,6 +539,78 @@ def _candidate_has_profile_evidence(candidate: dict) -> bool:
     )
 
 
+_EVENT_KEYWORDS = {
+    "event", "exhibition", "expo", "booth", "seminar", "workshop",
+    "trade show", "pameran", "acara", "festival", "konferensi",
+    "seminar", "webinar", "training", "pelatihan", "roadshow",
+    "conference", "summit", "gathering", "launch", "grand opening",
+}
+
+_CORPORATE_SIGNALS = {
+    "pt", "pt.", "tbk", "cv", "corp", "company", "official",
+    "direktur", "manajer", "managing", "sekretaris", "secretary",
+    "holding", "group", "persero", "resmi", "internasional",
+}
+
+
+def _is_event_account(handle: str, bio: str, title: str) -> bool:
+    """
+    Returns True if this IG account is an EVENT/ANNOUNCEMENT account
+    (not a corporate account).
+
+    Event signals: bio or title contains only event keywords.
+    Corporate signals: bio or title contains company indicators.
+    If BOTH present -> treat as corporate (company does events too)
+    If ONLY event signals -> SKIP this candidate.
+    """
+    combined = f"{bio} {title}".lower()
+    event_hits = sum(1 for kw in _EVENT_KEYWORDS if kw in combined)
+    corp_hits = sum(1 for sig in _CORPORATE_SIGNALS if sig in combined)
+
+    if event_hits == 0:
+        return False
+    if corp_hits > 0:
+        return False
+    return True
+
+
+def _extract_wa_from_bio(bio: str, handle: str) -> list[ContactResult]:
+    """
+    Extract WA number from a bio text/URL.
+
+    Finds wa.me/NUMBER or api.whatsapp.com/send?phone=NUMBER patterns,
+    normalizes to +62 format, and returns ContactResult list.
+    """
+    results: list[ContactResult] = []
+    seen: set[str] = set()
+
+    for pattern in _WHATSAPP_URL_PATTERNS:
+        for raw_digits in pattern.findall(bio):
+            digits = "".join(filter(str.isdigit, raw_digits))
+            if not digits or len(digits) < 9:
+                continue
+            if digits in seen:
+                continue
+            seen.add(digits)
+
+            if digits.startswith("0"):
+                normalized = f"+62{digits[1:]}"
+            elif digits.startswith("62"):
+                normalized = f"+62{digits[2:]}"
+            else:
+                normalized = f"+{digits}"
+
+            results.append(ContactResult(
+                contact_type="wa_phone",
+                value=normalized,
+                source_url=f"https://wa.me/{digits}",
+                source_type="ig_bio",
+                confidence=0.8,
+            ))
+
+    return results
+
+
 def _candidate_has_non_llm_selection_evidence(candidate: dict) -> bool:
     if _candidate_has_profile_evidence(candidate):
         return True
@@ -848,6 +922,18 @@ async def _evaluate_corporate_ig_candidates(client_name: str) -> list[dict]:
         min(_CORPORATE_MAX_CANDIDATES, len(candidates)),
     )
 
+    # Extract WA contacts from bio URLs before filtering/verification
+    for candidate in enriched:
+        bio = candidate.get("bio") or ""
+        handle = candidate.get("handle") or ""
+        candidate["wa_contacts"] = _extract_wa_from_bio(bio, handle)
+
+    # Filter out event accounts before LLM verification and ranking
+    enriched = [
+        c for c in enriched
+        if not _is_event_account(c.get("handle", ""), c.get("bio", ""), c.get("title", ""))
+    ]
+
     for candidate in enriched:
         profile_score = _boost_company_candidate_from_profile(candidate, client_name)
         affinity_score = _company_affinity_score(candidate, client_name)
@@ -1017,34 +1103,6 @@ def _select_grounded_source_url(candidate_url: str | None, grounded_urls: list[s
     return grounded_urls[0] if grounded_urls else None
 
 
-def _append_standalone_person_results(
-    results: list[ContactResult],
-    *,
-    source_url: str | None,
-    source_type: str,
-    confidence: float,
-    name: str | None,
-    title: str | None,
-) -> None:
-    clean_name = (name or "").strip()
-    clean_title = (title or "").strip()
-    if clean_name:
-        results.append(ContactResult(
-            contact_type="pic_name",
-            value=clean_name,
-            source_url=source_url,
-            source_type=source_type,
-            confidence=confidence,
-        ))
-    if clean_title:
-        results.append(ContactResult(
-            contact_type="pic_title",
-            value=clean_title,
-            source_url=source_url,
-            source_type=source_type,
-            confidence=confidence,
-        ))
-
 
 def _build_gemini_grounded_prompt(
     client_name: str,
@@ -1129,8 +1187,6 @@ def _build_grounded_contact_results(
             source_url=source_url,
             source_type=source_type,
             confidence=_clamp_contact_confidence(item.get("confidence"), 0.6),
-            pic_name=str(item.get("contact_name") or "").strip() or None,
-            pic_title=str(item.get("contact_title") or "").strip() or None,
         ))
 
     for item in _normalize_grounded_items(payload.get("mobile_phones")):
@@ -1145,35 +1201,8 @@ def _build_grounded_contact_results(
             source_type=source_type,
             confidence=_clamp_contact_confidence(item.get("confidence"), 0.65),
             pic_name=str(item.get("contact_name") or "").strip() or None,
-            pic_title=str(item.get("contact_title") or "").strip() or None,
         ))
 
-    for item in _normalize_grounded_items(payload.get("office_phones")):
-        value = str(item.get("value") or "").strip()
-        if not value:
-            continue
-        source_url = _select_grounded_source_url(str(item.get("supporting_url") or ""), grounded_urls)
-        results.append(ContactResult(
-            contact_type="office_phone",
-            value=value,
-            source_url=source_url,
-            source_type=source_type,
-            confidence=_clamp_contact_confidence(item.get("confidence"), 0.55),
-            pic_name=str(item.get("contact_name") or "").strip() or None,
-            pic_title=str(item.get("contact_title") or "").strip() or None,
-        ))
-
-    for item in _normalize_grounded_items(payload.get("contact_people")):
-        source_url = _select_grounded_source_url(str(item.get("supporting_url") or ""), grounded_urls)
-        confidence = _clamp_contact_confidence(item.get("confidence"), 0.5)
-        _append_standalone_person_results(
-            results,
-            source_url=source_url,
-            source_type=source_type,
-            confidence=confidence,
-            name=str(item.get("name") or "").strip() or None,
-            title=str(item.get("title") or "").strip() or None,
-        )
 
     return _dedupe_results(results)
 
@@ -1463,18 +1492,9 @@ async def _replace_ig_contact_results_for_client(
             source_url=result.source_url,
             source_type=result.source_type,
             confidence=result.confidence,
+            pic_name=result.pic_name if result.contact_type == "wa_phone" else None,
         )
         inserted_contacts += 1
-
-        if result.pic_name:
-            await mkt.upsert_contact_result(
-                client_id=client_id,
-                contact_type="pic_name",
-                value=result.pic_name,
-                source_url=result.source_url or "",
-                source_type=result.source_type or "",
-                confidence=result.confidence,
-            )
 
     return inserted_contacts
 
@@ -1536,11 +1556,23 @@ async def ig_discovery(client_name: str) -> InstagramDiscoveryResult:
     results: list[ContactResult] = []
 
     candidates = await _evaluate_corporate_ig_candidates(client_name)
+
+    # Collect WA contacts extracted from IG bios (done in _evaluate_corporate_ig_candidates)
+    for candidate in candidates:
+        for wa_contact in candidate.get("wa_contacts", []):
+            results.append(wa_contact)
+
     selected_candidates = [candidate for candidate in candidates if candidate.get("is_selected")]
     primary_candidate = next((candidate for candidate in candidates if candidate.get("is_primary")), None)
 
     if not selected_candidates:
-        return InstagramDiscoveryResult(candidates=candidates)
+        # Return WA contacts found in bios even without selected IG candidates
+        return InstagramDiscoveryResult(
+            candidates=candidates,
+            contacts=_dedupe_results(results),
+            scrape_status="no_candidates",
+            scrape_error="No corporate Instagram candidates passed event filter",
+        )
 
     selected_handles = [candidate.get("handle") for candidate in selected_candidates if candidate.get("handle")]
     primary_handle = primary_candidate.get("handle") if primary_candidate else None
@@ -1557,6 +1589,7 @@ async def ig_discovery(client_name: str) -> InstagramDiscoveryResult:
             handle=primary_handle,
             profile_url=primary_candidate.get("url") if primary_candidate else None,
             candidates=candidates,
+            contacts=_dedupe_results(results),
             scrape_status="failed",
             scrape_error=str(exc) or type(exc).__name__,
         )
@@ -1566,10 +1599,12 @@ async def ig_discovery(client_name: str) -> InstagramDiscoveryResult:
             handle=primary_candidate.get("handle") if primary_candidate else None,
             profile_url=primary_candidate.get("url") if primary_candidate else None,
             candidates=candidates,
+            contacts=_dedupe_results(results),
             scrape_status="empty",
             scrape_error=scrape_error,
         )
-    results = await _extract_marketing_contacts_from_posts(all_posts)
+    post_results = await _extract_marketing_contacts_from_posts(all_posts)
+    results.extend(post_results)
 
     return InstagramDiscoveryResult(
         handle=primary_candidate.get("handle") if primary_candidate else None,
@@ -1585,12 +1620,19 @@ async def ig_discovery(client_name: str) -> InstagramDiscoveryResult:
 async def ig_handle_audit_discovery(client_name: str) -> InstagramDiscoveryResult:
     """Resolve and rank Instagram handles without scraping posts."""
     candidates = await _evaluate_corporate_ig_candidates(client_name)
+
+    # Surface WA contacts extracted from bios
+    wa_contacts: list[ContactResult] = []
+    for candidate in candidates:
+        wa_contacts.extend(candidate.get("wa_contacts", []))
+
     selected_candidates = [candidate for candidate in candidates if candidate.get("is_selected")]
     primary_candidate = next((candidate for candidate in candidates if candidate.get("is_primary")), None)
 
     if not selected_candidates:
         return InstagramDiscoveryResult(
             candidates=candidates,
+            contacts=_dedupe_results(wa_contacts),
             scrape_status="not_found",
             scrape_error="No Instagram candidate matched strongly enough for audit persistence",
         )
@@ -1599,6 +1641,7 @@ async def ig_handle_audit_discovery(client_name: str) -> InstagramDiscoveryResul
         handle=primary_candidate.get("handle") if primary_candidate else None,
         profile_url=primary_candidate.get("url") if primary_candidate else None,
         candidates=candidates,
+        contacts=_dedupe_results(wa_contacts),
         scrape_status="audit_only",
         scrape_error="Instagram post scrape skipped because website already produced the required contact set",
     )
