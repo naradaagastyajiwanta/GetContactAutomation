@@ -9,16 +9,24 @@ export type ClientType =
   | "swasta_besar"
   | "asosiasi"
   | "lpk"
-  | "lkp";
+  | "lkp" // existing
+  | "lsp_p1"
+  | "lsp_p2"
+  | "lsp_p3"
+  | "dinas"; // newly added
 
 export const CLIENT_TYPE_LABELS: Record<ClientType, string> = {
-  lembaga_negara: "Lembaga Negara",
+  lembaga_negara: "Lembaga Negara Non Kementerian",
   kementerian: "Kementerian",
   bumn: "BUMN",
   swasta_besar: "Perusahaan Swasta Besar",
   asosiasi: "Asosiasi",
-  lpk: "LPK",
-  lkp: "LKP",
+  lpk: "Lembaga Pelatihan Kerja (LPK)",
+  lkp: "Lembaga Karier (LKP)",
+  lsp_p1: "LSP P1",
+  lsp_p2: "LSP P2",
+  lsp_p3: "LSP P3",
+  dinas: "Dinas",
 };
 
 export type GroupStatus = "draft" | "searching" | "done";
@@ -477,10 +485,39 @@ export async function handoffGroup(
   );
   // Backend returns {success, campaign_id, wa_count, email_count, handoff_id, message}
   // Map to HandoffResult interface
-  return {
-    success: data.success,
-    campaign_id: data.campaign_id,
-    campaign_type: handoffType,
-    message: data.message,
-  };
+}
+
+// ── Gemini Group Generation API ─────────────────────────────────────────────
+
+export interface GeneratedPreview {
+  names: string[];
+  grounding_urls: string[];
+  suggested_count: number;
+}
+
+export interface GenerateConfirmResult {
+  success: boolean;
+  group_id: number;
+  group_name: string;
+  clients_created: number;
+  status: GroupStatus;
+}
+
+export async function generateMarketingGroupPreview(payload: {
+  client_type: ClientType;
+  count: number;
+}): Promise<GeneratedPreview> {
+  const { data } = await apiClient.post("/marketing/groups/generate", payload);
+  return data;
+}
+
+export async function confirmGeneratedGroup(payload: {
+  client_type: ClientType;
+  names: string[];
+}): Promise<GenerateConfirmResult> {
+  const { data } = await apiClient.post(
+    "/marketing/groups/generate/confirm",
+    payload,
+  );
+  return data;
 }

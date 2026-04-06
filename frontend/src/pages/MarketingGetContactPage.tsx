@@ -22,7 +22,7 @@ import { Button } from "../components/ui/Button";
 import { Spinner } from "../components/ui/Spinner";
 import { Select } from "../components/ui/Select";
 import { EmptyState } from "../components/ui/EmptyState";
-import { MarketingCreateGroupModal } from "../components/marketing/MarketingCreateGroupModal";
+import { MarketingGenerateGroupModal } from "../components/marketing/MarketingGenerateGroupModal";
 import { useAuth } from "../context/AuthContext";
 import { formatDate } from "../lib/utils";
 import {
@@ -34,13 +34,17 @@ import {
 // Options use snake_case values (matching API); import label map for display
 const CLIENT_TYPE_OPTIONS: { value: ClientType | ""; label: string }[] = [
   { value: "", label: "Semua Tipe" },
-  { value: "lembaga_negara", label: "Lembaga Negara" },
+  { value: "lembaga_negara", label: "Lembaga Negara Non Kementerian" },
   { value: "kementerian", label: "Kementerian" },
   { value: "bumn", label: "BUMN" },
   { value: "swasta_besar", label: "Perusahaan Swasta Besar" },
   { value: "asosiasi", label: "Asosiasi" },
-  { value: "lpk", label: "LPK" },
-  { value: "lkp", label: "LKP" },
+  { value: "lpk", label: "Lembaga Pelatihan Kerja (LPK)" },
+  { value: "lkp", label: "Lembaga Karier (LKP)" },
+  { value: "lsp_p1", label: "LSP P1" },
+  { value: "lsp_p2", label: "LSP P2" },
+  { value: "lsp_p3", label: "LSP P3" },
+  { value: "dinas", label: "Dinas" },
 ];
 
 const statusConfig: Record<
@@ -294,7 +298,9 @@ export default function MarketingGetContactPage() {
       )}
 
       {createModalOpen && (
-        <MarketingCreateGroupModal onClose={() => setCreateModalOpen(false)} />
+        <MarketingGenerateGroupModal
+          onClose={() => setCreateModalOpen(false)}
+        />
       )}
     </div>
   );

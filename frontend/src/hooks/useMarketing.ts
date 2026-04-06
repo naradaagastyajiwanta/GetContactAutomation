@@ -19,6 +19,8 @@ import {
   startGroupSearch,
   getSearchStatus,
   handoffGroup,
+  generateMarketingGroupPreview,
+  confirmGeneratedGroup,
   type ClientType,
 } from "../api/marketing";
 
@@ -337,6 +339,28 @@ export function useHandoffGroup() {
       groupId: number;
       handoffType: "wa_blast" | "email_blast";
     }) => handoffGroup(groupId, handoffType),
+    retry: 0,
+  });
+}
+
+// ── Gemini Group Generation Hooks ──────────────────────────────────────────
+
+export function useGenerateMarketingPreview() {
+  return useMutation({
+    mutationFn: (payload: { client_type: ClientType; count: number }) =>
+      generateMarketingGroupPreview(payload),
+    retry: 0,
+  });
+}
+
+export function useConfirmGeneratedGroup() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (payload: { client_type: ClientType; names: string[] }) =>
+      confirmGeneratedGroup(payload),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: mkKeys.all });
+    },
     retry: 0,
   });
 }

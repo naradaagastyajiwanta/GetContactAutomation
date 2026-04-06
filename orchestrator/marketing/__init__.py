@@ -10,7 +10,7 @@ from fastapi.responses import StreamingResponse
 
 from orchestrator.auth import require_permission
 from . import groups as mkt
-from .serializers import GroupCreate, GroupUpdate, ClientCreate, ContactCreate, ContactResultOut
+from .serializers import GroupCreate, GroupUpdate, ClientCreate, ContactCreate, ContactResultOut, GroupGenerate, GroupGenerateResponse
 
 router = APIRouter()
 
@@ -83,6 +83,97 @@ async def delete_group(request: Request, group_id: int):
     if not deleted:
         raise HTTPException(status_code=404, detail="Group not found")
     return {"success": True, "message": "Group deleted"}
+
+
+# ---------------------------------------------------------------------------
+# Gemini Group Generation
+# ---------------------------------------------------------------------------
+
+from . import generator
+from . import search as mkt_search
+
+
+@router.post("/groups/generate", response_model=dict)
+async def generate_group_preview(request: Request, body: GroupGenerate):
+    """
+    Preview a list of institution names for a client_type using Gemini
+    with Google Search grounding.
+    """
+    await require_permission(request, "marketing.view")
+    try:
+        result = await generator.generate_client_names(body.client_type, body.count)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except generator.GenerationError as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(status_code=502, detail=f"Generation failed: {exc}") from exc
+
+    return {
+        "success": True,
+        "names": result["names"],
+        "grounding_urls": result["grounding_urls"],
+        "suggested_count": result["suggested_count"],
+    }
+
+
+@router.post("/groups/generate/confirm", response_model=dict)
+async def generate_and_create_group(
+    request: Request,
+    background_tasks: BackgroundTasks,
+    body: GroupGenerateResponse,
+):
+    """
+    Create a group with auto-generated name, insert all client names,
+    and trigger the search pipeline.
+    """
+    await require_permission(request, "marketing.manage")
+
+    auto_name = f"{body.client_type}_{datetime.now().strftime('%Y-%m-%d_%H-%M')}"
+    group = await mkt.create_group(auto_name, body.client_type)
+    group_id = group["id"]
+
+    # Update source to gemini_generated
+    import aiosqlite
+    from orchestrator.config import DATABASE_PATH
+    async with aiosqlite.connect(DATABASE_PATH) as db:
+        await db.execute(
+            "UPDATE marketing_groups SET source = ? WHERE id = ?",
+            ("gemini_generated", group_id),
+        )
+        await db.commit()
+
+    # Batch insert all client names
+    now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    rows: list[tuple[int, str, str | None, str]] = [
+        (group_id, name, None, now_str) for name in body.names
+    ]
+    clients_created = await mkt.batch_create_clients(rows)
+
+    # Update group and client status to searching
+    await mkt.update_group_status(group_id, "searching")
+
+    # Trigger background search pipeline
+    async def wrapped_search() -> None:
+        try:
+            await mkt_search.process_search_queue(group_id)
+        except Exception as exc:
+            import logging
+
+            logging.getLogger("marketing.search").exception(
+                "process_search_queue failed for group %s: %s", group_id, exc
+            )
+            await mkt.mark_group_search_failed(group_id, str(exc))
+
+    background_tasks.add_task(wrapped_search)
+
+    return {
+        "success": True,
+        "group_id": group_id,
+        "group_name": auto_name,
+        "clients_created": clients_created,
+        "status": "searching",
+    }
 
 
 # ---------------------------------------------------------------------------

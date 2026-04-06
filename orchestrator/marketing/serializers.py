@@ -1,6 +1,16 @@
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from datetime import datetime
 from .constants import ClientType, GroupStatus, SearchStatus, ContactType
+
+
+class GroupGenerate(BaseModel):
+    client_type: str
+    count: int = Field(50, ge=5, le=200)
+
+
+class GroupGenerateResponse(BaseModel):
+    client_type: str
+    names: list[str]
 
 
 class GroupCreate(BaseModel):
