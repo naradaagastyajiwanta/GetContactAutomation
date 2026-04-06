@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { Link } from "react-router-dom";
 import {
   CheckCircle2,
   Circle,
@@ -6,8 +7,7 @@ import {
   RotateCcw,
   X,
   Plus,
-  ChevronDown,
-  ChevronUp,
+  ChevronRight,
   Trash2,
   Wifi,
   Mail,
@@ -22,6 +22,7 @@ import {
   Globe,
   Loader2,
 } from "lucide-react";
+
 import { cn } from "../../lib/utils";
 import { Button } from "../ui/Button";
 import { Card } from "../ui/Card";
@@ -38,9 +39,6 @@ import {
   useUpdateMarketingContact,
   useDeleteMarketingClient,
   useCreateMarketingContact,
-  useRetryMarketingClientInstagramScrape,
-  useRetryMarketingClientInstagramContactExtraction,
-  useRetryMarketingClientSearch,
 } from "../../hooks/useMarketing";
 import { Modal } from "../ui/Modal";
 import { Select } from "../ui/Select";
@@ -345,8 +343,6 @@ function getInstagramScrapeStatusLabel(client: MarketingClient): {
   return null;
 }
 
-type ClientDetailTab = "contacts" | "posts" | "instagram";
-
 function getInstagramCandidateStatus(candidate: {
   is_primary?: boolean;
   is_selected?: boolean;
@@ -379,7 +375,7 @@ function getInstagramCandidateStatus(candidate: {
   };
 }
 
-function MarketingInstagramAccountsPanel({
+export function MarketingInstagramAccountsPanel({
   client,
 }: {
   client: MarketingClient;
@@ -490,7 +486,7 @@ function MarketingInstagramAccountsPanel({
   );
 }
 
-function MarketingInstagramPostsPanel({
+export function MarketingInstagramPostsPanel({
   client,
   canManage,
   onRetry,
@@ -616,7 +612,7 @@ function MarketingInstagramPostsPanel({
   );
 }
 
-function MarketingContactsPanel({
+export function MarketingContactsPanel({
   client,
   groupId,
   canManage,
@@ -717,7 +713,11 @@ function MarketingContactsPanel({
   );
 }
 
-function InstagramDiscoveryPanel({ client }: { client: MarketingClient }) {
+export function InstagramDiscoveryPanel({
+  client,
+}: {
+  client: MarketingClient;
+}) {
   const posts = client.ig_posts ?? [];
   const candidates = client.ig_candidates ?? [];
   const selectedCandidates = getSelectedInstagramCandidates(client);
@@ -1445,133 +1445,22 @@ function ClientCard({
   groupId: number;
   canManage: boolean;
 }) {
-  const [expanded, setExpanded] = useState(false);
-  const [activeTab, setActiveTab] = useState<ClientDetailTab>("contacts");
-  const updateContact = useUpdateMarketingContact();
   const deleteClient = useDeleteMarketingClient();
-  const retryInstagramScrape = useRetryMarketingClientInstagramScrape();
-  const retryInstagramContactExtraction =
-    useRetryMarketingClientInstagramContactExtraction();
-  const retryClientSearch = useRetryMarketingClientSearch();
-
-  function handleApprove(contactId: number, approved: boolean) {
-    updateContact.mutate({ contactId, payload: { is_approved: approved } });
-  }
-
-  function handleEdit(contactId: number, value: string) {
-    updateContact.mutate({ contactId, payload: { edited_value: value } });
-  }
 
   function handleDelete() {
     if (!window.confirm("Hapus client ini?")) return;
     deleteClient.mutate({ clientId: client.id, groupId });
   }
 
-  async function handleRetryInstagramScrape() {
-    try {
-      const result = await retryInstagramScrape.mutateAsync({
-        clientId: client.id,
-        groupId,
-      });
-      if (result.posts > 0 && result.contacts_added === 0) {
-        toast.success(
-          `${result.message}. Post tersimpan, tapi kontak belum terdeteksi.`,
-        );
-      } else {
-        toast.success(result.message);
-      }
-      setExpanded(true);
-      setActiveTab(result.posts > 0 ? "contacts" : "posts");
-    } catch (error) {
-      const message =
-        error instanceof Error ? error.message : "Gagal retry IG post scrape";
-      toast.error(message);
-    }
-  }
-
-  async function handleRetryInstagramContactExtraction() {
-    try {
-      const result = await retryInstagramContactExtraction.mutateAsync({
-        clientId: client.id,
-        groupId,
-      });
-      toast.success(result.message);
-      setExpanded(true);
-      setActiveTab("contacts");
-    } catch (error) {
-      const message =
-        error instanceof Error
-          ? error.message
-          : "Gagal extract contact dari post Instagram";
-      toast.error(message);
-    }
-  }
-
-  async function handleRetrySearch() {
-    try {
-      const result = await retryClientSearch.mutateAsync({
-        clientId: client.id,
-        groupId,
-      });
-      toast.success(result.message);
-      setExpanded(true);
-      setActiveTab("contacts");
-    } catch (error) {
-      const message =
-        error instanceof Error ? error.message : "Gagal retry search client";
-      toast.error(message);
-    }
-  }
-
   const hasContacts = (client.contacts ?? []).length > 0;
-  const hasApproved = (client.contacts ?? []).some((c) => c.is_approved);
-  const igCandidateCount = client.ig_candidates?.length ?? 0;
-  const igPostCount = client.ig_posts?.length ?? 0;
-  const igScrapeWarning = hasInstagramScrapeWarning(client);
   const visibleInstagramHandles = getVisibleInstagramHandles(client);
-  const headerInstagramCandidates = visibleInstagramHandles.slice(0, 3);
-  const remainingInstagramCandidateCount = Math.max(
-    0,
-    visibleInstagramHandles.length - headerInstagramCandidates.length,
-  );
-  const retrying = retryInstagramScrape.isPending;
-  const retryingExtractContacts = retryInstagramContactExtraction.isPending;
-  const retryingSearch = retryClientSearch.isPending;
-  const statusBadge = getInstagramScrapeStatusLabel(client);
-  const tabs: Array<{ key: ClientDetailTab; label: string; count: number }> = [
-    { key: "contacts", label: "Contacts", count: client.contacts?.length ?? 0 },
-    { key: "posts", label: "Posts", count: client.ig_posts?.length ?? 0 },
-    {
-      key: "instagram",
-      label: "IG Accounts",
-      count: Math.max(
-        client.ig_candidates?.length ?? 0,
-        visibleInstagramHandles.length,
-      ),
-    },
-  ];
 
   return (
     <Card padding={false} className="overflow-hidden">
-      {/* Client header row */}
-      <div
-        className={cn(
-          "flex items-center gap-3 px-4 py-3 cursor-pointer transition-colors",
-          expanded
-            ? "bg-indigo-50 dark:bg-indigo-950/50"
-            : "hover:bg-gray-50 dark:hover:bg-gray-800/50",
-        )}
-        onClick={() => setExpanded((e) => !e)}
-        role="button"
-        tabIndex={0}
-        aria-expanded={expanded}
-        aria-controls={`client-card-${client.id}`}
-        onKeyDown={(e) => {
-          if (e.key === "Enter" || e.key === " ") {
-            e.preventDefault();
-            setExpanded((x) => !x);
-          }
-        }}
+      {/* Client header row — navigate to detail page on click */}
+      <Link
+        to={`/marketing/clients/${client.id}`}
+        className="flex items-center gap-3 px-4 py-3 transition-colors hover:bg-gray-50 dark:hover:bg-gray-800/50"
       >
         <div className="flex-1 min-w-0">
           <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
@@ -1638,75 +1527,19 @@ function ClientCard({
             <button
               type="button"
               onClick={(e) => {
+                e.preventDefault();
                 e.stopPropagation();
                 handleDelete();
               }}
-              className="rounded p-1 text-gray-400 hover:text-red-500 transition-colors"
+              className="rounded p-1 text-gray-400 transition-colors hover:text-red-500"
               aria-label="Hapus client"
             >
               <Trash2 className="h-3.5 w-3.5" />
             </button>
           )}
-          {expanded ? (
-            <ChevronUp className="h-4 w-4 text-gray-400" />
-          ) : (
-            <ChevronDown className="h-4 w-4 text-gray-400" />
-          )}
+          <ChevronRight className="h-4 w-4 text-gray-400" />
         </div>
-      </div>
-
-      {/* Expanded contacts table */}
-      {expanded && (
-        <div className="border-t border-gray-200 dark:border-gray-700">
-          <div className="border-b border-gray-200 px-4 dark:border-gray-700">
-            <nav className="flex gap-4 overflow-x-auto">
-              {tabs.map((tab) => (
-                <button
-                  key={tab.key}
-                  type="button"
-                  onClick={() => setActiveTab(tab.key)}
-                  className={cn(
-                    "border-b-2 px-1 py-3 text-sm font-medium transition-colors whitespace-nowrap",
-                    activeTab === tab.key
-                      ? "border-indigo-500 text-indigo-600 dark:text-indigo-400"
-                      : "border-transparent text-gray-500 hover:border-gray-300 hover:text-gray-700 dark:text-gray-400 dark:hover:text-gray-300",
-                  )}
-                >
-                  {tab.label}
-                  <span className="ml-2 rounded-full bg-gray-100 px-2 py-0.5 text-xs text-gray-600 dark:bg-gray-800 dark:text-gray-300">
-                    {tab.count}
-                  </span>
-                </button>
-              ))}
-            </nav>
-          </div>
-
-          {activeTab === "contacts" && (
-            <MarketingContactsPanel
-              client={client}
-              groupId={groupId}
-              canManage={canManage}
-              onApprove={handleApprove}
-              onEdit={handleEdit}
-              onRetryExtractContacts={handleRetryInstagramContactExtraction}
-              retryingExtractContacts={retryingExtractContacts}
-              onRetrySearch={handleRetrySearch}
-              retryingSearch={retryingSearch}
-            />
-          )}
-          {activeTab === "posts" && (
-            <MarketingInstagramPostsPanel
-              client={client}
-              canManage={canManage}
-              onRetry={handleRetryInstagramScrape}
-              retrying={retrying}
-            />
-          )}
-          {activeTab === "instagram" && (
-            <MarketingInstagramAccountsPanel client={client} />
-          )}
-        </div>
-      )}
+      </Link>
     </Card>
   );
 }

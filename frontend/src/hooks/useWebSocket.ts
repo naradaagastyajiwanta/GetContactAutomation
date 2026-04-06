@@ -758,6 +758,9 @@ function handleEventQuery(
         exact: false,
       });
       void qc.invalidateQueries({
+        queryKey: ["marketing", "client", data.client_id],
+      });
+      void qc.invalidateQueries({
         queryKey: ["marketing", "search", data.group_id],
       });
       break;

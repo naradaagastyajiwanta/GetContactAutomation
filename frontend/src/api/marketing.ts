@@ -280,6 +280,13 @@ export async function getMarketingClients(
   };
 }
 
+export async function getMarketingClientDetail(
+  clientId: number,
+): Promise<MarketingClient> {
+  const { data } = await apiClient.get(`/marketing/clients/${clientId}`);
+  return data.client;
+}
+
 export async function addMarketingClient(
   groupId: number,
   payload: { name: string },

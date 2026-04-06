@@ -236,6 +236,53 @@ async def bulk_delete_clients(request: Request, group_id: int, body: dict):
     return {"success": True, "deleted": deleted}
 
 
+@router.get("/clients/{client_id}", response_model=dict)
+async def get_client_detail(request: Request, client_id: int):
+    """Get a single client with full nested data (contacts, ig_posts, ig_candidates)."""
+    await require_permission(request, "marketing.view")
+    client = await mkt.get_client(client_id)
+    if client is None:
+        raise HTTPException(status_code=404, detail="Client not found")
+    contacts = await mkt.get_contact_results_for_client(client_id)
+    ig_posts = await mkt.get_client_ig_posts(client_id)
+
+    import aiosqlite
+    from orchestrator.config import DATABASE_PATH
+    async with aiosqlite.connect(DATABASE_PATH) as db:
+        cur = await db.execute(
+            """
+            SELECT id, client_id, handle, profile_url, source, title, snippet,
+                   full_name, bio, external_url, external_domain, is_verified,
+                   base_score, affinity_score, profile_score, final_score,
+                   llm_is_correct, llm_confidence, llm_reason, rank_order,
+                   is_primary, is_selected, created_at
+            FROM marketing_ig_candidates
+            WHERE client_id = ?
+            ORDER BY is_selected DESC, is_primary DESC,
+                     COALESCE(rank_order, 999999) ASC, final_score DESC, created_at DESC
+            """,
+            (client_id,),
+        )
+        cand_rows = await cur.fetchall()
+    ig_candidates = [
+        {
+            "id": r[0], "client_id": r[1], "handle": r[2], "profile_url": r[3],
+            "source": r[4], "title": r[5], "snippet": r[6], "full_name": r[7],
+            "bio": r[8], "external_url": r[9], "external_domain": r[10],
+            "is_verified": bool(r[11]), "base_score": r[12], "affinity_score": r[13],
+            "profile_score": r[14], "final_score": r[15], "llm_is_correct": r[16],
+            "llm_confidence": r[17], "llm_reason": r[18], "rank_order": r[19],
+            "is_primary": bool(r[20]), "is_selected": bool(r[21]), "created_at": r[22],
+        }
+        for r in cand_rows
+    ]
+
+    return {
+        "success": True,
+        "client": {**client, "contacts": contacts, "ig_posts": ig_posts, "ig_candidates": ig_candidates},
+    }
+
+
 @router.get("/clients/{client_id}/orchestration", response_model=dict)
 async def get_client_orchestration(request: Request, client_id: int):
     """Get orchestration state and recent runs for a marketing client."""

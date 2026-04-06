@@ -4,6 +4,7 @@ import {
   getMarketingGroup,
   createMarketingGroup,
   deleteMarketingGroup,
+  getMarketingClientDetail,
   getMarketingClients,
   addMarketingClient,
   deleteMarketingClient,
@@ -101,6 +102,15 @@ export function useUpdateMarketingGroup() {
 }
 
 // ── Client Hooks ────────────────────────────────────────────────────────────
+
+export function useMarketingClientDetail(clientId: number) {
+  return useQuery({
+    queryKey: ["marketing", "client", clientId] as const,
+    queryFn: () => getMarketingClientDetail(clientId),
+    enabled: !!clientId,
+    retry: 2,
+  });
+}
 
 export function useMarketingClients(
   groupId: number,
