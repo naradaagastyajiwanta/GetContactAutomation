@@ -1050,6 +1050,14 @@ async def init_db() -> None:
                 "ALTER TABLE marketing_ig_posts ADD COLUMN phones_found INTEGER DEFAULT 0"
             )
 
+        # Migration: add search_error column to marketing_groups if missing
+        cursor = await db.execute("PRAGMA table_info(marketing_groups)")
+        group_columns = {row[1] for row in await cursor.fetchall()}
+        if "search_error" not in group_columns:
+            await db.execute(
+                "ALTER TABLE marketing_groups ADD COLUMN search_error TEXT"
+            )
+
         await db.executescript(_INDEXES_MARKETING)
 
         async def _rebuild_email_cache_table_if_needed(table_name: str, recreate_script: str) -> None:

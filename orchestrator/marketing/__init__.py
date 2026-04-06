@@ -2,6 +2,7 @@
 Marketing module router — corporate outreach groups, clients, contacts, and search.
 """
 import io
+import json
 from datetime import datetime
 
 from fastapi import APIRouter, BackgroundTasks, HTTPException, Query, Request, UploadFile, File as FastAPIFile
@@ -9,7 +10,7 @@ from fastapi.responses import StreamingResponse
 
 from orchestrator.auth import require_permission
 from . import groups as mkt
-from .serializers import GroupCreate, ClientCreate, ContactResultOut
+from .serializers import GroupCreate, GroupUpdate, ClientCreate, ContactCreate, ContactResultOut
 
 router = APIRouter()
 
@@ -39,11 +40,18 @@ async def list_groups(
     request: Request,
     client_type: str | None = Query(None),
     status: str | None = Query(None),
+    limit: int = Query(50, ge=1, le=200),
+    offset: int = Query(0, ge=0),
 ):
-    """List all marketing groups with stats."""
+    """List all marketing groups with stats, paginated."""
     await require_permission(request, "marketing.view")
-    groups = await mkt.list_groups(client_type=client_type, status=status)
-    return {"success": True, "groups": groups}
+    result = await mkt.list_groups(
+        client_type=client_type,
+        status=status,
+        limit=limit,
+        offset=offset,
+    )
+    return {"success": True, **result}
 
 
 @router.get("/groups/{group_id}", response_model=dict)
@@ -55,6 +63,16 @@ async def get_group(request: Request, group_id: int):
         raise HTTPException(status_code=404, detail="Group not found")
     stats = await mkt.get_group_stats(group_id)
     return {"success": True, "group": group, "stats": stats}
+
+
+@router.patch("/groups/{group_id}", response_model=dict)
+async def patch_group(request: Request, group_id: int, body: GroupUpdate):
+    """Update group name and/or client_type."""
+    await require_permission(request, "marketing.manage")
+    group = await mkt.update_group(group_id, name=body.name)
+    if group is None:
+        raise HTTPException(status_code=404, detail="Group not found")
+    return {"success": True, "group": group}
 
 
 @router.delete("/groups/{group_id}", response_model=dict)
@@ -95,11 +113,36 @@ async def add_client(request: Request, group_id: int, body: ClientCreate):
 
 
 @router.get("/groups/{group_id}/clients", response_model=dict)
-async def list_clients(request: Request, group_id: int):
-    """List all clients in a group."""
+async def list_clients(
+    request: Request,
+    group_id: int,
+    limit: int = Query(50, ge=1, le=500),
+    offset: int = Query(0, ge=0),
+    q: str | None = Query(None),
+    search_status: str | None = Query(None),
+):
+    """List clients in a group with pagination and optional search/filter."""
     await require_permission(request, "marketing.view")
-    clients = await mkt.list_clients(group_id)
-    return {"success": True, "clients": clients}
+    result = await mkt.list_clients(
+        group_id,
+        limit=limit,
+        offset=offset,
+        q=q or None,
+        search_status=search_status or None,
+    )
+    return {"success": True, **result}
+
+
+@router.delete("/groups/{group_id}/clients", response_model=dict)
+async def bulk_delete_clients(request: Request, group_id: int, body: dict):
+    """Delete multiple clients from a group."""
+    await require_permission(request, "marketing.manage")
+    group = await mkt.get_group(group_id)
+    if group is None:
+        raise HTTPException(status_code=404, detail="Group not found")
+    client_ids: list[int] = body.get("client_ids", [])
+    deleted = await mkt.delete_clients_by_ids(group_id, client_ids)
+    return {"success": True, "deleted": deleted}
 
 
 @router.get("/clients/{client_id}/orchestration", response_model=dict)
@@ -209,6 +252,27 @@ async def get_client_contacts(request: Request, client_id: int):
     return {"success": True, "contacts": contacts}
 
 
+@router.post("/clients/{client_id}/contacts", response_model=dict)
+async def add_contact_result(
+    request: Request,
+    client_id: int,
+    body: ContactCreate,
+):
+    """Manually add a contact result for a client."""
+    await require_permission(request, "marketing.manage")
+    client = await mkt.get_client(client_id)
+    if client is None:
+        raise HTTPException(status_code=404, detail="Client not found")
+    contact = await mkt.create_contact_result_for_client(
+        client_id,
+        body.contact_type,
+        body.value,
+        source_url=body.source_url,
+        source_type=body.source_type,
+    )
+    return {"success": True, "contact": contact}
+
+
 @router.patch("/contacts/{result_id}", response_model=dict)
 async def patch_contact(request: Request, result_id: int, body: dict):
     """Partial update for a contact result (is_approved, is_selected, edited_value)."""
@@ -244,7 +308,7 @@ from .importer import parse_excel_bytes
 
 @router.post("/groups/{group_id}/import/preview", response_model=dict)
 async def import_preview(request: Request, group_id: int, file: UploadFile = FastAPIFile(...)):
-    """Preview first 5 rows of an Excel/CSV import."""
+    """Preview first 5 rows of an Excel/CSV import, marking duplicates."""
     await require_permission(request, "marketing.manage")
     group = await mkt.get_group(group_id)
     if group is None:
@@ -254,14 +318,35 @@ async def import_preview(request: Request, group_id: int, file: UploadFile = Fas
     if not content:
         raise HTTPException(status_code=400, detail="Empty file")
 
+    # Check file size (10 MB limit)
+    MAX_FILE_SIZE = 10 * 1024 * 1024
+    if len(content) > MAX_FILE_SIZE:
+        raise HTTPException(status_code=413, detail="File terlalu besar (max 10MB)")
+
     rows, columns = parse_excel_bytes(content, file.filename or "upload.xlsx")
-    preview = rows[:5]
+
+    # Fetch existing client names for this group to detect duplicates
+    existing_clients = await mkt.list_clients(group_id, limit=10000, offset=0)
+    existing_names: set[str] = {c["name"].lower().strip() for c in existing_clients["clients"]}
+
+    # Mark preview rows
+    seen_in_file: set[str] = set()
+    duplicate_count = 0
+    preview_rows = []
+    for row in rows[:10]:
+        name = row.get("name", "").strip().lower()
+        is_dup = (name in existing_names) or (name in seen_in_file)
+        if is_dup:
+            duplicate_count += 1
+        seen_in_file.add(name)
+        preview_rows.append({**row, "is_duplicate": is_dup})
+
     return {
         "success": True,
         "detected_columns": columns,
-        "preview": preview,
+        "preview": preview_rows,
         "total_rows": len(rows),
-        "duplicates": 0,
+        "duplicates": duplicate_count,
     }
 
 
@@ -277,13 +362,15 @@ async def import_commit(request: Request, group_id: int, file: UploadFile = Fast
     if not content:
         raise HTTPException(status_code=400, detail="Empty file")
 
+    MAX_FILE_SIZE = 10 * 1024 * 1024
+    if len(content) > MAX_FILE_SIZE:
+        raise HTTPException(status_code=413, detail="File terlalu besar (max 10MB)")
+
     rows, _ = parse_excel_bytes(content, file.filename or "upload.xlsx")
 
-    # Get existing client names in this group
-    existing_clients = await mkt.list_clients(group_id)
-    existing_names = {c["name"].lower().strip() for c in existing_clients}
-
-    inserted = 0
+    # Collect names to insert (skip empty / already-seen)
+    to_insert: list[tuple[int, str, str | None, str]] = []
+    seen_names: set[str] = set()
     skipped_empty = 0
     duplicates = 0
 
@@ -292,14 +379,18 @@ async def import_commit(request: Request, group_id: int, file: UploadFile = Fast
         if not name:
             skipped_empty += 1
             continue
-        if name.lower() in existing_names:
+        if name.lower() in seen_names:
             duplicates += 1
             continue
+        seen_names.add(name.lower())
+        extra_json = json.dumps(row.get("_extra")) if row.get("_extra") else None
+        now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        to_insert.append((group_id, name, extra_json, now))
 
-        extra = row.get("_extra")
-        await mkt.create_client(group_id, name, extra)
-        existing_names.add(name.lower())
-        inserted += 1
+    if to_insert:
+        inserted = await mkt.batch_create_clients(to_insert)
+    else:
+        inserted = 0
 
     return {
         "success": True,
@@ -327,7 +418,17 @@ async def start_search(request: Request, group_id: int, background_tasks: Backgr
     pending = await mkt.get_pending_clients(group_id)
     triggered = len(pending)
 
-    background_tasks.add_task(mkt_search.process_search_queue, group_id)
+    async def wrapped_search() -> None:
+        try:
+            await mkt_search.process_search_queue(group_id)
+        except Exception as exc:
+            import logging
+            logging.getLogger("marketing.search").exception(
+                "process_search_queue failed for group %s: %s", group_id, exc
+            )
+            await mkt.mark_group_search_failed(group_id, str(exc))
+
+    background_tasks.add_task(wrapped_search)
 
     return {"success": True, "triggered": triggered}
 

@@ -13,6 +13,19 @@ from orchestrator.config import DATABASE_PATH
 
 
 # ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
+
+
+def _parse_extra_data(raw: str) -> dict | None:
+    """Parse extra_data JSON safely. Returns None on parse failure."""
+    try:
+        return json.loads(raw)
+    except (json.JSONDecodeError, TypeError):
+        return None
+
+
+# ---------------------------------------------------------------------------
 # Group CRUD
 # ---------------------------------------------------------------------------
 
@@ -34,10 +47,28 @@ async def create_group(name: str, client_type: str) -> dict[str, Any]:
 async def list_groups(
     client_type: str | None = None,
     status: str | None = None,
-) -> list[dict[str, Any]]:
-    """List all marketing groups with aggregated stats."""
+    *,
+    limit: int = 50,
+    offset: int = 0,
+) -> dict[str, Any]:
+    """List all marketing groups with aggregated stats, paginated."""
     async with aiosqlite.connect(DATABASE_PATH) as db:
-        query = """
+        conditions: list[str] = []
+        params: list[Any] = []
+        if client_type:
+            conditions.append("g.client_type = ?")
+            params.append(client_type)
+        if status:
+            conditions.append("g.status = ?")
+            params.append(status)
+        where = " AND ".join(conditions) if conditions else "1=1"
+
+        # Total count (ignoring pagination for accurate total)
+        count_query = f"SELECT COUNT(*) FROM marketing_groups g WHERE {where}"
+        count_cursor = await db.execute(count_query, params)
+        total = (await count_cursor.fetchone())[0]
+
+        query = f"""
             SELECT
                 g.id, g.name, g.client_type, g.source, g.status,
                 g.created_at, g.updated_at,
@@ -47,20 +78,19 @@ async def list_groups(
                 SUM(CASE WHEN c.search_status IN ('pending','searching') THEN 1 ELSE 0 END) AS pending_count
             FROM marketing_groups g
             LEFT JOIN marketing_clients c ON c.group_id = g.id
-            WHERE 1=1
+            WHERE {where}
+            GROUP BY g.id
+            ORDER BY g.created_at DESC
+            LIMIT ? OFFSET ?
         """
-        params: list[Any] = []
-        if client_type:
-            query += " AND g.client_type = ?"
-            params.append(client_type)
-        if status:
-            query += " AND g.status = ?"
-            params.append(status)
-        query += " GROUP BY g.id ORDER BY g.created_at DESC"
-
-        cursor = await db.execute(query, params)
+        cursor = await db.execute(query, [*params, limit, offset])
         rows = await cursor.fetchall()
-        return [_row_to_group_out(r) for r in rows]
+        return {
+            "groups": [_row_to_group_out(r) for r in rows],
+            "total": total,
+            "limit": limit,
+            "offset": offset,
+        }
 
 
 async def get_group(group_id: int) -> dict[str, Any] | None:
@@ -106,6 +136,59 @@ async def update_group_status(group_id: int, status: str) -> None:
             (status, now, group_id),
         )
         await db.commit()
+
+
+async def update_group(group_id: int, name: str | None = None) -> dict[str, Any] | None:
+    """Update group name (and optionally other fields). Returns updated group."""
+    now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    async with aiosqlite.connect(DATABASE_PATH) as db:
+        if name is not None:
+            await db.execute(
+                "UPDATE marketing_groups SET name = ?, updated_at = ? WHERE id = ?",
+                (name, now, group_id),
+            )
+        await db.commit()
+    return await get_group(group_id)
+
+
+async def delete_clients_by_ids(group_id: int, client_ids: list[int]) -> int:
+    """Delete multiple clients by ID within a group. Returns count deleted.
+    Cascade-deletes all related tables in a single transaction."""
+    if not client_ids:
+        return 0
+    async with aiosqlite.connect(DATABASE_PATH) as db:
+        await db.execute("BEGIN IMMEDIATE")
+        try:
+            placeholders = ",".join("?" * len(client_ids))
+            await db.execute(
+                f"DELETE FROM marketing_orchestration_evidence WHERE client_id IN ({placeholders})",
+                client_ids,
+            )
+            await db.execute(
+                f"DELETE FROM marketing_orchestration_runs WHERE client_id IN ({placeholders})",
+                client_ids,
+            )
+            await db.execute(
+                f"DELETE FROM marketing_contact_results WHERE client_id IN ({placeholders})",
+                client_ids,
+            )
+            await db.execute(
+                f"DELETE FROM marketing_ig_posts WHERE client_id IN ({placeholders})",
+                client_ids,
+            )
+            await db.execute(
+                f"DELETE FROM marketing_ig_candidates WHERE client_id IN ({placeholders})",
+                client_ids,
+            )
+            cursor = await db.execute(
+                f"DELETE FROM marketing_clients WHERE group_id = ? AND id IN ({placeholders})",
+                [group_id, *client_ids],
+            )
+            await db.commit()
+            return cursor.rowcount
+        except Exception:
+            await db.rollback()
+            raise
 
 
 async def delete_group(group_id: int) -> bool:
@@ -171,11 +254,60 @@ async def create_client(group_id: int, name: str, extra_data: dict | None = None
         return await get_client(client_id)
 
 
-async def list_clients(group_id: int) -> list[dict[str, Any]]:
-    """List all clients in a group with their contact results."""
+async def batch_create_clients(
+    rows: list[tuple[int, str, str | None, str]],
+) -> int:
+    """Batch insert clients using executemany. Returns inserted row count.
+    Each row: (group_id, name, extra_data_json_or_None, created_at)."""
+    if not rows:
+        return 0
     async with aiosqlite.connect(DATABASE_PATH) as db:
+        await db.executemany(
+            """INSERT OR IGNORE INTO marketing_clients
+               (group_id, name, extra_data, search_status, created_at)
+               VALUES (?, ?, ?, 'pending', ?)""",
+            rows,
+        )
+        inserted = db.total_changes
+        await db.commit()
+        return inserted
+
+
+async def list_clients(
+    group_id: int,
+    *,
+    limit: int = 50,
+    offset: int = 0,
+    q: str | None = None,
+    search_status: str | None = None,
+) -> dict[str, Any]:
+    """List clients in a group with their contact results, paginated.
+    Returns {clients: [...], total: int, limit: int, offset: int}.
+    """
+    # Build filter conditions
+    conditions: list[str] = ["c.group_id = ?"]
+    params: list[Any] = [group_id]
+
+    if q:
+        conditions.append("LOWER(c.name) LIKE ?")
+        params.append(f"%{q.lower()}%")
+    if search_status:
+        conditions.append("c.search_status = ?")
+        params.append(search_status)
+
+    where_clause = " AND ".join(conditions)
+
+    async with aiosqlite.connect(DATABASE_PATH) as db:
+        # Get total count
+        count_cursor = await db.execute(
+            f"SELECT COUNT(*) FROM marketing_clients c WHERE {where_clause}",
+            params,
+        )
+        total = (await count_cursor.fetchone())[0]
+
+        # Get paginated client IDs
         cursor = await db.execute(
-            """
+            f"""
             SELECT
                 c.id, c.group_id, c.name, c.extra_data, c.search_status, c.error_message,
                 c.ig_handle, c.ig_profile_url, c.ig_last_scraped_at,
@@ -186,10 +318,11 @@ async def list_clients(group_id: int) -> list[dict[str, Any]]:
                 r.is_approved, r.is_selected, r.edited_value, r.created_at AS r_created_at
             FROM marketing_clients c
             LEFT JOIN marketing_contact_results r ON r.client_id = c.id
-            WHERE c.group_id = ?
+            WHERE {where_clause}
             ORDER BY c.created_at DESC, r.created_at DESC
+            LIMIT ? OFFSET ?
             """,
-            (group_id,),
+            [*params, limit, offset],
         )
         rows = await cursor.fetchall()
 
@@ -235,7 +368,7 @@ async def list_clients(group_id: int) -> list[dict[str, Any]]:
                 "id": row[0],
                 "group_id": row[1],
                 "name": row[2],
-                "extra_data": json.loads(row[3]) if row[3] else None,
+                "extra_data": (_parse_extra_data(row[3]) if row[3] else None),
                 "search_status": row[4],
                 "error_message": row[5],
                 "ig_handle": row[6],
@@ -317,7 +450,12 @@ async def list_clients(group_id: int) -> list[dict[str, Any]]:
     for client in clients_map.values():
         client["contacts"] = _filter_visible_contact_results(client["contacts"])
 
-    return list(clients_map.values())
+    return {
+        "clients": list(clients_map.values()),
+        "total": total,
+        "limit": limit,
+        "offset": offset,
+    }
 
 
 async def get_client(client_id: int) -> dict[str, Any] | None:
@@ -636,6 +774,17 @@ async def update_client_error_message(client_id: int, error_message: str) -> Non
         await db.commit()
 
 
+async def mark_group_search_failed(group_id: int, error_message: str) -> None:
+    """Set group status back to 'draft' and record the search error so UI can display it."""
+    now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    async with aiosqlite.connect(DATABASE_PATH) as db:
+        await db.execute(
+            "UPDATE marketing_groups SET status = ?, search_error = ?, updated_at = ? WHERE id = ?",
+            ("draft", error_message, now, group_id),
+        )
+        await db.commit()
+
+
 async def save_client_instagram_profile(
     client_id: int,
     ig_handle: str,
@@ -935,6 +1084,87 @@ async def replace_client_ig_candidates(
         await db.commit()
 
 
+async def create_contact_result_for_client(
+    client_id: int,
+    contact_type: str,
+    value: str,
+    source_url: str | None = None,
+    source_type: str | None = None,
+) -> dict[str, Any]:
+    """Insert a manual contact result for a client. Returns the created result dict."""
+    result_id = await upsert_contact_result(
+        client_id,
+        contact_type,
+        value,
+        source_url=source_url,
+        source_type=source_type,
+    )
+    # Fetch and return the created result
+    async with aiosqlite.connect(DATABASE_PATH) as db:
+        cursor = await db.execute(
+            """SELECT id, client_id, contact_type, value, source_url, source_type,
+                      confidence, is_approved, is_selected, edited_value, created_at
+               FROM marketing_contact_results WHERE id = ?""",
+            (result_id,),
+        )
+        row = await cursor.fetchone()
+        if row is None:
+            raise ValueError(f"Contact result {result_id} not found after insert")
+        return {
+            "id": row[0],
+            "client_id": row[1],
+            "contact_type": row[2],
+            "value": row[3],
+            "source_url": row[4],
+            "source_type": row[5],
+            "confidence": row[6],
+            "is_approved": bool(row[7]),
+            "is_selected": bool(row[8]),
+            "edited_value": row[9],
+            "created_at": row[10],
+        }
+
+
+async def upsert_contact_results_batch(
+    client_id: int,
+    results: list[dict[str, Any]],
+) -> int:
+    """Batch upsert contact results for a client using executemany.
+    Returns the number of rows inserted.
+    Uses BEGIN IMMEDIATE transaction for race-condition safety."""
+    if not results:
+        return 0
+
+    async with aiosqlite.connect(DATABASE_PATH) as db:
+        await db.execute("BEGIN IMMEDIATE")
+        try:
+            now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            rows_to_insert = [
+                (
+                    client_id,
+                    r["contact_type"],
+                    r["value"],
+                    r.get("source_url"),
+                    r.get("source_type"),
+                    float(r.get("confidence", 0.0)),
+                    now,
+                )
+                for r in results
+            ]
+            await db.executemany(
+                """INSERT OR IGNORE INTO marketing_contact_results
+                   (client_id, contact_type, value, source_url, source_type, confidence, is_selected, created_at)
+                   VALUES (?, ?, ?, ?, ?, ?, 0, ?)""",
+                rows_to_insert,
+            )
+            inserted = db.total_changes
+            await db.commit()
+            return inserted
+        except Exception:
+            await db.rollback()
+            raise
+
+
 async def upsert_contact_result(
     client_id: int,
     contact_type: str,
@@ -943,34 +1173,41 @@ async def upsert_contact_result(
     source_type: str | None = None,
     confidence: float = 0.0,
 ) -> int:
-    """Insert a contact result for a client. Returns result id."""
+    """Insert a contact result for a client. Returns result id.
+    Uses BEGIN IMMEDIATE transaction to avoid race-condition duplicates."""
     async with aiosqlite.connect(DATABASE_PATH) as db:
-        cursor = await db.execute(
-            """
-            SELECT id
-            FROM marketing_contact_results
-            WHERE client_id = ?
-              AND contact_type = ?
-              AND value = ?
-              AND COALESCE(source_url, '') = COALESCE(?, '')
-              AND COALESCE(source_type, '') = COALESCE(?, '')
-            LIMIT 1
-            """,
-            (client_id, contact_type, value, source_url, source_type),
-        )
-        existing = await cursor.fetchone()
-        if existing is not None:
-            return int(existing[0])
+        await db.execute("BEGIN IMMEDIATE")
+        try:
+            cursor = await db.execute(
+                """
+                SELECT id
+                FROM marketing_contact_results
+                WHERE client_id = ?
+                  AND contact_type = ?
+                  AND value = ?
+                  AND COALESCE(source_url, '') = COALESCE(?, '')
+                  AND COALESCE(source_type, '') = COALESCE(?, '')
+                LIMIT 1
+                """,
+                (client_id, contact_type, value, source_url, source_type),
+            )
+            existing = await cursor.fetchone()
+            if existing is not None:
+                await db.commit()
+                return int(existing[0])
 
-        now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        cursor = await db.execute(
-            """INSERT INTO marketing_contact_results
-               (client_id, contact_type, value, source_url, source_type, confidence, is_selected, created_at)
-               VALUES (?, ?, ?, ?, ?, ?, 0, ?)""",
-            (client_id, contact_type, value, source_url, source_type, confidence, now),
-        )
-        await db.commit()
-        return cursor.lastrowid
+            now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            cursor = await db.execute(
+                """INSERT INTO marketing_contact_results
+                   (client_id, contact_type, value, source_url, source_type, confidence, is_selected, created_at)
+                   VALUES (?, ?, ?, ?, ?, ?, 0, ?)""",
+                (client_id, contact_type, value, source_url, source_type, confidence, now),
+            )
+            await db.commit()
+            return cursor.lastrowid
+        except Exception:
+            await db.rollback()
+            raise
 
 
 async def get_contact_results_for_client(client_id: int) -> list[dict[str, Any]]:
@@ -1021,33 +1258,37 @@ async def update_contact_result(
 
 
 async def get_group_stats(group_id: int) -> dict[str, int]:
-    """Get stats for a single group (total, found, not_found, error, pending, approved)."""
+    """Get stats for a single group. Uses a single GROUP BY query instead of 6 subqueries."""
     async with aiosqlite.connect(DATABASE_PATH) as db:
-        cursor = await db.execute(
+        status_cursor = await db.execute(
             """
-            SELECT
-                (SELECT COUNT(*) FROM marketing_clients WHERE group_id = ?) AS total,
-                (SELECT COUNT(*) FROM marketing_clients WHERE group_id = ? AND search_status = 'found') AS found,
-                (SELECT COUNT(*) FROM marketing_clients WHERE group_id = ? AND search_status = 'not_found') AS not_found,
-                (SELECT COUNT(*) FROM marketing_clients WHERE group_id = ? AND search_status = 'error') AS error_count,
-                (SELECT COUNT(*) FROM marketing_clients WHERE group_id = ? AND search_status IN ('pending','searching')) AS pending,
-                (
-                    SELECT COUNT(*)
-                    FROM marketing_contact_results r
-                    JOIN marketing_clients c ON c.id = r.client_id
-                    WHERE c.group_id = ? AND r.is_approved = 1
-                ) AS approved
+            SELECT search_status, COUNT(*) as cnt
+            FROM marketing_clients
+            WHERE group_id = ?
+            GROUP BY search_status
             """,
-            (group_id, group_id, group_id, group_id, group_id, group_id),
+            (group_id,),
         )
-        row = await cursor.fetchone()
+        status_counts = {row[0]: row[1] for row in await status_cursor.fetchall()}
+        total = sum(status_counts.values())
+        approved_cursor = await db.execute(
+            """
+            SELECT COUNT(*)
+            FROM marketing_contact_results r
+            JOIN marketing_clients c ON c.id = r.client_id
+            WHERE c.group_id = ? AND r.is_approved = 1
+            """,
+            (group_id,),
+        )
+        approved = (await approved_cursor.fetchone())[0] or 0
         return {
-            "total": row[0] or 0,
-            "found": row[1] or 0,
-            "not_found": row[2] or 0,
-            "error_count": row[3] or 0,
-            "pending": row[4] or 0,
-            "approved": row[5] or 0,
+            "total": total,
+            "found": status_counts.get("found", 0),
+            "partial": status_counts.get("partial", 0),
+            "not_found": status_counts.get("not_found", 0),
+            "error_count": status_counts.get("error", 0),
+            "pending": status_counts.get("pending", 0) + status_counts.get("searching", 0),
+            "approved": approved,
         }
 
 
@@ -1067,25 +1308,30 @@ async def approve_all_in_group(group_id: int) -> int:
 async def get_group_search_status(group_id: int) -> dict[str, Any]:
     """Get search status counts for a group."""
     async with aiosqlite.connect(DATABASE_PATH) as db:
-        cursor = await db.execute(
+        # Single GROUP BY query instead of 6 separate COUNT subqueries
+        status_cursor = await db.execute(
             """
-            SELECT
-                (SELECT COUNT(*) FROM marketing_clients WHERE group_id = ?) AS total,
-                (SELECT COUNT(*) FROM marketing_clients WHERE group_id = ? AND search_status = 'pending') AS pending,
-                (SELECT COUNT(*) FROM marketing_clients WHERE group_id = ? AND search_status = 'searching') AS searching,
-                (SELECT COUNT(*) FROM marketing_clients WHERE group_id = ? AND search_status = 'found') AS found,
-                (SELECT COUNT(*) FROM marketing_clients WHERE group_id = ? AND search_status = 'not_found') AS not_found,
-                (SELECT COUNT(*) FROM marketing_clients WHERE group_id = ? AND search_status = 'error') AS error_count,
-                (
-                    SELECT COUNT(*)
-                    FROM marketing_contact_results r
-                    JOIN marketing_clients c ON c.id = r.client_id
-                    WHERE c.group_id = ? AND r.is_approved = 1
-                ) AS approved
+            SELECT search_status, COUNT(*) as cnt
+            FROM marketing_clients
+            WHERE group_id = ?
+            GROUP BY search_status
             """,
-            (group_id, group_id, group_id, group_id, group_id, group_id, group_id),
+            (group_id,),
         )
-        row = await cursor.fetchone()
+        status_counts = {row[0]: row[1] for row in await status_cursor.fetchall()}
+
+        total = sum(status_counts.values())
+
+        approved_cursor = await db.execute(
+            """
+            SELECT COUNT(*)
+            FROM marketing_contact_results r
+            JOIN marketing_clients c ON c.id = r.client_id
+            WHERE c.group_id = ? AND r.is_approved = 1
+            """,
+            (group_id,),
+        )
+        approved = (await approved_cursor.fetchone())[0] or 0
 
         # Fetch error messages for clients in error state
         err_cursor = await db.execute(
@@ -1099,15 +1345,25 @@ async def get_group_search_status(group_id: int) -> dict[str, Any]:
             for r in await err_cursor.fetchall()
         ]
 
+        # Fetch group-level search error (set when the entire background job crashes)
+        grp_cursor = await db.execute(
+            "SELECT search_error FROM marketing_groups WHERE id = ?",
+            (group_id,),
+        )
+        grp_row = await grp_cursor.fetchone()
+        group_search_error: str | None = grp_row[0] if grp_row else None
+
         return {
-            "total": row[0] or 0,
-            "pending": row[1] or 0,
-            "searching": row[2] or 0,
-            "found": row[3] or 0,
-            "not_found": row[4] or 0,
-            "error_count": row[5] or 0,
-            "approved": row[6] or 0,
+            "total": total,
+            "pending": status_counts.get("pending", 0),
+            "searching": status_counts.get("searching", 0),
+            "found": status_counts.get("found", 0),
+            "not_found": status_counts.get("not_found", 0),
+            "error_count": status_counts.get("error", 0),
+            "partial": status_counts.get("partial", 0),
+            "approved": approved,
             "errors": errors,
+            "group_search_error": group_search_error,
         }
 
 

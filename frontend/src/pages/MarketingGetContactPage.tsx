@@ -1,5 +1,5 @@
-import { useState } from 'react'
-import { Link } from 'react-router-dom'
+import { useState } from "react";
+import { Link } from "react-router-dom";
 import {
   Users,
   Plus,
@@ -10,73 +10,80 @@ import {
   AlertCircle,
   Loader2,
   ChevronRight,
-} from 'lucide-react'
-import { cn } from '../lib/utils'
+} from "lucide-react";
+import { cn } from "../lib/utils";
+import { Pagination } from "../components/ui/Pagination";
 import {
   useMarketingGroups,
   useDeleteMarketingGroup,
-} from '../hooks/useMarketing'
-import { Card } from '../components/ui/Card'
-import { Button } from '../components/ui/Button'
-import { Spinner } from '../components/ui/Spinner'
-import { Select } from '../components/ui/Select'
-import { EmptyState } from '../components/ui/EmptyState'
-import { MarketingCreateGroupModal } from '../components/marketing/MarketingCreateGroupModal'
-import { useAuth } from '../context/AuthContext'
-import { formatDate } from '../lib/utils'
-import { type MarketingGroup, type ClientType, CLIENT_TYPE_LABELS } from '../api/marketing'
+} from "../hooks/useMarketing";
+import { Card } from "../components/ui/Card";
+import { Button } from "../components/ui/Button";
+import { Spinner } from "../components/ui/Spinner";
+import { Select } from "../components/ui/Select";
+import { EmptyState } from "../components/ui/EmptyState";
+import { MarketingCreateGroupModal } from "../components/marketing/MarketingCreateGroupModal";
+import { useAuth } from "../context/AuthContext";
+import { formatDate } from "../lib/utils";
+import {
+  type MarketingGroup,
+  type ClientType,
+  CLIENT_TYPE_LABELS,
+} from "../api/marketing";
 
 // Options use snake_case values (matching API); import label map for display
-const CLIENT_TYPE_OPTIONS: { value: ClientType | ''; label: string }[] = [
-  { value: '', label: 'Semua Tipe' },
-  { value: 'lembaga_negara', label: 'Lembaga Negara' },
-  { value: 'kementerian', label: 'Kementerian' },
-  { value: 'bumn', label: 'BUMN' },
-  { value: 'swasta_besar', label: 'Perusahaan Swasta Besar' },
-  { value: 'asosiasi', label: 'Asosiasi' },
-  { value: 'lpk', label: 'LPK' },
-  { value: 'lkp', label: 'LKP' },
-]
+const CLIENT_TYPE_OPTIONS: { value: ClientType | ""; label: string }[] = [
+  { value: "", label: "Semua Tipe" },
+  { value: "lembaga_negara", label: "Lembaga Negara" },
+  { value: "kementerian", label: "Kementerian" },
+  { value: "bumn", label: "BUMN" },
+  { value: "swasta_besar", label: "Perusahaan Swasta Besar" },
+  { value: "asosiasi", label: "Asosiasi" },
+  { value: "lpk", label: "LPK" },
+  { value: "lkp", label: "LKP" },
+];
 
 const statusConfig: Record<
   string,
   { label: string; color: string; bg: string; icon: React.ElementType }
 > = {
   draft: {
-    label: 'Draft',
-    color: 'text-gray-600 dark:text-gray-400',
-    bg: 'bg-gray-100 dark:bg-gray-800',
+    label: "Draft",
+    color: "text-gray-600 dark:text-gray-400",
+    bg: "bg-gray-100 dark:bg-gray-800",
     icon: Clock,
   },
   searching: {
-    label: 'Searching',
-    color: 'text-blue-600 dark:text-blue-400',
-    bg: 'bg-blue-50 dark:bg-blue-900/30',
+    label: "Searching",
+    color: "text-blue-600 dark:text-blue-400",
+    bg: "bg-blue-50 dark:bg-blue-900/30",
     icon: Loader2,
   },
   done: {
-    label: 'Done',
-    color: 'text-green-600 dark:text-green-400',
-    bg: 'bg-green-50 dark:bg-green-900/30',
+    label: "Done",
+    color: "text-green-600 dark:text-green-400",
+    bg: "bg-green-50 dark:bg-green-900/30",
     icon: CheckCircle2,
   },
-}
+};
 
 function GroupStatusBadge({ status }: { status: string }) {
-  const cfg = statusConfig[status] || statusConfig.draft
-  const Icon = cfg.icon
+  const cfg = statusConfig[status] || statusConfig.draft;
+  const Icon = cfg.icon;
   return (
     <span
       className={cn(
-        'inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-xs font-semibold',
+        "inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-xs font-semibold",
         cfg.bg,
-        cfg.color
+        cfg.color,
       )}
     >
-      <Icon className={cn('h-3 w-3', status === 'searching' && 'animate-spin')} />
+      <Icon
+        className={cn("h-3 w-3", status === "searching" && "animate-spin")}
+      />
       {cfg.label}
     </span>
-  )
+  );
 }
 
 function GroupRow({
@@ -84,9 +91,9 @@ function GroupRow({
   canManage,
   onDelete,
 }: {
-  group: MarketingGroup
-  canManage: boolean
-  onDelete: (id: number) => void
+  group: MarketingGroup;
+  canManage: boolean;
+  onDelete: (id: number) => void;
 }) {
   return (
     <tr className="hover:bg-gray-50 dark:hover:bg-gray-800/50 transition-colors">
@@ -136,25 +143,32 @@ function GroupRow({
         </div>
       </td>
     </tr>
-  )
+  );
 }
 
 export default function MarketingGetContactPage() {
-  const { hasPermission } = useAuth()
-  const [clientTypeFilter, setClientTypeFilter] = useState<ClientType | ''>('')
-  const [createModalOpen, setCreateModalOpen] = useState(false)
-  const canManage = hasPermission('marketing.manage')
+  const { hasPermission } = useAuth();
+  const [clientTypeFilter, setClientTypeFilter] = useState<ClientType | "">("");
+  const [createModalOpen, setCreateModalOpen] = useState(false);
+  const [page, setPage] = useState(1);
+  const pageSize = 50;
+  const canManage = hasPermission("marketing.manage");
 
-  const { data, isLoading } = useMarketingGroups(
-    clientTypeFilter ? { client_type: clientTypeFilter } : {}
-  )
-  const deleteMutation = useDeleteMarketingGroup()
+  const { data, isLoading } = useMarketingGroups({
+    ...(clientTypeFilter ? { client_type: clientTypeFilter } : {}),
+    limit: pageSize,
+    offset: (page - 1) * pageSize,
+  });
+  const deleteMutation = useDeleteMarketingGroup();
 
-  const groups = data?.groups ?? []
+  const groups = data?.groups ?? [];
+  const total = data?.total ?? 0;
+  const totalPages = Math.ceil(total / pageSize);
 
   function handleDelete(groupId: number) {
-    if (!window.confirm('Hapus group ini beserta seluruh client di dalamnya?')) return
-    deleteMutation.mutate(groupId)
+    if (!window.confirm("Hapus group ini beserta seluruh client di dalamnya?"))
+      return;
+    deleteMutation.mutate(groupId);
   }
 
   return (
@@ -190,7 +204,10 @@ export default function MarketingGetContactPage() {
         </div>
         <Select
           value={clientTypeFilter}
-          onChange={(v) => setClientTypeFilter(v as ClientType | '')}
+          onChange={(v) => {
+            setClientTypeFilter(v as ClientType | "");
+            setPage(1);
+          }}
           options={CLIENT_TYPE_OPTIONS}
           className="w-56"
         />
@@ -259,14 +276,26 @@ export default function MarketingGetContactPage() {
               </tbody>
             </table>
           </div>
+          {/* Pagination */}
+          {groups.length > 0 && (
+            <div className="flex items-center justify-between px-4 py-3 border-t border-gray-100 dark:border-gray-700">
+              <p className="text-sm text-gray-500 dark:text-gray-400">
+                Menampilkan {(page - 1) * pageSize + 1}–
+                {Math.min(page * pageSize, total)} dari {total} group
+              </p>
+              <Pagination
+                currentPage={page}
+                totalPages={totalPages}
+                onPageChange={(p) => setPage(p)}
+              />
+            </div>
+          )}
         </Card>
       )}
 
       {createModalOpen && (
-        <MarketingCreateGroupModal
-          onClose={() => setCreateModalOpen(false)}
-        />
+        <MarketingCreateGroupModal onClose={() => setCreateModalOpen(false)} />
       )}
     </div>
-  )
+  );
 }

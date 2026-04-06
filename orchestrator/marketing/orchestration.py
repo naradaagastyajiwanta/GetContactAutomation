@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import os
 from functools import partial
 from typing import Any
 
@@ -168,33 +169,43 @@ async def _persist_final_results(
         )
 
     all_results = search_flow._dedupe_results(stage1 + stage2.contacts + stage3 + stage4)
+
+    # Batch upsert all contacts at once (instead of N individual DB calls)
+    batch_results: list[dict[str, Any]] = []
     for result in all_results:
-        await mkt.upsert_contact_result(
-            client_id=client_id,
-            contact_type=result.contact_type,
-            value=result.value,
-            source_url=result.source_url,
-            source_type=result.source_type,
-            confidence=result.confidence,
-        )
+        batch_results.append({
+            "contact_type": result.contact_type,
+            "value": result.value,
+            "source_url": result.source_url,
+            "source_type": result.source_type,
+            "confidence": result.confidence,
+        })
         if result.pic_name:
-            await mkt.upsert_contact_result(
-                client_id=client_id,
-                contact_type="pic_name",
-                value=result.pic_name,
-                source_url=result.source_url or "",
-                source_type=result.source_type or "",
-                confidence=result.confidence,
-            )
+            batch_results.append({
+                "contact_type": "pic_name",
+                "value": result.pic_name,
+                "source_url": result.source_url or None,
+                "source_type": result.source_type or None,
+                "confidence": result.confidence,
+            })
         if result.pic_title:
-            await mkt.upsert_contact_result(
-                client_id=client_id,
-                contact_type="pic_title",
-                value=result.pic_title,
-                source_url=result.source_url or "",
-                source_type=result.source_type or "",
-                confidence=result.confidence,
-            )
+            batch_results.append({
+                "contact_type": "pic_title",
+                "value": result.pic_title,
+                "source_url": result.source_url or None,
+                "source_type": result.source_type or None,
+                "confidence": result.confidence,
+            })
+
+    if batch_results:
+        await mkt.upsert_contact_results_batch(client_id, batch_results)
+
+    # Mark which IG posts had phones extracted (used for the "Extracted" column in UI)
+    if stage2.posts:
+        ig_contacts = [r for r in all_results if r.source_type in ("ig_post", "ig_caption")]
+        phones_found_by_post = search_flow._count_marketing_phones_found_by_post(stage2.posts, ig_contacts)
+        await mkt.mark_client_ig_posts_extracted(client_id, stage2.posts, phones_found_by_post)
+
     pruned_contacts = await search_flow._prune_stale_client_contacts(client_id)
     return all_results, pruned_contacts
 
@@ -411,7 +422,15 @@ async def _run_full_search(client: dict[str, Any], run_id: int, plan: dict[str, 
 
     await _set_client_stage(client_id, run_id, "resolving", "finalize")
     final_results, pruned_contacts = await _persist_final_results(client_id, stage1, stage2, stage3, stage4)
-    final_status = "found" if final_results else "not_found"
+
+    # IG partial failure masking: if IG handle was found but scrape failed/empty,
+    # and overall search found contacts, mark as 'partial' (not 'found').
+    ig_scrape_failed = stage2.scrape_status in {"failed", "empty"}
+    ig_handle_was_found = bool(stage2.handle)
+    if final_results and ig_handle_was_found and ig_scrape_failed:
+        final_status = "partial"
+    else:
+        final_status = "found" if final_results else "not_found"
     await mkt.update_client_search_status(client_id, final_status)
 
     await _record_contacts(run_id, client_id, "finalize", final_results, status="accepted")
@@ -611,12 +630,17 @@ async def run_client_orchestration(
 
 async def process_group_orchestration_queue(group_id: int, *, trigger_type: str = "scheduler") -> None:
     """Run orchestration for all pending clients in a group."""
+    MAX_CONCURRENT = int(os.getenv("MARKETING_MAX_CONCURRENT", "20"))
+    semaphore = asyncio.Semaphore(MAX_CONCURRENT)
+
     await mkt.update_group_status(group_id, "searching")
     pending_clients = await mkt.get_pending_clients(group_id)
-    tasks = [
-        run_client_orchestration(client["id"], mode="full_search", trigger_type=trigger_type)
-        for client in pending_clients
-    ]
+
+    async def bounded_orchestrate(client_id: int) -> None:
+        async with semaphore:
+            await run_client_orchestration(client_id, mode="full_search", trigger_type=trigger_type)
+
+    tasks = [bounded_orchestrate(client["id"]) for client in pending_clients]
     if tasks:
         await asyncio.gather(*tasks, return_exceptions=True)
 

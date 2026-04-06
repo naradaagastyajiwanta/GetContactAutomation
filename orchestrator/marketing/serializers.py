@@ -8,6 +8,11 @@ class GroupCreate(BaseModel):
     client_type: str
 
 
+class GroupUpdate(BaseModel):
+    name: str | None = None
+    client_type: str | None = None
+
+
 class GroupOut(BaseModel):
     id: int
     name: str
@@ -49,3 +54,10 @@ class ContactResultOut(BaseModel):
     is_selected: bool
     edited_value: str | None = None
     created_at: datetime
+
+
+class ContactCreate(BaseModel):
+    contact_type: str
+    value: str
+    source_url: str | None = None
+    source_type: str | None = None

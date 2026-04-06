@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useState } from "react";
 import {
   CheckCircle2,
   Circle,
@@ -20,28 +20,37 @@ import {
   Image as ImageIcon,
   Clock3,
   Globe,
-} from 'lucide-react'
-import { cn } from '../../lib/utils'
-import { Button } from '../ui/Button'
-import { Card } from '../ui/Card'
-import { Badge } from '../ui/Badge'
-import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '../ui/Table'
+} from "lucide-react";
+import { cn } from "../../lib/utils";
+import { Button } from "../ui/Button";
+import { Card } from "../ui/Card";
+import { Badge } from "../ui/Badge";
+import {
+  Table,
+  TableBody,
+  TableCell,
+  TableHead,
+  TableHeader,
+  TableRow,
+} from "../ui/Table";
 import {
   useUpdateMarketingContact,
   useDeleteMarketingClient,
-  useAddMarketingClient,
+  useCreateMarketingContact,
   useRetryMarketingClientInstagramScrape,
   useRetryMarketingClientInstagramContactExtraction,
   useRetryMarketingClientSearch,
-} from '../../hooks/useMarketing'
-import toast from 'react-hot-toast'
+} from "../../hooks/useMarketing";
+import { Modal } from "../ui/Modal";
+import { Select } from "../ui/Select";
+import toast from "react-hot-toast";
 import type {
   MarketingClient,
   MarketingContact,
   ContactType,
   MarketingInstagramCandidate,
   MarketingInstagramPost,
-} from '../../api/marketing'
+} from "../../api/marketing";
 
 const CONTACT_ICONS: Record<ContactType, React.ElementType> = {
   website: Globe,
@@ -50,318 +59,369 @@ const CONTACT_ICONS: Record<ContactType, React.ElementType> = {
   office_phone: Phone,
   pic_name: User,
   pic_title: Briefcase,
-}
+};
 
 const CONTACT_TYPE_OPTIONS = [
-  { value: 'website', label: 'Website' },
-  { value: 'wa_phone', label: 'WA' },
-  { value: 'email', label: 'Email' },
-  { value: 'office_phone', label: 'Telp Kantor' },
-  { value: 'pic_name', label: 'Nama PIC' },
-  { value: 'pic_title', label: 'Jabatan PIC' },
-]
+  { value: "website", label: "Website" },
+  { value: "wa_phone", label: "WA" },
+  { value: "email", label: "Email" },
+  { value: "office_phone", label: "Telp Kantor" },
+  { value: "pic_name", label: "Nama PIC" },
+  { value: "pic_title", label: "Jabatan PIC" },
+];
 
 const CONTACT_TYPE_LABELS: Record<ContactType, string> = {
-  website: 'Website',
-  wa_phone: 'WA',
-  email: 'Email',
-  office_phone: 'Telp Kantor',
-  pic_name: 'Nama PIC',
-  pic_title: 'Jabatan PIC',
-}
+  website: "Website",
+  wa_phone: "WA",
+  email: "Email",
+  office_phone: "Telp Kantor",
+  pic_name: "Nama PIC",
+  pic_title: "Jabatan PIC",
+};
 
 const IG_SOURCE_LABELS: Record<string, string> = {
-  website_social: 'Website Resmi',
-  ig_web_search: 'IG Search',
-  ddg_search: 'DDG',
-}
+  website_social: "Website Resmi",
+  ig_web_search: "IG Search",
+  ddg_search: "DDG",
+};
 
 const CONTACT_SOURCE_LABELS: Record<string, string> = {
-  ig_post: 'Instagram Post',
-  ig_caption: 'Instagram Caption',
-  ddg_result_page: 'DDG Result Page',
-  ddg_result_snippet: 'DDG Snippet',
-  website: 'Website Resmi',
-  official_website: 'Website Resmi',
-  contact_page: 'Halaman Kontak',
-  website_social: 'Website Social',
-  web_search_fallback: 'Web Search Fallback',
-}
+  ig_post: "Instagram Post",
+  ig_caption: "Instagram Caption",
+  ddg_result_page: "DDG Result Page",
+  ddg_result_snippet: "DDG Snippet",
+  website: "Website Resmi",
+  official_website: "Website Resmi",
+  contact_page: "Halaman Kontak",
+  website_social: "Website Social",
+  web_search_fallback: "Web Search Fallback",
+};
 
 function formatDateTime(date: string | null | undefined): string {
-  if (!date) return '-'
-  return new Intl.DateTimeFormat('id-ID', {
-    day: 'numeric',
-    month: 'short',
-    year: 'numeric',
-    hour: '2-digit',
-    minute: '2-digit',
-  }).format(new Date(date))
+  if (!date) return "-";
+  return new Intl.DateTimeFormat("id-ID", {
+    day: "numeric",
+    month: "short",
+    year: "numeric",
+    hour: "2-digit",
+    minute: "2-digit",
+  }).format(new Date(date));
 }
 
-function truncateText(value: string | null | undefined, maxLength = 180): string {
-  if (!value) return ''
-  if (value.length <= maxLength) return value
-  return `${value.slice(0, maxLength).trimEnd()}...`
+function truncateText(
+  value: string | null | undefined,
+  maxLength = 180,
+): string {
+  if (!value) return "";
+  if (value.length <= maxLength) return value;
+  return `${value.slice(0, maxLength).trimEnd()}...`;
 }
 
 function getContactSourceLabel(sourceType: string | null | undefined): string {
-  if (!sourceType) return '—'
-  return CONTACT_SOURCE_LABELS[sourceType] ?? sourceType.replace(/_/g, ' ')
+  if (!sourceType) return "—";
+  return CONTACT_SOURCE_LABELS[sourceType] ?? sourceType.replace(/_/g, " ");
 }
 
 function getContactTypeLabel(contactType: ContactType): string {
-  return CONTACT_TYPE_LABELS[contactType] ?? contactType
+  return CONTACT_TYPE_LABELS[contactType] ?? contactType;
 }
 
 function getContactDisplayValue(contact: MarketingContact): string {
-  return (contact.edited_value ?? contact.value ?? '').trim()
+  return (contact.edited_value ?? contact.value ?? "").trim();
 }
 
 function isMobilePhoneValue(value: string | null | undefined): boolean {
-  const digits = (value ?? '').replace(/\D/g, '')
-  if (digits.length < 10 || digits.length > 14) return false
+  const digits = (value ?? "").replace(/\D/g, "");
+  if (digits.length < 10 || digits.length > 14) return false;
 
-  let normalized = digits
-  if (digits.startsWith('0')) {
-    normalized = `62${digits.slice(1)}`
-  } else if (digits.startsWith('8')) {
-    normalized = `62${digits}`
+  let normalized = digits;
+  if (digits.startsWith("0")) {
+    normalized = `62${digits.slice(1)}`;
+  } else if (digits.startsWith("8")) {
+    normalized = `62${digits}`;
   }
 
-  return normalized.startsWith('628')
+  return normalized.startsWith("628");
 }
 
 function isMobileMarketingContact(contact: MarketingContact): boolean {
-  if (contact.contact_type !== 'wa_phone' && contact.contact_type !== 'office_phone') {
-    return false
+  if (
+    contact.contact_type !== "wa_phone" &&
+    contact.contact_type !== "office_phone"
+  ) {
+    return false;
   }
 
-  return isMobilePhoneValue(getContactDisplayValue(contact))
+  return isMobilePhoneValue(getContactDisplayValue(contact));
 }
 
 function getDisplayedContactLabel(contact: MarketingContact): string {
-  if (contact.contact_type === 'office_phone' && isMobileMarketingContact(contact)) {
-    return 'No. HP'
+  if (
+    contact.contact_type === "office_phone" &&
+    isMobileMarketingContact(contact)
+  ) {
+    return "No. HP";
   }
 
-  return getContactTypeLabel(contact.contact_type)
+  return getContactTypeLabel(contact.contact_type);
 }
 
-function getContactSourceDisplayUrl(sourceUrl: string | null | undefined): string {
-  if (!sourceUrl) return '—'
+function getContactSourceDisplayUrl(
+  sourceUrl: string | null | undefined,
+): string {
+  if (!sourceUrl) return "—";
   try {
-    const url = new URL(sourceUrl)
-    return url.hostname.replace(/^www\./, '')
+    const url = new URL(sourceUrl);
+    return url.hostname.replace(/^www\./, "");
   } catch {
-    return truncateText(sourceUrl, 36) || sourceUrl
+    return truncateText(sourceUrl, 36) || sourceUrl;
   }
 }
 
 function getMarketingContactSourceIdentity(contact: MarketingContact): string {
   return [
     contact.client_id,
-    (contact.source_type ?? '').trim().toLowerCase(),
-    (contact.source_url ?? '').trim(),
-  ].join('::')
+    (contact.source_type ?? "").trim().toLowerCase(),
+    (contact.source_url ?? "").trim(),
+  ].join("::");
 }
 
 function hasMarketingContactNamePair(
   contact: MarketingContact,
   contacts: MarketingContact[],
 ): boolean {
-  if (contact.contact_type !== 'wa_phone') return false
+  if (contact.contact_type !== "wa_phone") return false;
 
-  const targetSourceIdentity = getMarketingContactSourceIdentity(contact)
+  const targetSourceIdentity = getMarketingContactSourceIdentity(contact);
   return contacts.some(
     (candidate) =>
-      candidate.contact_type === 'pic_name' &&
-      Boolean((candidate.edited_value ?? candidate.value ?? '').trim()) &&
+      candidate.contact_type === "pic_name" &&
+      Boolean((candidate.edited_value ?? candidate.value ?? "").trim()) &&
       getMarketingContactSourceIdentity(candidate) === targetSourceIdentity,
-  )
+  );
 }
 
 function shouldHideMarketingContact(
   contact: MarketingContact,
   contacts: MarketingContact[],
 ): boolean {
-  if (contact.contact_type === 'office_phone') return !isMobileMarketingContact(contact)
-  if (contact.contact_type === 'wa_phone') return !hasMarketingContactNamePair(contact, contacts)
-  return false
+  if (contact.contact_type === "office_phone")
+    return !isMobileMarketingContact(contact);
+  if (contact.contact_type === "wa_phone")
+    return !hasMarketingContactNamePair(contact, contacts);
+  return false;
 }
 
 function findContactSourcePost(
   posts: MarketingInstagramPost[],
   contact: MarketingContact,
 ): MarketingInstagramPost | null {
-  const sourceUrl = (contact.source_url ?? '').trim()
-  if (!sourceUrl) return null
+  const sourceUrl = (contact.source_url ?? "").trim();
+  if (!sourceUrl) return null;
 
-  return posts.find((post) => post.post_url === sourceUrl || post.image_url === sourceUrl) ?? null
+  return (
+    posts.find(
+      (post) => post.post_url === sourceUrl || post.image_url === sourceUrl,
+    ) ?? null
+  );
 }
 
-function getSelectedInstagramCandidates(client: MarketingClient): MarketingInstagramCandidate[] {
-  return (client.ig_candidates ?? []).filter((candidate) => candidate.is_selected)
+function getSelectedInstagramCandidates(
+  client: MarketingClient,
+): MarketingInstagramCandidate[] {
+  return (client.ig_candidates ?? []).filter(
+    (candidate) => candidate.is_selected,
+  );
 }
 
-function getInstagramHandlesFromPosts(posts: MarketingInstagramPost[]): string[] {
+function getInstagramHandlesFromPosts(
+  posts: MarketingInstagramPost[],
+): string[] {
   return Array.from(
-    new Set(posts.map((post) => (post.ig_handle ?? '').trim()).filter(Boolean))
-  )
+    new Set(posts.map((post) => (post.ig_handle ?? "").trim()).filter(Boolean)),
+  );
 }
 
 function getVisibleInstagramHandles(client: MarketingClient): Array<{
-  handle: string
-  isPrimary: boolean
-  source: 'candidate' | 'post' | 'profile'
+  handle: string;
+  isPrimary: boolean;
+  source: "candidate" | "post" | "profile";
 }> {
-  const selectedCandidates = getSelectedInstagramCandidates(client)
+  const selectedCandidates = getSelectedInstagramCandidates(client);
   if (selectedCandidates.length > 0) {
     return selectedCandidates.map((candidate) => ({
       handle: candidate.handle,
       isPrimary: candidate.is_primary,
-      source: 'candidate',
-    }))
+      source: "candidate",
+    }));
   }
 
-  const postHandles = getInstagramHandlesFromPosts(client.ig_posts ?? [])
+  const postHandles = getInstagramHandlesFromPosts(client.ig_posts ?? []);
   if (postHandles.length > 0) {
-    const primaryHandle = (client.ig_handle ?? '').trim().toLowerCase()
+    const primaryHandle = (client.ig_handle ?? "").trim().toLowerCase();
     return postHandles.map((handle) => ({
       handle,
       isPrimary: handle.toLowerCase() === primaryHandle,
-      source: 'post',
-    }))
+      source: "post",
+    }));
   }
 
   if (client.ig_handle) {
-    return [{ handle: client.ig_handle, isPrimary: true, source: 'profile' }]
+    return [{ handle: client.ig_handle, isPrimary: true, source: "profile" }];
   }
 
-  return []
+  return [];
 }
-
 
 function hasInstagramScrapeWarning(client: MarketingClient): boolean {
   if (!client.ig_handle || (client.ig_posts?.length ?? 0) > 0) {
-    return false
+    return false;
   }
 
-  return client.ig_post_scrape_status === 'empty' || client.ig_post_scrape_status === 'failed'
+  return (
+    client.ig_post_scrape_status === "empty" ||
+    client.ig_post_scrape_status === "failed"
+  );
 }
 
-function getInstagramScrapeDiagnosticMessage(client: MarketingClient): string | null {
-  if (client.ig_post_scrape_status === 'audit_only') {
-    return 'Handle IG disimpan untuk audit ranking, tetapi scrape post sengaja tidak dijalankan karena website resmi sudah cukup.'
+function getInstagramScrapeDiagnosticMessage(
+  client: MarketingClient,
+): string | null {
+  if (client.ig_post_scrape_status === "audit_only") {
+    return "Handle IG disimpan untuk audit ranking, tetapi scrape post sengaja tidak dijalankan karena website resmi sudah cukup.";
   }
-  if (client.ig_post_scrape_error) return client.ig_post_scrape_error
+  if (client.ig_post_scrape_error) return client.ig_post_scrape_error;
   if (hasInstagramScrapeWarning(client)) {
-    return 'Handle IG sudah tervalidasi, tetapi provider scrape post belum mengembalikan post apa pun.'
+    return "Handle IG sudah tervalidasi, tetapi provider scrape post belum mengembalikan post apa pun.";
   }
-  return null
+  return null;
 }
 
 function getInstagramScrapeStatusLabel(client: MarketingClient): {
-  label: string
-  className: string
+  label: string;
+  className: string;
 } | null {
-  if (client.ig_post_scrape_status === 'scraping') {
+  if (client.ig_post_scrape_status === "scraping") {
     return {
-      label: 'Retry Scrape Berjalan',
-      className: 'bg-blue-50 text-blue-700 dark:bg-blue-900/30 dark:text-blue-300',
-    }
+      label: "Retry Scrape Berjalan",
+      className:
+        "bg-blue-50 text-blue-700 dark:bg-blue-900/30 dark:text-blue-300",
+    };
   }
-  if (client.ig_post_scrape_status === 'failed') {
+  if (client.ig_post_scrape_status === "failed") {
     return {
-      label: 'IG Scrape Failed',
-      className: 'bg-red-50 text-red-700 dark:bg-red-900/30 dark:text-red-300',
-    }
+      label: "IG Scrape Failed",
+      className: "bg-red-50 text-red-700 dark:bg-red-900/30 dark:text-red-300",
+    };
   }
-  if (client.ig_post_scrape_status === 'audit_only') {
+  if (client.ig_post_scrape_status === "audit_only") {
     return {
-      label: 'IG Audit Only',
-      className: 'bg-emerald-50 text-emerald-700 dark:bg-emerald-900/30 dark:text-emerald-300',
-    }
+      label: "IG Audit Only",
+      className:
+        "bg-emerald-50 text-emerald-700 dark:bg-emerald-900/30 dark:text-emerald-300",
+    };
   }
-  if (client.ig_post_scrape_status === 'empty' && hasInstagramScrapeWarning(client)) {
+  if (
+    client.ig_post_scrape_status === "empty" &&
+    hasInstagramScrapeWarning(client)
+  ) {
     return {
-      label: 'IG Post Kosong',
-      className: 'bg-amber-50 text-amber-700 dark:bg-amber-900/30 dark:text-amber-300',
-    }
+      label: "IG Post Kosong",
+      className:
+        "bg-amber-50 text-amber-700 dark:bg-amber-900/30 dark:text-amber-300",
+    };
   }
-  return null
+  return null;
 }
 
-type ClientDetailTab = 'contacts' | 'posts' | 'instagram'
+type ClientDetailTab = "contacts" | "posts" | "instagram";
 
 function getInstagramCandidateStatus(candidate: {
-  is_primary?: boolean
-  is_selected?: boolean
-  llm_is_correct?: boolean | null
+  is_primary?: boolean;
+  is_selected?: boolean;
+  llm_is_correct?: boolean | null;
 }) {
   if (candidate.is_primary) {
     return {
-      label: 'Primary',
-      className: 'bg-emerald-100 text-emerald-700 dark:bg-emerald-900/30 dark:text-emerald-300',
-    }
+      label: "Primary",
+      className:
+        "bg-emerald-100 text-emerald-700 dark:bg-emerald-900/30 dark:text-emerald-300",
+    };
   }
   if (candidate.is_selected) {
     return {
-      label: 'Selected',
-      className: 'bg-blue-100 text-blue-700 dark:bg-blue-900/30 dark:text-blue-300',
-    }
+      label: "Selected",
+      className:
+        "bg-blue-100 text-blue-700 dark:bg-blue-900/30 dark:text-blue-300",
+    };
   }
   if (candidate.llm_is_correct === false) {
     return {
-      label: 'Rejected',
-      className: 'bg-rose-100 text-rose-700 dark:bg-rose-900/30 dark:text-rose-300',
-    }
+      label: "Rejected",
+      className:
+        "bg-rose-100 text-rose-700 dark:bg-rose-900/30 dark:text-rose-300",
+    };
   }
   return {
-    label: 'Observed',
-    className: 'bg-gray-100 text-gray-700 dark:bg-gray-800 dark:text-gray-300',
-  }
+    label: "Observed",
+    className: "bg-gray-100 text-gray-700 dark:bg-gray-800 dark:text-gray-300",
+  };
 }
 
-function MarketingInstagramAccountsPanel({ client }: { client: MarketingClient }) {
-  const posts = client.ig_posts ?? []
-  const candidates = client.ig_candidates ?? []
-  const postHandleCounts = new Map<string, number>()
+function MarketingInstagramAccountsPanel({
+  client,
+}: {
+  client: MarketingClient;
+}) {
+  const posts = client.ig_posts ?? [];
+  const candidates = client.ig_candidates ?? [];
+  const postHandleCounts = new Map<string, number>();
 
   for (const post of posts) {
-    const handle = (post.ig_handle ?? '').trim().toLowerCase()
-    if (!handle) continue
-    postHandleCounts.set(handle, (postHandleCounts.get(handle) ?? 0) + 1)
+    const handle = (post.ig_handle ?? "").trim().toLowerCase();
+    if (!handle) continue;
+    postHandleCounts.set(handle, (postHandleCounts.get(handle) ?? 0) + 1);
   }
 
-  const rows = candidates.length > 0
-    ? candidates.map((candidate) => ({
-        key: `candidate-${candidate.id}`,
-        handle: candidate.handle,
-        subtitle: candidate.full_name || candidate.external_domain || null,
-        source: IG_SOURCE_LABELS[candidate.source ?? ''] ?? candidate.source ?? 'Unknown source',
-        status: getInstagramCandidateStatus(candidate),
-        score: candidate.final_score,
-        posts: postHandleCounts.get(candidate.handle.toLowerCase()) ?? 0,
-        href: candidate.profile_url || `https://instagram.com/${candidate.handle}`,
-      }))
-    : getVisibleInstagramHandles(client).map((account) => ({
-        key: `${account.source}-${account.handle}`,
-        handle: account.handle,
-        subtitle: account.source === 'post' ? 'Derived from scraped posts' : 'Stored profile',
-        source: account.source === 'post' ? 'IG Posts' : 'Stored profile',
-        status: getInstagramCandidateStatus({ is_primary: account.isPrimary }),
-        score: null,
-        posts: postHandleCounts.get(account.handle.toLowerCase()) ?? 0,
-        href: `https://instagram.com/${account.handle}`,
-      }))
+  const rows =
+    candidates.length > 0
+      ? candidates.map((candidate) => ({
+          key: `candidate-${candidate.id}`,
+          handle: candidate.handle,
+          subtitle: candidate.full_name || candidate.external_domain || null,
+          source:
+            IG_SOURCE_LABELS[candidate.source ?? ""] ??
+            candidate.source ??
+            "Unknown source",
+          status: getInstagramCandidateStatus(candidate),
+          score: candidate.final_score,
+          posts: postHandleCounts.get(candidate.handle.toLowerCase()) ?? 0,
+          href:
+            candidate.profile_url ||
+            `https://instagram.com/${candidate.handle}`,
+        }))
+      : getVisibleInstagramHandles(client).map((account) => ({
+          key: `${account.source}-${account.handle}`,
+          handle: account.handle,
+          subtitle:
+            account.source === "post"
+              ? "Derived from scraped posts"
+              : "Stored profile",
+          source: account.source === "post" ? "IG Posts" : "Stored profile",
+          status: getInstagramCandidateStatus({
+            is_primary: account.isPrimary,
+          }),
+          score: null,
+          posts: postHandleCounts.get(account.handle.toLowerCase()) ?? 0,
+          href: `https://instagram.com/${account.handle}`,
+        }));
 
   if (rows.length === 0) {
     return (
       <div className="px-4 py-5 text-sm text-gray-500 dark:text-gray-400">
         Belum ada akun Instagram yang berhasil ditemukan.
       </div>
-    )
+    );
   }
 
   return (
@@ -381,17 +441,25 @@ function MarketingInstagramAccountsPanel({ client }: { client: MarketingClient }
           <TableRow key={row.key}>
             <TableCell>
               <div className="min-w-0">
-                <div className="font-medium text-gray-900 dark:text-gray-100">@{row.handle}</div>
+                <div className="font-medium text-gray-900 dark:text-gray-100">
+                  @{row.handle}
+                </div>
                 {row.subtitle && (
-                  <div className="truncate text-xs text-gray-500 dark:text-gray-400">{row.subtitle}</div>
+                  <div className="truncate text-xs text-gray-500 dark:text-gray-400">
+                    {row.subtitle}
+                  </div>
                 )}
               </div>
             </TableCell>
-            <TableCell className="text-xs text-gray-500 dark:text-gray-400">{row.source}</TableCell>
+            <TableCell className="text-xs text-gray-500 dark:text-gray-400">
+              {row.source}
+            </TableCell>
             <TableCell>
               <Badge className={row.status.className}>{row.status.label}</Badge>
             </TableCell>
-            <TableCell>{row.score != null ? `${Math.round(row.score * 100)}%` : '—'}</TableCell>
+            <TableCell>
+              {row.score != null ? `${Math.round(row.score * 100)}%` : "—"}
+            </TableCell>
             <TableCell>{row.posts}</TableCell>
             <TableCell>
               <a
@@ -408,7 +476,7 @@ function MarketingInstagramAccountsPanel({ client }: { client: MarketingClient }
         ))}
       </TableBody>
     </Table>
-  )
+  );
 }
 
 function MarketingInstagramPostsPanel({
@@ -417,13 +485,13 @@ function MarketingInstagramPostsPanel({
   onRetry,
   retrying,
 }: {
-  client: MarketingClient
-  canManage: boolean
-  onRetry: () => void
-  retrying: boolean
+  client: MarketingClient;
+  canManage: boolean;
+  onRetry: () => void;
+  retrying: boolean;
 }) {
-  const posts = client.ig_posts ?? []
-  const diagnosticMessage = getInstagramScrapeDiagnosticMessage(client)
+  const posts = client.ig_posts ?? [];
+  const diagnosticMessage = getInstagramScrapeDiagnosticMessage(client);
 
   if (posts.length === 0) {
     return (
@@ -437,20 +505,26 @@ function MarketingInstagramPostsPanel({
             <p className="mt-1 break-words">{diagnosticMessage}</p>
             {client.ig_post_scrape_last_attempt_at && (
               <p className="mt-2 inline-flex items-center gap-1 text-[11px] text-amber-700/90 dark:text-amber-300">
-                <Clock3 className="h-3 w-3" /> Percobaan terakhir {formatDateTime(client.ig_post_scrape_last_attempt_at)}
+                <Clock3 className="h-3 w-3" /> Percobaan terakhir{" "}
+                {formatDateTime(client.ig_post_scrape_last_attempt_at)}
               </p>
             )}
           </div>
         )}
         {canManage && Boolean(client.ig_handle) && (
           <div>
-            <Button size="sm" variant="outline" onClick={onRetry} loading={retrying}>
+            <Button
+              size="sm"
+              variant="outline"
+              onClick={onRetry}
+              loading={retrying}
+            >
               Retry IG Post Scrape
             </Button>
           </div>
         )}
       </div>
-    )
+    );
   }
 
   return (
@@ -487,13 +561,17 @@ function MarketingInstagramPostsPanel({
             </TableCell>
             <TableCell>
               <div className="font-medium text-gray-900 dark:text-gray-100">
-                @{post.ig_handle || 'unknown'}
+                @{post.ig_handle || "unknown"}
               </div>
             </TableCell>
             <TableCell className="max-w-sm">
-              <span className="block truncate">{truncateText(post.caption, 90) || 'Tanpa caption'}</span>
+              <span className="block truncate">
+                {truncateText(post.caption, 90) || "Tanpa caption"}
+              </span>
             </TableCell>
-            <TableCell className="text-xs text-gray-500 dark:text-gray-400">{post.source || '—'}</TableCell>
+            <TableCell className="text-xs text-gray-500 dark:text-gray-400">
+              {post.source || "—"}
+            </TableCell>
             <TableCell>{post.phones_found ?? 0}</TableCell>
             <TableCell>
               {post.phone_extracted ? (
@@ -506,7 +584,9 @@ function MarketingInstagramPostsPanel({
                 </Badge>
               )}
             </TableCell>
-            <TableCell>{formatDateTime(post.post_timestamp ?? post.created_at)}</TableCell>
+            <TableCell>
+              {formatDateTime(post.post_timestamp ?? post.created_at)}
+            </TableCell>
             <TableCell>
               <a
                 href={post.post_url}
@@ -522,7 +602,7 @@ function MarketingInstagramPostsPanel({
         ))}
       </TableBody>
     </Table>
-  )
+  );
 }
 
 function MarketingContactsPanel({
@@ -536,28 +616,32 @@ function MarketingContactsPanel({
   onRetrySearch,
   retryingSearch,
 }: {
-  client: MarketingClient
-  groupId: number
-  canManage: boolean
-  onApprove: (id: number, approved: boolean) => void
-  onEdit: (id: number, value: string) => void
-  onRetryExtractContacts: () => void
-  retryingExtractContacts: boolean
-  onRetrySearch: () => void
-  retryingSearch: boolean
+  client: MarketingClient;
+  groupId: number;
+  canManage: boolean;
+  onApprove: (id: number, approved: boolean) => void;
+  onEdit: (id: number, value: string) => void;
+  onRetryExtractContacts: () => void;
+  retryingExtractContacts: boolean;
+  onRetrySearch: () => void;
+  retryingSearch: boolean;
 }) {
-  const [showAllContacts, setShowAllContacts] = useState(false)
-  const allContacts = client.contacts ?? []
+  const [showAllContacts, setShowAllContacts] = useState(false);
+  const allContacts = client.contacts ?? [];
   const filteredContacts = showAllContacts
     ? allContacts
-    : allContacts.filter((contact) => !shouldHideMarketingContact(contact, allContacts))
-  const hiddenContactsCount = allContacts.length - filteredContacts.length
-  const hasContacts = allContacts.length > 0
+    : allContacts.filter(
+        (contact) => !shouldHideMarketingContact(contact, allContacts),
+      );
+  const hiddenContactsCount = allContacts.length - filteredContacts.length;
+  const hasContacts = allContacts.length > 0;
 
   if (!hasContacts) {
     return (
       <div className="p-4">
-        <p className="mb-2 text-sm text-gray-500 dark:text-gray-400">Belum ada kontak</p>
+        <p className="mb-2 text-sm text-gray-500 dark:text-gray-400">
+          Belum ada kontak
+        </p>
         <EmptyClientState
           client={client}
           groupId={groupId}
@@ -568,7 +652,7 @@ function MarketingContactsPanel({
           retryingSearch={retryingSearch}
         />
       </div>
-    )
+    );
   }
 
   return (
@@ -581,7 +665,7 @@ function MarketingContactsPanel({
             onClick={() => setShowAllContacts((value) => !value)}
           >
             {showAllContacts
-              ? 'Hide Hidden Contacts'
+              ? "Hide Hidden Contacts"
               : `Show All Contacts (${hiddenContactsCount} hidden)`}
           </Button>
         </div>
@@ -589,7 +673,8 @@ function MarketingContactsPanel({
 
       {filteredContacts.length === 0 ? (
         <div className="rounded-lg border border-dashed border-gray-200 px-4 py-6 text-sm text-gray-500 dark:border-gray-700 dark:text-gray-400">
-          Tidak ada kontak yang terlihat. Klik `Show All Contacts` untuk melihat nomor yang disembunyikan.
+          Tidak ada kontak yang terlihat. Klik `Show All Contacts` untuk melihat
+          nomor yang disembunyikan.
         </div>
       ) : (
         <Table>
@@ -609,7 +694,10 @@ function MarketingContactsPanel({
               <ContactRow
                 key={contact.id}
                 contact={contact}
-                sourcePost={findContactSourcePost(client.ig_posts ?? [], contact)}
+                sourcePost={findContactSourcePost(
+                  client.ig_posts ?? [],
+                  contact,
+                )}
                 onApprove={onApprove}
                 onEdit={onEdit}
               />
@@ -618,22 +706,23 @@ function MarketingContactsPanel({
         </Table>
       )}
     </div>
-  )
+  );
 }
 
 function InstagramDiscoveryPanel({ client }: { client: MarketingClient }) {
-  const posts = client.ig_posts ?? []
-  const candidates = client.ig_candidates ?? []
-  const selectedCandidates = getSelectedInstagramCandidates(client)
-  const visibleHandles = getVisibleInstagramHandles(client)
-  const postHandles = getInstagramHandlesFromPosts(posts)
-  const hasInstagramData = Boolean(client.ig_handle) || posts.length > 0 || candidates.length > 0
-  const scrapeWarning = hasInstagramScrapeWarning(client)
-  const statusBadge = getInstagramScrapeStatusLabel(client)
-  const diagnosticMessage = getInstagramScrapeDiagnosticMessage(client)
+  const posts = client.ig_posts ?? [];
+  const candidates = client.ig_candidates ?? [];
+  const selectedCandidates = getSelectedInstagramCandidates(client);
+  const visibleHandles = getVisibleInstagramHandles(client);
+  const postHandles = getInstagramHandlesFromPosts(posts);
+  const hasInstagramData =
+    Boolean(client.ig_handle) || posts.length > 0 || candidates.length > 0;
+  const scrapeWarning = hasInstagramScrapeWarning(client);
+  const statusBadge = getInstagramScrapeStatusLabel(client);
+  const diagnosticMessage = getInstagramScrapeDiagnosticMessage(client);
 
   if (!hasInstagramData) {
-    return null
+    return null;
   }
 
   return (
@@ -645,7 +734,11 @@ function InstagramDiscoveryPanel({ client }: { client: MarketingClient }) {
             <p className="text-sm font-semibold text-gray-900 dark:text-gray-100">
               Instagram Discovery
             </p>
-            {statusBadge && <Badge className={statusBadge.className}>{statusBadge.label}</Badge>}
+            {statusBadge && (
+              <Badge className={statusBadge.className}>
+                {statusBadge.label}
+              </Badge>
+            )}
           </div>
           <div className="flex flex-wrap gap-1.5">
             {visibleHandles.length > 0
@@ -653,33 +746,35 @@ function InstagramDiscoveryPanel({ client }: { client: MarketingClient }) {
                   <span
                     key={`${handle.source}-${handle.handle}`}
                     className={cn(
-                      'inline-flex items-center rounded-full px-2 py-0.5 text-xs font-semibold shadow-sm',
+                      "inline-flex items-center rounded-full px-2 py-0.5 text-xs font-semibold shadow-sm",
                       handle.isPrimary
-                        ? 'bg-emerald-50 text-emerald-700 dark:bg-emerald-900/40 dark:text-emerald-300'
-                        : 'bg-white text-indigo-700 dark:bg-gray-900 dark:text-indigo-300',
+                        ? "bg-emerald-50 text-emerald-700 dark:bg-emerald-900/40 dark:text-emerald-300"
+                        : "bg-white text-indigo-700 dark:bg-gray-900 dark:text-indigo-300",
                     )}
                   >
                     @{handle.handle}
-                    {handle.isPrimary ? ' · primary' : ''}
+                    {handle.isPrimary ? " · primary" : ""}
                   </span>
                 ))
               : null}
           </div>
           <p className="text-xs text-gray-600 dark:text-gray-300">
             {candidates.length > 0
-              ? client.ig_post_scrape_status === 'audit_only'
+              ? client.ig_post_scrape_status === "audit_only"
                 ? `${candidates.length} kandidat IG dievaluasi, ${selectedCandidates.length} akun dipilih untuk audit handle tanpa scrape post.`
                 : `${candidates.length} kandidat IG dievaluasi, ${selectedCandidates.length} akun dipilih untuk scraping.`
               : postHandles.length > 1
                 ? `${posts.length} post tersimpan dari ${postHandles.length} akun IG yang berhasil discrape.`
-              : posts.length > 0
-                ? `${posts.length} post tersimpan dari akun IG ini untuk audit flow pencarian.`
-                : 'Handle IG sudah tersimpan, tapi belum ada post yang berhasil discrape.'}
+                : posts.length > 0
+                  ? `${posts.length} post tersimpan dari akun IG ini untuk audit flow pencarian.`
+                  : "Handle IG sudah tersimpan, tapi belum ada post yang berhasil discrape."}
           </p>
           {scrapeWarning && (
             <div className="space-y-1">
               <p className="text-[11px] text-amber-700 dark:text-amber-300">
-                Scrape post belum berhasil walau akun IG sudah tervalidasi. Search group tetap bisa selesai karena contact ditemukan dari website atau web fallback.
+                Scrape post belum berhasil walau akun IG sudah tervalidasi.
+                Search group tetap bisa selesai karena contact ditemukan dari
+                website atau web fallback.
               </p>
               {diagnosticMessage && (
                 <p className="text-[11px] text-amber-800 dark:text-amber-200">
@@ -721,7 +816,10 @@ function InstagramDiscoveryPanel({ client }: { client: MarketingClient }) {
           </div>
           <div className="grid gap-2 lg:grid-cols-2">
             {candidates.map((candidate) => (
-              <InstagramCandidateCard key={candidate.id} candidate={candidate} />
+              <InstagramCandidateCard
+                key={candidate.id}
+                candidate={candidate}
+              />
             ))}
           </div>
         </div>
@@ -735,25 +833,29 @@ function InstagramDiscoveryPanel({ client }: { client: MarketingClient }) {
         </div>
       )}
     </div>
-  )
+  );
 }
 
-function InstagramCandidateCard({ candidate }: { candidate: MarketingInstagramCandidate }) {
+function InstagramCandidateCard({
+  candidate,
+}: {
+  candidate: MarketingInstagramCandidate;
+}) {
   const statusLabel = candidate.is_primary
-    ? 'Primary'
+    ? "Primary"
     : candidate.is_selected
-      ? 'Selected'
+      ? "Selected"
       : candidate.llm_is_correct === false
-        ? 'Rejected'
-        : 'Observed'
+        ? "Rejected"
+        : "Observed";
 
   const statusClassName = candidate.is_primary
-    ? 'bg-green-50 text-green-700 dark:bg-green-900/30 dark:text-green-300'
+    ? "bg-green-50 text-green-700 dark:bg-green-900/30 dark:text-green-300"
     : candidate.is_selected
-      ? 'bg-blue-50 text-blue-700 dark:bg-blue-900/30 dark:text-blue-300'
+      ? "bg-blue-50 text-blue-700 dark:bg-blue-900/30 dark:text-blue-300"
       : candidate.llm_is_correct === false
-        ? 'bg-red-50 text-red-700 dark:bg-red-900/30 dark:text-red-300'
-        : 'bg-gray-100 text-gray-700 dark:bg-gray-800 dark:text-gray-300'
+        ? "bg-red-50 text-red-700 dark:bg-red-900/30 dark:text-red-300"
+        : "bg-gray-100 text-gray-700 dark:bg-gray-800 dark:text-gray-300";
 
   return (
     <div className="rounded-xl border border-indigo-100 bg-white p-3 shadow-sm dark:border-gray-800 dark:bg-gray-900">
@@ -763,7 +865,12 @@ function InstagramCandidateCard({ candidate }: { candidate: MarketingInstagramCa
             <p className="truncate text-sm font-semibold text-gray-900 dark:text-gray-100">
               @{candidate.handle}
             </p>
-            <span className={cn('rounded-full px-2 py-0.5 text-[10px] font-semibold', statusClassName)}>
+            <span
+              className={cn(
+                "rounded-full px-2 py-0.5 text-[10px] font-semibold",
+                statusClassName,
+              )}
+            >
               {statusLabel}
             </span>
             {candidate.is_verified && (
@@ -773,8 +880,10 @@ function InstagramCandidateCard({ candidate }: { candidate: MarketingInstagramCa
             )}
           </div>
           <p className="text-xs text-gray-500 dark:text-gray-400">
-            {IG_SOURCE_LABELS[candidate.source ?? ''] ?? candidate.source ?? 'Unknown source'}
-            {candidate.rank_order ? ` · Rank ${candidate.rank_order}` : ''}
+            {IG_SOURCE_LABELS[candidate.source ?? ""] ??
+              candidate.source ??
+              "Unknown source"}
+            {candidate.rank_order ? ` · Rank ${candidate.rank_order}` : ""}
             {` · Score ${Math.round(candidate.final_score * 100)}%`}
           </p>
           <div className="flex flex-wrap gap-1 pt-1">
@@ -790,13 +899,13 @@ function InstagramCandidateCard({ candidate }: { candidate: MarketingInstagramCa
             {candidate.llm_is_correct !== null && (
               <span
                 className={cn(
-                  'rounded-full px-2 py-0.5 text-[10px] font-medium',
+                  "rounded-full px-2 py-0.5 text-[10px] font-medium",
                   candidate.llm_is_correct
-                    ? 'bg-emerald-50 text-emerald-700 dark:bg-emerald-900/30 dark:text-emerald-300'
-                    : 'bg-rose-50 text-rose-700 dark:bg-rose-900/30 dark:text-rose-300',
+                    ? "bg-emerald-50 text-emerald-700 dark:bg-emerald-900/30 dark:text-emerald-300"
+                    : "bg-rose-50 text-rose-700 dark:bg-rose-900/30 dark:text-rose-300",
                 )}
               >
-                LLM {candidate.llm_is_correct ? 'Accept' : 'Reject'}
+                LLM {candidate.llm_is_correct ? "Accept" : "Reject"}
               </span>
             )}
           </div>
@@ -823,9 +932,7 @@ function InstagramCandidateCard({ candidate }: { candidate: MarketingInstagramCa
       {(candidate.bio || candidate.snippet || candidate.llm_reason) && (
         <div className="mt-3 space-y-2 text-xs text-gray-600 dark:text-gray-300">
           {(candidate.bio || candidate.snippet) && (
-            <p>
-              {truncateText(candidate.bio || candidate.snippet, 180)}
-            </p>
+            <p>{truncateText(candidate.bio || candidate.snippet, 180)}</p>
           )}
           {candidate.llm_reason && (
             <p className="rounded-lg bg-gray-50 px-2.5 py-2 text-[11px] text-gray-600 dark:bg-gray-800/80 dark:text-gray-300">
@@ -835,14 +942,19 @@ function InstagramCandidateCard({ candidate }: { candidate: MarketingInstagramCa
         </div>
       )}
     </div>
-  )
+  );
 }
 
 function InstagramPostCard({ post }: { post: MarketingInstagramPost }) {
   return (
     <div className="overflow-hidden rounded-xl border border-indigo-100 bg-white shadow-sm dark:border-gray-800 dark:bg-gray-900">
       {post.image_url ? (
-        <a href={post.image_url} target="_blank" rel="noreferrer" className="block">
+        <a
+          href={post.image_url}
+          target="_blank"
+          rel="noreferrer"
+          className="block"
+        >
           <img
             src={post.image_url}
             alt="Instagram post"
@@ -868,7 +980,7 @@ function InstagramPostCard({ post }: { post: MarketingInstagramPost }) {
         </div>
 
         <p className="text-sm leading-5 text-gray-700 dark:text-gray-200">
-          {truncateText(post.caption, 220) || 'Tanpa caption'}
+          {truncateText(post.caption, 220) || "Tanpa caption"}
         </p>
 
         <div className="flex flex-wrap items-center gap-2 text-xs font-medium">
@@ -895,7 +1007,7 @@ function InstagramPostCard({ post }: { post: MarketingInstagramPost }) {
         </div>
       </div>
     </div>
-  )
+  );
 }
 
 function ContactRow({
@@ -904,24 +1016,26 @@ function ContactRow({
   onApprove,
   onEdit,
 }: {
-  contact: MarketingContact
-  sourcePost: MarketingInstagramPost | null
-  onApprove: (id: number, approved: boolean) => void
-  onEdit: (id: number, value: string) => void
+  contact: MarketingContact;
+  sourcePost: MarketingInstagramPost | null;
+  onApprove: (id: number, approved: boolean) => void;
+  onEdit: (id: number, value: string) => void;
 }) {
-  const [editing, setEditing] = useState(false)
-  const [editValue, setEditValue] = useState(contact.edited_value ?? contact.value ?? '')
-  const Icon = CONTACT_ICONS[contact.contact_type] ?? Circle
-  const sourceUrl = contact.source_url?.trim() || null
-  const sourceLabel = getContactSourceLabel(contact.source_type)
-  const sourceDisplayUrl = getContactSourceDisplayUrl(sourceUrl)
-  const displayLabel = getDisplayedContactLabel(contact)
+  const [editing, setEditing] = useState(false);
+  const [editValue, setEditValue] = useState(
+    contact.edited_value ?? contact.value ?? "",
+  );
+  const Icon = CONTACT_ICONS[contact.contact_type] ?? Circle;
+  const sourceUrl = contact.source_url?.trim() || null;
+  const sourceLabel = getContactSourceLabel(contact.source_type);
+  const sourceDisplayUrl = getContactSourceDisplayUrl(sourceUrl);
+  const displayLabel = getDisplayedContactLabel(contact);
 
   function commitEdit() {
-    if (editValue !== (contact.edited_value ?? contact.value ?? '')) {
-      onEdit(contact.id, editValue)
+    if (editValue !== (contact.edited_value ?? contact.value ?? "")) {
+      onEdit(contact.id, editValue);
     }
-    setEditing(false)
+    setEditing(false);
   }
 
   return (
@@ -941,8 +1055,11 @@ function ContactRow({
             value={editValue}
             onChange={(e) => setEditValue(e.target.value)}
             onKeyDown={(e) => {
-              if (e.key === 'Enter') commitEdit()
-              if (e.key === 'Escape') { setEditing(false); setEditValue(contact.edited_value ?? contact.value ?? '') }
+              if (e.key === "Enter") commitEdit();
+              if (e.key === "Escape") {
+                setEditing(false);
+                setEditValue(contact.edited_value ?? contact.value ?? "");
+              }
             }}
             className="w-full rounded border border-indigo-500 bg-white px-2 py-1 text-sm
               focus:outline-none focus:ring-1 focus:ring-indigo-500
@@ -951,10 +1068,10 @@ function ContactRow({
         ) : (
           <span
             className={cn(
-              'text-sm',
+              "text-sm",
               contact.edited_value
-                ? 'text-indigo-700 dark:text-indigo-300 font-medium'
-                : 'text-gray-900 dark:text-gray-100'
+                ? "text-indigo-700 dark:text-indigo-300 font-medium"
+                : "text-gray-900 dark:text-gray-100",
             )}
           >
             {contact.value ?? <span className="italic text-gray-400">—</span>}
@@ -986,9 +1103,13 @@ function ContactRow({
           )}
 
           <div className="min-w-0 space-y-1">
-            <div className="font-medium text-gray-700 dark:text-gray-200">{sourceLabel}</div>
+            <div className="font-medium text-gray-700 dark:text-gray-200">
+              {sourceLabel}
+            </div>
             {sourcePost?.ig_handle && (
-              <div className="text-[11px] text-gray-500 dark:text-gray-400">@{sourcePost.ig_handle}</div>
+              <div className="text-[11px] text-gray-500 dark:text-gray-400">
+                @{sourcePost.ig_handle}
+              </div>
             )}
             {sourceUrl ? (
               <a
@@ -998,38 +1119,44 @@ function ContactRow({
                 className="inline-flex items-center gap-1 text-[11px] font-medium text-indigo-600 hover:text-indigo-800 dark:text-indigo-400 dark:hover:text-indigo-300"
                 title={sourceUrl}
               >
-                {sourcePost ? 'Lihat Post' : sourceDisplayUrl}
+                {sourcePost ? "Lihat Post" : sourceDisplayUrl}
                 <ExternalLink className="h-3 w-3" />
               </a>
             ) : (
-              <span className="text-[11px] text-gray-400 dark:text-gray-500">Tidak ada link sumber</span>
+              <span className="text-[11px] text-gray-400 dark:text-gray-500">
+                Tidak ada link sumber
+              </span>
             )}
           </div>
         </div>
       </td>
       <td className="px-3 py-2 text-xs text-gray-500 dark:text-gray-400">
-        {contact.confidence != null ? `${Math.round(contact.confidence * 100)}%` : '—'}
+        {contact.confidence != null
+          ? `${Math.round(contact.confidence * 100)}%`
+          : "—"}
       </td>
       <td className="px-3 py-2 text-center">
         <button
           type="button"
           onClick={() => onApprove(contact.id, !contact.is_approved)}
           className={cn(
-            'transition-colors',
+            "transition-colors",
             contact.is_approved
-              ? 'text-green-600 hover:text-green-700 dark:text-green-400'
-              : 'text-gray-300 hover:text-green-600 dark:text-gray-600 dark:hover:text-green-400'
+              ? "text-green-600 hover:text-green-700 dark:text-green-400"
+              : "text-gray-300 hover:text-green-600 dark:text-gray-600 dark:hover:text-green-400",
           )}
-          title={contact.is_approved ? 'Batalkan approve' : 'Approve'}
+          title={contact.is_approved ? "Batalkan approve" : "Approve"}
         >
-          {contact.is_approved
-            ? <CheckCircle2 className="h-4 w-4" />
-            : <Circle className="h-4 w-4" />}
+          {contact.is_approved ? (
+            <CheckCircle2 className="h-4 w-4" />
+          ) : (
+            <Circle className="h-4 w-4" />
+          )}
         </button>
       </td>
       <td className="px-3 py-2 text-center">
         <span className="text-xs text-gray-400">
-          {contact.is_approved ? '—' : 'Unchecked'}
+          {contact.is_approved ? "—" : "Unchecked"}
         </span>
       </td>
       <td className="px-3 py-2">
@@ -1038,10 +1165,10 @@ function ContactRow({
             type="button"
             onClick={() => setEditing((e) => !e)}
             className={cn(
-              'rounded p-1 transition-colors',
+              "rounded p-1 transition-colors",
               editing
-                ? 'text-indigo-600 dark:text-indigo-400 bg-indigo-50 dark:bg-indigo-900/30'
-                : 'text-gray-400 hover:text-indigo-600 dark:hover:text-indigo-400'
+                ? "text-indigo-600 dark:text-indigo-400 bg-indigo-50 dark:bg-indigo-900/30"
+                : "text-gray-400 hover:text-indigo-600 dark:hover:text-indigo-400",
             )}
             title="Edit nilai"
           >
@@ -1060,8 +1187,8 @@ function ContactRow({
               <button
                 type="button"
                 onClick={() => {
-                  setEditing(false)
-                  setEditValue(contact.edited_value ?? contact.value ?? '')
+                  setEditing(false);
+                  setEditValue(contact.edited_value ?? contact.value ?? "");
                 }}
                 className="rounded p-1 text-gray-400 hover:text-red-500"
                 title="Batal"
@@ -1073,7 +1200,7 @@ function ContactRow({
         </div>
       </td>
     </tr>
-  )
+  );
 }
 
 function EmptyClientState({
@@ -1085,25 +1212,176 @@ function EmptyClientState({
   onRetrySearch,
   retryingSearch,
 }: {
-  client: MarketingClient
-  groupId: number
-  canManage: boolean
-  onRetryExtractContacts: () => void
-  retryingExtractContacts: boolean
-  onRetrySearch: () => void
-  retryingSearch: boolean
+  client: MarketingClient;
+  groupId: number;
+  canManage: boolean;
+  onRetryExtractContacts: () => void;
+  retryingExtractContacts: boolean;
+  onRetrySearch: () => void;
+  retryingSearch: boolean;
 }) {
-  const [show, setShow] = useState(false)
-  const addClient = useAddMarketingClient()
-  // For manual contact entry, we'd use a different endpoint.
-  // Since there's no "add contact" endpoint in the API contract, we'll just note the not_found status.
-  void addClient
+  const [show, setShow] = useState(false);
+  const [showManualModal, setShowManualModal] = useState(false);
+  const createContact = useCreateMarketingContact();
 
-  const isError = client.search_status === 'error'
-  const hasStoredInstagramPosts = (client.ig_posts ?? []).length > 0
+  // ── Manual Contact Modal ────────────────────────────────────────────────────
+  function ManualContactModal() {
+    const [contactType, setContactType] = useState("email");
+    const [value, setValue] = useState("");
+    const [sourceUrl, setSourceUrl] = useState("");
+
+    function handleSubmit(e: React.FormEvent) {
+      e.preventDefault();
+      if (!value.trim()) return;
+      createContact.mutate(
+        {
+          clientId: client.id,
+          payload: {
+            contact_type: contactType,
+            value: value.trim(),
+            source_url: sourceUrl.trim() || undefined,
+          },
+        },
+        {
+          onSuccess: () => {
+            toast.success("Kontak manual berhasil ditambahkan");
+            setShowManualModal(false);
+            setValue("");
+            setSourceUrl("");
+          },
+          onError: () => {
+            toast.error("Gagal menambahkan kontak manual");
+          },
+        },
+      );
+    }
+
+    return (
+      <Modal
+        isOpen={showManualModal}
+        onClose={() => setShowManualModal(false)}
+        title="Tambah Kontak Manual"
+        size="sm"
+      >
+        <form onSubmit={handleSubmit} className="space-y-4">
+          <div>
+            <label className="mb-1 block text-sm font-medium text-gray-700 dark:text-gray-300">
+              Tipe Kontak
+            </label>
+            <Select
+              value={contactType}
+              onChange={setContactType}
+              options={CONTACT_TYPE_OPTIONS}
+            />
+          </div>
+          <div>
+            <label className="mb-1 block text-sm font-medium text-gray-700 dark:text-gray-300">
+              Nilai <span className="text-red-500">*</span>
+            </label>
+            <input
+              type="text"
+              value={value}
+              onChange={(e) => setValue(e.target.value)}
+              required
+              placeholder={
+                contactType === "email"
+                  ? "info@contoh.com"
+                  : contactType === "wa_phone" || contactType === "office_phone"
+                    ? "628123456789"
+                    : contactType === "website"
+                      ? "https://contoh.com"
+                      : "Masukkan nilai"
+              }
+              className="w-full rounded-lg border border-gray-300 bg-white px-3 py-2 text-sm transition-colors focus:border-indigo-500 focus:outline-none focus:ring-1 focus:ring-indigo-500 dark:border-gray-600 dark:bg-gray-800 dark:text-gray-100 dark:focus:border-indigo-400 dark:focus:ring-indigo-400"
+            />
+          </div>
+          <div>
+            <label className="mb-1 block text-sm font-medium text-gray-700 dark:text-gray-300">
+              Source URL{" "}
+              <span className="text-gray-400 font-normal">(opsional)</span>
+            </label>
+            <input
+              type="url"
+              value={sourceUrl}
+              onChange={(e) => setSourceUrl(e.target.value)}
+              placeholder="https://..."
+              className="w-full rounded-lg border border-gray-300 bg-white px-3 py-2 text-sm transition-colors focus:border-indigo-500 focus:outline-none focus:ring-1 focus:ring-indigo-500 dark:border-gray-600 dark:bg-gray-800 dark:text-gray-100 dark:focus:border-indigo-400 dark:focus:ring-indigo-400"
+            />
+          </div>
+          <div className="flex justify-end gap-2 pt-2">
+            <Button
+              type="button"
+              variant="outline"
+              onClick={() => setShowManualModal(false)}
+            >
+              Batal
+            </Button>
+            <Button
+              type="submit"
+              loading={createContact.isPending}
+              disabled={!value.trim()}
+            >
+              Simpan
+            </Button>
+          </div>
+        </form>
+      </Modal>
+    );
+  }
+  // ── End ManualContactModal ────────────────────────────────────────────────
+
+  const isError = client.search_status === "error";
+  const hasStoredInstagramPosts = (client.ig_posts ?? []).length > 0;
 
   if (!show) {
     return (
+      <>
+        <div className="mt-2 flex flex-wrap gap-2">
+          {hasStoredInstagramPosts && canManage && (
+            <Button
+              size="sm"
+              variant="outline"
+              onClick={onRetryExtractContacts}
+              loading={retryingExtractContacts}
+              className="text-xs"
+            >
+              <Instagram className="h-3 w-3" />
+              Extract Contacts from Posts
+            </Button>
+          )}
+          {(client.search_status === "not_found" ||
+            client.search_status === "error") &&
+            canManage && (
+              <Button
+                size="sm"
+                variant="outline"
+                onClick={onRetrySearch}
+                loading={retryingSearch}
+                className="text-xs"
+              >
+                <RotateCcw className="h-3 w-3" />
+                Retry Search
+              </Button>
+            )}
+          {canManage && (
+            <Button
+              size="sm"
+              variant="outline"
+              onClick={() => setShowManualModal(true)}
+              className="text-xs"
+            >
+              <Plus className="h-3 w-3" />
+              Tambah Kontak Manual
+            </Button>
+          )}
+        </div>
+        <ManualContactModal />
+      </>
+    );
+  }
+
+  return (
+    <>
       <div className="mt-2 flex flex-wrap gap-2">
         {hasStoredInstagramPosts && canManage && (
           <Button
@@ -1117,63 +1395,67 @@ function EmptyClientState({
             Extract Contacts from Posts
           </Button>
         )}
-        {(client.search_status === 'not_found' || client.search_status === 'error') && canManage && (
+        {(client.search_status === "not_found" ||
+          client.search_status === "error") &&
+          canManage && (
+            <Button
+              size="sm"
+              variant="outline"
+              onClick={onRetrySearch}
+              loading={retryingSearch}
+              className="text-xs"
+            >
+              <RotateCcw className="h-3 w-3" />
+              Retry Search
+            </Button>
+          )}
+        {canManage && (
           <Button
             size="sm"
             variant="outline"
-            onClick={onRetrySearch}
-            loading={retryingSearch}
+            onClick={() => setShowManualModal(true)}
             className="text-xs"
           >
-            <RotateCcw className="h-3 w-3" />
-            Retry Search
+            <Plus className="h-3 w-3" />
+            Tambah Kontak Manual
           </Button>
         )}
-        <Button
-          size="sm"
-          variant="outline"
-          onClick={() => setShow(true)}
-          className="text-xs"
-        >
-          <Plus className="h-3 w-3" />
-          Tambah Kontak Manual
-        </Button>
       </div>
-    )
-  }
-
-  return (
-    <div
-      className={cn(
-        'mt-2 flex items-start gap-2 rounded-lg border p-3',
-        isError
-          ? 'border-red-200 bg-red-50 dark:border-red-900 dark:bg-red-950/40'
-          : 'border-indigo-200 bg-indigo-50 dark:border-indigo-800 dark:bg-indigo-950'
-      )}
-    >
-      {isError && <AlertTriangle className="mt-0.5 h-4 w-4 flex-shrink-0 text-red-500" />}
-      <span
+      <div
         className={cn(
-          'text-xs font-medium',
+          "mt-2 flex items-start gap-2 rounded-lg border p-3",
           isError
-            ? 'text-red-700 dark:text-red-300'
-            : 'text-indigo-700 dark:text-indigo-300'
+            ? "border-red-200 bg-red-50 dark:border-red-900 dark:bg-red-950/40"
+            : "border-indigo-200 bg-indigo-50 dark:border-indigo-800 dark:bg-indigo-950",
         )}
       >
-        {isError
-          ? `Pencarian gagal: ${client.error_message ?? 'unknown error'}`
-          : 'Kontak tidak ditemukan — silakan tambah manual setelah data ditemukan'}
-      </span>
-      <Button
-        size="sm"
-        variant="ghost"
-        onClick={() => setShow(false)}
-        className="ml-auto text-xs"
-      >
-        Tutup
-      </Button>
-    </div>
-  )
+        {isError && (
+          <AlertTriangle className="mt-0.5 h-4 w-4 flex-shrink-0 text-red-500" />
+        )}
+        <span
+          className={cn(
+            "text-xs font-medium",
+            isError
+              ? "text-red-700 dark:text-red-300"
+              : "text-indigo-700 dark:text-indigo-300",
+          )}
+        >
+          {isError
+            ? `Pencarian gagal: ${client.error_message ?? "unknown error"}`
+            : "Kontak tidak ditemukan — silakan tambah manual setelah data ditemukan"}
+        </span>
+        <Button
+          size="sm"
+          variant="ghost"
+          onClick={() => setShow(false)}
+          className="ml-auto text-xs"
+        >
+          Tutup
+        </Button>
+      </div>
+      <ManualContactModal />
+    </>
+  );
 }
 
 function ClientCard({
@@ -1181,119 +1463,161 @@ function ClientCard({
   groupId,
   canManage,
 }: {
-  client: MarketingClient
-  groupId: number
-  canManage: boolean
+  client: MarketingClient;
+  groupId: number;
+  canManage: boolean;
 }) {
-  const [expanded, setExpanded] = useState(false)
-  const [activeTab, setActiveTab] = useState<ClientDetailTab>('contacts')
-  const updateContact = useUpdateMarketingContact()
-  const deleteClient = useDeleteMarketingClient()
-  const retryInstagramScrape = useRetryMarketingClientInstagramScrape()
-  const retryInstagramContactExtraction = useRetryMarketingClientInstagramContactExtraction()
-  const retryClientSearch = useRetryMarketingClientSearch()
+  const [expanded, setExpanded] = useState(false);
+  const [activeTab, setActiveTab] = useState<ClientDetailTab>("contacts");
+  const updateContact = useUpdateMarketingContact();
+  const deleteClient = useDeleteMarketingClient();
+  const retryInstagramScrape = useRetryMarketingClientInstagramScrape();
+  const retryInstagramContactExtraction =
+    useRetryMarketingClientInstagramContactExtraction();
+  const retryClientSearch = useRetryMarketingClientSearch();
 
   function handleApprove(contactId: number, approved: boolean) {
-    updateContact.mutate({ contactId, payload: { is_approved: approved } })
+    updateContact.mutate({ contactId, payload: { is_approved: approved } });
   }
 
   function handleEdit(contactId: number, value: string) {
-    updateContact.mutate({ contactId, payload: { edited_value: value } })
+    updateContact.mutate({ contactId, payload: { edited_value: value } });
   }
 
   function handleDelete() {
-    if (!window.confirm('Hapus client ini?')) return
-    deleteClient.mutate({ clientId: client.id, groupId })
+    if (!window.confirm("Hapus client ini?")) return;
+    deleteClient.mutate({ clientId: client.id, groupId });
   }
 
   async function handleRetryInstagramScrape() {
     try {
-      const result = await retryInstagramScrape.mutateAsync({ clientId: client.id, groupId })
+      const result = await retryInstagramScrape.mutateAsync({
+        clientId: client.id,
+        groupId,
+      });
       if (result.posts > 0 && result.contacts_added === 0) {
-        toast.success(`${result.message}. Post tersimpan, tapi kontak belum terdeteksi.`)
+        toast.success(
+          `${result.message}. Post tersimpan, tapi kontak belum terdeteksi.`,
+        );
       } else {
-        toast.success(result.message)
+        toast.success(result.message);
       }
-      setExpanded(true)
-      setActiveTab(result.posts > 0 ? 'contacts' : 'posts')
+      setExpanded(true);
+      setActiveTab(result.posts > 0 ? "contacts" : "posts");
     } catch (error) {
-      const message = error instanceof Error ? error.message : 'Gagal retry IG post scrape'
-      toast.error(message)
+      const message =
+        error instanceof Error ? error.message : "Gagal retry IG post scrape";
+      toast.error(message);
     }
   }
 
   async function handleRetryInstagramContactExtraction() {
     try {
-      const result = await retryInstagramContactExtraction.mutateAsync({ clientId: client.id, groupId })
-      toast.success(result.message)
-      setExpanded(true)
-      setActiveTab('contacts')
+      const result = await retryInstagramContactExtraction.mutateAsync({
+        clientId: client.id,
+        groupId,
+      });
+      toast.success(result.message);
+      setExpanded(true);
+      setActiveTab("contacts");
     } catch (error) {
-      const message = error instanceof Error ? error.message : 'Gagal extract contact dari post Instagram'
-      toast.error(message)
+      const message =
+        error instanceof Error
+          ? error.message
+          : "Gagal extract contact dari post Instagram";
+      toast.error(message);
     }
   }
 
   async function handleRetrySearch() {
     try {
-      const result = await retryClientSearch.mutateAsync({ clientId: client.id, groupId })
-      toast.success(result.message)
-      setExpanded(true)
-      setActiveTab('contacts')
+      const result = await retryClientSearch.mutateAsync({
+        clientId: client.id,
+        groupId,
+      });
+      toast.success(result.message);
+      setExpanded(true);
+      setActiveTab("contacts");
     } catch (error) {
-      const message = error instanceof Error ? error.message : 'Gagal retry search client'
-      toast.error(message)
+      const message =
+        error instanceof Error ? error.message : "Gagal retry search client";
+      toast.error(message);
     }
   }
 
-  const hasContacts = (client.contacts ?? []).length > 0
-  const hasApproved = (client.contacts ?? []).some((c) => c.is_approved)
-  const igCandidateCount = client.ig_candidates?.length ?? 0
-  const igPostCount = client.ig_posts?.length ?? 0
-  const igScrapeWarning = hasInstagramScrapeWarning(client)
-  const visibleInstagramHandles = getVisibleInstagramHandles(client)
-  const headerInstagramCandidates = visibleInstagramHandles.slice(0, 3)
-  const remainingInstagramCandidateCount = Math.max(0, visibleInstagramHandles.length - headerInstagramCandidates.length)
-  const retrying = retryInstagramScrape.isPending
-  const retryingExtractContacts = retryInstagramContactExtraction.isPending
-  const retryingSearch = retryClientSearch.isPending
-  const statusBadge = getInstagramScrapeStatusLabel(client)
+  const hasContacts = (client.contacts ?? []).length > 0;
+  const hasApproved = (client.contacts ?? []).some((c) => c.is_approved);
+  const igCandidateCount = client.ig_candidates?.length ?? 0;
+  const igPostCount = client.ig_posts?.length ?? 0;
+  const igScrapeWarning = hasInstagramScrapeWarning(client);
+  const visibleInstagramHandles = getVisibleInstagramHandles(client);
+  const headerInstagramCandidates = visibleInstagramHandles.slice(0, 3);
+  const remainingInstagramCandidateCount = Math.max(
+    0,
+    visibleInstagramHandles.length - headerInstagramCandidates.length,
+  );
+  const retrying = retryInstagramScrape.isPending;
+  const retryingExtractContacts = retryInstagramContactExtraction.isPending;
+  const retryingSearch = retryClientSearch.isPending;
+  const statusBadge = getInstagramScrapeStatusLabel(client);
   const tabs: Array<{ key: ClientDetailTab; label: string; count: number }> = [
-    { key: 'contacts', label: 'Contacts', count: client.contacts?.length ?? 0 },
-    { key: 'posts', label: 'Posts', count: client.ig_posts?.length ?? 0 },
-    { key: 'instagram', label: 'IG Accounts', count: Math.max(client.ig_candidates?.length ?? 0, visibleInstagramHandles.length) },
-  ]
+    { key: "contacts", label: "Contacts", count: client.contacts?.length ?? 0 },
+    { key: "posts", label: "Posts", count: client.ig_posts?.length ?? 0 },
+    {
+      key: "instagram",
+      label: "IG Accounts",
+      count: Math.max(
+        client.ig_candidates?.length ?? 0,
+        visibleInstagramHandles.length,
+      ),
+    },
+  ];
 
   return (
     <Card padding={false} className="overflow-hidden">
       {/* Client header row */}
       <div
         className={cn(
-          'flex items-center gap-3 px-4 py-3 cursor-pointer transition-colors',
+          "flex items-center gap-3 px-4 py-3 cursor-pointer transition-colors",
           expanded
-            ? 'bg-indigo-50 dark:bg-indigo-950/50'
-            : 'hover:bg-gray-50 dark:hover:bg-gray-800/50'
+            ? "bg-indigo-50 dark:bg-indigo-950/50"
+            : "hover:bg-gray-50 dark:hover:bg-gray-800/50",
         )}
         onClick={() => setExpanded((e) => !e)}
+        role="button"
+        tabIndex={0}
+        aria-expanded={expanded}
+        aria-controls={`client-card-${client.id}`}
+        onKeyDown={(e) => {
+          if (e.key === "Enter" || e.key === " ") {
+            e.preventDefault();
+            setExpanded((x) => !x);
+          }
+        }}
       >
         <div className="flex-1 min-w-0">
           <div className="flex flex-wrap items-center gap-2">
             <p className="text-sm font-semibold text-gray-900 dark:text-gray-100 truncate">
               {client.name}
             </p>
-            {client.search_status === 'not_found' && (
+            {client.search_status === "not_found" && (
               <span className="inline-flex items-center gap-1 rounded-full bg-red-50 px-2 py-0.5 text-[10px] font-semibold text-red-600 dark:bg-red-900/30 dark:text-red-400">
                 <X className="h-3 w-3" /> Tidak Ditemukan
               </span>
             )}
-            {client.search_status === 'error' && (
+            {client.search_status === "error" && (
               <span className="inline-flex items-center gap-1 rounded-full bg-amber-50 px-2 py-0.5 text-[10px] font-semibold text-amber-700 dark:bg-amber-900/30 dark:text-amber-300">
                 <AlertTriangle className="h-3 w-3" /> Error Search
               </span>
             )}
-            {client.search_status === 'found' && (
+            {client.search_status === "found" && (
               <span className="inline-flex items-center gap-1 rounded-full bg-green-50 px-2 py-0.5 text-[10px] font-semibold text-green-600 dark:bg-green-900/30 dark:text-green-400">
                 <CheckCircle2 className="h-3 w-3" /> Ditemukan
+              </span>
+            )}
+            {client.search_status === "partial" && (
+              <span className="inline-flex items-center gap-1 rounded-full bg-amber-50 px-2 py-0.5 text-[10px] font-semibold text-amber-700 dark:bg-amber-900/30 dark:text-amber-300">
+                <AlertTriangle className="h-3 w-3" /> Partial
               </span>
             )}
             {igScrapeWarning && (
@@ -1302,45 +1626,49 @@ function ClientCard({
               </span>
             )}
             {statusBadge && !igScrapeWarning && (
-              <Badge className={cn('text-[10px]', statusBadge.className)}>{statusBadge.label}</Badge>
+              <Badge className={cn("text-[10px]", statusBadge.className)}>
+                {statusBadge.label}
+              </Badge>
             )}
-            {client.search_status === 'searching' && (
+            {client.search_status === "searching" && (
               <span className="inline-flex items-center gap-1 rounded-full bg-blue-50 px-2 py-0.5 text-[10px] font-semibold text-blue-600 dark:bg-blue-900/30 dark:text-blue-400">
                 Searching...
               </span>
             )}
           </div>
 
-          {(headerInstagramCandidates.length > 0 || client.ig_handle || remainingInstagramCandidateCount > 0) && (
+          {(headerInstagramCandidates.length > 0 ||
+            client.ig_handle ||
+            remainingInstagramCandidateCount > 0) && (
             <div className="mt-1 flex flex-wrap items-center gap-2">
-            {headerInstagramCandidates.length > 0
-              ? headerInstagramCandidates.map((candidate) => (
-                  <span
-                    key={`${candidate.source}-${candidate.handle}`}
-                    className={cn(
-                      'inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[10px] font-semibold',
-                      candidate.isPrimary
-                        ? 'bg-emerald-50 text-emerald-700 dark:bg-emerald-900/30 dark:text-emerald-300'
-                        : 'bg-indigo-50 text-indigo-700 dark:bg-indigo-900/30 dark:text-indigo-300',
-                    )}
-                  >
-                    <Instagram className="h-3 w-3" /> @{candidate.handle}
-                  </span>
-                ))
-              : null}
-            {remainingInstagramCandidateCount > 0 && (
-              <span className="inline-flex items-center rounded-full bg-gray-100 px-2 py-0.5 text-[10px] font-semibold text-gray-700 dark:bg-gray-800 dark:text-gray-300">
-                +{remainingInstagramCandidateCount} IG
-              </span>
-            )}
+              {headerInstagramCandidates.length > 0
+                ? headerInstagramCandidates.map((candidate) => (
+                    <span
+                      key={`${candidate.source}-${candidate.handle}`}
+                      className={cn(
+                        "inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[10px] font-semibold",
+                        candidate.isPrimary
+                          ? "bg-emerald-50 text-emerald-700 dark:bg-emerald-900/30 dark:text-emerald-300"
+                          : "bg-indigo-50 text-indigo-700 dark:bg-indigo-900/30 dark:text-indigo-300",
+                      )}
+                    >
+                      <Instagram className="h-3 w-3" /> @{candidate.handle}
+                    </span>
+                  ))
+                : null}
+              {remainingInstagramCandidateCount > 0 && (
+                <span className="inline-flex items-center rounded-full bg-gray-100 px-2 py-0.5 text-[10px] font-semibold text-gray-700 dark:bg-gray-800 dark:text-gray-300">
+                  +{remainingInstagramCandidateCount} IG
+                </span>
+              )}
             </div>
           )}
           <p className="mt-0.5 text-xs text-gray-500 dark:text-gray-400">
             {hasContacts
               ? `${(client.contacts ?? []).length} kontak · ${(client.contacts ?? []).filter((c) => c.is_approved).length} approved`
-              : 'Belum ada kontak'}
-            {igCandidateCount > 0 ? ` · ${igCandidateCount} kandidat IG` : ''}
-            {igPostCount > 0 ? ` · ${igPostCount} post IG` : ''}
+              : "Belum ada kontak"}
+            {igCandidateCount > 0 ? ` · ${igCandidateCount} kandidat IG` : ""}
+            {igPostCount > 0 ? ` · ${igPostCount} post IG` : ""}
           </p>
         </div>
 
@@ -1349,11 +1677,11 @@ function ClientCard({
             <button
               type="button"
               onClick={(e) => {
-                e.stopPropagation()
-                handleDelete()
+                e.stopPropagation();
+                handleDelete();
               }}
               className="rounded p-1 text-gray-400 hover:text-red-500 transition-colors"
-              title="Hapus client"
+              aria-label="Hapus client"
             >
               <Trash2 className="h-3.5 w-3.5" />
             </button>
@@ -1377,10 +1705,10 @@ function ClientCard({
                   type="button"
                   onClick={() => setActiveTab(tab.key)}
                   className={cn(
-                    'border-b-2 px-1 py-3 text-sm font-medium transition-colors whitespace-nowrap',
+                    "border-b-2 px-1 py-3 text-sm font-medium transition-colors whitespace-nowrap",
                     activeTab === tab.key
-                      ? 'border-indigo-500 text-indigo-600 dark:text-indigo-400'
-                      : 'border-transparent text-gray-500 hover:border-gray-300 hover:text-gray-700 dark:text-gray-400 dark:hover:text-gray-300',
+                      ? "border-indigo-500 text-indigo-600 dark:text-indigo-400"
+                      : "border-transparent text-gray-500 hover:border-gray-300 hover:text-gray-700 dark:text-gray-400 dark:hover:text-gray-300",
                   )}
                 >
                   {tab.label}
@@ -1392,7 +1720,7 @@ function ClientCard({
             </nav>
           </div>
 
-          {activeTab === 'contacts' && (
+          {activeTab === "contacts" && (
             <MarketingContactsPanel
               client={client}
               groupId={groupId}
@@ -1405,7 +1733,7 @@ function ClientCard({
               retryingSearch={retryingSearch}
             />
           )}
-          {activeTab === 'posts' && (
+          {activeTab === "posts" && (
             <MarketingInstagramPostsPanel
               client={client}
               canManage={canManage}
@@ -1413,19 +1741,19 @@ function ClientCard({
               retrying={retrying}
             />
           )}
-          {activeTab === 'instagram' && (
+          {activeTab === "instagram" && (
             <MarketingInstagramAccountsPanel client={client} />
           )}
         </div>
       )}
     </Card>
-  )
+  );
 }
 
 interface MarketingClientResultsTableProps {
-  clients: MarketingClient[]
-  groupId: number
-  canManage: boolean
+  clients: MarketingClient[];
+  groupId: number;
+  canManage: boolean;
 }
 
 export function MarketingClientResultsTable({
@@ -1438,7 +1766,7 @@ export function MarketingClientResultsTable({
       <div className="py-12 text-center text-sm text-gray-500 dark:text-gray-400">
         Belum ada client di group ini
       </div>
-    )
+    );
   }
 
   return (
@@ -1452,5 +1780,5 @@ export function MarketingClientResultsTable({
         />
       ))}
     </div>
-  )
+  );
 }
