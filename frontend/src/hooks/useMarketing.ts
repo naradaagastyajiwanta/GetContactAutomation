@@ -15,6 +15,8 @@ import {
   retryMarketingClientInstagramContactExtraction,
   retryMarketingClientSearch,
   updateMarketingContact,
+  updateMarketingGroup,
+  bulkDeleteMarketingClients,
   bulkApproveGroupContacts,
   importPreview,
   importCommit,
@@ -34,7 +36,7 @@ const mkKeys = {
   groups: (params: Record<string, unknown>) =>
     ["marketing", "groups", params] as const,
   groupDetail: (id: number) => ["marketing", "group", id] as const,
-  groupClients: (id: number, params?: Record<string, unknown>) =>
+  groupClients: (id: number | undefined, params?: Record<string, unknown>) =>
     ["marketing", "clients", id, params] as const,
   allClients: (params: Record<string, unknown>) =>
     ["marketing", "all-clients", params] as const,
@@ -250,12 +252,9 @@ export function useCreateMarketingContact() {
 export function useRetryMarketingClientInstagramScrape() {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: ({ clientId }: { clientId: number }) =>
+    mutationFn: ({ clientId }: { clientId: number; groupId: number }) =>
       retryMarketingClientInstagramScrape(clientId),
-    onSuccess: (
-      _data,
-      { clientId: _clientId, groupId }: { clientId: number; groupId: number },
-    ) => {
+    onSuccess: (_data, { groupId }) => {
       qc.invalidateQueries({ queryKey: mkKeys.groupClients(groupId) });
       qc.invalidateQueries({ queryKey: mkKeys.groupDetail(groupId) });
     },
@@ -266,9 +265,9 @@ export function useRetryMarketingClientInstagramScrape() {
 export function useRetryMarketingClientInstagramContactExtraction() {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: ({ clientId }: { clientId: number }) =>
+    mutationFn: ({ clientId }: { clientId: number; groupId: number }) =>
       retryMarketingClientInstagramContactExtraction(clientId),
-    onSuccess: (_data, { groupId }: { clientId: number; groupId: number }) => {
+    onSuccess: (_data, { groupId }) => {
       qc.invalidateQueries({ queryKey: mkKeys.groupClients(groupId) });
       qc.invalidateQueries({ queryKey: mkKeys.groupDetail(groupId) });
     },
@@ -279,9 +278,9 @@ export function useRetryMarketingClientInstagramContactExtraction() {
 export function useRetryMarketingClientSearch() {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: ({ clientId }: { clientId: number }) =>
+    mutationFn: ({ clientId }: { clientId: number; groupId: number }) =>
       retryMarketingClientSearch(clientId),
-    onSuccess: (_data, { groupId }: { clientId: number; groupId: number }) => {
+    onSuccess: (_data, { groupId }) => {
       qc.invalidateQueries({ queryKey: mkKeys.groupClients(groupId) });
       qc.invalidateQueries({ queryKey: mkKeys.groupDetail(groupId) });
       qc.invalidateQueries({ queryKey: mkKeys.searchStatus(groupId) });

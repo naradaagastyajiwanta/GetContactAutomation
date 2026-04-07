@@ -81,6 +81,7 @@ export default function MarketingClientPage() {
     try {
       const result = await retryInstagramScrape.mutateAsync({
         clientId: client.id,
+        groupId: client.group_id,
       });
       if (result.posts > 0 && result.contacts_added === 0) {
         toast.success(
@@ -101,6 +102,7 @@ export default function MarketingClientPage() {
     try {
       const result = await retryInstagramContactExtraction.mutateAsync({
         clientId: client.id,
+        groupId: client.group_id,
       });
       toast.success(result.message);
       setActiveTab("contacts");
@@ -118,6 +120,7 @@ export default function MarketingClientPage() {
     try {
       const result = await retryClientSearch.mutateAsync({
         clientId: client.id,
+        groupId: client.group_id,
       });
       toast.success(result.message);
       setActiveTab("contacts");
