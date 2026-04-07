@@ -4,66 +4,80 @@
  * Clean form for bulk sending WhatsApp messages with device selection.
  */
 
-import { useState } from 'react'
-import { Send, FileText, Upload, RefreshCw, Loader2, Hash } from 'lucide-react'
-import { useWhatsAppDevices, useBulkSendWhatsApp, useBulkSendDocumentWhatsApp } from '../../hooks/useWhatsApp'
-import { cn } from '../../lib/utils'
+import { useState } from "react";
+import { Send, FileText, Upload, RefreshCw, Loader2, Hash } from "lucide-react";
+import {
+  useMyDevices,
+  useBulkSendWhatsApp,
+  useBulkSendDocumentWhatsApp,
+} from "../../hooks/useWhatsApp";
+import { cn } from "../../lib/utils";
 
 export function BulkSendPanel() {
-  const { data: devicesData } = useWhatsAppDevices()
-  const bulkSendMutation = useBulkSendWhatsApp()
-  const bulkSendDocMutation = useBulkSendDocumentWhatsApp()
+  const { data: myDevicesData } = useMyDevices();
+  const bulkSendMutation = useBulkSendWhatsApp();
+  const bulkSendDocMutation = useBulkSendDocumentWhatsApp();
 
-  const [mode, setMode] = useState<'text' | 'document'>('text')
-  const [selectedDeviceId, setSelectedDeviceId] = useState<string>('')
-  const [phoneNumbers, setPhoneNumbers] = useState<string>('')
-  const [message, setMessage] = useState<string>('')
-  const [filePath, setFilePath] = useState<string>('')
-  const [fileName, setFileName] = useState<string>('')
-  const [caption, setCaption] = useState<string>('')
+  const [mode, setMode] = useState<"text" | "document">("text");
+  const [selectedDeviceId, setSelectedDeviceId] = useState<string>("");
+  const [phoneNumbers, setPhoneNumbers] = useState<string>("");
+  const [message, setMessage] = useState<string>("");
+  const [filePath, setFilePath] = useState<string>("");
+  const [fileName, setFileName] = useState<string>("");
+  const [caption, setCaption] = useState<string>("");
 
-  const connectedDevices = devicesData?.devices.filter((d) => d.connectionState === 'connected') || []
-  const recipientCount = phoneNumbers.split('\n').filter((n) => n.trim().length > 0).length
+  // Only show user's own connected devices
+  const connectedDevices = (myDevicesData?.devices || [])
+    .filter((e) => e.device?.connectionState === "connected")
+    .map((e) => ({
+      id: e.device_id,
+      name: e.label || e.device?.name || e.device_id,
+      phoneNumber: e.device?.phoneNumber ?? null,
+    }));
+  const recipientCount = phoneNumbers
+    .split("\n")
+    .filter((n) => n.trim().length > 0).length;
 
   const handleSubmit = (e: React.FormEvent) => {
-    e.preventDefault()
+    e.preventDefault();
 
-    if (!selectedDeviceId) return alert('Please select a device')
+    if (!selectedDeviceId) return alert("Please select a device");
 
     const numbers = phoneNumbers
-      .split('\n')
+      .split("\n")
       .map((n) => n.trim())
-      .filter((n) => n.length > 0)
+      .filter((n) => n.length > 0);
 
-    if (numbers.length === 0) return alert('Please enter at least one phone number')
+    if (numbers.length === 0)
+      return alert("Please enter at least one phone number");
 
-    if (mode === 'text') {
-      if (!message.trim()) return alert('Please enter a message')
+    if (mode === "text") {
+      if (!message.trim()) return alert("Please enter a message");
       bulkSendMutation.mutate({
         phone_numbers: numbers,
         message: message.trim(),
         device_id: selectedDeviceId,
-      })
-      setPhoneNumbers('')
-      setMessage('')
+      });
+      setPhoneNumbers("");
+      setMessage("");
     } else {
-      if (!filePath.trim()) return alert('Please enter a file path')
-      if (!fileName.trim()) return alert('Please enter a file name')
+      if (!filePath.trim()) return alert("Please enter a file path");
+      if (!fileName.trim()) return alert("Please enter a file name");
       bulkSendDocMutation.mutate({
         phone_numbers: numbers,
         file_path: filePath.trim(),
         file_name: fileName.trim(),
         caption: caption.trim() || undefined,
         device_id: selectedDeviceId,
-      })
-      setPhoneNumbers('')
-      setFilePath('')
-      setFileName('')
-      setCaption('')
+      });
+      setPhoneNumbers("");
+      setFilePath("");
+      setFileName("");
+      setCaption("");
     }
-  }
+  };
 
-  const isSending = bulkSendMutation.isPending || bulkSendDocMutation.isPending
+  const isSending = bulkSendMutation.isPending || bulkSendDocMutation.isPending;
 
   return (
     <div>
@@ -71,12 +85,12 @@ export function BulkSendPanel() {
       <div className="inline-flex rounded-lg bg-gray-100 dark:bg-gray-900 p-0.5 mb-5">
         <button
           type="button"
-          onClick={() => setMode('text')}
+          onClick={() => setMode("text")}
           className={cn(
-            'flex items-center gap-1.5 px-4 py-1.5 rounded-md text-xs font-semibold transition-all',
-            mode === 'text'
-              ? 'bg-white dark:bg-gray-700 text-gray-900 dark:text-gray-100 shadow-sm'
-              : 'text-gray-500 dark:text-gray-400 hover:text-gray-700 dark:hover:text-gray-300'
+            "flex items-center gap-1.5 px-4 py-1.5 rounded-md text-xs font-semibold transition-all",
+            mode === "text"
+              ? "bg-white dark:bg-gray-700 text-gray-900 dark:text-gray-100 shadow-sm"
+              : "text-gray-500 dark:text-gray-400 hover:text-gray-700 dark:hover:text-gray-300",
           )}
         >
           <Send className="w-3.5 h-3.5" />
@@ -84,12 +98,12 @@ export function BulkSendPanel() {
         </button>
         <button
           type="button"
-          onClick={() => setMode('document')}
+          onClick={() => setMode("document")}
           className={cn(
-            'flex items-center gap-1.5 px-4 py-1.5 rounded-md text-xs font-semibold transition-all',
-            mode === 'document'
-              ? 'bg-white dark:bg-gray-700 text-gray-900 dark:text-gray-100 shadow-sm'
-              : 'text-gray-500 dark:text-gray-400 hover:text-gray-700 dark:hover:text-gray-300'
+            "flex items-center gap-1.5 px-4 py-1.5 rounded-md text-xs font-semibold transition-all",
+            mode === "document"
+              ? "bg-white dark:bg-gray-700 text-gray-900 dark:text-gray-100 shadow-sm"
+              : "text-gray-500 dark:text-gray-400 hover:text-gray-700 dark:hover:text-gray-300",
           )}
         >
           <FileText className="w-3.5 h-3.5" />
@@ -112,7 +126,8 @@ export function BulkSendPanel() {
             <option value="">Select a connected device...</option>
             {connectedDevices.map((device) => (
               <option key={device.id} value={device.id}>
-                {device.name} {device.phoneNumber ? `(${device.phoneNumber})` : ''}
+                {device.name}{" "}
+                {device.phoneNumber ? `(${device.phoneNumber})` : ""}
               </option>
             ))}
           </select>
@@ -132,7 +147,7 @@ export function BulkSendPanel() {
             {recipientCount > 0 && (
               <span className="flex items-center gap-1 text-xs font-medium text-blue-600 dark:text-blue-400">
                 <Hash className="w-3 h-3" />
-                {recipientCount} recipient{recipientCount !== 1 ? 's' : ''}
+                {recipientCount} recipient{recipientCount !== 1 ? "s" : ""}
               </span>
             )}
           </label>
@@ -150,7 +165,7 @@ export function BulkSendPanel() {
         </div>
 
         {/* Message (text mode) */}
-        {mode === 'text' && (
+        {mode === "text" && (
           <div>
             <label className="block text-xs font-semibold text-gray-600 dark:text-gray-400 uppercase tracking-wider mb-1.5">
               Message <span className="text-red-400">*</span>
@@ -167,7 +182,7 @@ export function BulkSendPanel() {
         )}
 
         {/* Document fields */}
-        {mode === 'document' && (
+        {mode === "document" && (
           <div className="space-y-4">
             <div>
               <label className="block text-xs font-semibold text-gray-600 dark:text-gray-400 uppercase tracking-wider mb-1.5">
@@ -197,7 +212,10 @@ export function BulkSendPanel() {
             </div>
             <div>
               <label className="block text-xs font-semibold text-gray-600 dark:text-gray-400 uppercase tracking-wider mb-1.5">
-                Caption <span className="text-gray-400 normal-case font-normal">(optional)</span>
+                Caption{" "}
+                <span className="text-gray-400 normal-case font-normal">
+                  (optional)
+                </span>
               </label>
               <textarea
                 value={caption}
@@ -214,7 +232,9 @@ export function BulkSendPanel() {
         <div className="flex items-center justify-end pt-4 border-t border-gray-100 dark:border-gray-700">
           <button
             type="submit"
-            disabled={isSending || !selectedDeviceId || connectedDevices.length === 0}
+            disabled={
+              isSending || !selectedDeviceId || connectedDevices.length === 0
+            }
             className="flex items-center gap-2 px-5 py-2 bg-blue-600 hover:bg-blue-700 text-white text-sm font-semibold rounded-lg shadow-sm transition-all disabled:opacity-50 disabled:cursor-not-allowed"
           >
             {isSending ? (
@@ -225,7 +245,10 @@ export function BulkSendPanel() {
             ) : (
               <>
                 <Send className="w-4 h-4" />
-                Queue {recipientCount > 0 ? `${recipientCount} Message${recipientCount !== 1 ? 's' : ''}` : 'Send'}
+                Queue{" "}
+                {recipientCount > 0
+                  ? `${recipientCount} Message${recipientCount !== 1 ? "s" : ""}`
+                  : "Send"}
               </>
             )}
           </button>
@@ -234,11 +257,14 @@ export function BulkSendPanel() {
 
       {/* Note */}
       <div className="mt-5 flex items-start gap-2 p-3 bg-gray-50 dark:bg-gray-900/50 rounded-lg border border-gray-100 dark:border-gray-700">
-        <span className="text-gray-400 dark:text-gray-500 text-xs mt-px">i</span>
+        <span className="text-gray-400 dark:text-gray-500 text-xs mt-px">
+          i
+        </span>
         <p className="text-xs text-gray-500 dark:text-gray-400 leading-relaxed">
-          Messages are queued and sent with human-like delays to avoid rate limiting. Check device metrics for progress.
+          Messages are queued and sent with human-like delays to avoid rate
+          limiting. Check device metrics for progress.
         </p>
       </div>
     </div>
-  )
+  );
 }
