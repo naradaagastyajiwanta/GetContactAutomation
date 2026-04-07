@@ -14,8 +14,9 @@ import {
   bulkSendWhatsApp,
   bulkSendDocumentWhatsApp,
   setupMyDevice,
-  getMyDevice,
+  getMyDevices,
   deleteMyDevice,
+  updateMyDeviceLabel,
   pauseDeviceAntiBan,
   resumeDeviceAntiBan,
 } from "../api/whatsapp";
@@ -204,10 +205,10 @@ export function useBulkSendDocumentWhatsApp() {
 // Per-User Device (My Device) Hooks
 // ---------------------------------------------------------------------------
 
-export function useMyDevice() {
+export function useMyDevices() {
   return useQuery({
-    queryKey: queryKeys.whatsapp.myDevice,
-    queryFn: getMyDevice,
+    queryKey: queryKeys.whatsapp.myDevices,
+    queryFn: getMyDevices,
     refetchInterval: 5_000,
   });
 }
@@ -215,10 +216,10 @@ export function useMyDevice() {
 export function useSetupMyDevice() {
   const queryClient = useQueryClient();
   return useMutation({
-    mutationFn: setupMyDevice,
+    mutationFn: (label: string = "") => setupMyDevice(label),
     onSuccess: () => {
       toast.success("WhatsApp device created. Scan the QR to connect.");
-      queryClient.invalidateQueries({ queryKey: queryKeys.whatsapp.myDevice });
+      queryClient.invalidateQueries({ queryKey: queryKeys.whatsapp.myDevices });
       queryClient.invalidateQueries({ queryKey: queryKeys.whatsapp.devices });
     },
     onError: () => {
@@ -230,14 +231,29 @@ export function useSetupMyDevice() {
 export function useDeleteMyDevice() {
   const queryClient = useQueryClient();
   return useMutation({
-    mutationFn: deleteMyDevice,
+    mutationFn: (deviceId: string) => deleteMyDevice(deviceId),
     onSuccess: () => {
       toast.success("WhatsApp device removed");
-      queryClient.invalidateQueries({ queryKey: queryKeys.whatsapp.myDevice });
+      queryClient.invalidateQueries({ queryKey: queryKeys.whatsapp.myDevices });
       queryClient.invalidateQueries({ queryKey: queryKeys.whatsapp.devices });
     },
     onError: () => {
       toast.error("Failed to delete WhatsApp device");
+    },
+  });
+}
+
+export function useUpdateMyDeviceLabel() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: ({ deviceId, label }: { deviceId: string; label: string }) =>
+      updateMyDeviceLabel(deviceId, label),
+    onSuccess: () => {
+      toast.success("Device label updated");
+      queryClient.invalidateQueries({ queryKey: queryKeys.whatsapp.myDevices });
+    },
+    onError: () => {
+      toast.error("Failed to update device label");
     },
   });
 }
@@ -248,7 +264,7 @@ export function usePauseAntiBan() {
     mutationFn: (deviceId: string) => pauseDeviceAntiBan(deviceId),
     onSuccess: () => {
       toast.success("Anti-ban paused");
-      queryClient.invalidateQueries({ queryKey: queryKeys.whatsapp.myDevice });
+      queryClient.invalidateQueries({ queryKey: queryKeys.whatsapp.myDevices });
     },
     onError: () => {
       toast.error("Failed to pause anti-ban");
@@ -262,7 +278,7 @@ export function useResumeAntiBan() {
     mutationFn: (deviceId: string) => resumeDeviceAntiBan(deviceId),
     onSuccess: () => {
       toast.success("Anti-ban resumed");
-      queryClient.invalidateQueries({ queryKey: queryKeys.whatsapp.myDevice });
+      queryClient.invalidateQueries({ queryKey: queryKeys.whatsapp.myDevices });
     },
     onError: () => {
       toast.error("Failed to resume anti-ban");

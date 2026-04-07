@@ -32,13 +32,13 @@ import {
   useDisconnectDevice,
   useDeviceQR,
   useForceRecoverDevice,
-  useMyDevice,
+  useMyDevices,
   useSetupMyDevice,
   useDeleteMyDevice,
   usePauseAntiBan,
   useResumeAntiBan,
 } from "../../hooks/useWhatsApp";
-import type { AntiBanStatus } from "../../api/whatsapp";
+import type { AntiBanStatus, MyDeviceEntry } from "../../api/whatsapp";
 import type { WhatsAppDevice } from "../../types/waDevices";
 import { cn } from "../../lib/utils";
 
@@ -622,9 +622,15 @@ function riskColor(risk: AntiBanStatus["health"]["risk"]): string {
   return "text-red-700 bg-red-100 dark:text-red-300 dark:bg-red-900/30";
 }
 
-export function MyDevicePanel({ canManage = true }: { canManage?: boolean }) {
-  const { data, isLoading } = useMyDevice();
-  const setupMutation = useSetupMyDevice();
+/* ─── MyDeviceSingleCard ─────────────────────────────────── */
+
+function MyDeviceSingleCard({
+  entry,
+  canManage,
+}: {
+  entry: MyDeviceEntry;
+  canManage: boolean;
+}) {
   const deleteMutation = useDeleteMyDevice();
   const pauseMutation = usePauseAntiBan();
   const resumeMutation = useResumeAntiBan();
@@ -633,10 +639,11 @@ export function MyDevicePanel({ canManage = true }: { canManage?: boolean }) {
   const [showQr, setShowQr] = useState(false);
   const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
 
-  const deviceId = data?.device_id ?? "";
-  const device = data?.device;
+  const deviceId = entry.device_id;
+  const device = entry.device;
+  const title = entry.label || device?.name || deviceId;
 
-  const { data: qrData } = useDeviceQR(showQr && deviceId ? deviceId : "");
+  const { data: qrData } = useDeviceQR(showQr ? deviceId : "");
 
   useEffect(() => {
     if (qrData?.connected && showQr) {
@@ -648,87 +655,7 @@ export function MyDevicePanel({ canManage = true }: { canManage?: boolean }) {
     }
   }, [qrData?.connected, showQr]);
 
-  if (isLoading) {
-    return (
-      <div className="flex items-center justify-center py-12">
-        <Loader2 className="w-8 h-8 animate-spin text-blue-500" />
-      </div>
-    );
-  }
-
-  // ── No device ───────────────────────────────────────────────
-  if (!data?.has_device) {
-    return (
-      <div className="rounded-xl border-2 border-dashed border-gray-200 dark:border-gray-700 p-6 text-center">
-        <div className="inline-flex items-center justify-center w-14 h-14 rounded-full bg-green-100 dark:bg-green-900/30 mb-3">
-          <Smartphone className="w-7 h-7 text-green-600 dark:text-green-400" />
-        </div>
-        <h3 className="font-bold text-gray-900 dark:text-gray-100 mb-1">
-          My WhatsApp
-        </h3>
-        <p className="text-sm text-gray-500 dark:text-gray-400 mb-4">
-          Setup your personal WhatsApp connection to send messages.
-        </p>
-        <button
-          onClick={() => setupMutation.mutate()}
-          disabled={setupMutation.isPending}
-          className="inline-flex items-center gap-2 px-4 py-2 text-sm font-semibold text-white bg-green-600 hover:bg-green-700 disabled:opacity-50 rounded-lg transition-colors"
-        >
-          {setupMutation.isPending ? (
-            <Loader2 className="w-4 h-4 animate-spin" />
-          ) : (
-            <Link2 className="w-4 h-4" />
-          )}
-          Setup My WhatsApp
-        </button>
-        <p className="mt-3 text-xs text-gray-400 dark:text-gray-500">
-          New connections start in warm-up mode (15 msgs/day, growing over 7
-          days)
-        </p>
-      </div>
-    );
-  }
-
-  // ── Device lost in WA service ────────────────────────────────
-  if (data.has_device && !device) {
-    return (
-      <div className="rounded-xl border-2 border-amber-200 dark:border-amber-800 bg-amber-50/50 dark:bg-amber-900/10 p-5">
-        <div className="flex items-start gap-3 mb-4">
-          <AlertCircle className="w-5 h-5 text-amber-500 mt-0.5 shrink-0" />
-          <div>
-            <p className="font-semibold text-amber-800 dark:text-amber-200 text-sm">
-              Device registration lost
-            </p>
-            <p className="text-xs text-amber-600 dark:text-amber-400 mt-0.5">
-              {(data as any).error ||
-                "Device not found in WA service. Click Repair to re-create."}
-            </p>
-          </div>
-        </div>
-        <button
-          onClick={() =>
-            deleteMutation.mutate(undefined, {
-              onSuccess: () => setupMutation.mutate(),
-            })
-          }
-          disabled={deleteMutation.isPending || setupMutation.isPending}
-          className="inline-flex items-center gap-2 px-4 py-2 text-sm font-semibold text-amber-700 dark:text-amber-300 bg-amber-100 dark:bg-amber-900/30 hover:bg-amber-200 dark:hover:bg-amber-900/50 border border-amber-300 dark:border-amber-700 rounded-lg transition-colors disabled:opacity-50"
-        >
-          {deleteMutation.isPending || setupMutation.isPending ? (
-            <Loader2 className="w-4 h-4 animate-spin" />
-          ) : (
-            <RefreshCw className="w-4 h-4" />
-          )}
-          Repair
-        </button>
-      </div>
-    );
-  }
-
-  const isConnected = device!.connectionState === "connected";
-  const antiBan = (device as any).antiBan as AntiBanStatus | undefined;
-
-  // ── Delete confirmation modal ────────────────────────────────
+  // ── Delete confirmation modal ──────────────────────────────
   const deleteModal = showDeleteConfirm && (
     <div className="fixed inset-0 bg-black/60 backdrop-blur-sm flex items-center justify-center z-50 p-4">
       <div className="bg-white dark:bg-gray-800 rounded-2xl shadow-2xl w-full max-w-sm p-6">
@@ -753,7 +680,7 @@ export function MyDevicePanel({ canManage = true }: { canManage?: boolean }) {
           </button>
           <button
             onClick={() => {
-              deleteMutation.mutate();
+              deleteMutation.mutate(deviceId);
               setShowDeleteConfirm(false);
             }}
             disabled={deleteMutation.isPending}
@@ -769,33 +696,73 @@ export function MyDevicePanel({ canManage = true }: { canManage?: boolean }) {
     </div>
   );
 
+  // ── Device lost in WA service ────────────────────────────────
+  if (entry.has_wa_record && !device) {
+    return (
+      <>
+        <div className="rounded-xl border-2 border-amber-200 dark:border-amber-800 bg-amber-50/50 dark:bg-amber-900/10 p-5">
+          <div className="flex items-start gap-3 mb-3">
+            <AlertCircle className="w-5 h-5 text-amber-500 mt-0.5 shrink-0" />
+            <div className="min-w-0 flex-1">
+              <p className="font-semibold text-amber-800 dark:text-amber-200 text-sm">
+                {title}
+              </p>
+              <p className="text-xs text-amber-600 dark:text-amber-400 mt-0.5 font-mono truncate">
+                {deviceId}
+              </p>
+              <p className="text-xs text-amber-600 dark:text-amber-400 mt-1">
+                {entry.error || "Device not found in WA service."}
+              </p>
+            </div>
+          </div>
+          {canManage && (
+            <button
+              onClick={() => setShowDeleteConfirm(true)}
+              className="inline-flex items-center gap-2 px-3 py-1.5 text-xs font-semibold text-red-600 dark:text-red-400 bg-red-50 dark:bg-red-900/20 hover:bg-red-100 dark:hover:bg-red-900/40 border border-red-200 dark:border-red-800 rounded-lg transition-colors"
+            >
+              <X className="w-3.5 h-3.5" />
+              Remove
+            </button>
+          )}
+        </div>
+        {deleteModal}
+      </>
+    );
+  }
+
+  const isConnected = device?.connectionState === "connected";
+  const antiBan = device?.antiBan as AntiBanStatus | undefined;
+
   // ── Not connected ────────────────────────────────────────────
   if (!isConnected) {
     return (
       <>
         <div className="rounded-xl border-2 border-gray-200 dark:border-gray-700 bg-gray-50/50 dark:bg-gray-800/50 p-5">
-          <div className="flex items-start justify-between mb-4">
-            <div>
-              <h4 className="font-bold text-gray-900 dark:text-gray-100 text-sm">
-                {device!.name}
+          <div className="flex items-start justify-between mb-3">
+            <div className="min-w-0 flex-1">
+              <h4 className="font-bold text-gray-900 dark:text-gray-100 text-sm truncate">
+                {title}
               </h4>
-              {device!.phoneNumber && (
+              <p className="text-xs text-gray-400 dark:text-gray-500 font-mono mt-0.5 truncate">
+                {deviceId}
+              </p>
+              {device?.phoneNumber && (
                 <div className="flex items-center gap-1.5 mt-1">
                   <Phone className="w-3.5 h-3.5 text-gray-400" />
                   <span className="text-sm text-gray-500">
-                    {device!.phoneNumber}
+                    {device.phoneNumber}
                   </span>
                 </div>
               )}
             </div>
-            <span className="px-2.5 py-1 text-xs font-semibold rounded-full bg-gray-200 text-gray-600 dark:bg-gray-700 dark:text-gray-400">
+            <span className="ml-2 shrink-0 px-2.5 py-1 text-xs font-semibold rounded-full bg-gray-200 text-gray-600 dark:bg-gray-700 dark:text-gray-400">
               Disconnected
             </span>
           </div>
 
-          {device!.lastError && (
+          {device?.lastError && (
             <p className="text-xs text-red-500 dark:text-red-400 mb-3 truncate">
-              {device!.lastError}
+              {device.lastError}
             </p>
           )}
 
@@ -827,7 +794,7 @@ export function MyDevicePanel({ canManage = true }: { canManage?: boolean }) {
           )}
         </div>
 
-        {showQr && (
+        {showQr && device && (
           <QrModal
             device={device as any}
             qrData={qrData}
@@ -853,9 +820,12 @@ export function MyDevicePanel({ canManage = true }: { canManage?: boolean }) {
 
         {/* Header */}
         <div className="mb-4">
-          <h4 className="font-bold text-gray-900 dark:text-gray-100 text-sm">
-            {device!.name}
+          <h4 className="font-bold text-gray-900 dark:text-gray-100 text-sm truncate pr-6">
+            {title}
           </h4>
+          <p className="text-xs text-gray-400 dark:text-gray-500 font-mono mt-0.5 truncate">
+            {deviceId}
+          </p>
           {device!.phoneNumber && (
             <div className="flex items-center gap-1.5 mt-1">
               <Phone className="w-3.5 h-3.5 text-green-600 dark:text-green-400" />
@@ -953,27 +923,23 @@ export function MyDevicePanel({ canManage = true }: { canManage?: boolean }) {
         )}
 
         {/* Queue stats */}
-        {(device as any).queueStats && (
+        {device!.queueStats && (
           <div className="flex items-center gap-4 mb-4 text-xs">
             <div className="flex items-center gap-1 text-green-700 dark:text-green-300">
               <ArrowUpCircle className="w-3.5 h-3.5" />
-              <span className="font-semibold">
-                {(device as any).queueStats.sent}
-              </span>
+              <span className="font-semibold">{device!.queueStats.sent}</span>
               <span className="opacity-70">sent</span>
             </div>
             <div className="flex items-center gap-1 text-blue-600 dark:text-blue-400">
               <Loader2 className="w-3.5 h-3.5" />
               <span className="font-semibold">
-                {(device as any).queueStats.pending}
+                {device!.queueStats.pending}
               </span>
               <span className="opacity-70">pending</span>
             </div>
             <div className="flex items-center gap-1 text-red-600 dark:text-red-400">
               <ArrowDownCircle className="w-3.5 h-3.5" />
-              <span className="font-semibold">
-                {(device as any).queueStats.failed}
-              </span>
+              <span className="font-semibold">{device!.queueStats.failed}</span>
               <span className="opacity-70">failed</span>
             </div>
           </div>
@@ -991,6 +957,156 @@ export function MyDevicePanel({ canManage = true }: { canManage?: boolean }) {
         )}
       </div>
       {deleteModal}
+    </>
+  );
+}
+
+/* ─── MyDevicePanel (container) ─────────────────────────── */
+
+export function MyDevicePanel({ canManage = true }: { canManage?: boolean }) {
+  const { data, isLoading } = useMyDevices();
+  const setupMutation = useSetupMyDevice();
+
+  const [showAddModal, setShowAddModal] = useState(false);
+  const [addLabel, setAddLabel] = useState("");
+
+  const devices = data?.devices ?? [];
+
+  const handleCreate = () => {
+    setupMutation.mutate(addLabel, {
+      onSuccess: () => {
+        setShowAddModal(false);
+        setAddLabel("");
+      },
+    });
+  };
+
+  if (isLoading) {
+    return (
+      <div className="flex items-center justify-center py-12">
+        <Loader2 className="w-8 h-8 animate-spin text-blue-500" />
+      </div>
+    );
+  }
+
+  return (
+    <>
+      <div className="space-y-4">
+        {/* Header */}
+        <div className="flex items-center justify-between">
+          <h3 className="text-sm font-semibold text-gray-700 dark:text-gray-300">
+            My WhatsApp Devices
+          </h3>
+          {canManage && (
+            <button
+              onClick={() => setShowAddModal(true)}
+              className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold text-green-700 dark:text-green-300 bg-green-50 dark:bg-green-900/20 hover:bg-green-100 dark:hover:bg-green-900/40 border border-green-200 dark:border-green-800 rounded-lg transition-colors"
+            >
+              <Smartphone className="w-3.5 h-3.5" />
+              Add WhatsApp
+            </button>
+          )}
+        </div>
+
+        {/* Device cards */}
+        {devices.length > 0 ? (
+          <div className="space-y-3">
+            {devices.map((entry) => (
+              <MyDeviceSingleCard
+                key={entry.device_id}
+                entry={entry}
+                canManage={canManage}
+              />
+            ))}
+          </div>
+        ) : (
+          /* Empty state */
+          <div className="rounded-xl border-2 border-dashed border-gray-200 dark:border-gray-700 p-6 text-center">
+            <div className="inline-flex items-center justify-center w-14 h-14 rounded-full bg-green-100 dark:bg-green-900/30 mb-3">
+              <Smartphone className="w-7 h-7 text-green-600 dark:text-green-400" />
+            </div>
+            <h3 className="font-bold text-gray-900 dark:text-gray-100 mb-1">
+              My WhatsApp
+            </h3>
+            <p className="text-sm text-gray-500 dark:text-gray-400 mb-4">
+              Setup your personal WhatsApp connection to send messages.
+            </p>
+            {canManage && (
+              <button
+                onClick={() => setShowAddModal(true)}
+                disabled={setupMutation.isPending}
+                className="inline-flex items-center gap-2 px-4 py-2 text-sm font-semibold text-white bg-green-600 hover:bg-green-700 disabled:opacity-50 rounded-lg transition-colors"
+              >
+                {setupMutation.isPending ? (
+                  <Loader2 className="w-4 h-4 animate-spin" />
+                ) : (
+                  <Link2 className="w-4 h-4" />
+                )}
+                Setup My WhatsApp
+              </button>
+            )}
+            <p className="mt-3 text-xs text-gray-400 dark:text-gray-500">
+              New connections start in warm-up mode (15 msgs/day, growing over 7
+              days)
+            </p>
+          </div>
+        )}
+      </div>
+
+      {/* Add device modal */}
+      {showAddModal && (
+        <div
+          className="fixed inset-0 bg-black/60 backdrop-blur-sm flex items-center justify-center z-50 p-4"
+          onClick={(e) =>
+            e.target === e.currentTarget && setShowAddModal(false)
+          }
+        >
+          <div className="bg-white dark:bg-gray-800 rounded-2xl shadow-2xl w-full max-w-sm p-6">
+            <div className="flex items-center gap-3 mb-4">
+              <div className="p-2 bg-green-100 dark:bg-green-900/30 rounded-full">
+                <Smartphone className="w-5 h-5 text-green-600 dark:text-green-400" />
+              </div>
+              <h3 className="font-bold text-gray-900 dark:text-gray-100">
+                Add WhatsApp Device
+              </h3>
+            </div>
+            <div className="mb-5">
+              <label className="block text-xs font-semibold text-gray-600 dark:text-gray-400 mb-1.5">
+                Label (optional)
+              </label>
+              <input
+                type="text"
+                value={addLabel}
+                onChange={(e) => setAddLabel(e.target.value)}
+                placeholder="Device Pribadi, Device Kantor, ..."
+                className="w-full px-3 py-2 text-sm border border-gray-200 dark:border-gray-600 rounded-lg bg-white dark:bg-gray-700 text-gray-900 dark:text-gray-100 placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-green-500 focus:border-transparent"
+                onKeyDown={(e) => e.key === "Enter" && handleCreate()}
+              />
+            </div>
+            <div className="flex gap-3">
+              <button
+                onClick={() => {
+                  setShowAddModal(false);
+                  setAddLabel("");
+                }}
+                className="flex-1 px-4 py-2 text-sm font-semibold text-gray-600 dark:text-gray-400 bg-gray-100 dark:bg-gray-700 hover:bg-gray-200 dark:hover:bg-gray-600 rounded-lg transition-colors"
+              >
+                Cancel
+              </button>
+              <button
+                onClick={handleCreate}
+                disabled={setupMutation.isPending}
+                className="flex-1 flex items-center justify-center gap-2 px-4 py-2 text-sm font-bold text-white bg-green-600 hover:bg-green-700 rounded-lg transition-colors disabled:opacity-50"
+              >
+                {setupMutation.isPending ? (
+                  <Loader2 className="w-4 h-4 animate-spin" />
+                ) : null}
+                Create Device
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </>
   );
 }

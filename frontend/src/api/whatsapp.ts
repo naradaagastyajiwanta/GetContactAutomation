@@ -184,9 +184,10 @@ export interface AntiBanStatus {
   pausedManually: boolean;
 }
 
-export interface MyDeviceStatusResponse {
-  has_device: boolean;
-  device_id: string | null;
+export interface MyDeviceEntry {
+  device_id: string;
+  label: string;
+  has_wa_record: boolean;
   device: {
     id: string;
     name: string;
@@ -207,37 +208,55 @@ export interface MyDeviceStatusResponse {
       failed: number;
     };
   } | null;
-  error?: string;
+  error: string | null;
+}
+
+export interface MyDevicesResponse {
+  devices: MyDeviceEntry[];
 }
 
 /**
  * Setup the calling user's personal WhatsApp device
  */
-export async function setupMyDevice(): Promise<MyDeviceStatusResponse> {
-  const { data } =
-    await apiClient.post<MyDeviceStatusResponse>("/wa/me/device");
+export async function setupMyDevice(
+  label: string = "",
+): Promise<{ success: boolean; device_id: string; already_existed: boolean }> {
+  const { data } = await apiClient.post("/wa/me/device", { label });
   return data;
 }
 
 /**
- * Get the calling user's personal WhatsApp device status
+ * Get all of the calling user's personal WhatsApp devices
  */
-export async function getMyDevice(): Promise<MyDeviceStatusResponse> {
-  const { data } = await apiClient.get<MyDeviceStatusResponse>("/wa/me/device");
+export async function getMyDevices(): Promise<MyDevicesResponse> {
+  const { data } = await apiClient.get<MyDevicesResponse>("/wa/me/device");
   return data;
 }
 
 /**
- * Delete the calling user's personal WhatsApp device
+ * Delete one of the calling user's personal WhatsApp devices
  */
-export async function deleteMyDevice(): Promise<{
-  success: boolean;
-  message?: string;
-}> {
+export async function deleteMyDevice(
+  deviceId: string,
+): Promise<{ success: boolean; message?: string }> {
   const { data } = await apiClient.delete<{
     success: boolean;
     message?: string;
-  }>("/wa/me/device");
+  }>(`/wa/me/device/${deviceId}`);
+  return data;
+}
+
+/**
+ * Update the label of one of the calling user's personal WhatsApp devices
+ */
+export async function updateMyDeviceLabel(
+  deviceId: string,
+  label: string,
+): Promise<{ success: boolean }> {
+  const { data } = await apiClient.patch<{ success: boolean }>(
+    `/wa/me/device/${deviceId}/label`,
+    { label },
+  );
   return data;
 }
 
