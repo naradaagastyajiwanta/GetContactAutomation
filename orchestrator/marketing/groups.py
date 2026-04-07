@@ -293,6 +293,100 @@ async def get_all_client_names_by_type(client_type: str) -> list[str]:
         return [row[0] for row in rows if row[0]]
 
 
+async def list_all_clients(
+    *,
+    limit: int = 50,
+    offset: int = 0,
+    q: str | None = None,
+    search_status: str | None = None,
+    client_type: str | None = None,
+    group_id: int | None = None,
+    has_contact: bool | None = None,
+) -> dict[str, Any]:
+    """List all clients across all groups (lightweight — no nested posts/candidates).
+
+    Returns {clients: [...], total, limit, offset}.
+    Each client includes group_name, client_type, wa_count, email_count, approved_count.
+    """
+    conditions: list[str] = []
+    params: list[Any] = []
+
+    if q:
+        conditions.append("LOWER(mc.name) LIKE ?")
+        params.append(f"%{q.lower()}%")
+    if search_status:
+        conditions.append("mc.search_status = ?")
+        params.append(search_status)
+    if client_type:
+        conditions.append("mg.client_type = ?")
+        params.append(client_type)
+    if group_id is not None:
+        conditions.append("mc.group_id = ?")
+        params.append(group_id)
+
+    where = ("WHERE " + " AND ".join(conditions)) if conditions else ""
+
+    having = ""
+    if has_contact is True:
+        having = "HAVING (wa_count + email_count) > 0"
+    elif has_contact is False:
+        having = "HAVING (wa_count + email_count) = 0"
+
+    async with aiosqlite.connect(DATABASE_PATH) as db:
+        db.row_factory = aiosqlite.Row
+
+        count_sql = f"""
+            SELECT COUNT(*) FROM (
+                SELECT mc.id
+                FROM marketing_clients mc
+                JOIN marketing_groups mg ON mc.group_id = mg.id
+                LEFT JOIN marketing_contact_results mr ON mr.client_id = mc.id
+                {where}
+                GROUP BY mc.id
+                {having}
+            )
+        """
+        count_cursor = await db.execute(count_sql, params)
+        total = (await count_cursor.fetchone())[0]
+
+        data_sql = f"""
+            SELECT
+                mc.id, mc.name, mc.search_status, mc.created_at,
+                mc.group_id,
+                mg.name AS group_name, mg.client_type,
+                COUNT(CASE WHEN mr.contact_type = 'wa_phone' THEN 1 END) AS wa_count,
+                COUNT(CASE WHEN mr.contact_type = 'email'    THEN 1 END) AS email_count,
+                COUNT(CASE WHEN mr.is_approved  = 1          THEN 1 END) AS approved_count
+            FROM marketing_clients mc
+            JOIN marketing_groups mg ON mc.group_id = mg.id
+            LEFT JOIN marketing_contact_results mr ON mr.client_id = mc.id
+            {where}
+            GROUP BY mc.id
+            {having}
+            ORDER BY mc.created_at DESC
+            LIMIT ? OFFSET ?
+        """
+        cursor = await db.execute(data_sql, [*params, limit, offset])
+        rows = await cursor.fetchall()
+
+    clients = [
+        {
+            "id": row["id"],
+            "name": row["name"],
+            "search_status": row["search_status"],
+            "created_at": row["created_at"],
+            "group_id": row["group_id"],
+            "group_name": row["group_name"],
+            "client_type": row["client_type"],
+            "wa_count": row["wa_count"],
+            "email_count": row["email_count"],
+            "approved_count": row["approved_count"],
+        }
+        for row in rows
+    ]
+    return {"clients": clients, "total": total, "limit": limit, "offset": offset}
+
+
 async def list_clients(
     group_id: int,
     *,

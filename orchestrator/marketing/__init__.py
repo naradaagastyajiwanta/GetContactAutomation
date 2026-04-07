@@ -243,6 +243,31 @@ async def add_client(request: Request, group_id: int, body: ClientCreate):
     return {"success": True, "client": client}
 
 
+@router.get("/clients", response_model=dict)
+async def list_all_clients(
+    request: Request,
+    limit: int = Query(50, ge=1, le=500),
+    offset: int = Query(0, ge=0),
+    q: str | None = Query(None),
+    search_status: str | None = Query(None),
+    client_type: str | None = Query(None),
+    group_id: int | None = Query(None),
+    has_contact: bool | None = Query(None),
+):
+    """List all clients across all groups with lightweight contact counts."""
+    await require_permission(request, "marketing.view")
+    result = await mkt.list_all_clients(
+        limit=limit,
+        offset=offset,
+        q=q or None,
+        search_status=search_status or None,
+        client_type=client_type or None,
+        group_id=group_id,
+        has_contact=has_contact,
+    )
+    return {"success": True, **result}
+
+
 @router.get("/groups/{group_id}/clients", response_model=dict)
 async def list_clients(
     request: Request,

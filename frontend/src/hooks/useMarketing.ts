@@ -6,6 +6,7 @@ import {
   deleteMarketingGroup,
   getMarketingClientDetail,
   getMarketingClients,
+  getAllMarketingClients,
   addMarketingClient,
   overrideClientIgHandle,
   deleteMarketingClient,
@@ -35,8 +36,28 @@ const mkKeys = {
   groupDetail: (id: number) => ["marketing", "group", id] as const,
   groupClients: (id: number, params?: Record<string, unknown>) =>
     ["marketing", "clients", id, params] as const,
+  allClients: (params: Record<string, unknown>) =>
+    ["marketing", "all-clients", params] as const,
   searchStatus: (id: number) => ["marketing", "search", id] as const,
 };
+
+// ── All-clients Hook ────────────────────────────────────────────────────────
+
+export function useAllMarketingClients(params?: {
+  limit?: number;
+  offset?: number;
+  q?: string;
+  search_status?: string;
+  client_type?: string;
+  group_id?: number;
+  has_contact?: boolean;
+}) {
+  return useQuery({
+    queryKey: mkKeys.allClients(params ?? {}),
+    queryFn: () => getAllMarketingClients(params),
+    retry: 2,
+  });
+}
 
 // ── Group Hooks ─────────────────────────────────────────────────────────────
 

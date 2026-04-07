@@ -1,6 +1,6 @@
 import { useState, useEffect } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { Link, useParams, useNavigate } from "react-router-dom";
+import { Link, useParams } from "react-router-dom";
 import {
   ArrowLeft,
   Play,
@@ -26,11 +26,8 @@ import {
   useExportGroupClients,
   useAddMarketingClient,
 } from "../hooks/useMarketing";
-import { Card } from "../components/ui/Card";
 import { Button } from "../components/ui/Button";
 import { Spinner } from "../components/ui/Spinner";
-import { Badge } from "../components/ui/Badge";
-import { Modal } from "../components/ui/Modal";
 import { MarketingImportModal } from "../components/marketing/MarketingImportModal";
 import { MarketingClientResultsTable } from "../components/marketing/MarketingClientResultsTable";
 import { MarketingReadyToBlastPanel } from "../components/marketing/MarketingReadyToBlastPanel";
@@ -40,33 +37,35 @@ import {
   type GroupStatus,
   CLIENT_TYPE_LABELS,
   getGroupStrategyMemo,
-  type GroupStrategyMemo,
 } from "../api/marketing";
 
+// ---------------------------------------------------------------------------
+// Status config — indigo for searching, emerald for done, gray for draft
+// ---------------------------------------------------------------------------
 const statusConfig: Record<
   GroupStatus,
-  { label: string; color: string; bg: string; icon: React.ElementType }
+  { label: string; dotClass: string; textClass: string }
 > = {
   draft: {
     label: "Draft",
-    color: "text-gray-600 dark:text-gray-400",
-    bg: "bg-gray-100 dark:bg-gray-800",
-    icon: XCircle,
+    dotClass: "bg-gray-300 dark:bg-gray-600",
+    textClass: "text-gray-500 dark:text-gray-400",
   },
   searching: {
     label: "Searching",
-    color: "text-blue-600 dark:text-blue-400",
-    bg: "bg-blue-50 dark:bg-blue-900/30",
-    icon: Loader2,
+    dotClass: "bg-indigo-500 animate-pulse",
+    textClass: "text-indigo-600 dark:text-indigo-400",
   },
   done: {
     label: "Done",
-    color: "text-green-600 dark:text-green-400",
-    bg: "bg-green-50 dark:bg-green-900/30",
-    icon: CheckCircle2,
+    dotClass: "bg-emerald-500",
+    textClass: "text-emerald-600 dark:text-emerald-400",
   },
 };
 
+// ---------------------------------------------------------------------------
+// Search progress bar — embedded inside stats strip
+// ---------------------------------------------------------------------------
 function SearchProgressBar({
   status,
   progress,
@@ -81,50 +80,55 @@ function SearchProgressBar({
   not_found: number;
 }) {
   if (status !== "searching") return null;
-  const pct = total > 0 ? Math.round((progress / total) * 100) : 0;
   const foundPct = total > 0 ? (found / total) * 100 : 0;
   const notFoundPct = total > 0 ? (not_found / total) * 100 : 0;
+  const pendingPct = Math.max(0, 100 - foundPct - notFoundPct);
+  const pct = total > 0 ? Math.round((progress / total) * 100) : 0;
 
   return (
-    <div className="space-y-2">
-      <div className="flex items-center justify-between text-xs text-gray-500 dark:text-gray-400">
-        <span>
-          {progress}/{total} diproses
-        </span>
-        <span>{pct}%</span>
-      </div>
-      <div className="h-2.5 overflow-hidden rounded-full bg-gray-100 dark:bg-gray-700">
+    <div className="mt-3 space-y-1.5">
+      <div className="h-1 overflow-hidden rounded-full bg-gray-100 dark:bg-gray-700/60">
         <div className="flex h-full">
           {foundPct > 0 && (
             <div
-              className="h-full bg-green-500 transition-all duration-500"
+              className="h-full bg-emerald-500 transition-all duration-500"
               style={{ width: `${foundPct}%` }}
             />
           )}
           {notFoundPct > 0 && (
             <div
-              className="h-full bg-red-400 transition-all duration-500"
+              className="h-full bg-gray-300 dark:bg-gray-600 transition-all duration-500"
               style={{ width: `${notFoundPct}%` }}
             />
           )}
-          {pct < 100 && (
+          {pendingPct > 0 && pct < 100 && (
             <div
-              className="h-full bg-blue-400 animate-pulse"
-              style={{ width: `${Math.max(0, 100 - foundPct - notFoundPct)}%` }}
+              className="h-full animate-pulse bg-indigo-300 dark:bg-indigo-700"
+              style={{ width: `${pendingPct}%` }}
             />
           )}
         </div>
       </div>
-      <div className="flex gap-4 text-xs">
-        <span className="text-green-600 dark:text-green-400">
-          {found} ditemukan
+      <div className="flex items-center justify-between text-[11px] text-gray-400">
+        <span>
+          {progress}/{total} diproses · {pct}%
         </span>
-        <span className="text-red-500">{not_found} tidak ditemukan</span>
+        <span className="flex gap-3">
+          {found > 0 && (
+            <span className="text-emerald-600 dark:text-emerald-400">
+              {found} ditemukan
+            </span>
+          )}
+          {not_found > 0 && <span>{not_found} tidak ditemukan</span>}
+        </span>
       </div>
     </div>
   );
 }
 
+// ---------------------------------------------------------------------------
+// Add client inline form
+// ---------------------------------------------------------------------------
 function AddClientInlineForm({
   groupId,
   onClose,
@@ -155,9 +159,9 @@ function AddClientInlineForm({
         value={name}
         onChange={(e) => setName(e.target.value)}
         placeholder="Nama client..."
-        className="flex-1 rounded-lg border border-gray-300 px-3 py-2 text-sm
+        className="flex-1 rounded-lg border border-gray-200 bg-white px-3 py-2 text-sm
           focus:border-indigo-500 focus:outline-none focus:ring-1 focus:ring-indigo-500
-          dark:border-gray-600 dark:bg-gray-700 dark:text-gray-100"
+          dark:border-gray-700 dark:bg-gray-800 dark:text-gray-100"
       />
       <Button
         type="submit"
@@ -174,6 +178,9 @@ function AddClientInlineForm({
   );
 }
 
+// ---------------------------------------------------------------------------
+// Helpers
+// ---------------------------------------------------------------------------
 function getGroupIgScrapeIncompleteCount(
   clients: Array<{
     search_status: string;
@@ -189,6 +196,71 @@ function getGroupIgScrapeIncompleteCount(
   ).length;
 }
 
+// ---------------------------------------------------------------------------
+// AI Group Memory panel
+// ---------------------------------------------------------------------------
+const TOOL_LABELS: Record<string, string> = {
+  spawn_web_search_agent: "Web Search",
+  spawn_instagram_agent: "Instagram",
+  spawn_registry_agent: "Registry",
+  spawn_gemini_agent: "Gemini",
+};
+
+function AgentBar({
+  tool,
+  produced,
+  spawns,
+}: {
+  tool: string;
+  produced: number;
+  spawns: number;
+}) {
+  const rate = spawns > 0 ? Math.round((produced / spawns) * 100) : 0;
+  const label =
+    TOOL_LABELS[tool] ??
+    tool.replace("spawn_", "").replace("_agent", "").replace(/_/g, " ");
+  const barColor =
+    rate >= 70
+      ? "bg-emerald-500"
+      : rate >= 40
+        ? "bg-indigo-400"
+        : "bg-gray-300 dark:bg-gray-600";
+
+  return (
+    <div className="flex items-center gap-3">
+      <span className="w-24 shrink-0 text-xs capitalize text-gray-500 dark:text-gray-400">
+        {label}
+      </span>
+      <div className="flex-1">
+        <div className="h-1.5 overflow-hidden rounded-full bg-gray-100 dark:bg-gray-700/60">
+          <div
+            className={cn(
+              "h-full rounded-full transition-all duration-500",
+              barColor,
+            )}
+            style={{ width: `${rate}%` }}
+          />
+        </div>
+      </div>
+      <span
+        className={cn(
+          "w-14 shrink-0 text-right text-xs tabular-nums",
+          rate >= 70
+            ? "text-emerald-600 dark:text-emerald-400"
+            : rate >= 40
+              ? "text-indigo-500 dark:text-indigo-400"
+              : "text-gray-400",
+        )}
+      >
+        {rate}%
+        <span className="ml-1 text-gray-300 dark:text-gray-600">
+          ({produced}/{spawns})
+        </span>
+      </span>
+    </div>
+  );
+}
+
 function GroupStrategyPanel({ groupId }: { groupId: number }) {
   const [isOpen, setIsOpen] = useState(false);
   const { data: strategy, isLoading } = useQuery({
@@ -198,123 +270,182 @@ function GroupStrategyPanel({ groupId }: { groupId: number }) {
     staleTime: 60_000,
   });
 
+  const hitRate = Math.round((strategy?.found_rate ?? 0) * 100);
+  const completedClients = strategy?.completed_clients ?? 0;
+
+  // ── Collapsed ──
   if (!isOpen) {
     return (
       <button
         onClick={() => setIsOpen(true)}
-        className="flex items-center gap-1.5 text-xs text-purple-600 dark:text-purple-400 hover:underline"
+        className="group flex w-full items-center gap-2 rounded-xl border border-gray-100 bg-white px-4 py-2.5 text-left transition-colors hover:border-gray-200 hover:bg-gray-50 dark:border-gray-700/50 dark:bg-gray-800/40 dark:hover:bg-gray-800/60"
       >
-        <Brain className="h-3.5 w-3.5" />
-        <span>Lihat AI Group Memory</span>
+        <Brain className="h-4 w-4 shrink-0 text-gray-400 group-hover:text-indigo-500 transition-colors" />
+        <span className="text-sm text-gray-500 dark:text-gray-400 group-hover:text-gray-700 dark:group-hover:text-gray-200 transition-colors">
+          AI Memory
+        </span>
+        {completedClients > 0 && (
+          <>
+            <span className="text-gray-200 dark:text-gray-700">·</span>
+            <span className="text-xs text-gray-400">
+              {completedClients} run
+            </span>
+            <span className="text-gray-200 dark:text-gray-700">·</span>
+            <span
+              className={cn(
+                "text-xs font-medium",
+                hitRate >= 70
+                  ? "text-emerald-600 dark:text-emerald-400"
+                  : "text-gray-400",
+              )}
+            >
+              {hitRate}% hit rate
+            </span>
+          </>
+        )}
+        <span className="ml-auto text-xs text-gray-300 dark:text-gray-600 group-hover:text-gray-400">
+          Lihat detail ↓
+        </span>
       </button>
     );
   }
 
+  const hasAgentRates =
+    strategy && Object.keys(strategy.tool_success_rates).length > 0;
+  const hasLessons = strategy && strategy.lessons.length > 0;
   const hasData =
-    strategy && (strategy.lessons.length > 0 || strategy.completed_clients > 0);
+    strategy && (hasAgentRates || hasLessons || completedClients > 0);
 
+  // ── Expanded ──
   return (
-    <div className="rounded-lg border border-purple-200 dark:border-purple-800 bg-purple-50 dark:bg-purple-950/30 p-4 mb-4">
-      <div className="flex items-center justify-between mb-3">
+    <div className="overflow-hidden rounded-xl border border-gray-100 bg-white dark:border-gray-700/50 dark:bg-gray-800/40">
+      {/* Header */}
+      <div className="flex items-center justify-between border-b border-gray-100 px-4 py-3 dark:border-gray-700/50">
         <div className="flex items-center gap-2">
-          <Brain className="h-4 w-4 text-purple-600 dark:text-purple-400" />
-          <span className="text-sm font-semibold text-purple-700 dark:text-purple-300">
-            AI Group Memory
+          <Brain className="h-4 w-4 text-indigo-500" />
+          <span className="text-sm font-medium text-gray-700 dark:text-gray-200">
+            AI Memory
           </span>
           {strategy && (
-            <span className="text-xs text-purple-500">
-              {strategy.completed_clients} klien selesai · hit rate{" "}
-              {Math.round((strategy.found_rate ?? 0) * 100)}%
-            </span>
+            <div className="flex items-center gap-2 text-xs text-gray-400">
+              <span className="text-gray-200 dark:text-gray-700">·</span>
+              <span>{completedClients} run selesai</span>
+              <span className="text-gray-200 dark:text-gray-700">·</span>
+              <span
+                className={
+                  hitRate >= 70
+                    ? "font-medium text-emerald-600 dark:text-emerald-400"
+                    : "text-gray-400"
+                }
+              >
+                {hitRate}% hit rate
+              </span>
+            </div>
           )}
         </div>
         <button
           onClick={() => setIsOpen(false)}
-          className="text-xs text-gray-400 hover:text-gray-600"
+          className="text-xs text-gray-400 transition-colors hover:text-gray-600 dark:hover:text-gray-300"
         >
           Tutup
         </button>
       </div>
 
-      {isLoading && <p className="text-xs text-gray-400">Memuat...</p>}
+      {/* Body */}
+      <div className="p-4">
+        {isLoading && (
+          <div className="space-y-2">
+            {[80, 60, 70].map((w, i) => (
+              <div
+                key={i}
+                className="h-3 animate-pulse rounded bg-gray-100 dark:bg-gray-700"
+                style={{ width: `${w}%` }}
+              />
+            ))}
+          </div>
+        )}
 
-      {!isLoading && !hasData && (
-        <p className="text-xs text-gray-400">
-          Belum ada AI memory untuk grup ini (mulai setelah pencarian pertama
-          selesai).
-        </p>
-      )}
+        {!isLoading && !hasData && (
+          <p className="text-xs text-gray-400">
+            Belum ada AI memory — akan terisi setelah pencarian pertama selesai.
+          </p>
+        )}
 
-      {hasData && (
-        <div className="space-y-3">
-          {/* Lessons */}
-          {strategy.lessons.length > 0 && (
-            <div>
-              <p className="text-xs font-medium text-purple-600 dark:text-purple-400 mb-1">
-                Lessons:
-              </p>
-              <ul className="space-y-1">
-                {strategy.lessons.slice(0, 3).map((lesson, i) => (
-                  <li
-                    key={i}
-                    className="text-xs text-gray-600 dark:text-gray-400 flex gap-1.5"
-                  >
-                    <span className="text-purple-400 flex-shrink-0">•</span>
-                    <span className="line-clamp-2">{lesson}</span>
-                  </li>
-                ))}
-              </ul>
-            </div>
-          )}
+        {!isLoading && hasData && (
+          <div className="space-y-5">
+            {/* Agent success rates */}
+            {hasAgentRates && (
+              <div>
+                <p className="mb-2.5 text-[11px] font-medium uppercase tracking-wide text-gray-400">
+                  Agent Success Rates
+                </p>
+                <div className="space-y-2">
+                  {Object.entries(strategy.tool_success_rates).map(
+                    ([tool, stats]) => (
+                      <AgentBar
+                        key={tool}
+                        tool={tool}
+                        produced={stats.produced_contacts}
+                        spawns={stats.spawns}
+                      />
+                    ),
+                  )}
+                </div>
+              </div>
+            )}
 
-          {/* Tool success rates */}
-          {Object.keys(strategy.tool_success_rates).length > 0 && (
-            <div>
-              <p className="text-xs font-medium text-purple-600 dark:text-purple-400 mb-1">
-                Agent Success Rates:
-              </p>
-              <div className="grid grid-cols-2 gap-1">
-                {Object.entries(strategy.tool_success_rates).map(
-                  ([tool, stats]) => {
-                    const rate =
-                      stats.spawns > 0
-                        ? Math.round(
-                            (stats.produced_contacts / stats.spawns) * 100,
-                          )
-                        : 0;
-                    const label = tool
-                      .replace("spawn_", "")
-                      .replace("_agent", "")
-                      .replace("_", " ");
+            {/* Lessons */}
+            {hasLessons && (
+              <div>
+                <p className="mb-2 text-[11px] font-medium uppercase tracking-wide text-gray-400">
+                  Recent Lessons
+                </p>
+                <div className="space-y-1.5">
+                  {strategy.lessons.slice(0, 4).map((lesson, i) => {
+                    const text =
+                      typeof lesson === "string"
+                        ? lesson
+                        : ((lesson as { summary?: string }).summary ?? "");
+                    const status =
+                      typeof lesson === "object"
+                        ? (lesson as { status?: string }).status
+                        : null;
                     return (
                       <div
-                        key={tool}
-                        className="text-xs text-gray-600 dark:text-gray-400"
+                        key={i}
+                        className="flex gap-2.5 rounded-lg bg-gray-50 px-3 py-2 dark:bg-gray-700/30"
                       >
-                        <span className="capitalize">{label}</span>:{" "}
                         <span
-                          className={
-                            rate > 50 ? "text-green-500" : "text-gray-400"
-                          }
-                        >
-                          {stats.produced_contacts}/{stats.spawns}
-                        </span>
+                          className={cn(
+                            "mt-0.5 inline-block h-1.5 w-1.5 shrink-0 rounded-full",
+                            status === "found"
+                              ? "bg-emerald-500"
+                              : status === "partial"
+                                ? "bg-emerald-300"
+                                : "bg-gray-300 dark:bg-gray-600",
+                          )}
+                        />
+                        <p className="line-clamp-2 text-xs leading-relaxed text-gray-500 dark:text-gray-400">
+                          {text}
+                        </p>
                       </div>
                     );
-                  },
-                )}
+                  })}
+                </div>
               </div>
-            </div>
-          )}
-        </div>
-      )}
+            )}
+          </div>
+        )}
+      </div>
     </div>
   );
 }
 
+// ---------------------------------------------------------------------------
+// Main page
+// ---------------------------------------------------------------------------
 export default function MarketingClientDetailPage() {
   const { id } = useParams<{ id: string }>();
-  const navigate = useNavigate();
   const { hasPermission } = useAuth();
   const groupId = Number(id);
   const queryClient = useQueryClient();
@@ -328,7 +459,6 @@ export default function MarketingClientDetailPage() {
   const pageSize = 50;
 
   const { data, isLoading, error } = useMarketingGroupDetail(groupId);
-  // Only poll via useSearchStatus — useMarketingClients is invalidated by status changes
   const { data: clientsData } = useMarketingClients(groupId, {
     limit: pageSize,
     offset: (page - 1) * pageSize,
@@ -344,7 +474,6 @@ export default function MarketingClientDetailPage() {
   const totalPages = Math.ceil(totalClients / pageSize);
   const igScrapeIncompleteCount = getGroupIgScrapeIncompleteCount(clients);
 
-  // Poll search status while searching
   const searchStatusEnabled = group?.status === "searching";
   const { data: searchStatus } = useSearchStatus(groupId, searchStatusEnabled);
 
@@ -355,6 +484,8 @@ export default function MarketingClientDetailPage() {
   const statusCfg = statusConfig[group?.status ?? "draft"];
   const showDoneWarning =
     group?.status === "done" && igScrapeIncompleteCount > 0;
+  const isSearching =
+    searchStatus?.status === "searching" || group?.status === "searching";
 
   useEffect(() => {
     if (searchStatus?.status !== "done") return;
@@ -401,35 +532,23 @@ export default function MarketingClientDetailPage() {
     }
   }
 
-  const isSearching =
-    searchStatus?.status === "searching" || group?.status === "searching";
-
+  // ── Loading skeleton ──
   if (isLoading) {
     return (
       <div className="space-y-6">
-        {/* Skeleton header */}
-        <div className="flex items-center gap-4">
-          <div className="h-10 w-10 animate-pulse rounded-lg bg-gray-200 dark:bg-gray-700" />
+        <div className="flex items-center gap-3">
+          <div className="h-8 w-8 animate-pulse rounded-lg bg-gray-100 dark:bg-gray-800" />
           <div className="space-y-2">
-            <div className="h-6 w-48 animate-pulse rounded bg-gray-200 dark:bg-gray-700" />
-            <div className="h-4 w-32 animate-pulse rounded bg-gray-200 dark:bg-gray-700" />
+            <div className="h-5 w-44 animate-pulse rounded bg-gray-100 dark:bg-gray-800" />
+            <div className="h-3.5 w-28 animate-pulse rounded bg-gray-100 dark:bg-gray-800" />
           </div>
         </div>
-        {/* Skeleton stats cards */}
-        <div className="grid grid-cols-2 gap-4 sm:grid-cols-4">
+        <div className="h-20 animate-pulse rounded-xl bg-gray-100 dark:bg-gray-800" />
+        <div className="space-y-2">
           {Array.from({ length: 4 }).map((_, i) => (
             <div
               key={i}
-              className="h-20 animate-pulse rounded-lg bg-gray-200 dark:bg-gray-700"
-            />
-          ))}
-        </div>
-        {/* Skeleton client rows */}
-        <div className="space-y-3">
-          {Array.from({ length: 3 }).map((_, i) => (
-            <div
-              key={i}
-              className="h-16 animate-pulse rounded-lg bg-gray-200 dark:bg-gray-700"
+              className="h-14 animate-pulse rounded-xl bg-gray-100 dark:bg-gray-800"
             />
           ))}
         </div>
@@ -437,67 +556,66 @@ export default function MarketingClientDetailPage() {
     );
   }
 
+  // ── Error state ──
   if (error || !group) {
     return (
       <div className="space-y-4">
         <Link
           to="/marketing"
-          className="inline-flex items-center gap-2 text-sm text-gray-500 hover:text-gray-700 dark:hover:text-gray-300"
+          className="inline-flex items-center gap-1.5 text-sm text-gray-400 hover:text-gray-600 dark:hover:text-gray-300"
         >
           <ArrowLeft className="h-4 w-4" /> Kembali
         </Link>
-        <Card className="border-red-200 dark:border-red-800 py-8 text-center">
-          <p className="text-red-600 dark:text-red-400">
-            Gagal memuat data group:{" "}
-            {(error as Error)?.message ?? "Unknown error"}
-          </p>
-        </Card>
+        <p className="text-sm text-gray-500">
+          Gagal memuat data group:{" "}
+          {(error as Error)?.message ?? "Unknown error"}
+        </p>
       </div>
     );
   }
 
   return (
-    <div className="space-y-6">
-      {/* Header */}
-      <div className="flex items-center justify-between">
-        <div className="flex items-center gap-4">
+    <div className="space-y-5">
+      {/* ── Header ── */}
+      <div className="flex items-start justify-between gap-4 pb-4 border-b border-gray-100 dark:border-gray-800">
+        <div className="flex items-start gap-3">
           <Link
             to="/marketing"
-            className="rounded-lg p-2 text-gray-500 transition-colors hover:bg-gray-100 dark:hover:bg-gray-800"
+            className="mt-0.5 rounded-lg p-1.5 text-gray-400 transition-colors hover:bg-gray-100 hover:text-gray-600 dark:hover:bg-gray-800"
           >
-            <ArrowLeft className="h-5 w-5" />
+            <ArrowLeft className="h-4 w-4" />
           </Link>
           <div>
-            <div className="flex items-center gap-3">
-              <h1 className="text-2xl font-bold text-gray-900 dark:text-gray-100">
-                {group.name}
-              </h1>
-              <span className="rounded-full bg-gray-100 px-2 py-0.5 text-xs font-medium text-gray-600 dark:bg-gray-800 dark:text-gray-400">
+            <h1 className="text-lg font-semibold text-gray-900 dark:text-gray-100">
+              {group.name}
+            </h1>
+            <div className="mt-1 flex items-center gap-2.5 text-xs">
+              {/* Status dot + label */}
+              <span className="flex items-center gap-1.5">
+                <span
+                  className={cn(
+                    "inline-block h-1.5 w-1.5 rounded-full",
+                    showDoneWarning
+                      ? "bg-gray-400 dark:bg-gray-500"
+                      : statusCfg.dotClass,
+                  )}
+                />
+                <span
+                  className={
+                    showDoneWarning
+                      ? "text-gray-500 dark:text-gray-400"
+                      : statusCfg.textClass
+                  }
+                >
+                  {showDoneWarning ? "Done (IG incomplete)" : statusCfg.label}
+                </span>
+              </span>
+              <span className="text-gray-200 dark:text-gray-700">·</span>
+              <span className="text-gray-400">
                 {CLIENT_TYPE_LABELS[group.client_type] ?? group.client_type}
               </span>
-            </div>
-            <div className="mt-1 flex items-center gap-2">
-              <span
-                className={cn(
-                  "inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-xs font-semibold",
-                  showDoneWarning
-                    ? "bg-amber-50 text-amber-700 dark:bg-amber-900/30 dark:text-amber-300"
-                    : statusCfg.bg,
-                  showDoneWarning
-                    ? "border border-amber-200 dark:border-amber-800"
-                    : statusCfg.color,
-                )}
-              >
-                {showDoneWarning ? (
-                  <XCircle className="h-3 w-3" />
-                ) : (
-                  <statusCfg.icon
-                    className={cn("h-3 w-3", isSearching && "animate-spin")}
-                  />
-                )}
-                {showDoneWarning ? "Done with IG warnings" : statusCfg.label}
-              </span>
-              <span className="text-xs text-gray-400">
+              <span className="text-gray-200 dark:text-gray-700">·</span>
+              <span className="text-gray-400">
                 {formatDate(group.created_at)}
               </span>
             </div>
@@ -513,12 +631,11 @@ export default function MarketingClientDetailPage() {
                 onClick={handleStartSearch}
                 loading={startSearchMutation.isPending}
               >
-                <Play className="h-4 w-4" />
+                <Play className="h-3.5 w-3.5" />
                 Mulai Scraping
               </Button>
             )}
-
-            {/* More actions dropdown */}
+            {/* More dropdown */}
             <div className="relative">
               <Button
                 variant="outline"
@@ -529,14 +646,13 @@ export default function MarketingClientDetailPage() {
               </Button>
               {moreOpen && (
                 <>
-                  {/* Backdrop */}
                   <div
                     className="fixed inset-0 z-10"
                     onClick={() => setMoreOpen(false)}
                   />
-                  <div className="absolute right-0 top-full z-20 mt-1 w-48 overflow-hidden rounded-lg border border-gray-200 bg-white shadow-lg dark:border-gray-700 dark:bg-gray-800">
+                  <div className="absolute right-0 top-full z-20 mt-1 w-48 overflow-hidden rounded-xl border border-gray-100 bg-white shadow-lg dark:border-gray-700/60 dark:bg-gray-800">
                     <button
-                      className="flex w-full items-center gap-2.5 px-3 py-2 text-sm text-gray-700 transition-colors hover:bg-gray-50 dark:text-gray-300 dark:hover:bg-gray-700/60 disabled:opacity-40"
+                      className="flex w-full items-center gap-2 px-3 py-2 text-sm text-gray-600 transition-colors hover:bg-gray-50 disabled:opacity-40 dark:text-gray-300 dark:hover:bg-gray-700/40"
                       onClick={() => {
                         void handleBulkApprove();
                         setMoreOpen(false);
@@ -546,11 +662,11 @@ export default function MarketingClientDetailPage() {
                         clients.flatMap((c) => c.contacts ?? []).length === 0
                       }
                     >
-                      <CheckCircle2 className="h-4 w-4 text-gray-400" />
+                      <CheckCircle2 className="h-3.5 w-3.5 text-gray-400" />
                       Approve Semua
                     </button>
                     <button
-                      className="flex w-full items-center gap-2.5 px-3 py-2 text-sm text-gray-700 transition-colors hover:bg-gray-50 dark:text-gray-300 dark:hover:bg-gray-700/60 disabled:opacity-40"
+                      className="flex w-full items-center gap-2 px-3 py-2 text-sm text-gray-600 transition-colors hover:bg-gray-50 disabled:opacity-40 dark:text-gray-300 dark:hover:bg-gray-700/40"
                       onClick={() => {
                         void handleExport();
                         setMoreOpen(false);
@@ -559,28 +675,28 @@ export default function MarketingClientDetailPage() {
                         exportMutation.isPending || clients.length === 0
                       }
                     >
-                      <Download className="h-4 w-4 text-gray-400" />
+                      <Download className="h-3.5 w-3.5 text-gray-400" />
                       Export Excel
                     </button>
                     <button
-                      className="flex w-full items-center gap-2.5 px-3 py-2 text-sm text-gray-700 transition-colors hover:bg-gray-50 dark:text-gray-300 dark:hover:bg-gray-700/60"
+                      className="flex w-full items-center gap-2 px-3 py-2 text-sm text-gray-600 transition-colors hover:bg-gray-50 dark:text-gray-300 dark:hover:bg-gray-700/40"
                       onClick={() => {
                         setImportOpen(true);
                         setMoreOpen(false);
                       }}
                     >
-                      <Upload className="h-4 w-4 text-gray-400" />
+                      <Upload className="h-3.5 w-3.5 text-gray-400" />
                       Upload Excel
                     </button>
-                    <div className="my-1 border-t border-gray-100 dark:border-gray-700" />
+                    <div className="mx-3 my-1 border-t border-gray-100 dark:border-gray-700/50" />
                     <button
-                      className="flex w-full items-center gap-2.5 px-3 py-2 text-sm text-gray-700 transition-colors hover:bg-gray-50 dark:text-gray-300 dark:hover:bg-gray-700/60"
+                      className="flex w-full items-center gap-2 px-3 py-2 text-sm text-gray-600 transition-colors hover:bg-gray-50 dark:text-gray-300 dark:hover:bg-gray-700/40"
                       onClick={() => {
                         setAddClientOpen(true);
                         setMoreOpen(false);
                       }}
                     >
-                      <Plus className="h-4 w-4 text-gray-400" />
+                      <Plus className="h-3.5 w-3.5 text-gray-400" />
                       Tambah Client
                     </button>
                   </div>
@@ -591,157 +707,138 @@ export default function MarketingClientDetailPage() {
         )}
       </div>
 
-      {/* Stats + progress */}
+      {/* ── Stats strip ── */}
       {stats && (
-        <div className="space-y-3">
-          <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
+        <div className="overflow-hidden rounded-xl border border-gray-100 bg-white shadow-sm dark:border-gray-700/50 dark:bg-gray-800/60">
+          <div className="grid grid-cols-4 divide-x divide-gray-100 dark:divide-gray-700/50">
             {/* Total */}
-            <Card padding={false}>
-              <div className="p-4">
-                <p className="text-xs font-medium text-gray-500 dark:text-gray-400">
-                  Total
-                </p>
-                <p className="mt-1 text-2xl font-bold text-gray-900 dark:text-gray-100">
-                  {stats.total}
-                </p>
-              </div>
-            </Card>
+            <div className="px-5 py-4">
+              <p className="text-[11px] font-medium uppercase tracking-wide text-gray-400">
+                Total
+              </p>
+              <p className="mt-1 text-2xl font-semibold text-gray-800 dark:text-gray-100">
+                {stats.total}
+              </p>
+            </div>
             {/* Ditemukan */}
-            <Card padding={false}>
-              <div className="p-4">
-                <p className="text-xs font-medium text-gray-500 dark:text-gray-400">
-                  Ditemukan
+            <div className="px-5 py-4">
+              <p className="text-[11px] font-medium uppercase tracking-wide text-gray-400">
+                Ditemukan
+              </p>
+              <p className="mt-1 text-2xl font-semibold text-emerald-600 dark:text-emerald-400">
+                {stats.found}
+              </p>
+              {(stats.partial > 0 ||
+                stats.not_found > 0 ||
+                stats.error_count > 0) && (
+                <p className="mt-0.5 text-[11px] leading-snug text-gray-400">
+                  {[
+                    stats.partial > 0 && `${stats.partial} partial`,
+                    stats.not_found > 0 && `${stats.not_found} tdk ditemukan`,
+                    stats.error_count > 0 && `${stats.error_count} error`,
+                  ]
+                    .filter(Boolean)
+                    .join(" · ")}
                 </p>
-                <p className="mt-1 text-2xl font-bold text-green-600 dark:text-green-400">
-                  {stats.found}
-                </p>
-                {(stats.partial > 0 ||
-                  stats.not_found > 0 ||
-                  stats.error_count > 0) && (
-                  <p className="mt-1 text-[11px] text-gray-400 dark:text-gray-500 leading-snug">
-                    {[
-                      stats.partial > 0 && `${stats.partial} partial`,
-                      stats.not_found > 0 && `${stats.not_found} tdk ditemukan`,
-                      stats.error_count > 0 && `${stats.error_count} error`,
-                    ]
-                      .filter(Boolean)
-                      .join(" · ")}
-                  </p>
-                )}
-              </div>
-            </Card>
+              )}
+            </div>
             {/* Pending */}
-            <Card padding={false}>
-              <div className="p-4">
-                <p className="text-xs font-medium text-gray-500 dark:text-gray-400">
-                  Pending
-                </p>
-                <p className="mt-1 text-2xl font-bold text-blue-600 dark:text-blue-400">
-                  {stats.pending}
-                </p>
-              </div>
-            </Card>
+            <div className="px-5 py-4">
+              <p className="text-[11px] font-medium uppercase tracking-wide text-gray-400">
+                Pending
+              </p>
+              <p className="mt-1 text-2xl font-semibold text-gray-600 dark:text-gray-300">
+                {stats.pending}
+              </p>
+            </div>
             {/* Approved */}
-            <Card padding={false}>
-              <div className="p-4">
-                <p className="text-xs font-medium text-gray-500 dark:text-gray-400">
-                  Approved
-                </p>
-                <p className="mt-1 text-2xl font-bold text-indigo-600 dark:text-indigo-400">
-                  {stats.approved}
-                </p>
-              </div>
-            </Card>
+            <div className="px-5 py-4">
+              <p className="text-[11px] font-medium uppercase tracking-wide text-gray-400">
+                Approved
+              </p>
+              <p className="mt-1 text-2xl font-semibold text-indigo-600 dark:text-indigo-400">
+                {stats.approved}
+              </p>
+            </div>
           </div>
 
-          {/* Progress bar — embedded when searching */}
+          {/* Progress bar embedded in strip */}
           {isSearching && searchStatus && (
-            <Card padding={false}>
-              <div className="p-4">
-                <SearchProgressBar
-                  status={searchStatus.status}
-                  progress={searchStatus.progress}
-                  total={searchStatus.total}
-                  found={searchStatus.found}
-                  not_found={searchStatus.not_found}
-                />
-                {searchStatus.error_message && (
-                  <p className="mt-2 text-xs text-red-500">
-                    {searchStatus.error_message}
-                  </p>
-                )}
-              </div>
-            </Card>
+            <div className="border-t border-gray-100 px-5 py-3 dark:border-gray-700/50">
+              <SearchProgressBar
+                status={searchStatus.status}
+                progress={searchStatus.progress}
+                total={searchStatus.total}
+                found={searchStatus.found}
+                not_found={searchStatus.not_found}
+              />
+              {searchStatus.error_message && (
+                <p className="mt-1.5 text-xs text-gray-500">
+                  {searchStatus.error_message}
+                </p>
+              )}
+            </div>
           )}
         </div>
       )}
 
-      {/* Group-level search error (entire background job crashed) */}
+      {/* ── Alert banners — no colored cards, just left-border lines ── */}
       {searchStatus?.group_search_error && (
-        <Card className="border-red-200 bg-red-50 dark:border-red-800 dark:bg-red-950/20">
-          <div className="flex items-start gap-3">
-            <XCircle className="mt-0.5 h-4 w-4 flex-shrink-0 text-red-600 dark:text-red-300" />
-            <div className="space-y-1">
-              <p className="text-sm font-semibold text-red-900 dark:text-red-100">
-                Scraping gagal
-              </p>
-              <p className="text-xs text-red-800 dark:text-red-200">
-                {searchStatus.group_search_error}
-              </p>
-            </div>
+        <div className="flex items-start gap-3 rounded-r-lg border-l-2 border-gray-400 bg-gray-50 px-4 py-3 dark:bg-gray-800/40">
+          <XCircle className="mt-0.5 h-4 w-4 shrink-0 text-gray-500" />
+          <div>
+            <p className="text-sm font-medium text-gray-700 dark:text-gray-300">
+              Scraping gagal
+            </p>
+            <p className="mt-0.5 text-xs text-gray-500">
+              {searchStatus.group_search_error}
+            </p>
           </div>
-        </Card>
+        </div>
       )}
 
       {showDoneWarning && (
-        <Card className="border-amber-200 bg-amber-50/70 dark:border-amber-900/60 dark:bg-amber-950/20">
-          <div className="flex items-start gap-3">
-            <XCircle className="mt-0.5 h-4 w-4 flex-shrink-0 text-amber-600 dark:text-amber-300" />
-            <div className="space-y-1">
-              <p className="text-sm font-semibold text-amber-900 dark:text-amber-100">
-                Search selesai, tapi sebagian IG post belum berhasil discrape
-              </p>
-              <p className="text-xs text-amber-800 dark:text-amber-200">
-                {igScrapeIncompleteCount} client sudah punya handle IG, tetapi
-                belum punya post tersimpan. Ini biasanya berarti handle
-                ditemukan, namun provider post scrape tidak mengembalikan data.
-              </p>
-            </div>
-          </div>
-        </Card>
+        <div className="flex items-start gap-3 rounded-r-lg border-l-2 border-gray-300 bg-gray-50 px-4 py-3 dark:bg-gray-800/40">
+          <XCircle className="mt-0.5 h-4 w-4 shrink-0 text-gray-400" />
+          <p className="text-xs text-gray-500 dark:text-gray-400">
+            {igScrapeIncompleteCount} client sudah punya handle IG, tapi belum
+            ada post tersimpan — provider scrape tidak mengembalikan data.
+          </p>
+        </div>
       )}
 
-      {/* Ready to blast panel */}
+      {/* ── Ready to blast panel ── */}
       <MarketingReadyToBlastPanel clients={clients} groupId={groupId} />
 
-      {/* Add client inline form */}
+      {/* ── Add client form ── */}
       {addClientOpen && (
-        <Card>
-          <h3 className="mb-3 text-sm font-semibold text-gray-700 dark:text-gray-300">
+        <div className="rounded-xl border border-gray-100 bg-white p-4 dark:border-gray-700/50 dark:bg-gray-800/60">
+          <p className="mb-3 text-sm font-medium text-gray-700 dark:text-gray-300">
             Tambah Client Baru
-          </h3>
+          </p>
           <AddClientInlineForm
             groupId={groupId}
             onClose={() => setAddClientOpen(false)}
           />
-        </Card>
+        </div>
       )}
 
-      {/* AI Group Memory */}
+      {/* ── AI Group Memory ── */}
       <GroupStrategyPanel groupId={groupId} />
 
-      {/* Clients list */}
+      {/* ── Client list ── */}
       <div>
-        {/* Header + search + filter */}
+        {/* Header row */}
         <div className="mb-3 flex flex-wrap items-center justify-between gap-3">
-          <h2 className="text-base font-semibold text-gray-900 dark:text-gray-100">
-            Daftar Client ({totalClients} total
-            {searchQuery ? ` — hasil filter` : ""})
-          </h2>
+          <p className="text-sm font-medium text-gray-600 dark:text-gray-400">
+            {totalClients} client
+            {(searchQuery || searchStatusFilter) && (
+              <span className="ml-1 text-gray-400">— hasil filter</span>
+            )}
+          </p>
           <div className="flex flex-wrap items-center gap-2">
-            {/* Search input */}
             <div className="relative">
-              <Search className="absolute left-2.5 top-1/2 h-4 w-4 -translate-y-1/2 text-gray-400" />
+              <Search className="absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-gray-300 dark:text-gray-600" />
               <input
                 type="text"
                 value={searchQuery}
@@ -750,21 +847,20 @@ export default function MarketingClientDetailPage() {
                   setPage(1);
                 }}
                 placeholder="Cari client..."
-                className="h-8 w-48 rounded-lg border border-gray-300 pl-8 pr-3 text-sm
-                  focus:border-indigo-500 focus:outline-none focus:ring-1 focus:ring-indigo-500
-                  dark:border-gray-600 dark:bg-gray-700 dark:text-gray-100"
+                className="h-8 w-44 rounded-lg border border-gray-200 bg-white pl-8 pr-3 text-sm text-gray-700
+                  placeholder:text-gray-300 focus:border-indigo-500 focus:outline-none focus:ring-1 focus:ring-indigo-500
+                  dark:border-gray-700 dark:bg-gray-800 dark:text-gray-300 dark:placeholder:text-gray-600"
               />
             </div>
-            {/* Status filter */}
             <select
               value={searchStatusFilter}
               onChange={(e) => {
                 setSearchStatusFilter(e.target.value);
                 setPage(1);
               }}
-              className="h-8 rounded-lg border border-gray-300 px-2 text-sm
+              className="h-8 rounded-lg border border-gray-200 bg-white px-2.5 text-sm text-gray-600
                 focus:border-indigo-500 focus:outline-none
-                dark:border-gray-600 dark:bg-gray-700 dark:text-gray-100"
+                dark:border-gray-700 dark:bg-gray-800 dark:text-gray-300"
             >
               <option value="">Semua Status</option>
               <option value="pending">Pending</option>
@@ -779,20 +875,23 @@ export default function MarketingClientDetailPage() {
 
         {/* Empty state */}
         {clients.length === 0 && (
-          <Card className="flex flex-col items-center justify-center py-12 text-center">
-            <Users className="mb-3 h-10 w-10 text-gray-300 dark:text-gray-600" />
-            <p className="mb-4 text-sm text-gray-500 dark:text-gray-400">
+          <div className="flex flex-col items-center justify-center rounded-xl border border-dashed border-gray-200 py-14 text-center dark:border-gray-700">
+            <Users className="mb-3 h-8 w-8 text-gray-200 dark:text-gray-700" />
+            <p className="text-sm text-gray-400">
               {searchQuery || searchStatusFilter
                 ? "Tidak ada client yang cocok dengan filter"
                 : "Belum ada client di group ini"}
             </p>
             {canManage && !searchQuery && !searchStatusFilter && (
-              <Button onClick={() => setAddClientOpen(true)}>
-                <Plus className="h-4 w-4" />
+              <button
+                onClick={() => setAddClientOpen(true)}
+                className="mt-4 inline-flex items-center gap-1.5 rounded-lg bg-indigo-600 px-3 py-1.5 text-sm font-medium text-white hover:bg-indigo-700"
+              >
+                <Plus className="h-3.5 w-3.5" />
                 Tambah Client Pertama
-              </Button>
+              </button>
             )}
-          </Card>
+          </div>
         )}
 
         {/* Client table */}
@@ -803,11 +902,10 @@ export default function MarketingClientDetailPage() {
               groupId={groupId}
               canManage={canManage}
             />
-            {/* Pagination */}
             {totalPages > 1 && (
               <div className="mt-4 flex items-center justify-between">
-                <p className="text-sm text-gray-500 dark:text-gray-400">
-                  Menampilkan {(page - 1) * pageSize + 1}–
+                <p className="text-xs text-gray-400">
+                  {(page - 1) * pageSize + 1}–
                   {Math.min(page * pageSize, totalClients)} dari {totalClients}
                 </p>
                 <Pagination

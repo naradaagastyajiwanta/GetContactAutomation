@@ -55,6 +55,19 @@ export type InstagramPostScrapeStatus =
   | "audit_only"
   | "not_found";
 
+export interface MarketingClientSummary {
+  id: number;
+  name: string;
+  search_status: ClientSearchStatus;
+  created_at: string;
+  group_id: number;
+  group_name: string;
+  client_type: ClientType;
+  wa_count: number;
+  email_count: number;
+  approved_count: number;
+}
+
 export interface MarketingGroup {
   id: number;
   name: string;
@@ -499,8 +512,7 @@ export async function handoffGroup(
       handoff_type: handoffType,
     },
   );
-  // Backend returns {success, campaign_id, wa_count, email_count, handoff_id, message}
-  // Map to HandoffResult interface
+  return data as HandoffResult;
 }
 
 // ── Gemini Group Generation API ─────────────────────────────────────────────
@@ -608,4 +620,17 @@ export async function getGroupStrategyMemo(
 ): Promise<GroupStrategyMemo | null> {
   const { data } = await apiClient.get(`/marketing/groups/${groupId}/strategy`);
   return data.strategy ?? null;
+}
+
+export async function getAllMarketingClients(params?: {
+  limit?: number;
+  offset?: number;
+  q?: string;
+  search_status?: string;
+  client_type?: string;
+  group_id?: number;
+  has_contact?: boolean;
+}): Promise<{ clients: MarketingClientSummary[]; total: number }> {
+  const { data } = await apiClient.get("/marketing/clients", { params });
+  return { clients: data.clients ?? [], total: data.total ?? 0 };
 }

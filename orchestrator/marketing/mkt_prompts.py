@@ -51,6 +51,11 @@ PHASE 2 — COLLECT (dengan SYNTHESIS antar-agent):
   - bumn/swasta_besar: spawn_web_search_agent, lalu spawn_instagram_agent jika WA belum ketemu
   - default: spawn_web_search_agent, lalu instagram jika perlu
 
+  ATURAN UNIVERSAL — berlaku untuk SEMUA tipe klien:
+  Jika setelah semua agent di atas WA phone BELUM ditemukan → WAJIB spawn_instagram_agent.
+  Jangan mark_done dengan status="found" atau "partial" tanpa pernah mencoba Instagram
+  ketika WA phone sama sekali belum ada. Email+website saja BELUM cukup.
+
   SYNTHESIS WAJIB — setelah spawn_web_search_agent return:
   → Baca hasilnya: apakah ada website_url?
   → Saat panggil spawn_instagram_agent: SELALU pass website_url dari hasil web search

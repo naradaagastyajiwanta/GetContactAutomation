@@ -45,6 +45,7 @@ const MarketingClientDetailPage = lazy(
   () => import("./pages/MarketingClientDetailPage"),
 );
 const MarketingClientPage = lazy(() => import("./pages/MarketingClientPage"));
+const MarketingClientsPage = lazy(() => import("./pages/MarketingClientsPage"));
 const LoginPage = lazy(() => import("./pages/LoginPage"));
 
 const queryClient = new QueryClient({
@@ -384,6 +385,16 @@ export default function App() {
                           <PermissionGuard permission="marketing.view">
                             <ErrorBoundary>
                               <MarketingClientDetailPage />
+                            </ErrorBoundary>
+                          </PermissionGuard>
+                        }
+                      />
+                      <Route
+                        path="marketing/clients"
+                        element={
+                          <PermissionGuard permission="marketing.view">
+                            <ErrorBoundary>
+                              <MarketingClientsPage />
                             </ErrorBoundary>
                           </PermissionGuard>
                         }

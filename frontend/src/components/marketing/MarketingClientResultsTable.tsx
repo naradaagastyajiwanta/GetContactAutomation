@@ -1436,6 +1436,43 @@ function EmptyClientState({
   );
 }
 
+// Status dot config — gray · indigo · emerald only
+const STATUS_DOT: Record<
+  string,
+  { dot: string; label: string; labelClass: string }
+> = {
+  found: {
+    dot: "bg-emerald-500",
+    label: "Ditemukan",
+    labelClass: "text-emerald-600 dark:text-emerald-400",
+  },
+  partial: {
+    dot: "bg-emerald-300 dark:bg-emerald-600",
+    label: "Partial",
+    labelClass: "text-emerald-600 dark:text-emerald-400",
+  },
+  searching: {
+    dot: "bg-indigo-500 animate-pulse",
+    label: "Searching…",
+    labelClass: "text-indigo-600 dark:text-indigo-400",
+  },
+  pending: {
+    dot: "bg-gray-300 dark:bg-gray-600",
+    label: "Pending",
+    labelClass: "text-gray-400 dark:text-gray-500",
+  },
+  not_found: {
+    dot: "bg-gray-300 dark:bg-gray-600",
+    label: "Tidak ditemukan",
+    labelClass: "text-gray-400 dark:text-gray-500",
+  },
+  error: {
+    dot: "bg-gray-500 dark:bg-gray-400",
+    label: "Error",
+    labelClass: "text-gray-500 dark:text-gray-400",
+  },
+};
+
 function ClientCard({
   client,
   groupId,
@@ -1452,77 +1489,86 @@ function ClientCard({
     deleteClient.mutate({ clientId: client.id, groupId });
   }
 
-  const hasContacts = (client.contacts ?? []).length > 0;
+  const contacts = client.contacts ?? [];
+  const approvedCount = contacts.filter((c) => c.is_approved).length;
   const visibleInstagramHandles = getVisibleInstagramHandles(client);
+  const statusDot = STATUS_DOT[client.search_status] ?? STATUS_DOT.pending;
+
+  // Build compact contact summary: "1 WA · 1 Email"
+  const contactSummary = (() => {
+    const waCount = contacts.filter(
+      (c) => c.contact_type === "wa_phone",
+    ).length;
+    const emailCount = contacts.filter(
+      (c) => c.contact_type === "email",
+    ).length;
+    const parts = [
+      waCount > 0 && `${waCount} WA`,
+      emailCount > 0 && `${emailCount} Email`,
+    ].filter(Boolean);
+    return parts.length > 0 ? parts.join(" · ") : null;
+  })();
 
   return (
-    <Card padding={false} className="overflow-hidden">
-      {/* Client header row — navigate to detail page on click */}
+    <div className="group relative overflow-hidden rounded-xl border border-gray-100 bg-white transition-colors hover:border-gray-200 hover:bg-gray-50/50 dark:border-gray-700/50 dark:bg-gray-800/40 dark:hover:border-gray-700 dark:hover:bg-gray-800/60">
       <Link
         to={`/marketing/clients/${client.id}`}
-        className="flex items-center gap-3 px-4 py-3 transition-colors hover:bg-gray-50 dark:hover:bg-gray-800/50"
+        className="flex items-center gap-3 px-4 py-3"
       >
-        <div className="flex-1 min-w-0">
-          <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
-            <p className="text-sm font-semibold text-gray-900 dark:text-gray-100 truncate">
+        {/* Status dot */}
+        <span
+          className={cn(
+            "mt-0.5 inline-block h-2 w-2 shrink-0 rounded-full",
+            statusDot.dot,
+          )}
+        />
+
+        {/* Main content */}
+        <div className="min-w-0 flex-1">
+          <div className="flex items-baseline gap-2">
+            <p className="truncate text-sm font-medium text-gray-800 dark:text-gray-100">
               {client.name}
             </p>
-            {/* Single consolidated status badge */}
-            {client.search_status === "found" && (
-              <span className="inline-flex items-center gap-1 rounded-full bg-green-50 px-2 py-0.5 text-[10px] font-semibold text-green-600 dark:bg-green-900/30 dark:text-green-400">
-                <CheckCircle2 className="h-3 w-3" /> Ditemukan
-              </span>
-            )}
-            {client.search_status === "partial" && (
-              <span className="inline-flex items-center gap-1 rounded-full bg-yellow-50 px-2 py-0.5 text-[10px] font-semibold text-yellow-700 dark:bg-yellow-900/30 dark:text-yellow-300">
-                Partial
-              </span>
-            )}
-            {client.search_status === "not_found" && (
-              <span className="inline-flex items-center gap-1 rounded-full bg-red-50 px-2 py-0.5 text-[10px] font-semibold text-red-600 dark:bg-red-900/30 dark:text-red-400">
-                <X className="h-3 w-3" /> Tidak Ditemukan
-              </span>
-            )}
-            {client.search_status === "error" && (
-              <span className="inline-flex items-center gap-1 rounded-full bg-red-50 px-2 py-0.5 text-[10px] font-semibold text-red-600 dark:bg-red-900/30 dark:text-red-400">
-                <AlertTriangle className="h-3 w-3" /> Error
-              </span>
-            )}
-            {client.search_status === "searching" && (
-              <span className="inline-flex items-center gap-1 rounded-full bg-blue-50 px-2 py-0.5 text-[10px] font-semibold text-blue-600 dark:bg-blue-900/30 dark:text-blue-400">
-                <Loader2 className="h-3 w-3 animate-spin" /> Searching...
-              </span>
-            )}
-            {client.search_status === "pending" && (
-              <span className="inline-flex items-center rounded-full bg-gray-100 px-2 py-0.5 text-[10px] font-semibold text-gray-500 dark:bg-gray-800 dark:text-gray-400">
-                Pending
-              </span>
-            )}
+            <span className={cn("shrink-0 text-xs", statusDot.labelClass)}>
+              {statusDot.label}
+            </span>
           </div>
 
-          <div className="mt-1 flex items-center gap-3">
-            <p className="text-xs text-gray-500 dark:text-gray-400">
-              {hasContacts
-                ? `${(client.contacts ?? []).length} kontak · ${(client.contacts ?? []).filter((c) => c.is_approved).length} approved`
-                : "Belum ada kontak"}
-            </p>
-            {/* Primary IG handle only */}
+          {/* Sub-line: contact summary + IG handle */}
+          <div className="mt-0.5 flex items-center gap-2 text-xs text-gray-400 dark:text-gray-500">
+            {contactSummary ? (
+              <span>{contactSummary}</span>
+            ) : (
+              <span>Belum ada kontak</span>
+            )}
+            {approvedCount > 0 && (
+              <>
+                <span className="text-gray-200 dark:text-gray-700">·</span>
+                <span className="text-indigo-500 dark:text-indigo-400">
+                  {approvedCount} approved
+                </span>
+              </>
+            )}
             {visibleInstagramHandles.length > 0 && (
-              <span className="inline-flex items-center gap-1 text-[11px] text-gray-400 dark:text-gray-500">
-                <Instagram className="h-3 w-3" />@
-                {visibleInstagramHandles.find((h) => h.isPrimary)?.handle ??
-                  visibleInstagramHandles[0].handle}
-                {visibleInstagramHandles.length > 1 && (
-                  <span className="text-gray-300 dark:text-gray-600">
-                    +{visibleInstagramHandles.length - 1}
-                  </span>
-                )}
-              </span>
+              <>
+                <span className="text-gray-200 dark:text-gray-700">·</span>
+                <span className="flex items-center gap-0.5">
+                  <Instagram className="h-3 w-3" />@
+                  {visibleInstagramHandles.find((h) => h.isPrimary)?.handle ??
+                    visibleInstagramHandles[0].handle}
+                  {visibleInstagramHandles.length > 1 && (
+                    <span className="ml-0.5">
+                      +{visibleInstagramHandles.length - 1}
+                    </span>
+                  )}
+                </span>
+              </>
             )}
           </div>
         </div>
 
-        <div className="flex items-center gap-2">
+        {/* Right: delete + chevron */}
+        <div className="flex shrink-0 items-center gap-1.5">
           {canManage && (
             <button
               type="button"
@@ -1531,16 +1577,16 @@ function ClientCard({
                 e.stopPropagation();
                 handleDelete();
               }}
-              className="rounded p-1 text-gray-400 transition-colors hover:text-red-500"
+              className="rounded p-1 text-gray-300 opacity-0 transition-all group-hover:opacity-100 hover:text-gray-600 dark:text-gray-600 dark:hover:text-gray-300"
               aria-label="Hapus client"
             >
               <Trash2 className="h-3.5 w-3.5" />
             </button>
           )}
-          <ChevronRight className="h-4 w-4 text-gray-400" />
+          <ChevronRight className="h-4 w-4 text-gray-300 dark:text-gray-600" />
         </div>
       </Link>
-    </Card>
+    </div>
   );
 }
 
@@ -1564,7 +1610,7 @@ export function MarketingClientResultsTable({
   }
 
   return (
-    <div className="space-y-2">
+    <div className="space-y-1.5">
       {clients.map((client) => (
         <ClientCard
           key={client.id}

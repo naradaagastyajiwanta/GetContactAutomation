@@ -1,27 +1,14 @@
 import { useState } from "react";
 import { Link } from "react-router-dom";
-import {
-  Users,
-  Plus,
-  Trash2,
-  Clock,
-  Search,
-  CheckCircle2,
-  AlertCircle,
-  Loader2,
-  ChevronRight,
-} from "lucide-react";
+import { Users, Plus, Trash2, ChevronRight, Loader2 } from "lucide-react";
 import { cn } from "../lib/utils";
 import { Pagination } from "../components/ui/Pagination";
 import {
   useMarketingGroups,
   useDeleteMarketingGroup,
 } from "../hooks/useMarketing";
-import { Card } from "../components/ui/Card";
 import { Button } from "../components/ui/Button";
 import { Spinner } from "../components/ui/Spinner";
-import { Select } from "../components/ui/Select";
-import { EmptyState } from "../components/ui/EmptyState";
 import { MarketingGenerateGroupModal } from "../components/marketing/MarketingGenerateGroupModal";
 import { useAuth } from "../context/AuthContext";
 import { formatDate } from "../lib/utils";
@@ -31,66 +18,52 @@ import {
   CLIENT_TYPE_LABELS,
 } from "../api/marketing";
 
-// Options use snake_case values (matching API); import label map for display
+// ---------------------------------------------------------------------------
+// Filter options
+// ---------------------------------------------------------------------------
 const CLIENT_TYPE_OPTIONS: { value: ClientType | ""; label: string }[] = [
   { value: "", label: "Semua Tipe" },
-  { value: "lembaga_negara", label: "Lembaga Negara Non Kementerian" },
+  { value: "lembaga_negara", label: "Lembaga Negara" },
   { value: "kementerian", label: "Kementerian" },
   { value: "bumn", label: "BUMN" },
-  { value: "swasta_besar", label: "Perusahaan Swasta Besar" },
+  { value: "swasta_besar", label: "Swasta Besar" },
   { value: "asosiasi", label: "Asosiasi" },
-  { value: "lpk", label: "Lembaga Pelatihan Kerja (LPK)" },
-  { value: "lkp", label: "Lembaga Karier (LKP)" },
+  { value: "lpk", label: "LPK" },
+  { value: "lkp", label: "LKP" },
   { value: "lsp_p1", label: "LSP P1" },
   { value: "lsp_p2", label: "LSP P2" },
   { value: "lsp_p3", label: "LSP P3" },
   { value: "dinas", label: "Dinas" },
 ];
 
-const statusConfig: Record<
+// ---------------------------------------------------------------------------
+// Status config — gray · indigo · emerald only
+// ---------------------------------------------------------------------------
+const STATUS_CFG: Record<
   string,
-  { label: string; color: string; bg: string; icon: React.ElementType }
+  { dot: string; label: string; labelClass: string }
 > = {
   draft: {
+    dot: "bg-gray-300 dark:bg-gray-600",
     label: "Draft",
-    color: "text-gray-600 dark:text-gray-400",
-    bg: "bg-gray-100 dark:bg-gray-800",
-    icon: Clock,
+    labelClass: "text-gray-400 dark:text-gray-500",
   },
   searching: {
+    dot: "bg-indigo-500 animate-pulse",
     label: "Searching",
-    color: "text-blue-600 dark:text-blue-400",
-    bg: "bg-blue-50 dark:bg-blue-900/30",
-    icon: Loader2,
+    labelClass: "text-indigo-600 dark:text-indigo-400",
   },
   done: {
+    dot: "bg-emerald-500",
     label: "Done",
-    color: "text-green-600 dark:text-green-400",
-    bg: "bg-green-50 dark:bg-green-900/30",
-    icon: CheckCircle2,
+    labelClass: "text-emerald-600 dark:text-emerald-400",
   },
 };
 
-function GroupStatusBadge({ status }: { status: string }) {
-  const cfg = statusConfig[status] || statusConfig.draft;
-  const Icon = cfg.icon;
-  return (
-    <span
-      className={cn(
-        "inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-xs font-semibold",
-        cfg.bg,
-        cfg.color,
-      )}
-    >
-      <Icon
-        className={cn("h-3 w-3", status === "searching" && "animate-spin")}
-      />
-      {cfg.label}
-    </span>
-  );
-}
-
-function GroupRow({
+// ---------------------------------------------------------------------------
+// Group row card
+// ---------------------------------------------------------------------------
+function GroupCard({
   group,
   canManage,
   onDelete,
@@ -99,57 +72,118 @@ function GroupRow({
   canManage: boolean;
   onDelete: (id: number) => void;
 }) {
+  const cfg = STATUS_CFG[group.status] ?? STATUS_CFG.draft;
+  const total = group.total_clients;
+  const found = group.found_count;
+  const notFound = group.not_found_count;
+  const pending = Math.max(0, total - found - notFound);
+  const foundPct = total > 0 ? (found / total) * 100 : 0;
+  const notFoundPct = total > 0 ? (notFound / total) * 100 : 0;
+
   return (
-    <tr className="hover:bg-gray-50 dark:hover:bg-gray-800/50 transition-colors">
-      <td className="px-4 py-3">
-        <Link
-          to={`/marketing/groups/${group.id}`}
-          className="font-medium text-gray-900 dark:text-gray-100 hover:text-indigo-600 dark:hover:text-indigo-400"
-        >
-          {group.name}
-        </Link>
-      </td>
-      <td className="px-4 py-3 text-sm text-gray-600 dark:text-gray-400">
-        {CLIENT_TYPE_LABELS[group.client_type] ?? group.client_type}
-      </td>
-      <td className="px-4 py-3 text-center text-sm text-gray-600 dark:text-gray-400">
-        {group.total_clients}
-      </td>
-      <td className="px-4 py-3 text-center text-sm text-green-600 dark:text-green-400">
-        {group.found_count}
-      </td>
-      <td className="px-4 py-3 text-center text-sm text-gray-600 dark:text-gray-400">
-        {group.not_found_count}
-      </td>
-      <td className="px-4 py-3">
-        <GroupStatusBadge status={group.status} />
-      </td>
-      <td className="px-4 py-3 text-sm text-gray-400 dark:text-gray-500">
-        {formatDate(group.created_at)}
-      </td>
-      <td className="px-4 py-3">
-        <div className="flex items-center gap-3">
-          <Link
-            to={`/marketing/groups/${group.id}`}
-            className="text-indigo-600 hover:text-indigo-800 dark:text-indigo-400 dark:hover:text-indigo-300"
-          >
-            <ChevronRight className="h-4 w-4" />
-          </Link>
-          {canManage && (
-            <button
-              onClick={() => onDelete(group.id)}
-              className="text-gray-400 hover:text-red-500 transition-colors"
-              title="Hapus group"
-            >
-              <Trash2 className="h-4 w-4" />
-            </button>
+    <div className="group relative overflow-hidden rounded-xl border border-gray-100 bg-white transition-colors hover:border-gray-200 hover:bg-gray-50/40 dark:border-gray-700/50 dark:bg-gray-800/40 dark:hover:border-gray-700 dark:hover:bg-gray-800/60">
+      <Link
+        to={`/marketing/groups/${group.id}`}
+        className="flex items-center gap-4 px-4 py-3.5"
+      >
+        {/* Status dot */}
+        <span
+          className={cn(
+            "mt-0.5 inline-block h-2 w-2 shrink-0 rounded-full",
+            cfg.dot,
+          )}
+        />
+
+        {/* Main info */}
+        <div className="min-w-0 flex-1">
+          {/* Name + type */}
+          <div className="flex items-baseline gap-2">
+            <p className="truncate text-sm font-medium text-gray-800 dark:text-gray-100">
+              {group.name}
+            </p>
+            <span className="shrink-0 text-xs text-gray-400 dark:text-gray-500">
+              {CLIENT_TYPE_LABELS[group.client_type] ?? group.client_type}
+            </span>
+          </div>
+
+          {/* Stats + progress */}
+          {total > 0 && (
+            <div className="mt-1.5 flex items-center gap-3">
+              {/* Mini progress bar */}
+              <div className="h-1 w-24 overflow-hidden rounded-full bg-gray-100 dark:bg-gray-700/60">
+                <div className="flex h-full">
+                  {foundPct > 0 && (
+                    <div
+                      className="h-full bg-emerald-500 transition-all duration-500"
+                      style={{ width: `${foundPct}%` }}
+                    />
+                  )}
+                  {notFoundPct > 0 && (
+                    <div
+                      className="h-full bg-gray-300 dark:bg-gray-600 transition-all duration-500"
+                      style={{ width: `${notFoundPct}%` }}
+                    />
+                  )}
+                </div>
+              </div>
+              {/* Counts */}
+              <span className="text-xs text-gray-400 dark:text-gray-500">
+                <span className="text-emerald-600 dark:text-emerald-400">
+                  {found}
+                </span>
+                <span className="mx-1 text-gray-200 dark:text-gray-700">/</span>
+                <span>{total}</span>
+                {pending > 0 && group.status === "searching" && (
+                  <span className="ml-1 text-indigo-500 dark:text-indigo-400">
+                    · {pending} pending
+                  </span>
+                )}
+              </span>
+            </div>
+          )}
+
+          {total === 0 && (
+            <p className="mt-0.5 text-xs text-gray-400">Belum ada client</p>
           )}
         </div>
-      </td>
-    </tr>
+
+        {/* Right: status label + date + chevron */}
+        <div className="flex shrink-0 items-center gap-4">
+          <div className="hidden text-right sm:block">
+            <p className={cn("text-xs font-medium", cfg.labelClass)}>
+              {cfg.label}
+              {group.status === "searching" && (
+                <Loader2 className="ml-1 inline h-3 w-3 animate-spin" />
+              )}
+            </p>
+            <p className="mt-0.5 text-[11px] text-gray-400 dark:text-gray-500">
+              {formatDate(group.created_at)}
+            </p>
+          </div>
+          <ChevronRight className="h-4 w-4 text-gray-300 dark:text-gray-600" />
+        </div>
+      </Link>
+
+      {/* Delete — appears on hover, outside the Link */}
+      {canManage && (
+        <button
+          onClick={(e) => {
+            e.stopPropagation();
+            onDelete(group.id);
+          }}
+          className="absolute right-10 top-1/2 -translate-y-1/2 rounded p-1 text-gray-300 opacity-0 transition-all group-hover:opacity-100 hover:text-gray-600 dark:text-gray-600 dark:hover:text-gray-300"
+          title="Hapus group"
+        >
+          <Trash2 className="h-3.5 w-3.5" />
+        </button>
+      )}
+    </div>
   );
 }
 
+// ---------------------------------------------------------------------------
+// Main page
+// ---------------------------------------------------------------------------
 export default function MarketingGetContactPage() {
   const { hasPermission } = useAuth();
   const [clientTypeFilter, setClientTypeFilter] = useState<ClientType | "">("");
@@ -176,116 +210,106 @@ export default function MarketingGetContactPage() {
   }
 
   return (
-    <div className="space-y-6">
+    <div className="space-y-5">
       {/* Header */}
-      <div className="flex items-center justify-between">
+      <div className="flex items-center justify-between border-b border-gray-100 pb-4 dark:border-gray-800">
         <div className="flex items-center gap-3">
-          <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-gradient-to-br from-indigo-500 to-purple-600 text-white shadow">
-            <Users className="h-5 w-5" />
+          <div className="flex h-9 w-9 items-center justify-center rounded-xl bg-indigo-50 dark:bg-indigo-900/20">
+            <Users className="h-4.5 w-4.5 text-indigo-600 dark:text-indigo-400" />
           </div>
           <div>
-            <h1 className="text-xl font-bold text-gray-900 dark:text-gray-100">
-              Marketing Get Contact
+            <h1 className="text-lg font-semibold text-gray-900 dark:text-gray-100">
+              Marketing
             </h1>
-            <p className="text-xs text-gray-500 dark:text-gray-400">
-              Kelola group client dan outbound outreach automation
+            <p className="text-xs text-gray-400 dark:text-gray-500">
+              {total > 0 ? `${total} group` : "Kelola group client"}
             </p>
           </div>
         </div>
-        {canManage && (
-          <Button onClick={() => setCreateModalOpen(true)}>
-            <Plus className="h-4 w-4" />
-            Buat Group
-          </Button>
-        )}
+        <div className="flex items-center gap-2">
+          <Link
+            to="/marketing/clients"
+            className="rounded-lg px-3 py-1.5 text-xs text-gray-400 transition-colors hover:bg-gray-100 hover:text-gray-600 dark:hover:bg-gray-800 dark:hover:text-gray-300"
+          >
+            Semua Client →
+          </Link>
+          {canManage && (
+            <Button size="sm" onClick={() => setCreateModalOpen(true)}>
+              <Plus className="h-3.5 w-3.5" />
+              Buat Group
+            </Button>
+          )}
+        </div>
       </div>
 
       {/* Filter */}
-      <div className="flex items-center gap-3">
-        <div className="flex items-center gap-2 text-sm text-gray-600 dark:text-gray-400">
-          <Search className="h-4 w-4" />
-          <span>Filter:</span>
+      <div className="flex items-center gap-2">
+        <span className="text-xs text-gray-400">Tipe:</span>
+        <div className="flex flex-wrap gap-1.5">
+          {CLIENT_TYPE_OPTIONS.map((opt) => (
+            <button
+              key={opt.value}
+              onClick={() => {
+                setClientTypeFilter(opt.value as ClientType | "");
+                setPage(1);
+              }}
+              className={cn(
+                "rounded-lg px-2.5 py-1 text-xs transition-colors",
+                clientTypeFilter === opt.value
+                  ? "bg-indigo-600 text-white"
+                  : "bg-gray-100 text-gray-500 hover:bg-gray-200 dark:bg-gray-800 dark:text-gray-400 dark:hover:bg-gray-700",
+              )}
+            >
+              {opt.label}
+            </button>
+          ))}
         </div>
-        <Select
-          value={clientTypeFilter}
-          onChange={(v) => {
-            setClientTypeFilter(v as ClientType | "");
-            setPage(1);
-          }}
-          options={CLIENT_TYPE_OPTIONS}
-          className="w-56"
-        />
       </div>
 
-      {/* Table */}
+      {/* Content */}
       {isLoading ? (
-        <div className="flex h-48 items-center justify-center">
-          <Spinner size="lg" />
+        <div className="space-y-1.5">
+          {Array.from({ length: 5 }).map((_, i) => (
+            <div
+              key={i}
+              className="h-16 animate-pulse rounded-xl bg-gray-100 dark:bg-gray-800"
+            />
+          ))}
         </div>
       ) : groups.length === 0 ? (
-        <EmptyState
-          icon={Users}
-          title="Belum ada group"
-          description="Buat group pertama untuk mulai mengelola client"
-          action={
-            canManage ? (
-              <Button onClick={() => setCreateModalOpen(true)}>
-                <Plus className="h-4 w-4" />
-                Buat Group
-              </Button>
-            ) : undefined
-          }
-        />
+        <div className="flex flex-col items-center justify-center rounded-xl border border-dashed border-gray-200 py-16 dark:border-gray-700">
+          <Users className="mb-3 h-8 w-8 text-gray-200 dark:text-gray-700" />
+          <p className="text-sm text-gray-400">
+            {clientTypeFilter
+              ? "Tidak ada group untuk tipe ini"
+              : "Belum ada group"}
+          </p>
+          {canManage && !clientTypeFilter && (
+            <button
+              onClick={() => setCreateModalOpen(true)}
+              className="mt-4 inline-flex items-center gap-1.5 rounded-lg bg-indigo-600 px-3 py-1.5 text-sm font-medium text-white hover:bg-indigo-700"
+            >
+              <Plus className="h-3.5 w-3.5" />
+              Buat Group Pertama
+            </button>
+          )}
+        </div>
       ) : (
-        <Card padding={false} className="overflow-hidden">
-          <div className="overflow-x-auto">
-            <table className="min-w-full divide-y divide-gray-200 dark:divide-gray-700">
-              <thead className="bg-gray-50 dark:bg-gray-800/50">
-                <tr>
-                  <th className="px-4 py-2.5 text-left text-xs font-medium uppercase tracking-wider text-gray-500 dark:text-gray-400">
-                    Nama Group
-                  </th>
-                  <th className="px-4 py-2.5 text-left text-xs font-medium uppercase tracking-wider text-gray-500 dark:text-gray-400">
-                    Tipe Client
-                  </th>
-                  <th className="px-4 py-2.5 text-center text-xs font-medium uppercase tracking-wider text-gray-500 dark:text-gray-400">
-                    Total
-                  </th>
-                  <th className="px-4 py-2.5 text-center text-xs font-medium uppercase tracking-wider text-gray-500 dark:text-gray-400">
-                    Ditemukan
-                  </th>
-                  <th className="px-4 py-2.5 text-center text-xs font-medium uppercase tracking-wider text-gray-500 dark:text-gray-400">
-                    Tidak Ditemukan
-                  </th>
-                  <th className="px-4 py-2.5 text-left text-xs font-medium uppercase tracking-wider text-gray-500 dark:text-gray-400">
-                    Status
-                  </th>
-                  <th className="px-4 py-2.5 text-left text-xs font-medium uppercase tracking-wider text-gray-500 dark:text-gray-400">
-                    Tanggal
-                  </th>
-                  <th className="px-4 py-2.5 text-left text-xs font-medium uppercase tracking-wider text-gray-500 dark:text-gray-400">
-                    Aksi
-                  </th>
-                </tr>
-              </thead>
-              <tbody className="divide-y divide-gray-200 dark:divide-gray-700 bg-white dark:bg-gray-900">
-                {groups.map((g) => (
-                  <GroupRow
-                    key={g.id}
-                    group={g}
-                    canManage={canManage}
-                    onDelete={handleDelete}
-                  />
-                ))}
-              </tbody>
-            </table>
-          </div>
-          {/* Pagination */}
-          {groups.length > 0 && (
-            <div className="flex items-center justify-between px-4 py-3 border-t border-gray-100 dark:border-gray-700">
-              <p className="text-sm text-gray-500 dark:text-gray-400">
-                Menampilkan {(page - 1) * pageSize + 1}–
-                {Math.min(page * pageSize, total)} dari {total} group
+        <div className="space-y-1.5">
+          {groups.map((g) => (
+            <GroupCard
+              key={g.id}
+              group={g}
+              canManage={canManage}
+              onDelete={handleDelete}
+            />
+          ))}
+
+          {totalPages > 1 && (
+            <div className="flex items-center justify-between pt-2">
+              <p className="text-xs text-gray-400">
+                {(page - 1) * pageSize + 1}–{Math.min(page * pageSize, total)}{" "}
+                dari {total}
               </p>
               <Pagination
                 currentPage={page}
@@ -294,7 +318,7 @@ export default function MarketingGetContactPage() {
               />
             </div>
           )}
-        </Card>
+        </div>
       )}
 
       {createModalOpen && (
