@@ -13,7 +13,7 @@ from datetime import datetime, time, timedelta, timezone
 from typing import Any, Optional
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
-from orchestrator.config import log
+from orchestrator.config import log, SYSTEM_DEVICE_ID
 from orchestrator.db import get_db
 from orchestrator.message_queue import message_queue
 from orchestrator.websocket import manager as ws_manager
@@ -912,7 +912,7 @@ async def _blast_worker(campaign_id: int) -> None:
                 log.info("[Blast] Campaign %d no longer sending, stopping worker", campaign_id)
                 break
 
-            device_id = current["device_id"] or "device_1"
+            device_id = current["device_id"] or SYSTEM_DEVICE_ID
             allowed_now, wait_ms, wait_reason = _campaign_allows_schedule(
                 current,
                 datetime.now(timezone.utc),

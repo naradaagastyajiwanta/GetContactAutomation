@@ -21,6 +21,7 @@ import base64
 import asyncio
 import json
 import os
+import random
 import re
 import time as _time
 from datetime import datetime, timezone
@@ -336,10 +337,11 @@ def _check_ig_response(resp: httpx.Response) -> bool:
         log.warning("IG session unauthorized (401) — session expired or invalid")
         return False
     if resp.status_code == 429:
+        backoff = random.uniform(8.0, 20.0)
+        log.warning("IG rate limited (429) — backing off %.0fs before rotating session", backoff)
+        _time.sleep(backoff)
         if session_id:
             _ig_pool.rotate(from_session_id=session_id)
-        # Rate-limited — do NOT mark session permanently bad, just rotate away
-        log.warning("IG rate limited (429) — rotating to next session and backing off")
         return False
     # If we get a normal 200 response, mark session as OK
     if resp.status_code == 200 and session_id:
@@ -1148,7 +1150,7 @@ def scrape_ig_posts_sync(
                 })
                 log.info("@%s: phone found in link-in-bio (%s): %s", handle, external_url, phone_list)
 
-        _time.sleep(1)
+        _time.sleep(random.uniform(0.8, 2.5))
 
         # Step 4: Fetch posts and classify (with pagination & early stop)
         next_max_id: str | None = None
@@ -1197,7 +1199,8 @@ def scrape_ig_posts_sync(
                 client.close()
                 client = _get_ig_web_client()
                 log.info("@%s: rotated to fresh IG session for page %d", handle, pages_fetched + 1)
-            _time.sleep(3)  # Longer rate limit between pages
+                _time.sleep(random.uniform(2.0, 5.0))  # Let new session "warm up"
+            _time.sleep(random.uniform(2.0, 6.0))  # Jitter between pages
 
     finally:
         client.close()
@@ -1619,7 +1622,10 @@ def _scrape_ig_posts_instaloader(
         )
         # Set rate limit delay
         L.context.sleep_func = lambda secs: __import__("time").sleep(
-            max(secs, request_delay)
+            __import__("random").uniform(
+                max(secs, request_delay),
+                max(secs, request_delay) * 2.0,
+            )
         )
 
         profile = instaloader.Profile.from_username(L.context, handle)

@@ -402,3 +402,7 @@ def set_paused(val: bool) -> None:
     global _is_paused
     with _pause_lock:
         _is_paused = val
+
+
+# System device for automated scheduler outreach
+SYSTEM_DEVICE_ID: str = os.getenv("SYSTEM_DEVICE_ID", "device_1")

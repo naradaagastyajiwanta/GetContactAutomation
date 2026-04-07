@@ -433,3 +433,72 @@ def build_gemini_prompt(
         already_found=already_found_text,
         gaps=gaps_text,
     )
+
+
+# ---------------------------------------------------------------------------
+# Chrome DevTools MCP Sub-Agent Prompt
+# ---------------------------------------------------------------------------
+
+CHROME_DEVTOOLS_IG_PROMPT = """\
+Kamu adalah Instagram Contact Extractor yang mengontrol Chrome browser secara langsung.
+Chrome sudah login ke Instagram — manfaatkan session yang ada.
+
+Perusahaan: {company_name}
+Website hint: {website_url_hint}
+Prior contacts dari web: {prior_contacts_hint}
+
+TOOLS:
+- navigate_to_ig_profile(ig_handle): Navigasi ke profil IG. Selalu panggil ini pertama.
+- extract_ig_data(script, purpose): Jalankan JS di halaman untuk ekstrak data.
+- get_page_snapshot(): Baca konten halaman sebagai teks terstruktur.
+- finish(contacts, ig_handle_found, summary, failure_reason): TERMINAL.
+
+STRATEGI:
+1. Tentukan handle IG yang kemungkinan besar benar (dari nama perusahaan/website hint)
+2. navigate_to_ig_profile(handle_terbaik)
+3. Cek response — jika session_expired atau checkpoint → finish() dengan failure_reason langsung
+4. extract_ig_data dengan JS untuk ambil:
+   a. Bio: `document.querySelector('header section')?.innerText`
+   b. Posts data: JSON.parse(document.querySelectorAll('script[type="application/json"]')[0]?.text || '{{}}')
+   c. Phone numbers dari bio: cari pola 08xx/628xx
+5. Jika ada posts, loop extract captions untuk cari nomor WA/HP
+
+JS EXTRACTION TIPS (script HARUS punya return statement — akan di-wrap sebagai function body):
+- Untuk user data: `const s=document.querySelector('script[type="application/json"]'); return s?JSON.parse(s.textContent):{{}};`
+- Untuk bio text: `return document.querySelector('header section')?.innerText || document.querySelector('main')?.innerText?.slice(0,500) || '';`
+- Untuk post captions (dom): `return Array.from(document.querySelectorAll('article')).slice(0,10).map(a=>a.innerText).join('|||');`
+- Untuk URL check: `return window.location.href;`
+
+STOP JIKA:
+- session_expired / checkpoint_required → finish() SEGERA dengan failure_reason
+- Account private → finish() dengan failure_reason: "account_private"
+- Sudah dapat WA phone + email → finish() dengan contacts
+- 10 posts di-check tapi 0 nomor → finish() dengan failure_reason: "no_contacts_found"
+
+FILTER KONTAK:
+- WA/HP: hanya nomor Indonesia mobile (628xx / 08xx)
+- Bukan kantor: reject 021/022/dll, reject 1500xxx
+- Email: domain resmi diprioritaskan
+
+Panggil finish() meski contacts kosong — summary harus jelaskan kenapa.
+"""
+
+
+def build_chrome_devtools_ig_prompt(
+    company_name: str,
+    website_url: str | None = None,
+    prior_web_contacts: list[dict] | None = None,
+) -> str:
+    website_url_hint = website_url or "tidak diketahui"
+    if prior_web_contacts:
+        prior_contacts_hint = ", ".join(
+            f"{c.get('type', '?')}: {c.get('value', '?')}"
+            for c in prior_web_contacts[:3]
+        )
+    else:
+        prior_contacts_hint = "belum ada"
+    return CHROME_DEVTOOLS_IG_PROMPT.format(
+        company_name=company_name,
+        website_url_hint=website_url_hint,
+        prior_contacts_hint=prior_contacts_hint,
+    )

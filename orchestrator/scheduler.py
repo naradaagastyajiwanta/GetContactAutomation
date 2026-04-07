@@ -13,6 +13,7 @@ from orchestrator.config import (
     FOLLOWUP_1_AFTER_HOURS,
     FOLLOWUP_2_AFTER_HOURS,
     MAX_FOLLOWUP_ATTEMPTS,
+    SYSTEM_DEVICE_ID,
     is_paused,
     log,
     cfg,
@@ -255,7 +256,7 @@ async def daily_outreach_loop():
         conv_id = await create_conversation(uni["id"], phone)
 
         # Enqueue via message queue (serial sending with interval)
-        await message_queue.enqueue_send(phone, message)
+        await message_queue.enqueue_send(phone, message, device_id=SYSTEM_DEVICE_ID)
 
         await update_conversation_state(
             conv_id,
@@ -353,7 +354,7 @@ async def process_followups():
             log.error(f"Failed to generate followup for conv {conv['id']}: {e}")
             continue
 
-        await message_queue.enqueue_send(conv["contact_phone"], followup_msg)
+        await message_queue.enqueue_send(conv["contact_phone"], followup_msg, device_id=SYSTEM_DEVICE_ID)
 
         await update_conversation_state(
             conv["id"],
@@ -406,7 +407,7 @@ async def process_audiensi_followups():
             log.error(f"Failed to generate audiensi followup for {aud['id']}: {e}")
             continue
 
-        await message_queue.enqueue_send(aud["contact_phone"], msg)
+        await message_queue.enqueue_send(aud["contact_phone"], msg, device_id=SYSTEM_DEVICE_ID)
         await update_audiensi_state(
             aud["id"],
             AudiensiState.FOLLOWUP_SENT,
@@ -517,7 +518,7 @@ async def _send_audiensi_reminders():
                 phone = schedule.get(phone_field, "")
                 pic_name = schedule.get(pic_field, "")
                 if phone and phone.strip() and len(phone.strip()) >= 8:
-                    await message_queue.enqueue_send(phone.strip(), message)
+                    await message_queue.enqueue_send(phone.strip(), message, device_id=SYSTEM_DEVICE_ID)
                     phones_sent.append(phone.strip())
                     log.info(
                         "DMS reminder sent to %s (%s) for %s on %s",
@@ -746,7 +747,7 @@ async def auto_approve_queued_audiensi():
 
                 # Send initial message if a draft exists
                 if draft:
-                    await message_queue.enqueue_send(phone, draft)
+                    await message_queue.enqueue_send(phone, draft, device_id=SYSTEM_DEVICE_ID)
                     await update_audiensi_state(aud_id, "INITIAL_SENT")
                     log.info("Auto-approved audiensi %d → INITIAL_SENT", aud_id)
                 else:

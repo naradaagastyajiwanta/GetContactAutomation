@@ -8,31 +8,31 @@ import makeWASocket, {
   proto,
   WAMessage,
   ConnectionState,
-} from '@whiskeysockets/baileys';
-import { Boom } from '@hapi/boom';
-import express, { Request, Response } from 'express';
-import cors from 'cors';
-import axios from 'axios';
-import pino, { Logger } from 'pino';
-import QRCode from 'qrcode';
-import * as fs from 'fs';
-import * as path from 'path';
-import Long from 'long';
-import { RateLimiterManager, createRateLimitMiddleware } from './rateLimiter';
-import { metrics, metricsMiddleware, MetricsSnapshot } from './metrics';
+} from "@whiskeysockets/baileys";
+import { Boom } from "@hapi/boom";
+import express, { Request, Response } from "express";
+import cors from "cors";
+import axios from "axios";
+import pino, { Logger } from "pino";
+import QRCode from "qrcode";
+import * as fs from "fs";
+import * as path from "path";
+import Long from "long";
+import { RateLimiterManager, createRateLimitMiddleware } from "./rateLimiter";
+import { metrics, metricsMiddleware, MetricsSnapshot } from "./metrics";
 import {
   getMessageQueue,
   MessageStatus,
   MessageType,
   type QueuedMessage,
-} from './messageQueue';
+} from "./messageQueue";
 import {
   DeviceManager,
   DeviceConnectionState,
   type MessagePayload,
   type DocumentPayload,
-} from './deviceManager';
-import { AntiBanManager, type AntiBanStatus } from './antiBan';
+} from "./deviceManager";
+import { AntiBanManager, type AntiBanStatus } from "./antiBan";
 
 // Extended Express interfaces for our custom properties
 interface SendMessageBody {
@@ -67,25 +67,34 @@ function clearDir(dir: string): void {
   }
 }
 
-const PORT = parseInt(process.env.PORT || '3100', 10);
-const AUTH_STORE_DIR = path.join(__dirname, '..', 'auth_store');
-const AUTH_BACKUP_DIR = path.join(__dirname, '..', 'auth_store_backup');
-const WEBHOOK_FILE = path.join(__dirname, '..', 'webhook_url.txt');
-const ANTIBAN_STATE_FILE = path.join(__dirname, '..', 'data', 'antiban-state.json');
+const PORT = parseInt(process.env.PORT || "3100", 10);
+const AUTH_STORE_DIR = path.join(__dirname, "..", "auth_store");
+const AUTH_BACKUP_DIR = path.join(__dirname, "..", "auth_store_backup");
+const WEBHOOK_FILE = path.join(__dirname, "..", "webhook_url.txt");
+const ANTIBAN_STATE_FILE = path.join(
+  __dirname,
+  "..",
+  "data",
+  "antiban-state.json",
+);
 
-const logger: Logger = pino({ level: 'info' });
+const logger: Logger = pino({ level: "info" });
 // Properly typed logger for Baileys - it accepts a Logger interface
-const baileysLogger: Logger = pino({ level: 'silent' });
+const baileysLogger: Logger = pino({ level: "silent" });
 const antiBanManager = new AntiBanManager(logger, ANTIBAN_STATE_FILE);
 
 // Device Manager for multi-device support
-const deviceManager = new DeviceManager(logger, {
-  onConnectionUpdate: handleDeviceConnectionUpdate,
-  onMessage: handleDeviceMessage,
-  onQR: handleDeviceQR,
-  onError: handleDeviceError,
-  onCredentialsUpdated: handleDeviceCredentialsUpdated,
-}, antiBanManager);
+const deviceManager = new DeviceManager(
+  logger,
+  {
+    onConnectionUpdate: handleDeviceConnectionUpdate,
+    onMessage: handleDeviceMessage,
+    onQR: handleDeviceQR,
+    onError: handleDeviceError,
+    onCredentialsUpdated: handleDeviceCredentialsUpdated,
+  },
+  antiBanManager,
+);
 
 let webhookUrl: string | null = null;
 
@@ -99,12 +108,12 @@ let webhookUrl: string | null = null;
  */
 function isLong(value: unknown): value is Long {
   return (
-    typeof value === 'object' &&
+    typeof value === "object" &&
     value !== null &&
-    'low' in value &&
-    'high' in value &&
-    'unsigned' in value &&
-    typeof (value as Long).toNumber === 'function'
+    "low" in value &&
+    "high" in value &&
+    "unsigned" in value &&
+    typeof (value as Long).toNumber === "function"
   );
 }
 
@@ -112,8 +121,10 @@ function isLong(value: unknown): value is Long {
  * Safely converts message timestamp to number.
  * Handles both number and Long types from Baileys without type assertions.
  */
-function convertTimestampToNumber(timestamp: number | Long | null | undefined): number {
-  if (typeof timestamp === 'number') {
+function convertTimestampToNumber(
+  timestamp: number | Long | null | undefined,
+): number {
+  if (typeof timestamp === "number") {
     return timestamp;
   }
   if (isLong(timestamp)) {
@@ -132,19 +143,19 @@ function convertTimestampToNumber(timestamp: number | Long | null | undefined): 
  */
 async function resolveLidToPhone(
   sock: WASocket,
-  lid: string
+  lid: string,
 ): Promise<string | null> {
   try {
     const pn = await sock.signalRepository.lidMapping.getPNForLID(lid);
     if (pn) {
-      const phone = pn.split('@')[0].split(':')[0];
-      logger.info({ lid, resolved: phone }, 'Resolved LID to phone number');
+      const phone = pn.split("@")[0].split(":")[0];
+      logger.info({ lid, resolved: phone }, "Resolved LID to phone number");
       return phone;
     }
-    logger.warn({ lid }, 'Could not resolve LID to phone number');
+    logger.warn({ lid }, "Could not resolve LID to phone number");
     return null;
   } catch (err) {
-    logger.error({ err, lid }, 'Failed to resolve LID');
+    logger.error({ err, lid }, "Failed to resolve LID");
     return null;
   }
 }
@@ -156,20 +167,28 @@ async function resolveLidToPhone(
 /**
  * Handle device connection updates from DeviceManager
  */
-function handleDeviceConnectionUpdate(deviceId: string, state: Partial<ConnectionState>): void {
+function handleDeviceConnectionUpdate(
+  deviceId: string,
+  state: Partial<ConnectionState>,
+): void {
   const { connection, lastDisconnect } = state;
-  const reachoutTimeLock = (state as Partial<ConnectionState> & {
-    reachoutTimeLock?: {
-      isActive?: boolean;
-      timeEnforcementEnds?: Date;
-      enforcementType?: string;
-    };
-  }).reachoutTimeLock;
+  const reachoutTimeLock = (
+    state as Partial<ConnectionState> & {
+      reachoutTimeLock?: {
+        isActive?: boolean;
+        timeEnforcementEnds?: Date;
+        enforcementType?: string;
+      };
+    }
+  ).reachoutTimeLock;
 
-  if (connection === 'open') {
+  if (connection === "open") {
     const device = deviceManager.getDevice(deviceId);
     if (device) {
-      logger.info({ deviceId, phoneNumber: device.phoneNumber }, 'Device connected');
+      logger.info(
+        { deviceId, phoneNumber: device.phoneNumber },
+        "Device connected",
+      );
       deviceManager.recordReconnect(deviceId);
       // Update device in database
       const messageQueue = getMessageQueue();
@@ -177,12 +196,12 @@ function handleDeviceConnectionUpdate(deviceId: string, state: Partial<Connectio
         messageQueue.updateDevicePhoneNumber(deviceId, device.phoneNumber);
       }
     }
-  } else if (connection === 'close') {
+  } else if (connection === "close") {
     deviceManager.recordDisconnect(
       deviceId,
-      (lastDisconnect?.error as Boom)?.output?.statusCode ?? 'unknown',
+      (lastDisconnect?.error as Boom)?.output?.statusCode ?? "unknown",
     );
-    logger.info({ deviceId }, 'Device disconnected');
+    logger.info({ deviceId }, "Device disconnected");
   }
 
   if (reachoutTimeLock) {
@@ -193,7 +212,10 @@ function handleDeviceConnectionUpdate(deviceId: string, state: Partial<Connectio
 /**
  * Handle incoming messages from any device
  */
-async function handleDeviceMessage(deviceId: string, msg: WAMessage): Promise<void> {
+async function handleDeviceMessage(
+  deviceId: string,
+  msg: WAMessage,
+): Promise<void> {
   if (!msg.key) return;
 
   const device = deviceManager.getDevice(deviceId);
@@ -209,8 +231,10 @@ async function handleDeviceMessage(deviceId: string, msg: WAMessage): Promise<vo
   if (!messageContent) return;
 
   // Log message types for debugging
-  const msgTypes = Object.keys(messageContent).filter((k) => k !== 'messageContextInfo');
-  logger.info({ deviceId, remoteJid, msgTypes }, 'Incoming message types');
+  const msgTypes = Object.keys(messageContent).filter(
+    (k) => k !== "messageContextInfo",
+  );
+  logger.info({ deviceId, remoteJid, msgTypes }, "Incoming message types");
 
   // Extract text content OR vCard contact(s)
   let text: string | null =
@@ -237,16 +261,19 @@ async function handleDeviceMessage(deviceId: string, msg: WAMessage): Promise<vo
       for (const vcard of vcards) {
         const fnMatch = vcard.match(/FN:(.+)/);
         const telMatches = [...vcard.matchAll(/TEL[^:]*:([+\d\s\-()]+)/g)];
-        const name = fnMatch?.[1]?.trim() ?? 'Unknown';
-        const phones = telMatches.map((m) => m[1].replace(/[\s\-()]/g, ''));
+        const name = fnMatch?.[1]?.trim() ?? "Unknown";
+        const phones = telMatches.map((m) => m[1].replace(/[\s\-()]/g, ""));
         if (phones.length > 0) {
-          parts.push(`[Shared Contact] ${name}: ${phones.join(', ')}`);
+          parts.push(`[Shared Contact] ${name}: ${phones.join(", ")}`);
         } else {
           parts.push(`[Shared Contact] ${name}`);
         }
       }
-      text = parts.join('\n');
-      logger.info({ vcardCount: vcards.length, parsed: text }, 'Parsed vCard contact message');
+      text = parts.join("\n");
+      logger.info(
+        { vcardCount: vcards.length, parsed: text },
+        "Parsed vCard contact message",
+      );
     }
   }
 
@@ -254,21 +281,27 @@ async function handleDeviceMessage(deviceId: string, msg: WAMessage): Promise<vo
 
   // Resolve JID to pure phone number digits with proper fallback for LID
   let from: string;
-  if (remoteJid.endsWith('@lid')) {
+  if (remoteJid.endsWith("@lid")) {
     const deviceState = deviceManager.getDevice(deviceId);
     if (deviceState?.sock) {
-      const resolvedPhone = await resolveLidToPhone(deviceState.sock, remoteJid);
+      const resolvedPhone = await resolveLidToPhone(
+        deviceState.sock,
+        remoteJid,
+      );
       if (resolvedPhone) {
         from = resolvedPhone;
       } else {
-        from = remoteJid.replace('@lid', '');
-        logger.warn({ lid: remoteJid, fallback: from }, 'Using LID fallback for message processing');
+        from = remoteJid.replace("@lid", "");
+        logger.warn(
+          { lid: remoteJid, fallback: from },
+          "Using LID fallback for message processing",
+        );
       }
     } else {
-      from = remoteJid.replace('@lid', '');
+      from = remoteJid.replace("@lid", "");
     }
   } else {
-    from = remoteJid.split('@')[0].split(':')[0];
+    from = remoteJid.split("@")[0].split(":")[0];
   }
 
   const timestamp = convertTimestampToNumber(msg.messageTimestamp);
@@ -288,7 +321,7 @@ async function handleDeviceMessage(deviceId: string, msg: WAMessage): Promise<vo
       timer,
       firstMsgKey: msg.key,
       allMsgKeys: [msg.key],
-      pushName: msg.pushName ?? '',
+      pushName: msg.pushName ?? "",
       firstTimestamp: timestamp,
       createdAt: Date.now(),
     });
@@ -299,7 +332,7 @@ async function handleDeviceMessage(deviceId: string, msg: WAMessage): Promise<vo
  * Handle QR code generation for a device
  */
 function handleDeviceQR(deviceId: string, qr: string): void {
-  logger.info({ deviceId }, 'QR code generated');
+  logger.info({ deviceId }, "QR code generated");
   // QR is already stored in device state, accessible via /devices/:id/qr endpoint
 }
 
@@ -307,15 +340,15 @@ function handleDeviceQR(deviceId: string, qr: string): void {
  * Handle device errors
  */
 function handleDeviceError(deviceId: string, error: Error): void {
-  logger.error({ deviceId, error: error.message }, 'Device error');
-  metrics.recordError('connection');
+  logger.error({ deviceId, error: error.message }, "Device error");
+  metrics.recordError("connection");
 }
 
 /**
  * Handle device credentials update
  */
 function handleDeviceCredentialsUpdated(deviceId: string): void {
-  logger.info({ deviceId }, 'Device credentials updated');
+  logger.info({ deviceId }, "Device credentials updated");
 }
 
 // ---------------------------------------------------------------------------
@@ -326,51 +359,74 @@ function handleDeviceCredentialsUpdated(deviceId: string): void {
  * Initialize all devices and register them in the database
  */
 async function initializeDevices(): Promise<void> {
-  const messageQueue = getMessageQueue();
-  const devicesToAutoConnect: string[] = [];
+  const mq = getMessageQueue();
 
-  const devices = [
-    { id: 'device_1', name: 'WhatsApp Device 1' },
-    { id: 'device_2', name: 'WhatsApp Device 2' },
-    { id: 'device_3', name: 'WhatsApp Device 3' },
-    { id: 'device_4', name: 'WhatsApp Device 4' },
-    { id: 'device_5', name: 'WhatsApp Device 5' },
-  ];
+  // Load devices from persistent SQLite devices table.
+  // On a fresh install this is empty — devices are created on-demand.
+  // On restart, previously registered devices (including legacy device_1..5) are reloaded.
+  let persistedDevices = mq.getAllDevices();
 
-  for (const device of devices) {
-    const authPath = path.join(__dirname, '..', `auth_store_${device.id}`);
-    deviceManager.registerDevice(device.id, device.name, authPath);
-    messageQueue.registerDevice(device.id, device.name, authPath);
-    const hasPersistedAuth = fs.existsSync(authPath) && fs.readdirSync(authPath).length > 0;
-    if (hasPersistedAuth) {
-      devicesToAutoConnect.push(device.id);
+  // Migration guard: first boot after upgrade — seed legacy devices that have auth files on disk.
+  // Devices that were never paired (no files) are intentionally NOT seeded.
+  if (persistedDevices.length === 0) {
+    const legacyIds = [
+      "device_1",
+      "device_2",
+      "device_3",
+      "device_4",
+      "device_5",
+    ];
+    for (const lid of legacyIds) {
+      const authPath = path.join(__dirname, "..", `auth_store_${lid}`);
+      if (fs.existsSync(authPath) && fs.readdirSync(authPath).length > 0) {
+        const legacyName = `WhatsApp Device ${lid.split("_")[1]}`;
+        mq.registerDevice(lid, legacyName, authPath);
+        logger.info({ deviceId: lid }, "Seeded legacy device from auth store");
+      }
+    }
+    persistedDevices = mq.getAllDevices();
+  }
+
+  for (const device of persistedDevices) {
+    if (!device.enabled) continue;
+    deviceManager.registerDevice(
+      device.id,
+      device.name,
+      device.auth_store_path,
+    );
+    const hasAuth =
+      fs.existsSync(device.auth_store_path) &&
+      fs.readdirSync(device.auth_store_path).length > 0;
+    if (hasAuth) {
+      await deviceManager
+        .connectDevice(device.id)
+        .catch((err) =>
+          logger.error(
+            { err, deviceId: device.id },
+            "Failed to auto-connect device",
+          ),
+        );
     }
   }
 
-  logger.info({ count: devices.length }, 'Devices registered');
-
-  // Start cleanup interval if not already running
+  // Start pending messages cleanup interval if not already running
   if (!cleanupInterval) {
     cleanupInterval = setInterval(() => {
       cleanupPendingMessages();
     }, CLEANUP_INTERVAL_MS);
-    logger.info({ intervalMs: CLEANUP_INTERVAL_MS }, 'Started pending messages cleanup interval');
-  }
-
-  logger.info('Device initialization complete');
-
-  if (devicesToAutoConnect.length > 0) {
-    logger.info({ deviceIds: devicesToAutoConnect }, 'Auto-connecting devices with persisted auth');
-    await Promise.allSettled(
-      devicesToAutoConnect.map((deviceId) =>
-        deviceManager.connectDevice(deviceId).catch((err) => {
-          logger.error({ err, deviceId }, 'Failed to auto-connect device with persisted auth');
-        })
-      )
+    logger.info(
+      { intervalMs: CLEANUP_INTERVAL_MS },
+      "Started pending messages cleanup interval",
     );
   }
 
-  logger.info('Devices are ready. Persisted sessions reconnect automatically; empty slots can be connected from the frontend when needed.');
+  logger.info(
+    { count: persistedDevices.length },
+    "Devices initialized from DB",
+  );
+  logger.info(
+    "Device initialization complete. Connect devices via frontend when needed.",
+  );
 }
 
 // ---------------------------------------------------------------------------
@@ -401,10 +457,22 @@ const WEBHOOK_RETRY_QUEUE_MAX_SIZE = 1000;
 // Rate limiting configuration
 // ---------------------------------------------------------------------------
 // Read from environment variables or use defaults
-const RATE_LIMIT_GLOBAL_TOKENS = parseInt(process.env.RATE_LIMIT_GLOBAL_TOKENS || '5', 10);
-const RATE_LIMIT_GLOBAL_REFILL_RATE = parseInt(process.env.RATE_LIMIT_GLOBAL_REFILL_RATE || '1', 10);
-const RATE_LIMIT_PER_RECIPIENT_TOKENS = parseInt(process.env.RATE_LIMIT_PER_RECIPIENT_TOKENS || '1', 10);
-const RATE_LIMIT_PER_RECIPIENT_INTERVAL = parseInt(process.env.RATE_LIMIT_PER_RECIPIENT_INTERVAL || '5000', 10);
+const RATE_LIMIT_GLOBAL_TOKENS = parseInt(
+  process.env.RATE_LIMIT_GLOBAL_TOKENS || "5",
+  10,
+);
+const RATE_LIMIT_GLOBAL_REFILL_RATE = parseInt(
+  process.env.RATE_LIMIT_GLOBAL_REFILL_RATE || "1",
+  10,
+);
+const RATE_LIMIT_PER_RECIPIENT_TOKENS = parseInt(
+  process.env.RATE_LIMIT_PER_RECIPIENT_TOKENS || "1",
+  10,
+);
+const RATE_LIMIT_PER_RECIPIENT_INTERVAL = parseInt(
+  process.env.RATE_LIMIT_PER_RECIPIENT_INTERVAL || "5000",
+  10,
+);
 
 // Initialize rate limiter manager
 const rateLimiter = new RateLimiterManager({
@@ -422,13 +490,13 @@ const rateLimiter = new RateLimiterManager({
 
 // Create rate limiting middleware for /send and /send-document endpoints
 const sendRateLimitMiddleware = createRateLimitMiddleware(rateLimiter, {
-  getRecipient: (req: any) => req?.body?.to as string || undefined,
+  getRecipient: (req: any) => (req?.body?.to as string) || undefined,
   onRateLimited: (_req: any, res: any, retryAfter: number) => {
-    logger.warn({ retryAfter }, 'Rate limit exceeded for /send endpoint');
-    metrics.recordError('ratelimit');
+    logger.warn({ retryAfter }, "Rate limit exceeded for /send endpoint");
+    metrics.recordError("ratelimit");
     res.status(429).json({
       success: false,
-      error: 'Rate limit exceeded',
+      error: "Rate limit exceeded",
       retryAfter,
     });
   },
@@ -442,21 +510,21 @@ function normalizePhone(phone: string): string {
   let normalized = phone.trim();
 
   // Remove @s.whatsapp.net if already present
-  if (normalized.includes('@')) {
-    normalized = normalized.split('@')[0];
+  if (normalized.includes("@")) {
+    normalized = normalized.split("@")[0];
   }
 
   // Remove leading '+'
-  if (normalized.startsWith('+')) {
+  if (normalized.startsWith("+")) {
     normalized = normalized.slice(1);
   }
 
   // Replace leading '0' with country code '62' (Indonesia)
-  if (normalized.startsWith('0')) {
-    normalized = '62' + normalized.slice(1);
+  if (normalized.startsWith("0")) {
+    normalized = "62" + normalized.slice(1);
   }
 
-  return normalized + '@s.whatsapp.net';
+  return normalized + "@s.whatsapp.net";
 }
 
 /** Random delay between min and max ms. */
@@ -468,9 +536,13 @@ function humanDelay(minMs: number, maxMs: number): Promise<void> {
 /** Typing delay proportional to message length. */
 function typingDelay(textLength: number): Promise<void> {
   const perChar =
-    Math.floor(Math.random() * (TYPING_SPEED_MAX_MS - TYPING_SPEED_MIN_MS + 1)) +
-    TYPING_SPEED_MIN_MS;
-  const ms = Math.max(TYPING_MIN_MS, Math.min(perChar * textLength, TYPING_MAX_MS));
+    Math.floor(
+      Math.random() * (TYPING_SPEED_MAX_MS - TYPING_SPEED_MIN_MS + 1),
+    ) + TYPING_SPEED_MIN_MS;
+  const ms = Math.max(
+    TYPING_MIN_MS,
+    Math.min(perChar * textLength, TYPING_MAX_MS),
+  );
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
@@ -486,11 +558,11 @@ function calculateBackoff(attempt: number): number {
 // ---------------------------------------------------------------------------
 
 enum MessageErrorType {
-  BLOCKED = 'BLOCKED',
-  NOT_ON_WHATSAPP = 'NOT_ON_WHATSAPP',
-  RATE_LIMITED = 'RATE_LIMITED',
-  NETWORK = 'NETWORK',
-  UNKNOWN = 'UNKNOWN',
+  BLOCKED = "BLOCKED",
+  NOT_ON_WHATSAPP = "NOT_ON_WHATSAPP",
+  RATE_LIMITED = "RATE_LIMITED",
+  NETWORK = "NETWORK",
+  UNKNOWN = "UNKNOWN",
 }
 
 interface CategorizedError {
@@ -504,42 +576,57 @@ function categorizeMessageError(err: unknown): CategorizedError {
   const errorMessage = err instanceof Error ? err.message : String(err);
   const errorStr = errorMessage.toLowerCase();
 
-  if (errorStr.includes('blocked') || errorStr.includes('restricted') ||
-      errorStr.includes('403') || errorStr.includes('unauthorized')) {
+  if (
+    errorStr.includes("blocked") ||
+    errorStr.includes("restricted") ||
+    errorStr.includes("403") ||
+    errorStr.includes("unauthorized")
+  ) {
     return {
       type: MessageErrorType.BLOCKED,
       retryable: false,
-      message: 'Recipient blocked or restricted communication',
+      message: "Recipient blocked or restricted communication",
       originalError: err,
     };
   }
 
-  if (errorStr.includes('not on whatsapp') || errorStr.includes('not found') ||
-      errorStr.includes('invalid jid')) {
+  if (
+    errorStr.includes("not on whatsapp") ||
+    errorStr.includes("not found") ||
+    errorStr.includes("invalid jid")
+  ) {
     return {
       type: MessageErrorType.NOT_ON_WHATSAPP,
       retryable: false,
-      message: 'Phone number not on WhatsApp',
+      message: "Phone number not on WhatsApp",
       originalError: err,
     };
   }
 
-  if (errorStr.includes('rate limit') || errorStr.includes('too many requests') ||
-      errorStr.includes('429') || errorStr.includes('timeout')) {
+  if (
+    errorStr.includes("rate limit") ||
+    errorStr.includes("too many requests") ||
+    errorStr.includes("429") ||
+    errorStr.includes("timeout")
+  ) {
     return {
       type: MessageErrorType.RATE_LIMITED,
       retryable: true,
-      message: 'Rate limited, retry with backoff',
+      message: "Rate limited, retry with backoff",
       originalError: err,
     };
   }
 
-  if (errorStr.includes('network') || errorStr.includes('connection') ||
-      errorStr.includes('econnrefused') || errorStr.includes('etimedout')) {
+  if (
+    errorStr.includes("network") ||
+    errorStr.includes("connection") ||
+    errorStr.includes("econnrefused") ||
+    errorStr.includes("etimedout")
+  ) {
     return {
       type: MessageErrorType.NETWORK,
       retryable: true,
-      message: 'Network error, retryable',
+      message: "Network error, retryable",
       originalError: err,
     };
   }
@@ -547,7 +634,7 @@ function categorizeMessageError(err: unknown): CategorizedError {
   return {
     type: MessageErrorType.UNKNOWN,
     retryable: true,
-    message: 'Unknown error',
+    message: "Unknown error",
     originalError: err,
   };
 }
@@ -560,9 +647,9 @@ function backupAuthStore(): void {
   try {
     if (!fs.existsSync(AUTH_STORE_DIR)) return;
     fs.cpSync(AUTH_STORE_DIR, AUTH_BACKUP_DIR, { recursive: true });
-    logger.info('Auth store backed up');
+    logger.info("Auth store backed up");
   } catch (err) {
-    logger.error({ err }, 'Failed to backup auth store');
+    logger.error({ err }, "Failed to backup auth store");
   }
 }
 
@@ -577,10 +664,10 @@ function restoreAuthIfNeeded(): void {
         fs.mkdirSync(AUTH_STORE_DIR, { recursive: true });
       }
       fs.cpSync(AUTH_BACKUP_DIR, AUTH_STORE_DIR, { recursive: true });
-      logger.info('Auth store restored from backup');
+      logger.info("Auth store restored from backup");
     }
   } catch (err) {
-    logger.error({ err }, 'Failed to restore auth store from backup');
+    logger.error({ err }, "Failed to restore auth store from backup");
   }
 }
 
@@ -590,23 +677,23 @@ function restoreAuthIfNeeded(): void {
 
 function saveWebhookUrl(url: string): void {
   try {
-    fs.writeFileSync(WEBHOOK_FILE, url, 'utf-8');
+    fs.writeFileSync(WEBHOOK_FILE, url, "utf-8");
   } catch (err) {
-    logger.error({ err }, 'Failed to persist webhook URL');
+    logger.error({ err }, "Failed to persist webhook URL");
   }
 }
 
 function loadWebhookUrl(): void {
   try {
     if (fs.existsSync(WEBHOOK_FILE)) {
-      const url = fs.readFileSync(WEBHOOK_FILE, 'utf-8').trim();
+      const url = fs.readFileSync(WEBHOOK_FILE, "utf-8").trim();
       if (url) {
         webhookUrl = url;
-        logger.info({ webhookUrl }, 'Webhook URL restored from disk');
+        logger.info({ webhookUrl }, "Webhook URL restored from disk");
       }
     }
   } catch (err) {
-    logger.error({ err }, 'Failed to load webhook URL');
+    logger.error({ err }, "Failed to load webhook URL");
   }
 }
 
@@ -634,26 +721,26 @@ function flushToWebhook(fromPhone: string): void {
   clearTimeout(entry.timer);
   pendingMessages.delete(fromPhone);
 
-  const combinedMessage = entry.messages.join('\n');
+  const combinedMessage = entry.messages.join("\n");
 
   forwardToWebhook({
     from: fromPhone,
     message: combinedMessage,
     timestamp: entry.firstTimestamp,
-    messageId: entry.firstMsgKey?.id ?? '',
+    messageId: entry.firstMsgKey?.id ?? "",
     pushName: entry.pushName,
     msgKey: entry.firstMsgKey
       ? {
-          remoteJid: entry.firstMsgKey.remoteJid ?? '',
-          id: entry.firstMsgKey.id ?? '',
+          remoteJid: entry.firstMsgKey.remoteJid ?? "",
+          id: entry.firstMsgKey.id ?? "",
           fromMe: entry.firstMsgKey.fromMe ?? false,
         }
       : null,
     allMsgKeys: entry.allMsgKeys
       .filter((k) => k.remoteJid && k.id)
       .map((k) => ({
-        remoteJid: k.remoteJid ?? '',
-        id: k.id ?? '',
+        remoteJid: k.remoteJid ?? "",
+        id: k.id ?? "",
         fromMe: k.fromMe ?? false,
       })),
   });
@@ -678,12 +765,18 @@ function cleanupPendingMessages(): void {
     if (entry) {
       clearTimeout(entry.timer);
       pendingMessages.delete(key);
-      logger.info({ phone: key, ageMinutes: Math.round((now - entry.createdAt) / 60000) }, 'Cleaned up stale pending message');
+      logger.info(
+        { phone: key, ageMinutes: Math.round((now - entry.createdAt) / 60000) },
+        "Cleaned up stale pending message",
+      );
     }
   }
 
   if (keysToDelete.length > 0) {
-    logger.info({ count: keysToDelete.length, remaining: pendingMessages.size }, 'Pending messages cleanup completed');
+    logger.info(
+      { count: keysToDelete.length, remaining: pendingMessages.size },
+      "Pending messages cleanup completed",
+    );
   }
 }
 
@@ -698,7 +791,7 @@ function clearAllPendingMessages(): void {
   const count = pendingMessages.size;
   pendingMessages.clear();
   if (count > 0) {
-    logger.info({ count }, 'Cleared all pending messages');
+    logger.info({ count }, "Cleared all pending messages");
   }
 }
 
@@ -728,13 +821,16 @@ const webhookRetryQueue: WebhookRetryEntry[] = [];
 let webhookRetryProcessorActive = false;
 
 function addWebhookToRetryQueue(
-  payload: WebhookRetryEntry['payload'],
-  currentAttempt: number = 0
+  payload: WebhookRetryEntry["payload"],
+  currentAttempt: number = 0,
 ): void {
   if (webhookRetryQueue.length >= WEBHOOK_RETRY_QUEUE_MAX_SIZE) {
     logger.warn(
-      { queueSize: webhookRetryQueue.length, max: WEBHOOK_RETRY_QUEUE_MAX_SIZE },
-      'Webhook retry queue full, dropping oldest entry'
+      {
+        queueSize: webhookRetryQueue.length,
+        max: WEBHOOK_RETRY_QUEUE_MAX_SIZE,
+      },
+      "Webhook retry queue full, dropping oldest entry",
     );
     webhookRetryQueue.shift();
   }
@@ -752,14 +848,14 @@ function addWebhookToRetryQueue(
     {
       messageId: payload.messageId,
       attempt: currentAttempt + 1,
-      queueSize: webhookRetryQueue.length
+      queueSize: webhookRetryQueue.length,
     },
-    'Webhook added to retry queue'
+    "Webhook added to retry queue",
   );
 
   if (!webhookRetryProcessorActive) {
     processWebhookRetryQueue().catch((err) => {
-      logger.error({ err }, 'Webhook retry queue processor error');
+      logger.error({ err }, "Webhook retry queue processor error");
     });
   }
 }
@@ -775,7 +871,9 @@ async function processWebhookRetryQueue(): Promise<void> {
 
       if (pendingEntry.nextRetryTime > now) {
         const waitTime = pendingEntry.nextRetryTime - now;
-        await new Promise(resolve => setTimeout(resolve, Math.min(waitTime, 5000)));
+        await new Promise((resolve) =>
+          setTimeout(resolve, Math.min(waitTime, 5000)),
+        );
         continue;
       }
 
@@ -785,7 +883,7 @@ async function processWebhookRetryQueue(): Promise<void> {
         await forwardToWebhookInternal(entry.payload);
         logger.info(
           { messageId: entry.payload.messageId, attempt: entry.attempt },
-          'Webhook retry successful'
+          "Webhook retry successful",
         );
       } catch (err) {
         if (entry.attempt < MAX_WEBHOOK_RETRY_ATTEMPTS) {
@@ -794,9 +892,9 @@ async function processWebhookRetryQueue(): Promise<void> {
               err,
               messageId: entry.payload.messageId,
               attempt: entry.attempt,
-              maxAttempts: MAX_WEBHOOK_RETRY_ATTEMPTS
+              maxAttempts: MAX_WEBHOOK_RETRY_ATTEMPTS,
             },
-            'Webhook retry failed, requeueing'
+            "Webhook retry failed, requeueing",
           );
           addWebhookToRetryQueue(entry.payload, entry.attempt);
         } else {
@@ -804,15 +902,15 @@ async function processWebhookRetryQueue(): Promise<void> {
             {
               err,
               messageId: entry.payload.messageId,
-              attempts: entry.attempt
+              attempts: entry.attempt,
             },
-            'Webhook retry failed permanently after max attempts'
+            "Webhook retry failed permanently after max attempts",
           );
         }
       }
     }
   } catch (err) {
-    logger.error({ err }, 'Error processing webhook retry queue');
+    logger.error({ err }, "Error processing webhook retry queue");
   } finally {
     webhookRetryProcessorActive = false;
   }
@@ -832,7 +930,7 @@ async function forwardToWebhookInternal(payload: {
   allMsgKeys?: { remoteJid: string; id: string; fromMe: boolean }[];
 }): Promise<void> {
   if (!webhookUrl) {
-    throw new Error('Webhook URL not configured');
+    throw new Error("Webhook URL not configured");
   }
 
   await axios.post(webhookUrl, payload, { timeout: 10000 });
@@ -848,15 +946,24 @@ async function forwardToWebhook(payload: {
   allMsgKeys?: { remoteJid: string; id: string; fromMe: boolean }[];
 }): Promise<void> {
   if (!webhookUrl) {
-    logger.warn({ messageId: payload.messageId }, 'Webhook URL not configured, skipping delivery');
+    logger.warn(
+      { messageId: payload.messageId },
+      "Webhook URL not configured, skipping delivery",
+    );
     return;
   }
 
   try {
     await forwardToWebhookInternal(payload);
-    logger.info({ messageId: payload.messageId }, 'Webhook delivered successfully');
+    logger.info(
+      { messageId: payload.messageId },
+      "Webhook delivered successfully",
+    );
   } catch (err) {
-    logger.error({ err, webhookUrl, messageId: payload.messageId }, 'Failed to deliver webhook');
+    logger.error(
+      { err, webhookUrl, messageId: payload.messageId },
+      "Failed to deliver webhook",
+    );
     addWebhookToRetryQueue(payload, 0);
   }
 }
@@ -896,7 +1003,8 @@ async function performProtectedTextSend(
       blocked: false,
       messageId: result.messageId,
       deviceId,
-      antiBanStatus: result.antiBanStatus || deviceManager.getAntiBanStatus(deviceId),
+      antiBanStatus:
+        result.antiBanStatus || deviceManager.getAntiBanStatus(deviceId),
     };
   }
 
@@ -907,17 +1015,19 @@ async function performProtectedTextSend(
       retryAfterMs: result.retryAfterMs,
       error: result.error,
       deviceId,
-      antiBanStatus: result.antiBanStatus || deviceManager.getAntiBanStatus(deviceId),
+      antiBanStatus:
+        result.antiBanStatus || deviceManager.getAntiBanStatus(deviceId),
     };
   }
 
-  metrics.recordMessageFailed(result.error || 'send_failed');
+  metrics.recordMessageFailed(result.error || "send_failed");
   return {
     success: false,
     blocked: false,
-    error: result.error || 'Failed to send message',
+    error: result.error || "Failed to send message",
     deviceId,
-    antiBanStatus: result.antiBanStatus || deviceManager.getAntiBanStatus(deviceId),
+    antiBanStatus:
+      result.antiBanStatus || deviceManager.getAntiBanStatus(deviceId),
   };
 }
 
@@ -933,7 +1043,8 @@ async function performProtectedDocumentSend(
       blocked: false,
       messageId: result.messageId,
       deviceId,
-      antiBanStatus: result.antiBanStatus || deviceManager.getAntiBanStatus(deviceId),
+      antiBanStatus:
+        result.antiBanStatus || deviceManager.getAntiBanStatus(deviceId),
     };
   }
 
@@ -944,17 +1055,19 @@ async function performProtectedDocumentSend(
       retryAfterMs: result.retryAfterMs,
       error: result.error,
       deviceId,
-      antiBanStatus: result.antiBanStatus || deviceManager.getAntiBanStatus(deviceId),
+      antiBanStatus:
+        result.antiBanStatus || deviceManager.getAntiBanStatus(deviceId),
     };
   }
 
-  metrics.recordMessageFailed(result.error || 'document_send_failed');
+  metrics.recordMessageFailed(result.error || "document_send_failed");
   return {
     success: false,
     blocked: false,
-    error: result.error || 'Failed to send document',
+    error: result.error || "Failed to send document",
     deviceId,
-    antiBanStatus: result.antiBanStatus || deviceManager.getAntiBanStatus(deviceId),
+    antiBanStatus:
+      result.antiBanStatus || deviceManager.getAntiBanStatus(deviceId),
   };
 }
 
@@ -963,11 +1076,14 @@ async function performProtectedDocumentSend(
  * Now uses DeviceManager for multi-device support
  */
 async function processQueuedMessage(msg: QueuedMessage): Promise<boolean> {
-  const deviceId = msg.device_id || 'device_1';
+  const deviceId = msg.device_id || "device_1";
   const device = deviceManager.getDevice(deviceId);
 
   if (!device || device.connectionState !== DeviceConnectionState.CONNECTED) {
-    logger.debug({ messageId: msg.message_id, deviceId }, 'Device not connected, skipping message');
+    logger.debug(
+      { messageId: msg.message_id, deviceId },
+      "Device not connected, skipping message",
+    );
     return false;
   }
 
@@ -975,44 +1091,76 @@ async function processQueuedMessage(msg: QueuedMessage): Promise<boolean> {
     if (msg.type === MessageType.TEXT) {
       const payload: MessagePayload = {
         to: msg.to,
-        message: msg.message || '',
-        replyToMsgKey: msg.replyToMsgKey ? JSON.parse(msg.replyToMsgKey as string) : undefined,
-        allMsgKeys: msg.allMsgKeys ? JSON.parse(msg.allMsgKeys as string) : undefined,
+        message: msg.message || "",
+        replyToMsgKey: msg.replyToMsgKey
+          ? JSON.parse(msg.replyToMsgKey as string)
+          : undefined,
+        allMsgKeys: msg.allMsgKeys
+          ? JSON.parse(msg.allMsgKeys as string)
+          : undefined,
       };
 
       const result = await performProtectedTextSend(deviceId, payload);
 
       if (result.success) {
-        messageQueue.markSent(msg.id, result.messageId || '');
-        logger.info({ messageId: msg.message_id, waMessageId: result.messageId, deviceId }, 'Queued message sent successfully');
+        messageQueue.markSent(msg.id, result.messageId || "");
+        logger.info(
+          {
+            messageId: msg.message_id,
+            waMessageId: result.messageId,
+            deviceId,
+          },
+          "Queued message sent successfully",
+        );
         return true;
       }
       if (result.blocked) {
-        logger.info({ messageId: msg.message_id, deviceId, retryAfterMs: result.retryAfterMs }, 'Queued message deferred by anti-ban policy');
+        logger.info(
+          {
+            messageId: msg.message_id,
+            deviceId,
+            retryAfterMs: result.retryAfterMs,
+          },
+          "Queued message deferred by anti-ban policy",
+        );
         return false;
       }
-      throw new Error(result.error || 'Failed to send message');
+      throw new Error(result.error || "Failed to send message");
     } else if (msg.type === MessageType.DOCUMENT) {
       const payload: DocumentPayload = {
         to: msg.to,
-        fileBase64: msg.fileBase64 || '',
-        fileName: msg.fileName || '',
-        mimetype: msg.mimetype || 'application/octet-stream',
+        fileBase64: msg.fileBase64 || "",
+        fileName: msg.fileName || "",
+        mimetype: msg.mimetype || "application/octet-stream",
         caption: msg.caption,
       };
 
       const result = await performProtectedDocumentSend(deviceId, payload);
 
       if (result.success) {
-        messageQueue.markSent(msg.id, result.messageId || '');
-        logger.info({ messageId: msg.message_id, waMessageId: result.messageId, deviceId }, 'Queued document sent successfully');
+        messageQueue.markSent(msg.id, result.messageId || "");
+        logger.info(
+          {
+            messageId: msg.message_id,
+            waMessageId: result.messageId,
+            deviceId,
+          },
+          "Queued document sent successfully",
+        );
         return true;
       }
       if (result.blocked) {
-        logger.info({ messageId: msg.message_id, deviceId, retryAfterMs: result.retryAfterMs }, 'Queued document deferred by anti-ban policy');
+        logger.info(
+          {
+            messageId: msg.message_id,
+            deviceId,
+            retryAfterMs: result.retryAfterMs,
+          },
+          "Queued document deferred by anti-ban policy",
+        );
         return false;
       }
-      throw new Error(result.error || 'Failed to send document');
+      throw new Error(result.error || "Failed to send document");
     }
 
     return false;
@@ -1022,10 +1170,16 @@ async function processQueuedMessage(msg: QueuedMessage): Promise<boolean> {
 
     // Check if we should retry
     if (msg.retry_count < msg.max_retries) {
-      logger.warn({ messageId: msg.message_id, error, retryCount: msg.retry_count }, 'Queued message failed, will retry');
+      logger.warn(
+        { messageId: msg.message_id, error, retryCount: msg.retry_count },
+        "Queued message failed, will retry",
+      );
       messageQueue.markForRetry(msg.id);
     } else {
-      logger.error({ messageId: msg.message_id, error, retryCount: msg.retry_count }, 'Queued message failed permanently');
+      logger.error(
+        { messageId: msg.message_id, error, retryCount: msg.retry_count },
+        "Queued message failed permanently",
+      );
     }
 
     return false;
@@ -1054,17 +1208,26 @@ async function processMessageQueue(): Promise<void> {
     for (const deviceId of connectedDeviceIds) {
       const antiBanStatus = deviceManager.getAntiBanStatus(deviceId);
       if (antiBanStatus.pausedManually) {
-        logger.info({ deviceId }, 'Skipping queue processing because anti-ban is paused manually');
+        logger.info(
+          { deviceId },
+          "Skipping queue processing because anti-ban is paused manually",
+        );
         continue;
       }
-      if (antiBanStatus.nextAllowedAt && antiBanStatus.nextAllowedAt > Date.now()) {
+      if (
+        antiBanStatus.nextAllowedAt &&
+        antiBanStatus.nextAllowedAt > Date.now()
+      ) {
         continue;
       }
 
       const pendingMessages = messageQueue.getPendingMessages(5, deviceId);
 
       if (pendingMessages.length > 0) {
-        logger.info({ deviceId, count: pendingMessages.length }, 'Processing queued messages for device');
+        logger.info(
+          { deviceId, count: pendingMessages.length },
+          "Processing queued messages for device",
+        );
 
         for (const msg of pendingMessages) {
           const sent = await processQueuedMessage(msg);
@@ -1079,10 +1242,10 @@ async function processMessageQueue(): Promise<void> {
     }
 
     if (totalProcessed > 0) {
-      logger.info({ totalProcessed }, 'Total queued messages processed');
+      logger.info({ totalProcessed }, "Total queued messages processed");
     }
   } catch (err) {
-    logger.error({ err }, 'Error processing message queue');
+    logger.error({ err }, "Error processing message queue");
   } finally {
     queueProcessorActive = false;
   }
@@ -1098,11 +1261,11 @@ function startQueueProcessor(): void {
 
   queueProcessorTimer = setInterval(() => {
     processMessageQueue().catch((err) => {
-      logger.error({ err }, 'Queue processor error');
+      logger.error({ err }, "Queue processor error");
     });
   }, 3000); // Process every 3 seconds
 
-  logger.info('Message queue processor started');
+  logger.info("Message queue processor started");
 }
 
 /**
@@ -1122,172 +1285,225 @@ function stopQueueProcessor(): void {
 // ---------------------------------------------------------------------------
 const app = express();
 app.use(cors());
-app.use(express.json({ limit: '10mb' }));
+app.use(express.json({ limit: "10mb" }));
 
 // Add metrics tracking middleware (must be before routes)
 app.use(metricsMiddleware);
 
 // POST /send — with human-like behavior (Item 1)
-app.post('/send', sendRateLimitMiddleware, async (req: Request, res: Response) => {
-  const { to, message, replyToMsgKey, allMsgKeys, queue = false, messageId, device_id = 'device_1' } = req.body as {
-    to?: string;
-    message?: string;
-    replyToMsgKey?: { remoteJid: string; id: string; fromMe: boolean };
-    allMsgKeys?: { remoteJid: string; id: string; fromMe: boolean }[];
-    queue?: boolean;
-    messageId?: string;
-    device_id?: string;
-  };
-
-  if (!to || !message) {
-    res.status(400).json({ success: false, error: 'Missing "to" or "message" field' });
-    return;
-  }
-
-  // If queue parameter is true, add to persistent queue
-  if (queue) {
-    const msgId = messageId || `${to}-${Date.now()}-${Math.random().toString(36).substring(7)}`;
-    const added = messageQueue.addTextMessage({
-      messageId: msgId,
+app.post(
+  "/send",
+  sendRateLimitMiddleware,
+  async (req: Request, res: Response) => {
+    const {
       to,
       message,
       replyToMsgKey,
       allMsgKeys,
-      deviceId: device_id,
-    });
+      queue = false,
+      messageId,
+      device_id = "device_1",
+    } = req.body as {
+      to?: string;
+      message?: string;
+      replyToMsgKey?: { remoteJid: string; id: string; fromMe: boolean };
+      allMsgKeys?: { remoteJid: string; id: string; fromMe: boolean }[];
+      queue?: boolean;
+      messageId?: string;
+      device_id?: string;
+    };
 
-    if (added) {
-      metrics.recordMessagePending();
-      res.json({ success: true, queued: true, messageId: msgId, device_id });
+    if (!to || !message) {
+      res
+        .status(400)
+        .json({ success: false, error: 'Missing "to" or "message" field' });
+      return;
+    }
+
+    // If queue parameter is true, add to persistent queue
+    if (queue) {
+      const msgId =
+        messageId ||
+        `${to}-${Date.now()}-${Math.random().toString(36).substring(7)}`;
+      const added = messageQueue.addTextMessage({
+        messageId: msgId,
+        to,
+        message,
+        replyToMsgKey,
+        allMsgKeys,
+        deviceId: device_id,
+      });
+
+      if (added) {
+        metrics.recordMessagePending();
+        res.json({ success: true, queued: true, messageId: msgId, device_id });
+      } else {
+        res.status(409).json({
+          success: false,
+          error: "Message already queued (duplicate)",
+        });
+      }
+      return;
+    }
+
+    // Send directly via device manager
+    const payload: MessagePayload = {
+      to,
+      message,
+      replyToMsgKey,
+      allMsgKeys,
+    };
+
+    const result = await performProtectedTextSend(device_id, payload);
+
+    if (result.success) {
+      res.json({
+        success: true,
+        messageId: result.messageId,
+        deviceId: result.deviceId,
+        antiBan: result.antiBanStatus,
+      });
+    } else if (result.blocked) {
+      if (result.retryAfterMs) {
+        res.setHeader(
+          "Retry-After",
+          Math.ceil(result.retryAfterMs / 1000).toString(),
+        );
+      }
+      res.status(429).json({
+        success: false,
+        blocked: true,
+        error: result.error || "Blocked by anti-ban policy",
+        retryAfterMs: result.retryAfterMs,
+        antiBan: result.antiBanStatus,
+      });
     } else {
-      res.status(409).json({ success: false, error: 'Message already queued (duplicate)' });
+      res.status(500).json({
+        success: false,
+        error: result.error || "Failed to send message",
+        antiBan: result.antiBanStatus,
+      });
     }
-    return;
-  }
-
-  // Send directly via device manager
-  const payload: MessagePayload = {
-    to,
-    message,
-    replyToMsgKey,
-    allMsgKeys,
-  };
-
-  const result = await performProtectedTextSend(device_id, payload);
-
-  if (result.success) {
-    res.json({
-      success: true,
-      messageId: result.messageId,
-      deviceId: result.deviceId,
-      antiBan: result.antiBanStatus,
-    });
-  } else if (result.blocked) {
-    if (result.retryAfterMs) {
-      res.setHeader('Retry-After', Math.ceil(result.retryAfterMs / 1000).toString());
-    }
-    res.status(429).json({
-      success: false,
-      blocked: true,
-      error: result.error || 'Blocked by anti-ban policy',
-      retryAfterMs: result.retryAfterMs,
-      antiBan: result.antiBanStatus,
-    });
-  } else {
-    res.status(500).json({
-      success: false,
-      error: result.error || 'Failed to send message',
-      antiBan: result.antiBanStatus,
-    });
-  }
-});
+  },
+);
 
 // POST /send-document — send a file (PDF, etc.) as a document message
-app.post('/send-document', sendRateLimitMiddleware, async (req: Request, res: Response) => {
-  const { to, fileBase64, fileName, mimetype, caption, queue = false, messageId, device_id = 'device_1' } = req.body as {
-    to?: string;
-    fileBase64?: string;
-    fileName?: string;
-    mimetype?: string;
-    caption?: string;
-    queue?: boolean;
-    messageId?: string;
-    device_id?: string;
-  };
-
-  if (!to || !fileBase64 || !fileName || !mimetype) {
-    res.status(400).json({
-      success: false,
-      error: 'Missing required fields: to, fileBase64, fileName, mimetype',
-    });
-    return;
-  }
-
-  // If queue parameter is true, add to persistent queue
-  if (queue) {
-    const msgId = messageId || `${to}-doc-${Date.now()}-${Math.random().toString(36).substring(7)}`;
-    const added = messageQueue.addDocumentMessage({
-      messageId: msgId,
+app.post(
+  "/send-document",
+  sendRateLimitMiddleware,
+  async (req: Request, res: Response) => {
+    const {
       to,
       fileBase64,
       fileName,
       mimetype,
       caption,
-      deviceId: device_id,
-    });
+      queue = false,
+      messageId,
+      device_id = "device_1",
+    } = req.body as {
+      to?: string;
+      fileBase64?: string;
+      fileName?: string;
+      mimetype?: string;
+      caption?: string;
+      queue?: boolean;
+      messageId?: string;
+      device_id?: string;
+    };
 
-    if (added) {
-      metrics.recordMessagePending();
-      res.json({ success: true, queued: true, messageId: msgId, device_id });
+    if (!to || !fileBase64 || !fileName || !mimetype) {
+      res.status(400).json({
+        success: false,
+        error: "Missing required fields: to, fileBase64, fileName, mimetype",
+      });
+      return;
+    }
+
+    // If queue parameter is true, add to persistent queue
+    if (queue) {
+      const msgId =
+        messageId ||
+        `${to}-doc-${Date.now()}-${Math.random().toString(36).substring(7)}`;
+      const added = messageQueue.addDocumentMessage({
+        messageId: msgId,
+        to,
+        fileBase64,
+        fileName,
+        mimetype,
+        caption,
+        deviceId: device_id,
+      });
+
+      if (added) {
+        metrics.recordMessagePending();
+        res.json({ success: true, queued: true, messageId: msgId, device_id });
+      } else {
+        res.status(409).json({
+          success: false,
+          error: "Document already queued (duplicate)",
+        });
+      }
+      return;
+    }
+
+    // Send directly via device manager
+    const payload: DocumentPayload = {
+      to,
+      fileBase64,
+      fileName,
+      mimetype,
+      caption,
+    };
+
+    const result = await performProtectedDocumentSend(device_id, payload);
+
+    if (result.success) {
+      logger.info(
+        { to, fileName, deviceId: device_id },
+        "Document sent successfully",
+      );
+      res.json({
+        success: true,
+        messageId: result.messageId,
+        deviceId: result.deviceId,
+        antiBan: result.antiBanStatus,
+      });
+    } else if (result.blocked) {
+      if (result.retryAfterMs) {
+        res.setHeader(
+          "Retry-After",
+          Math.ceil(result.retryAfterMs / 1000).toString(),
+        );
+      }
+      res.status(429).json({
+        success: false,
+        blocked: true,
+        error: result.error || "Blocked by anti-ban policy",
+        retryAfterMs: result.retryAfterMs,
+        antiBan: result.antiBanStatus,
+      });
     } else {
-      res.status(409).json({ success: false, error: 'Document already queued (duplicate)' });
+      const error = result.error || "Failed to send document";
+      logger.error(
+        { to, fileName, deviceId: device_id, error },
+        "Failed to send document",
+      );
+      res
+        .status(500)
+        .json({ success: false, error, antiBan: result.antiBanStatus });
     }
-    return;
-  }
+  },
+);
 
-  // Send directly via device manager
-  const payload: DocumentPayload = {
-    to,
-    fileBase64,
-    fileName,
-    mimetype,
-    caption,
-  };
-
-  const result = await performProtectedDocumentSend(device_id, payload);
-
-  if (result.success) {
-    logger.info({ to, fileName, deviceId: device_id }, 'Document sent successfully');
-    res.json({
-      success: true,
-      messageId: result.messageId,
-      deviceId: result.deviceId,
-      antiBan: result.antiBanStatus,
-    });
-  } else if (result.blocked) {
-    if (result.retryAfterMs) {
-      res.setHeader('Retry-After', Math.ceil(result.retryAfterMs / 1000).toString());
-    }
-    res.status(429).json({
-      success: false,
-      blocked: true,
-      error: result.error || 'Blocked by anti-ban policy',
-      retryAfterMs: result.retryAfterMs,
-      antiBan: result.antiBanStatus,
-    });
-  } else {
-    const error = result.error || 'Failed to send document';
-    logger.error({ to, fileName, deviceId: device_id, error }, 'Failed to send document');
-    res.status(500).json({ success: false, error, antiBan: result.antiBanStatus });
-  }
-});
-
-app.get('/qr', async (req: Request, res: Response) => {
-  const { device_id = 'device_1' } = req.query as { device_id?: string };
+app.get("/qr", async (req: Request, res: Response) => {
+  const { device_id = "device_1" } = req.query as { device_id?: string };
 
   const device = deviceManager.getDevice(device_id);
   if (!device) {
-    res.status(404).json({ success: false, error: `Device ${device_id} not found` });
+    res
+      .status(404)
+      .json({ success: false, error: `Device ${device_id} not found` });
     return;
   }
 
@@ -1300,10 +1516,12 @@ app.get('/qr', async (req: Request, res: Response) => {
   });
 });
 
-app.get('/status', (_req: Request, res: Response) => {
+app.get("/status", (_req: Request, res: Response) => {
   const allDevices = deviceManager.getAllDevicesStatus();
   const queueStats = messageQueue.getStats();
-  const antiBanStatuses = deviceManager.getAllAntiBanStatuses(allDevices.map((device) => device.id));
+  const antiBanStatuses = deviceManager.getAllAntiBanStatuses(
+    allDevices.map((device) => device.id),
+  );
 
   res.json({
     devices: allDevices,
@@ -1314,7 +1532,7 @@ app.get('/status', (_req: Request, res: Response) => {
 });
 
 // GET /queue/status — get message queue statistics
-app.get('/queue/status', (_req: Request, res: Response) => {
+app.get("/queue/status", (_req: Request, res: Response) => {
   const stats = messageQueue.getStats();
   const deviceStats = messageQueue.getAllDeviceStats();
   res.json({
@@ -1325,13 +1543,13 @@ app.get('/queue/status', (_req: Request, res: Response) => {
 });
 
 // DELETE /queue/cleanup — clean up old sent messages
-app.delete('/queue/cleanup', (req: Request, res: Response) => {
+app.delete("/queue/cleanup", (req: Request, res: Response) => {
   const daysOld = parseInt(req.query.daysOld as string) || 7;
   const deleted = messageQueue.cleanupOldSentMessages(daysOld);
   res.json({ success: true, deleted });
 });
 
-app.post('/webhook/register', (req: Request, res: Response) => {
+app.post("/webhook/register", (req: Request, res: Response) => {
   const { url } = req.body as { url?: string };
 
   if (!url) {
@@ -1341,11 +1559,11 @@ app.post('/webhook/register', (req: Request, res: Response) => {
 
   webhookUrl = url;
   saveWebhookUrl(url);
-  logger.info({ webhookUrl }, 'Webhook URL registered');
+  logger.info({ webhookUrl }, "Webhook URL registered");
   res.json({ success: true });
 });
 
-app.post('/logout', async (req: Request, res: Response) => {
+app.post("/logout", async (req: Request, res: Response) => {
   const { device_id } = req.body as { device_id?: string };
 
   try {
@@ -1353,9 +1571,15 @@ app.post('/logout', async (req: Request, res: Response) => {
       // Logout specific device
       await deviceManager.resetDeviceAuth(device_id);
       await deviceManager.connectDevice(device_id).catch((err) => {
-        logger.error({ err, deviceId: device_id }, 'Failed to reconnect device after logout');
+        logger.error(
+          { err, deviceId: device_id },
+          "Failed to reconnect device after logout",
+        );
       });
-      res.json({ success: true, message: `Device ${device_id} logged out. Scan new QR code to reconnect.` });
+      res.json({
+        success: true,
+        message: `Device ${device_id} logged out. Scan new QR code to reconnect.`,
+      });
     } else {
       // Logout all devices
       for (const device of deviceManager.getAllDevices()) {
@@ -1363,16 +1587,19 @@ app.post('/logout', async (req: Request, res: Response) => {
       }
       // Reconnect all devices
       await initializeDevices();
-      res.json({ success: true, message: 'All devices logged out. Scan new QR codes to reconnect.' });
+      res.json({
+        success: true,
+        message: "All devices logged out. Scan new QR codes to reconnect.",
+      });
     }
   } catch (err) {
     const error = err instanceof Error ? err.message : String(err);
-    logger.error({ err }, 'Logout failed');
+    logger.error({ err }, "Logout failed");
     res.status(500).json({ success: false, error });
   }
 });
 
-app.post('/restart', async (req: Request, res: Response) => {
+app.post("/restart", async (req: Request, res: Response) => {
   const { device_id } = req.body as { device_id?: string };
 
   try {
@@ -1385,11 +1612,11 @@ app.post('/restart', async (req: Request, res: Response) => {
       // Restart all devices
       await deviceManager.disconnectAll();
       await initializeDevices();
-      res.json({ success: true, message: 'Restarting all devices...' });
+      res.json({ success: true, message: "Restarting all devices..." });
     }
   } catch (err) {
     const error = err instanceof Error ? err.message : String(err);
-    logger.error({ err }, 'Restart failed');
+    logger.error({ err }, "Restart failed");
     res.status(500).json({ success: false, error });
   }
 });
@@ -1399,13 +1626,48 @@ app.post('/restart', async (req: Request, res: Response) => {
 // ---------------------------------------------------------------------------
 
 // GET /devices — list all devices with status
-app.get('/devices', (_req: Request, res: Response) => {
+app.get("/devices", (_req: Request, res: Response) => {
   const devices = deviceManager.getAllDevicesStatus();
   res.json({ devices });
 });
 
+// POST /devices — create a new device slot on-demand (idempotent)
+app.post("/devices", async (req: Request, res: Response) => {
+  const { id, name } = req.body as { id?: string; name?: string };
+
+  if (!id || !name) {
+    res
+      .status(400)
+      .json({ success: false, error: "Missing required fields: id, name" });
+    return;
+  }
+
+  // Idempotent: if device already registered, return success
+  if (deviceManager.getDevice(id)) {
+    logger.info(
+      { deviceId: id },
+      "Device already registered, returning success",
+    );
+    res.json({ success: true, deviceId: id, alreadyExisted: true });
+    return;
+  }
+
+  const authPath = path.join(__dirname, "..", `auth_store_${id}`);
+
+  try {
+    deviceManager.registerDevice(id, name, authPath);
+    getMessageQueue().registerDevice(id, name, authPath);
+    logger.info({ deviceId: id, name }, "Device created on-demand");
+    res.json({ success: true, deviceId: id, alreadyExisted: false });
+  } catch (err) {
+    const error = err instanceof Error ? err.message : String(err);
+    logger.error({ err, deviceId: id }, "Failed to create device");
+    res.status(500).json({ success: false, error });
+  }
+});
+
 // POST /devices/:id/connect — connect a specific device
-app.post('/devices/:id/connect', async (req: Request, res: Response) => {
+app.post("/devices/:id/connect", async (req: Request, res: Response) => {
   const { id } = req.params;
   const deviceId = Array.isArray(id) ? id[0] : id;
 
@@ -1414,13 +1676,13 @@ app.post('/devices/:id/connect', async (req: Request, res: Response) => {
     res.json({ success: true, message: `Connecting device ${deviceId}...` });
   } catch (err) {
     const error = err instanceof Error ? err.message : String(err);
-    logger.error({ err, deviceId }, 'Failed to connect device');
+    logger.error({ err, deviceId }, "Failed to connect device");
     res.status(500).json({ success: false, error });
   }
 });
 
 // POST /devices/:id/disconnect — disconnect a specific device
-app.post('/devices/:id/disconnect', async (req: Request, res: Response) => {
+app.post("/devices/:id/disconnect", async (req: Request, res: Response) => {
   const { id } = req.params;
   const deviceId = Array.isArray(id) ? id[0] : id;
 
@@ -1429,34 +1691,39 @@ app.post('/devices/:id/disconnect', async (req: Request, res: Response) => {
     res.json({ success: true, message: `Device ${deviceId} disconnected` });
   } catch (err) {
     const error = err instanceof Error ? err.message : String(err);
-    logger.error({ err, deviceId }, 'Failed to disconnect device');
+    logger.error({ err, deviceId }, "Failed to disconnect device");
     res.status(500).json({ success: false, error });
   }
 });
 
 // POST /devices/:id/recover — force a clean auth recovery for a specific device
-app.post('/devices/:id/recover', async (req: Request, res: Response) => {
+app.post("/devices/:id/recover", async (req: Request, res: Response) => {
   const { id } = req.params;
   const deviceId = Array.isArray(id) ? id[0] : id;
 
   try {
     await deviceManager.forceRecoverDevice(deviceId);
-    res.json({ success: true, message: `Force recovery started for device ${deviceId}. Scan the new QR code.` });
+    res.json({
+      success: true,
+      message: `Force recovery started for device ${deviceId}. Scan the new QR code.`,
+    });
   } catch (err) {
     const error = err instanceof Error ? err.message : String(err);
-    logger.error({ err, deviceId }, 'Failed to force recover device');
+    logger.error({ err, deviceId }, "Failed to force recover device");
     res.status(500).json({ success: false, error });
   }
 });
 
 // GET /devices/:id/qr — get QR code for a specific device
-app.get('/devices/:id/qr', async (req: Request, res: Response) => {
+app.get("/devices/:id/qr", async (req: Request, res: Response) => {
   const { id } = req.params;
   const deviceId = Array.isArray(id) ? id[0] : id;
   const device = deviceManager.getDevice(deviceId);
 
   if (!device) {
-    res.status(404).json({ success: false, error: `Device ${deviceId} not found` });
+    res
+      .status(404)
+      .json({ success: false, error: `Device ${deviceId} not found` });
     return;
   }
 
@@ -1470,14 +1737,51 @@ app.get('/devices/:id/qr', async (req: Request, res: Response) => {
   });
 });
 
+// DELETE /devices/:id — disconnect, clear auth, and permanently remove device
+app.delete("/devices/:id", async (req: Request, res: Response) => {
+  const { id } = req.params;
+  const deviceId = Array.isArray(id) ? id[0] : id;
+  const device = deviceManager.getDevice(deviceId);
+
+  if (!device) {
+    res
+      .status(404)
+      .json({ success: false, error: `Device ${deviceId} not found` });
+    return;
+  }
+
+  try {
+    // 1. Disconnect gracefully (sets userDisconnected flag, prevents auto-reconnect)
+    await deviceManager.disconnectDevice(deviceId);
+
+    // 2. Clear auth store files
+    clearDir(device.authStorePath);
+
+    // 3. Unregister from DeviceManager (also cleans anti-ban state)
+    deviceManager.unregisterDevice(deviceId);
+
+    // 4. Remove from SQLite devices table
+    getMessageQueue().removeDevice(deviceId);
+
+    logger.info({ deviceId }, "Device permanently deleted");
+    res.json({ success: true, deviceId });
+  } catch (err) {
+    const error = err instanceof Error ? err.message : String(err);
+    logger.error({ err, deviceId }, "Failed to delete device");
+    res.status(500).json({ success: false, error });
+  }
+});
+
 // GET /devices/:id/status — get status of a specific device
-app.get('/devices/:id/status', async (req: Request, res: Response) => {
+app.get("/devices/:id/status", async (req: Request, res: Response) => {
   const { id } = req.params;
   const deviceId = Array.isArray(id) ? id[0] : id;
   const deviceStatus = deviceManager.getDeviceStatusSummary(deviceId);
 
   if (!deviceStatus) {
-    res.status(404).json({ success: false, error: `Device ${deviceId} not found` });
+    res
+      .status(404)
+      .json({ success: false, error: `Device ${deviceId} not found` });
     return;
   }
 
@@ -1490,60 +1794,84 @@ app.get('/devices/:id/status', async (req: Request, res: Response) => {
   });
 });
 
-app.get('/devices/:id/antiban', async (req: Request, res: Response) => {
+app.get("/devices/:id/antiban", async (req: Request, res: Response) => {
   const { id } = req.params;
   const deviceId = Array.isArray(id) ? id[0] : id;
   const device = deviceManager.getDevice(deviceId);
 
   if (!device) {
-    res.status(404).json({ success: false, error: `Device ${deviceId} not found` });
+    res
+      .status(404)
+      .json({ success: false, error: `Device ${deviceId} not found` });
     return;
   }
 
-  res.json({ success: true, deviceId, antiBan: deviceManager.getAntiBanStatus(deviceId) });
+  res.json({
+    success: true,
+    deviceId,
+    antiBan: deviceManager.getAntiBanStatus(deviceId),
+  });
 });
 
-app.post('/devices/:id/antiban/pause', async (req: Request, res: Response) => {
+app.post("/devices/:id/antiban/pause", async (req: Request, res: Response) => {
   const { id } = req.params;
   const deviceId = Array.isArray(id) ? id[0] : id;
   const device = deviceManager.getDevice(deviceId);
 
   if (!device) {
-    res.status(404).json({ success: false, error: `Device ${deviceId} not found` });
+    res
+      .status(404)
+      .json({ success: false, error: `Device ${deviceId} not found` });
     return;
   }
 
-  res.json({ success: true, deviceId, antiBan: deviceManager.pauseAntiBan(deviceId) });
+  res.json({
+    success: true,
+    deviceId,
+    antiBan: deviceManager.pauseAntiBan(deviceId),
+  });
 });
 
-app.post('/devices/:id/antiban/resume', async (req: Request, res: Response) => {
+app.post("/devices/:id/antiban/resume", async (req: Request, res: Response) => {
   const { id } = req.params;
   const deviceId = Array.isArray(id) ? id[0] : id;
   const device = deviceManager.getDevice(deviceId);
 
   if (!device) {
-    res.status(404).json({ success: false, error: `Device ${deviceId} not found` });
+    res
+      .status(404)
+      .json({ success: false, error: `Device ${deviceId} not found` });
     return;
   }
 
-  res.json({ success: true, deviceId, antiBan: deviceManager.resumeAntiBan(deviceId) });
+  res.json({
+    success: true,
+    deviceId,
+    antiBan: deviceManager.resumeAntiBan(deviceId),
+  });
 });
 
-app.post('/devices/:id/antiban/reset', async (req: Request, res: Response) => {
+app.post("/devices/:id/antiban/reset", async (req: Request, res: Response) => {
   const { id } = req.params;
   const deviceId = Array.isArray(id) ? id[0] : id;
   const device = deviceManager.getDevice(deviceId);
 
   if (!device) {
-    res.status(404).json({ success: false, error: `Device ${deviceId} not found` });
+    res
+      .status(404)
+      .json({ success: false, error: `Device ${deviceId} not found` });
     return;
   }
 
-  res.json({ success: true, deviceId, antiBan: deviceManager.resetAntiBan(deviceId) });
+  res.json({
+    success: true,
+    deviceId,
+    antiBan: deviceManager.resetAntiBan(deviceId),
+  });
 });
 
 // GET /devices/:id/messages — get messages for a specific device
-app.get('/devices/:id/messages', async (req: Request, res: Response) => {
+app.get("/devices/:id/messages", async (req: Request, res: Response) => {
   const { id } = req.params;
   const deviceId = Array.isArray(id) ? id[0] : id;
   const { status } = req.query as { status?: MessageStatus };
@@ -1553,7 +1881,7 @@ app.get('/devices/:id/messages', async (req: Request, res: Response) => {
     res.json({ deviceId, messages, count: messages.length });
   } catch (err) {
     const error = err instanceof Error ? err.message : String(err);
-    logger.error({ err, deviceId }, 'Failed to get device messages');
+    logger.error({ err, deviceId }, "Failed to get device messages");
     res.status(500).json({ success: false, error });
   }
 });
@@ -1567,7 +1895,7 @@ app.get('/devices/:id/messages', async (req: Request, res: Response) => {
  * Cleans up resources, closes connections, and clears timers.
  */
 async function gracefulShutdown(signal: string): Promise<void> {
-  logger.info({ signal }, 'Starting graceful shutdown...');
+  logger.info({ signal }, "Starting graceful shutdown...");
 
   // Stop accepting new connections
   try {
@@ -1587,31 +1915,31 @@ async function gracefulShutdown(signal: string): Promise<void> {
     // Explicit disconnect here forces every connected device into a stopped state.
     deviceManager.clearAllReconnectTimers();
 
-    logger.info('Graceful shutdown completed');
+    logger.info("Graceful shutdown completed");
   } catch (err) {
-    logger.error({ err }, 'Error during graceful shutdown');
+    logger.error({ err }, "Error during graceful shutdown");
   }
 
   // Force exit after timeout
   setTimeout(() => {
-    logger.warn('Forced exit after timeout');
+    logger.warn("Forced exit after timeout");
     process.exit(0);
   }, 5000).unref();
 }
 
 // Register shutdown handlers
-process.on('SIGTERM', () => gracefulShutdown('SIGTERM'));
-process.on('SIGINT', () => gracefulShutdown('SIGINT'));
+process.on("SIGTERM", () => gracefulShutdown("SIGTERM"));
+process.on("SIGINT", () => gracefulShutdown("SIGINT"));
 
 // Handle uncaught exceptions
-process.on('uncaughtException', (err) => {
-  logger.error({ err }, 'Uncaught exception');
-  gracefulShutdown('uncaughtException').then(() => process.exit(1));
+process.on("uncaughtException", (err) => {
+  logger.error({ err }, "Uncaught exception");
+  gracefulShutdown("uncaughtException").then(() => process.exit(1));
 });
 
 // Handle unhandled promise rejections
-process.on('unhandledRejection', (reason) => {
-  logger.error({ reason }, 'Unhandled promise rejection');
+process.on("unhandledRejection", (reason) => {
+  logger.error({ reason }, "Unhandled promise rejection");
   // Don't exit immediately, log and continue
 });
 
@@ -1622,7 +1950,7 @@ app.listen(PORT, async () => {
 
   // Initialize all devices (register only, no auto-connect)
   await initializeDevices().catch((err) => {
-    logger.error({ err }, 'Failed to initialize devices');
+    logger.error({ err }, "Failed to initialize devices");
   });
 
   // Start queue processor

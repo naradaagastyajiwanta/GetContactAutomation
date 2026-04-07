@@ -27,7 +27,13 @@ from orchestrator.osint.tools import (
     extract_social_links,
 )
 from . import search as search_flow
-from .mkt_prompts import build_web_search_prompt, build_instagram_prompt, build_website_scraper_prompt
+from .mkt_prompts import (
+    build_web_search_prompt,
+    build_instagram_prompt,
+    build_website_scraper_prompt,
+    build_chrome_devtools_ig_prompt,
+)
+from orchestrator.mcp_browser_client import get_mcp_browser, MCPBrowserClient, MCPBrowserError
 
 
 # ---------------------------------------------------------------------------
@@ -58,6 +64,7 @@ async def _run_sub_agent_llm_loop(
     terminal_tools: set[str],
     tool_dispatch: dict[str, Callable],
     max_iterations: int = 8,
+    model_override: str | None = None,
 ) -> tuple[dict, int]:
     """
     Generic ReAct loop for sub-agents using OpenAI Responses API.
@@ -65,7 +72,7 @@ async def _run_sub_agent_llm_loop(
     terminal_tool_args is the arguments dict from the first terminal tool called.
     """
     client = _get_sub_agent_openai()
-    model = cfg.MARKETING_SUB_AGENT_MODEL
+    model = model_override or cfg.MARKETING_SUB_AGENT_MODEL
     total_tokens = 0
 
     response = await client.responses.create(
@@ -1183,6 +1190,260 @@ class GeminiGapFillSubAgent:
                 tool_calls_made=["gemini_grounded_discovery"],
                 duration_seconds=duration,
             )
+
+
+# ---------------------------------------------------------------------------
+# Chrome DevTools MCP Sub-Agent
+# ---------------------------------------------------------------------------
+
+_CHROME_IG_TOOLS = [
+    {
+        "type": "function",
+        "name": "navigate_to_ig_profile",
+        "description": (
+            "Navigasi ke halaman profil Instagram dan tunggu sampai halaman load. "
+            "Selalu panggil ini PERTAMA sebelum extract data."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "ig_handle": {
+                    "type": "string",
+                    "description": "Handle Instagram tanpa @, e.g. 'universitasgadjahmadasli'",
+                },
+            },
+            "required": ["ig_handle"],
+        },
+    },
+    {
+        "type": "function",
+        "name": "extract_ig_data",
+        "description": (
+            "Jalankan JavaScript di halaman Instagram untuk mengekstrak data posts, bio, "
+            "nomor telepon, atau informasi lainnya. Gunakan ini setelah navigate_to_ig_profile."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "script": {
+                    "type": "string",
+                    "description": "JavaScript yang akan dijalankan di browser. Harus punya return statement.",
+                },
+                "purpose": {
+                    "type": "string",
+                    "description": "Penjelasan singkat apa yang diextract (untuk logging)",
+                },
+            },
+            "required": ["script", "purpose"],
+        },
+    },
+    {
+        "type": "function",
+        "name": "get_page_snapshot",
+        "description": (
+            "Ambil accessibility tree halaman saat ini sebagai teks terstruktur. "
+            "Berguna untuk membaca konten halaman tanpa JavaScript."
+        ),
+        "parameters": {"type": "object", "properties": {}, "required": []},
+    },
+    {
+        "type": "function",
+        "name": "finish",
+        "description": "TERMINAL: selesai, kembalikan semua kontak yang ditemukan.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "contacts": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "type": {"type": "string", "enum": ["wa_phone", "email"]},
+                            "value": {"type": "string"},
+                            "source_url": {"type": "string"},
+                            "confidence": {"type": "number"},
+                            "pic_name": {"type": "string"},
+                        },
+                        "required": ["type", "value", "source_url", "confidence"],
+                    },
+                },
+                "ig_handle_found": {"type": "string"},
+                "summary": {"type": "string"},
+                "failure_reason": {
+                    "type": "string",
+                    "enum": [
+                        "session_expired",
+                        "account_private",
+                        "account_not_found",
+                        "checkpoint_required",
+                        "no_contacts_found",
+                        "js_extraction_failed",
+                    ],
+                },
+            },
+            "required": ["contacts", "summary"],
+        },
+    },
+]
+_CHROME_IG_TERMINAL: set[str] = {"finish"}
+
+
+async def _cdp_navigate_tool(args: dict, client: MCPBrowserClient) -> str:
+    handle = args.get("ig_handle", "").strip().lstrip("@")
+    if not handle:
+        return json.dumps({"error": "ig_handle kosong"})
+    target_url = f"https://www.instagram.com/{handle}/"
+    try:
+        await client.navigate(target_url)
+        # chrome-devtools-mcp navigate response doesn't include current URL,
+        # so evaluate window.location.href to detect login/challenge redirects
+        current_url = await client.get_current_url()
+        if "/accounts/login" in current_url:
+            return json.dumps({
+                "status": "error",
+                "error_type": "session_expired",
+                "message": "Instagram meminta login. Buka Chrome dan login ke instagram.com dulu.",
+                "url": current_url,
+            })
+        if "/challenge/" in current_url or "/accounts/suspended" in current_url:
+            return json.dumps({
+                "status": "error",
+                "error_type": "checkpoint_required",
+                "message": "IG membutuhkan verifikasi akun.",
+                "url": current_url,
+            })
+        return json.dumps({
+            "status": "ok",
+            "url": current_url,
+            "message": f"Navigasi ke @{handle} berhasil",
+        })
+    except MCPBrowserError as e:
+        return json.dumps({"status": "error", "error_type": "mcp_error", "message": str(e)})
+
+
+async def _cdp_evaluate_tool(args: dict, client: MCPBrowserClient) -> str:
+    script = args.get("script", "").strip()
+    purpose = args.get("purpose", "extract")
+    if not script:
+        return json.dumps({"error": "script kosong"})
+    try:
+        result = await client.evaluate(script)
+        log.debug("[CDPAgent] JS eval (%s): %s chars result", purpose, len(str(result)))
+        return json.dumps({"status": "ok", "result": result})
+    except MCPBrowserError as e:
+        return json.dumps({"status": "error", "error_type": "js_error", "message": str(e)})
+
+
+async def _cdp_snapshot_tool(args: dict, client: MCPBrowserClient) -> str:
+    try:
+        result = await client.snapshot()
+        text = str(result.get("raw") or result)[:5000]
+        return json.dumps({"status": "ok", "snapshot": text})
+    except MCPBrowserError as e:
+        return json.dumps({"status": "error", "error_type": "snapshot_error", "message": str(e)})
+
+
+class ChromeDevToolsInstagramSubAgent:
+    """
+    Scrapes Instagram via Chrome DevTools MCP — uses real Chrome with existing IG session.
+    PRIMARY: LLM (GPT-4o) navigates IG using browser tools + JS extraction.
+    FALLBACK: delegates to InstagramSubAgent (Playwright + tiers).
+    """
+
+    async def run(
+        self,
+        company_name: str,
+        website_url: str | None = None,
+        prior_web_contacts: list[dict] | None = None,
+    ) -> SubAgentResult:
+        from functools import partial
+        start = time.monotonic()
+
+        # 1. Check MCP availability
+        mcp_client = get_mcp_browser()
+        if not mcp_client:
+            log.info("[CDPAgent] MCP_DEVTOOLS_URL not set — falling back to InstagramSubAgent")
+            return await self._fallback(company_name, website_url, prior_web_contacts)
+
+        available = await mcp_client.is_available()
+        if not available:
+            log.warning("[CDPAgent] MCP server not reachable — falling back to InstagramSubAgent")
+            return await self._fallback(company_name, website_url, prior_web_contacts)
+
+        # 2. LLM ReAct loop
+        model = cfg.get("MCP_DEVTOOLS_MODEL", "gpt-4o")
+        dispatch = {
+            "navigate_to_ig_profile": partial(_cdp_navigate_tool, client=mcp_client),
+            "extract_ig_data": partial(_cdp_evaluate_tool, client=mcp_client),
+            "get_page_snapshot": partial(_cdp_snapshot_tool, client=mcp_client),
+        }
+
+        try:
+            system_prompt = build_chrome_devtools_ig_prompt(company_name, website_url, prior_web_contacts)
+            terminal_args, tokens = await _run_sub_agent_llm_loop(
+                system_prompt=system_prompt,
+                initial_message=f"Cari dan scrape Instagram untuk {company_name}",
+                tool_schemas=_CHROME_IG_TOOLS,
+                terminal_tools=_CHROME_IG_TERMINAL,
+                tool_dispatch=dispatch,
+                max_iterations=12,
+                model_override=model,
+            )
+        except Exception as exc:
+            log.warning("[CDPAgent] LLM loop failed for '%s': %s — falling back", company_name, exc)
+            return await self._fallback(company_name, website_url, prior_web_contacts)
+
+        # 3. Process result
+        contacts = terminal_args.get("contacts", [])
+        failure_reason = terminal_args.get("failure_reason")
+        ig_handle = terminal_args.get("ig_handle_found")
+        summary = terminal_args.get("summary", "")
+        duration = time.monotonic() - start
+
+        # Hard failures — do NOT trigger fallback (would waste quota with same result)
+        no_fallback_reasons = {"session_expired", "checkpoint_required"}
+        if not contacts and failure_reason in no_fallback_reasons:
+            log.warning("[CDPAgent] Hard failure for '%s': %s — NOT falling back", company_name, failure_reason)
+            return SubAgentResult(
+                contacts=[],
+                ig_handle=ig_handle,
+                failure_reason=failure_reason,
+                summary=f"CDP: {summary}",
+                tokens_used=tokens,
+                duration_seconds=duration,
+                scrape_tier_used="chrome_devtools_mcp",
+                success=False,
+                error=failure_reason,
+            )
+
+        if contacts:
+            log.info("[CDPAgent] '%s': %d contacts in %.1fs", company_name, len(contacts), duration)
+            return SubAgentResult(
+                contacts=contacts,
+                ig_handle=ig_handle,
+                summary=summary,
+                tokens_used=tokens,
+                duration_seconds=duration,
+                scrape_tier_used="chrome_devtools_mcp",
+                tool_calls_made=["chrome_devtools_llm"],
+                success=True,
+            )
+
+        # 4. No contacts — try fallback
+        log.info("[CDPAgent] '%s': 0 contacts (reason: %s) — trying fallback", company_name, failure_reason)
+        return await self._fallback(company_name, website_url, prior_web_contacts)
+
+    async def _fallback(
+        self,
+        company_name: str,
+        website_url: str | None,
+        prior_web_contacts: list[dict] | None,
+    ) -> SubAgentResult:
+        return await InstagramSubAgent().run(
+            company_name=company_name,
+            website_url=website_url,
+            prior_web_contacts=prior_web_contacts,
+        )
 
 
 class WebFallbackSubAgent:

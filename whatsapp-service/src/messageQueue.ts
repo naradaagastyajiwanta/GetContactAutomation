@@ -5,29 +5,29 @@
  * and retry capabilities. Survives service restarts using SQLite.
  */
 
-import Database from 'better-sqlite3';
-import pino from 'pino';
-import * as fs from 'fs';
-import * as path from 'path';
+import Database from "better-sqlite3";
+import pino from "pino";
+import * as fs from "fs";
+import * as path from "path";
 
-const logger = pino({ level: 'info' });
+const logger = pino({ level: "info" });
 
 // Database path
-const DB_PATH = path.join(__dirname, '..', 'data', 'message_queue.db');
+const DB_PATH = path.join(__dirname, "..", "data", "message_queue.db");
 
 // Message status enum
 export enum MessageStatus {
-  PENDING = 'pending',
-  SENDING = 'sending',
-  SENT = 'sent',
-  FAILED = 'failed',
-  RETRYING = 'retrying',
+  PENDING = "pending",
+  SENDING = "sending",
+  SENT = "sent",
+  FAILED = "failed",
+  RETRYING = "retrying",
 }
 
 // Message type enum
 export enum MessageType {
-  TEXT = 'text',
-  DOCUMENT = 'document',
+  TEXT = "text",
+  DOCUMENT = "document",
 }
 
 // Interface for queued message
@@ -57,7 +57,7 @@ export interface QueuedMessage {
 // Interface for webhook event
 export interface WebhookEvent {
   id: number;
-  event_type: 'message_received' | 'message_sent';
+  event_type: "message_received" | "message_sent";
   payload: string;
   status: MessageStatus;
   retry_count: number;
@@ -100,7 +100,7 @@ export class MessageQueue {
       fs.mkdirSync(dir, { recursive: true });
     }
     this.db = new Database(dbPath);
-    this.db.pragma('journal_mode = WAL');
+    this.db.pragma("journal_mode = WAL");
     this.initSchema();
   }
 
@@ -176,7 +176,7 @@ export class MessageQueue {
       const allMsgKeysStr = options.allMsgKeys
         ? JSON.stringify(options.allMsgKeys)
         : null;
-      const deviceId = options.deviceId ?? 'device_1';
+      const deviceId = options.deviceId ?? "device_1";
 
       const result = stmt.run(
         options.messageId,
@@ -185,18 +185,27 @@ export class MessageQueue {
         options.message ?? null,
         replyToMsgKeyStr,
         allMsgKeysStr,
-        deviceId
+        deviceId,
       );
 
       if (result.changes > 0) {
-        logger.info({ messageId: options.messageId, deviceId }, 'Message added to queue');
+        logger.info(
+          { messageId: options.messageId, deviceId },
+          "Message added to queue",
+        );
         return true;
       } else {
-        logger.warn({ messageId: options.messageId }, 'Message already exists (duplicate)');
+        logger.warn(
+          { messageId: options.messageId },
+          "Message already exists (duplicate)",
+        );
         return false;
       }
     } catch (err) {
-      logger.error({ err, messageId: options.messageId }, 'Failed to add message to queue');
+      logger.error(
+        { err, messageId: options.messageId },
+        "Failed to add message to queue",
+      );
       return false;
     }
   }
@@ -212,7 +221,7 @@ export class MessageQueue {
     `);
 
     try {
-      const deviceId = options.deviceId ?? 'device_1';
+      const deviceId = options.deviceId ?? "device_1";
 
       const result = stmt.run(
         options.messageId,
@@ -222,18 +231,27 @@ export class MessageQueue {
         options.fileName,
         options.mimetype,
         options.caption ?? null,
-        deviceId
+        deviceId,
       );
 
       if (result.changes > 0) {
-        logger.info({ messageId: options.messageId, deviceId }, 'Document message added to queue');
+        logger.info(
+          { messageId: options.messageId, deviceId },
+          "Document message added to queue",
+        );
         return true;
       } else {
-        logger.warn({ messageId: options.messageId }, 'Document message already exists (duplicate)');
+        logger.warn(
+          { messageId: options.messageId },
+          "Document message already exists (duplicate)",
+        );
         return false;
       }
     } catch (err) {
-      logger.error({ err, messageId: options.messageId }, 'Failed to add document to queue');
+      logger.error(
+        { err, messageId: options.messageId },
+        "Failed to add document to queue",
+      );
       return false;
     }
   }
@@ -280,7 +298,7 @@ export class MessageQueue {
         LIMIT ?
       `);
       const rows = stmt.all(MessageStatus.PENDING, deviceId, limit) as any[];
-      return rows.map(row => this.mapRowToQueuedMessage(row));
+      return rows.map((row) => this.mapRowToQueuedMessage(row));
     } else {
       stmt = this.db.prepare(`
         SELECT * FROM message_queue
@@ -289,7 +307,7 @@ export class MessageQueue {
         LIMIT ?
       `);
       const rows = stmt.all(MessageStatus.PENDING, limit) as any[];
-      return rows.map(row => this.mapRowToQueuedMessage(row));
+      return rows.map((row) => this.mapRowToQueuedMessage(row));
     }
   }
 
@@ -305,15 +323,24 @@ export class MessageQueue {
     `);
 
     const rows = stmt.all(MessageStatus.FAILED) as any[];
-    return rows.map(row => this.mapRowToQueuedMessage(row));
+    return rows.map((row) => this.mapRowToQueuedMessage(row));
   }
 
   /**
    * Update message status
    */
-  updateStatus(id: number, status: MessageStatus, errorMessage?: string, waMessageId?: string): boolean {
-    const updateSent = status === MessageStatus.SENT ? ', sent_at = datetime("now")' : '';
-    const updateRetrying = status === MessageStatus.RETRYING ? ', retry_count = retry_count + 1' : '';
+  updateStatus(
+    id: number,
+    status: MessageStatus,
+    errorMessage?: string,
+    waMessageId?: string,
+  ): boolean {
+    const updateSent =
+      status === MessageStatus.SENT ? ', sent_at = datetime("now")' : "";
+    const updateRetrying =
+      status === MessageStatus.RETRYING
+        ? ", retry_count = retry_count + 1"
+        : "";
 
     const stmt = this.db.prepare(`
       UPDATE message_queue
@@ -330,7 +357,7 @@ export class MessageQueue {
       stmt.run(status, errorMessage ?? null, waMessageId ?? null, id);
       return true;
     } catch (err) {
-      logger.error({ err, id, status }, 'Failed to update message status');
+      logger.error({ err, id, status }, "Failed to update message status");
       return false;
     }
   }
@@ -370,7 +397,7 @@ export class MessageQueue {
       stmt.run(MessageStatus.PENDING, id);
       return true;
     } catch (err) {
-      logger.error({ err, id }, 'Failed to mark message for retry');
+      logger.error({ err, id }, "Failed to mark message for retry");
       return false;
     }
   }
@@ -379,7 +406,9 @@ export class MessageQueue {
    * Get message by message_id
    */
   getByMessageId(messageId: string): QueuedMessage | null {
-    const stmt = this.db.prepare('SELECT * FROM message_queue WHERE message_id = ?');
+    const stmt = this.db.prepare(
+      "SELECT * FROM message_queue WHERE message_id = ?",
+    );
     const row = stmt.get(messageId) as any;
     return row ? this.mapRowToQueuedMessage(row) : null;
   }
@@ -395,7 +424,10 @@ export class MessageQueue {
     `);
 
     const result = stmt.run(MessageStatus.SENT, daysOld);
-    logger.info({ deleted: result.changes, daysOld }, 'Cleaned up old sent messages');
+    logger.info(
+      { deleted: result.changes, daysOld },
+      "Cleaned up old sent messages",
+    );
     return result.changes;
   }
 
@@ -434,7 +466,10 @@ export class MessageQueue {
   /**
    * Add webhook event to queue
    */
-  addWebhookEvent(eventType: 'message_received' | 'message_sent', payload: any): number {
+  addWebhookEvent(
+    eventType: "message_received" | "message_sent",
+    payload: any,
+  ): number {
     const stmt = this.db.prepare(`
       INSERT INTO webhook_queue (event_type, payload)
       VALUES (?, ?)
@@ -475,8 +510,12 @@ export class MessageQueue {
    * Update webhook event status
    */
   updateWebhookStatus(id: number, status: MessageStatus): boolean {
-    const updateSent = status === MessageStatus.SENT ? ', delivered_at = datetime("now")' : '';
-    const updateRetrying = status === MessageStatus.RETRYING ? ', retry_count = retry_count + 1' : '';
+    const updateSent =
+      status === MessageStatus.SENT ? ', delivered_at = datetime("now")' : "";
+    const updateRetrying =
+      status === MessageStatus.RETRYING
+        ? ", retry_count = retry_count + 1"
+        : "";
 
     const stmt = this.db.prepare(`
       UPDATE webhook_queue
@@ -490,7 +529,7 @@ export class MessageQueue {
       stmt.run(status, id);
       return true;
     } catch (err) {
-      logger.error({ err, id, status }, 'Failed to update webhook status');
+      logger.error({ err, id, status }, "Failed to update webhook status");
       return false;
     }
   }
@@ -505,7 +544,9 @@ export class MessageQueue {
       type: row.type,
       to: row.to,
       message: row.message,
-      replyToMsgKey: row.reply_to_msg_key ? JSON.parse(row.reply_to_msg_key) : undefined,
+      replyToMsgKey: row.reply_to_msg_key
+        ? JSON.parse(row.reply_to_msg_key)
+        : undefined,
       allMsgKeys: row.all_msg_keys ? JSON.parse(row.all_msg_keys) : undefined,
       fileBase64: row.file_base64,
       fileName: row.file_name,
@@ -519,7 +560,7 @@ export class MessageQueue {
       updated_at: row.updated_at,
       sent_at: row.sent_at,
       wa_message_id: row.wa_message_id,
-      device_id: row.device_id || 'device_1',
+      device_id: row.device_id || "device_1",
     };
   }
 
@@ -545,10 +586,13 @@ export class MessageQueue {
 
     try {
       stmt.run(id, name, authStorePath);
-      logger.info({ deviceId: id, name }, 'Device registered in database');
+      logger.info({ deviceId: id, name }, "Device registered in database");
       return true;
     } catch (err) {
-      logger.error({ err, deviceId: id }, 'Failed to register device in database');
+      logger.error(
+        { err, deviceId: id },
+        "Failed to register device in database",
+      );
       return false;
     }
   }
@@ -563,9 +607,9 @@ export class MessageQueue {
     auth_store_path: string;
     enabled: number;
   }> {
-    const stmt = this.db.prepare('SELECT * FROM devices');
+    const stmt = this.db.prepare("SELECT * FROM devices");
     const rows = stmt.all() as any[];
-    return rows.map(row => ({
+    return rows.map((row) => ({
       id: row.id,
       name: row.name,
       phone_number: row.phone_number,
@@ -578,14 +622,37 @@ export class MessageQueue {
    * Update device phone number
    */
   updateDevicePhoneNumber(id: string, phoneNumber: string): boolean {
-    const stmt = this.db.prepare('UPDATE devices SET phone_number = ? WHERE id = ?');
+    const stmt = this.db.prepare(
+      "UPDATE devices SET phone_number = ? WHERE id = ?",
+    );
 
     try {
       stmt.run(phoneNumber, id);
-      logger.info({ deviceId: id, phoneNumber }, 'Device phone number updated');
+      logger.info({ deviceId: id, phoneNumber }, "Device phone number updated");
       return true;
     } catch (err) {
-      logger.error({ err, deviceId: id }, 'Failed to update device phone number');
+      logger.error(
+        { err, deviceId: id },
+        "Failed to update device phone number",
+      );
+      return false;
+    }
+  }
+
+  /**
+   * Remove a device from the database
+   */
+  removeDevice(id: string): boolean {
+    const stmt = this.db.prepare("DELETE FROM devices WHERE id = ?");
+    try {
+      const result = stmt.run(id);
+      logger.info({ deviceId: id }, "Device removed from database");
+      return result.changes > 0;
+    } catch (err) {
+      logger.error(
+        { err, deviceId: id },
+        "Failed to remove device from database",
+      );
       return false;
     }
   }
@@ -593,7 +660,10 @@ export class MessageQueue {
   /**
    * Get messages for a specific device
    */
-  getMessagesByDevice(deviceId: string, status?: MessageStatus): QueuedMessage[] {
+  getMessagesByDevice(
+    deviceId: string,
+    status?: MessageStatus,
+  ): QueuedMessage[] {
     let stmt: Database.Statement;
     if (status) {
       stmt = this.db.prepare(`
@@ -602,7 +672,7 @@ export class MessageQueue {
         ORDER BY created_at DESC
       `);
       const rows = stmt.all(deviceId, status) as any[];
-      return rows.map(row => this.mapRowToQueuedMessage(row));
+      return rows.map((row) => this.mapRowToQueuedMessage(row));
     } else {
       stmt = this.db.prepare(`
         SELECT * FROM message_queue
@@ -610,7 +680,7 @@ export class MessageQueue {
         ORDER BY created_at DESC
       `);
       const rows = stmt.all(deviceId) as any[];
-      return rows.map(row => this.mapRowToQueuedMessage(row));
+      return rows.map((row) => this.mapRowToQueuedMessage(row));
     }
   }
 
@@ -650,25 +720,35 @@ export class MessageQueue {
   /**
    * Get all device statistics
    */
-  getAllDeviceStats(): Map<string, {
-    pending: number;
-    sending: number;
-    sent: number;
-    failed: number;
-  }> {
+  getAllDeviceStats(): Map<
+    string,
+    {
+      pending: number;
+      sending: number;
+      sent: number;
+      failed: number;
+    }
+  > {
     const stmt = this.db.prepare(`
       SELECT device_id, status, COUNT(*) as count
       FROM message_queue
       GROUP BY device_id, status
     `);
 
-    const rows = stmt.all() as { device_id: string; status: string; count: number }[];
-    const statsMap = new Map<string, {
-      pending: number;
-      sending: number;
-      sent: number;
-      failed: number;
-    }>();
+    const rows = stmt.all() as {
+      device_id: string;
+      status: string;
+      count: number;
+    }[];
+    const statsMap = new Map<
+      string,
+      {
+        pending: number;
+        sending: number;
+        sent: number;
+        failed: number;
+      }
+    >();
 
     for (const row of rows) {
       if (!statsMap.has(row.device_id)) {

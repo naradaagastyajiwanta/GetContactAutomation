@@ -2064,6 +2064,9 @@ def _scrape_instagram_posts_for_handles(handles: list[str], primary_handle: str 
 
         if len(all_posts) >= target_post_count:
             break
+        # Jitter delay between handles — avoid burst-scraping multiple accounts in sequence
+        import time as _t, random as _r
+        _t.sleep(_r.uniform(4.0, 10.0))
 
     if all_posts:
         return all_posts, None
