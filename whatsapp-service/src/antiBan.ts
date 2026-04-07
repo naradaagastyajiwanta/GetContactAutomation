@@ -1,9 +1,9 @@
-import { createHash } from 'crypto';
-import * as fs from 'fs';
-import * as path from 'path';
-import type { Logger } from 'pino';
+import { createHash } from "crypto";
+import * as fs from "fs";
+import * as path from "path";
+import type { Logger } from "pino";
 
-export type BanRiskLevel = 'low' | 'medium' | 'high' | 'critical';
+export type BanRiskLevel = "low" | "medium" | "high" | "critical";
 
 export interface AntiBanDecision {
   allowed: boolean;
@@ -30,7 +30,7 @@ export interface AntiBanStatus {
   lastSentAt: number | null;
   health: AntiBanHealthStatus;
   warmUp: {
-    phase: 'warming' | 'active';
+    phase: "warming" | "active";
     day: number;
     totalDays: number;
     todayLimit: number;
@@ -151,7 +151,7 @@ const DEFAULT_CONFIG = {
     disconnectWarningThreshold: 3,
     disconnectCriticalThreshold: 5,
     failedMessageThreshold: 5,
-    autoPauseAt: 'high' as BanRiskLevel,
+    autoPauseAt: "high" as BanRiskLevel,
     cooldownMs: 15 * MINUTE_MS,
   },
   timelock: {
@@ -182,36 +182,39 @@ function createDefaultDeviceState(): DeviceAntiBanState {
 }
 
 function hashContent(content: string): string {
-  const normalized = content.trim().toLowerCase().replace(/\s+/g, ' ');
-  return createHash('sha1').update(normalized).digest('hex');
+  const normalized = content.trim().toLowerCase().replace(/\s+/g, " ");
+  return createHash("sha1").update(normalized).digest("hex");
 }
 
 function normalizeJid(input: string): string {
   const trimmed = input.trim();
   if (!trimmed) return trimmed;
-  if (trimmed.endsWith('@g.us')) {
+  if (trimmed.endsWith("@g.us")) {
     return trimmed;
   }
 
   let normalized = trimmed;
-  if (normalized.includes('@')) {
-    normalized = normalized.split('@')[0];
+  if (normalized.includes("@")) {
+    normalized = normalized.split("@")[0];
   }
-  if (normalized.startsWith('+')) {
+  if (normalized.startsWith("+")) {
     normalized = normalized.slice(1);
   }
-  if (normalized.startsWith('0')) {
+  if (normalized.startsWith("0")) {
     normalized = `62${normalized.slice(1)}`;
   }
-  normalized = normalized.split(':')[0];
+  normalized = normalized.split(":")[0];
   return `${normalized}@s.whatsapp.net`;
 }
 
 function isGroupJid(jid: string): boolean {
-  return jid.endsWith('@g.us');
+  return jid.endsWith("@g.us");
 }
 
-function riskMeetsThreshold(risk: BanRiskLevel, threshold: BanRiskLevel): boolean {
+function riskMeetsThreshold(
+  risk: BanRiskLevel,
+  threshold: BanRiskLevel,
+): boolean {
   const order: Record<BanRiskLevel, number> = {
     low: 0,
     medium: 1,
@@ -223,19 +226,27 @@ function riskMeetsThreshold(risk: BanRiskLevel, threshold: BanRiskLevel): boolea
 
 function is401Reason(reason: string): boolean {
   const normalized = reason.trim().toLowerCase();
-  return normalized === '401' || normalized.includes('401') || normalized.includes('loggedout');
+  return (
+    normalized === "401" ||
+    normalized.includes("401") ||
+    normalized.includes("loggedout")
+  );
 }
 
 function is403Reason(reason: string): boolean {
   const normalized = reason.trim().toLowerCase();
-  return normalized === '403' || normalized.includes('403') || normalized.includes('forbidden');
+  return (
+    normalized === "403" ||
+    normalized.includes("403") ||
+    normalized.includes("forbidden")
+  );
 }
 
 function toLocalDayKey(timestamp: number): string {
   const date = new Date(timestamp);
   const year = date.getFullYear();
-  const month = String(date.getMonth() + 1).padStart(2, '0');
-  const day = String(date.getDate()).padStart(2, '0');
+  const month = String(date.getMonth() + 1).padStart(2, "0");
+  const day = String(date.getDate()).padStart(2, "0");
   return `${year}-${month}-${day}`;
 }
 
@@ -265,7 +276,11 @@ export class AntiBanManager {
   private config: typeof DEFAULT_CONFIG;
   private state: PersistedState;
 
-  constructor(logger: Logger, stateFilePath: string, config: AntiBanConfig = {}) {
+  constructor(
+    logger: Logger,
+    stateFilePath: string,
+    config: AntiBanConfig = {},
+  ) {
     this.logger = logger;
     this.stateFilePath = stateFilePath;
     this.config = {
@@ -277,7 +292,11 @@ export class AntiBanManager {
     this.state = this.loadState();
   }
 
-  beforeSend(deviceId: string, recipient: string, content: string): AntiBanDecision {
+  beforeSend(
+    deviceId: string,
+    recipient: string,
+    content: string,
+  ): AntiBanDecision {
     const now = Date.now();
     const state = this.getDeviceState(deviceId);
     this.pruneState(state, now);
@@ -292,7 +311,7 @@ export class AntiBanManager {
       return {
         allowed: false,
         delayMs: 0,
-        reason: 'Device is cooling down before the next send window',
+        reason: "Device is cooling down before the next send window",
         resumeAfterMs: state.nextAllowedAt - now,
         health,
         warmUpDay: warmUp.day,
@@ -303,7 +322,7 @@ export class AntiBanManager {
       return {
         allowed: false,
         delayMs: 0,
-        reason: 'Sending paused manually for this device',
+        reason: "Sending paused manually for this device",
         health,
         warmUpDay: warmUp.day,
       };
@@ -323,15 +342,21 @@ export class AntiBanManager {
       };
     }
 
-    if (state.timelock.isActive && !isGroupJid(normalizedJid) && !this.isKnownChat(state, normalizedJid)) {
-      const until = (state.timelock.expiresAt ?? now + this.config.timelock.defaultDurationMs)
-        + this.config.timelock.resumeBufferMs;
+    if (
+      state.timelock.isActive &&
+      !isGroupJid(normalizedJid) &&
+      !this.isKnownChat(state, normalizedJid)
+    ) {
+      const until =
+        (state.timelock.expiresAt ??
+          now + this.config.timelock.defaultDurationMs) +
+        this.config.timelock.resumeBufferMs;
       this.deferUntil(state, until);
       this.saveState();
       return {
         allowed: false,
         delayMs: 0,
-        reason: 'Reachout timelock active for new contacts',
+        reason: "Reachout timelock active for new contacts",
         resumeAfterMs: until - now,
         health,
         warmUpDay: warmUp.day,
@@ -357,7 +382,7 @@ export class AntiBanManager {
       return {
         allowed: false,
         delayMs: 0,
-        reason: 'Daily anti-ban cap reached for this device',
+        reason: "Daily anti-ban cap reached for this device",
         resumeAfterMs: warmUp.nextResetAt - now,
         health,
         warmUpDay: warmUp.day,
@@ -372,7 +397,7 @@ export class AntiBanManager {
       return {
         allowed: false,
         delayMs: 0,
-        reason: 'Hourly anti-ban cap reached for this device',
+        reason: "Hourly anti-ban cap reached for this device",
         resumeAfterMs: until - now,
         health,
         warmUpDay: warmUp.day,
@@ -387,22 +412,26 @@ export class AntiBanManager {
       return {
         allowed: false,
         delayMs: 0,
-        reason: 'Per-minute anti-ban cap reached for this device',
+        reason: "Per-minute anti-ban cap reached for this device",
         resumeAfterMs: until - now,
         health,
         warmUpDay: warmUp.day,
       };
     }
 
-    if (recent.identicalMessageHits >= this.config.rateLimiter.maxIdenticalMessages) {
+    if (
+      recent.identicalMessageHits >=
+      this.config.rateLimiter.maxIdenticalMessages
+    ) {
       const oldestIdentical = recent.oldestIdenticalAt ?? now;
-      const until = oldestIdentical + this.config.rateLimiter.identicalMessageWindowMs;
+      const until =
+        oldestIdentical + this.config.rateLimiter.identicalMessageWindowMs;
       this.deferUntil(state, until);
       this.saveState();
       return {
         allowed: false,
         delayMs: 0,
-        reason: 'Identical-message anti-ban guard triggered',
+        reason: "Identical-message anti-ban guard triggered",
         resumeAfterMs: until - now,
         health,
         warmUpDay: warmUp.day,
@@ -418,7 +447,8 @@ export class AntiBanManager {
       delayMs += this.config.rateLimiter.newChatDelayMs;
     }
     if (recent.lastMinute > this.config.rateLimiter.burstAllowance) {
-      delayMs += (recent.lastMinute - this.config.rateLimiter.burstAllowance) * 1_000;
+      delayMs +=
+        (recent.lastMinute - this.config.rateLimiter.burstAllowance) * 1_000;
     }
     if (state.lastSentAt && now - state.lastSentAt < 15_000) {
       delayMs += 1_500;
@@ -446,7 +476,10 @@ export class AntiBanManager {
       contentHash: hashContent(content),
     });
     state.lastSentAt = now;
-    state.nextAllowedAt = state.nextAllowedAt && state.nextAllowedAt > now ? state.nextAllowedAt : null;
+    state.nextAllowedAt =
+      state.nextAllowedAt && state.nextAllowedAt > now
+        ? state.nextAllowedAt
+        : null;
 
     if (!isGroupJid(normalizedJid)) {
       this.registerKnownChat(deviceId, normalizedJid, false);
@@ -456,33 +489,41 @@ export class AntiBanManager {
 
     const dayKey = toLocalDayKey(now);
     state.warmUp.startedAt = state.warmUp.startedAt ?? now;
-    state.warmUp.dailyCounts[dayKey] = (state.warmUp.dailyCounts[dayKey] ?? 0) + 1;
+    state.warmUp.dailyCounts[dayKey] =
+      (state.warmUp.dailyCounts[dayKey] ?? 0) + 1;
     this.pruneState(state, now);
     this.saveState();
   }
 
-  afterSendFailed(deviceId: string, recipient: string | null, error: string): void {
+  afterSendFailed(
+    deviceId: string,
+    recipient: string | null,
+    error: string,
+  ): void {
     const now = Date.now();
     const state = this.getDeviceState(deviceId);
     const errorText = error.toLowerCase();
     state.failedEvents.push({ at: now, error });
 
-    if (errorText.includes('463')) {
+    if (errorText.includes("463")) {
       state.timelock.isActive = true;
       state.timelock.expiresAt = now + this.config.timelock.defaultDurationMs;
-      state.timelock.enforcementType = '463';
-      this.deferUntil(state, (state.timelock.expiresAt ?? now) + this.config.timelock.resumeBufferMs);
-    } else if (errorText.includes('403')) {
+      state.timelock.enforcementType = "463";
+      this.deferUntil(
+        state,
+        (state.timelock.expiresAt ?? now) + this.config.timelock.resumeBufferMs,
+      );
+    } else if (errorText.includes("403")) {
       this.deferUntil(state, now + HOUR_MS);
-    } else if (errorText.includes('401')) {
+    } else if (errorText.includes("401")) {
       this.deferUntil(state, now + this.config.health.cooldownMs);
-    } else if (errorText.includes('rate limit') || errorText.includes('429')) {
+    } else if (errorText.includes("rate limit") || errorText.includes("429")) {
       this.deferUntil(state, now + 5 * MINUTE_MS);
     }
 
     if (recipient) {
       const normalizedJid = normalizeJid(recipient);
-      if (!isGroupJid(normalizedJid) && !errorText.includes('463')) {
+      if (!isGroupJid(normalizedJid) && !errorText.includes("463")) {
         this.registerKnownChat(deviceId, normalizedJid, false);
       }
     }
@@ -512,13 +553,17 @@ export class AntiBanManager {
     const health = this.computeHealth(state, now);
     const warmUp = this.computeWarmUp(state, now);
     const recent = this.getRecentSendStats(state, now, null);
-    const onlyStaleAuthCooldown = !health.paused
-      && !state.timelock.isActive
-      && recent.lastMinute === 0
-      && recent.lastHour === 0
-      && warmUp.todaySent < warmUp.todayLimit;
+    const onlyStaleAuthCooldown =
+      !health.paused &&
+      !state.timelock.isActive &&
+      recent.lastMinute === 0 &&
+      recent.lastHour === 0 &&
+      warmUp.todaySent < warmUp.todayLimit;
 
-    if ((state.nextAllowedAt && state.nextAllowedAt < now) || onlyStaleAuthCooldown) {
+    if (
+      (state.nextAllowedAt && state.nextAllowedAt < now) ||
+      onlyStaleAuthCooldown
+    ) {
       state.nextAllowedAt = null;
     }
     this.pruneState(state, now);
@@ -539,22 +584,30 @@ export class AntiBanManager {
     }
   }
 
-  updateTimelock(deviceId: string, update: {
-    isActive?: boolean;
-    timeEnforcementEnds?: Date | string | number;
-    enforcementType?: string;
-  }): void {
+  updateTimelock(
+    deviceId: string,
+    update: {
+      isActive?: boolean;
+      timeEnforcementEnds?: Date | string | number;
+      enforcementType?: string;
+    },
+  ): void {
     const state = this.getDeviceState(deviceId);
     if (update.isActive) {
       state.timelock.isActive = true;
-      state.timelock.enforcementType = update.enforcementType ?? state.timelock.enforcementType;
+      state.timelock.enforcementType =
+        update.enforcementType ?? state.timelock.enforcementType;
       const expiresAt = update.timeEnforcementEnds
         ? new Date(update.timeEnforcementEnds).getTime()
         : Date.now() + this.config.timelock.defaultDurationMs;
       state.timelock.expiresAt = Number.isFinite(expiresAt)
         ? expiresAt
         : Date.now() + this.config.timelock.defaultDurationMs;
-      this.deferUntil(state, (state.timelock.expiresAt ?? Date.now()) + this.config.timelock.resumeBufferMs);
+      this.deferUntil(
+        state,
+        (state.timelock.expiresAt ?? Date.now()) +
+          this.config.timelock.resumeBufferMs,
+      );
     } else {
       state.timelock.isActive = false;
       state.timelock.expiresAt = null;
@@ -584,6 +637,14 @@ export class AntiBanManager {
   reset(deviceId: string): void {
     this.state.devices[deviceId] = createDefaultDeviceState();
     this.saveState();
+  }
+
+  removeDevice(deviceId: string): void {
+    if (this.state.devices[deviceId]) {
+      delete this.state.devices[deviceId];
+      this.saveState();
+      this.logger.info({ deviceId }, "Anti-ban state removed for device");
+    }
   }
 
   getStatus(deviceId: string): AntiBanStatus {
@@ -636,23 +697,30 @@ export class AntiBanManager {
       if (!fs.existsSync(this.stateFilePath)) {
         return { version: 1, devices: {} };
       }
-      const raw = fs.readFileSync(this.stateFilePath, 'utf-8');
+      const raw = fs.readFileSync(this.stateFilePath, "utf-8");
       const parsed = JSON.parse(raw) as PersistedState;
       return {
         version: parsed.version || 1,
         devices: parsed.devices || {},
       };
     } catch (error) {
-      this.logger.error({ error }, 'Failed to load anti-ban state, using defaults');
+      this.logger.error(
+        { error },
+        "Failed to load anti-ban state, using defaults",
+      );
       return { version: 1, devices: {} };
     }
   }
 
   private saveState(): void {
     try {
-      fs.writeFileSync(this.stateFilePath, JSON.stringify(this.state, null, 2), 'utf-8');
+      fs.writeFileSync(
+        this.stateFilePath,
+        JSON.stringify(this.state, null, 2),
+        "utf-8",
+      );
     } catch (error) {
-      this.logger.error({ error }, 'Failed to save anti-ban state');
+      this.logger.error({ error }, "Failed to save anti-ban state");
     }
   }
 
@@ -664,15 +732,22 @@ export class AntiBanManager {
   }
 
   private pruneState(state: DeviceAntiBanState, now: number): void {
-    const retentionWindow = Math.max(
-      this.config.rateLimiter.identicalMessageWindowMs,
-      DAY_MS,
-    ) + HOUR_MS;
+    const retentionWindow =
+      Math.max(this.config.rateLimiter.identicalMessageWindowMs, DAY_MS) +
+      HOUR_MS;
 
-    state.sendEvents = state.sendEvents.filter((event) => now - event.at <= retentionWindow);
-    state.failedEvents = state.failedEvents.filter((event) => now - event.at <= 6 * HOUR_MS);
-    state.disconnectEvents = state.disconnectEvents.filter((event) => now - event.at <= 6 * HOUR_MS);
-    state.knownChats = Array.from(new Set(state.knownChats.map((jid) => normalizeJid(jid))));
+    state.sendEvents = state.sendEvents.filter(
+      (event) => now - event.at <= retentionWindow,
+    );
+    state.failedEvents = state.failedEvents.filter(
+      (event) => now - event.at <= 6 * HOUR_MS,
+    );
+    state.disconnectEvents = state.disconnectEvents.filter(
+      (event) => now - event.at <= 6 * HOUR_MS,
+    );
+    state.knownChats = Array.from(
+      new Set(state.knownChats.map((jid) => normalizeJid(jid))),
+    );
 
     const oldestWarmUpKey = toLocalDayKey(now - 30 * DAY_MS);
     for (const key of Object.keys(state.warmUp.dailyCounts)) {
@@ -681,7 +756,11 @@ export class AntiBanManager {
       }
     }
 
-    if (state.timelock.isActive && state.timelock.expiresAt && now > state.timelock.expiresAt + this.config.timelock.resumeBufferMs) {
+    if (
+      state.timelock.isActive &&
+      state.timelock.expiresAt &&
+      now > state.timelock.expiresAt + this.config.timelock.resumeBufferMs
+    ) {
       state.timelock.isActive = false;
       state.timelock.expiresAt = null;
       state.timelock.enforcementType = null;
@@ -692,7 +771,10 @@ export class AntiBanManager {
     }
   }
 
-  private computeWarmUp(state: DeviceAntiBanState, now: number): AntiBanStatus['warmUp'] {
+  private computeWarmUp(
+    state: DeviceAntiBanState,
+    now: number,
+  ): AntiBanStatus["warmUp"] {
     const inactivityMs = this.config.warmUp.inactivityThresholdHours * HOUR_MS;
     if (state.lastSentAt && now - state.lastSentAt > inactivityMs) {
       state.warmUp.startedAt = now;
@@ -705,84 +787,117 @@ export class AntiBanManager {
     const currentDate = new Date(now);
     currentDate.setHours(0, 0, 0, 0);
 
-    const elapsedDays = Math.max(1, Math.floor((currentDate.getTime() - startDate.getTime()) / DAY_MS) + 1);
+    const elapsedDays = Math.max(
+      1,
+      Math.floor((currentDate.getTime() - startDate.getTime()) / DAY_MS) + 1,
+    );
     const day = Math.min(this.config.warmUp.warmUpDays, elapsedDays);
     const todayKey = toLocalDayKey(now);
     const todaySent = state.warmUp.dailyCounts[todayKey] ?? 0;
     const rawLimit = Math.round(
-      this.config.warmUp.day1Limit * Math.pow(this.config.warmUp.growthFactor, day - 1),
+      this.config.warmUp.day1Limit *
+        Math.pow(this.config.warmUp.growthFactor, day - 1),
     );
-    const todayLimit = Math.min(this.config.rateLimiter.maxPerDay, Math.max(this.config.warmUp.day1Limit, rawLimit));
+    const todayLimit = Math.min(
+      this.config.rateLimiter.maxPerDay,
+      Math.max(this.config.warmUp.day1Limit, rawLimit),
+    );
 
     return {
-      phase: day < this.config.warmUp.warmUpDays ? 'warming' : 'active',
+      phase: day < this.config.warmUp.warmUpDays ? "warming" : "active",
       day,
       totalDays: this.config.warmUp.warmUpDays,
       todayLimit,
       todaySent,
-      progress: Math.min(100, Math.round((day / this.config.warmUp.warmUpDays) * 100)),
+      progress: Math.min(
+        100,
+        Math.round((day / this.config.warmUp.warmUpDays) * 100),
+      ),
       nextResetAt: nextLocalMidnight(now),
     };
   }
 
-  private computeHealth(state: DeviceAntiBanState, now: number): AntiBanHealthStatus {
+  private computeHealth(
+    state: DeviceAntiBanState,
+    now: number,
+  ): AntiBanHealthStatus {
     let score = 0;
     const reasons: string[] = [];
 
-    const disconnectsLastHour = state.disconnectEvents.filter((event) => now - event.at <= HOUR_MS);
-    const disconnect403 = disconnectsLastHour.filter((event) => is403Reason(event.reason));
-    const disconnect401 = disconnectsLastHour.filter((event) => is401Reason(event.reason));
-    const failedLastHour = state.failedEvents.filter((event) => now - event.at <= HOUR_MS);
+    const disconnectsLastHour = state.disconnectEvents.filter(
+      (event) => now - event.at <= HOUR_MS,
+    );
+    const disconnect403 = disconnectsLastHour.filter((event) =>
+      is403Reason(event.reason),
+    );
+    const disconnect401 = disconnectsLastHour.filter((event) =>
+      is401Reason(event.reason),
+    );
+    const failedLastHour = state.failedEvents.filter(
+      (event) => now - event.at <= HOUR_MS,
+    );
 
-    if (disconnectsLastHour.length >= this.config.health.disconnectCriticalThreshold) {
+    if (
+      disconnectsLastHour.length >=
+      this.config.health.disconnectCriticalThreshold
+    ) {
       score += 30;
-      reasons.push('Frequent disconnects within the last hour');
-    } else if (disconnectsLastHour.length >= this.config.health.disconnectWarningThreshold) {
+      reasons.push("Frequent disconnects within the last hour");
+    } else if (
+      disconnectsLastHour.length >=
+      this.config.health.disconnectWarningThreshold
+    ) {
       score += 15;
-      reasons.push('Repeated disconnects detected');
+      reasons.push("Repeated disconnects detected");
     }
 
     if (disconnect403.length > 0) {
       score += Math.min(60, disconnect403.length * 40);
-      reasons.push('403 disconnect suggests WhatsApp is actively restricting the account');
+      reasons.push(
+        "403 disconnect suggests WhatsApp is actively restricting the account",
+      );
     }
     if (disconnect401.length > 0) {
       score += Math.min(80, disconnect401.length * 60);
-      reasons.push('401 logout suggests the session may be under enforcement');
+      reasons.push("401 logout suggests the session may be under enforcement");
     }
     if (failedLastHour.length >= this.config.health.failedMessageThreshold) {
       score += 20;
-      reasons.push('Message failures are rising in the last hour');
+      reasons.push("Message failures are rising in the last hour");
     }
     if (state.timelock.isActive) {
       score += 25;
-      reasons.push('Reachout timelock is active for new contacts');
+      reasons.push("Reachout timelock is active for new contacts");
     }
 
     score = Math.min(100, score);
 
-    let risk: BanRiskLevel = 'low';
+    let risk: BanRiskLevel = "low";
     if (score >= 85) {
-      risk = 'critical';
+      risk = "critical";
     } else if (score >= 60) {
-      risk = 'high';
+      risk = "high";
     } else if (score >= 30) {
-      risk = 'medium';
+      risk = "medium";
     }
 
-    const paused = state.pausedManually || riskMeetsThreshold(risk, this.config.health.autoPauseAt);
+    const paused =
+      state.pausedManually ||
+      riskMeetsThreshold(risk, this.config.health.autoPauseAt);
 
-    let recommendation = 'Traffic is within the current safety envelope.';
-    if (risk === 'medium') {
-      recommendation = 'Reduce new-contact sends and watch the device closely.';
-    } else if (risk === 'high') {
-      recommendation = 'Pause outbound traffic for this device and let it cool down.';
-    } else if (risk === 'critical') {
-      recommendation = 'Stop all outbound traffic immediately and avoid reconnect churn.';
+    let recommendation = "Traffic is within the current safety envelope.";
+    if (risk === "medium") {
+      recommendation = "Reduce new-contact sends and watch the device closely.";
+    } else if (risk === "high") {
+      recommendation =
+        "Pause outbound traffic for this device and let it cool down.";
+    } else if (risk === "critical") {
+      recommendation =
+        "Stop all outbound traffic immediately and avoid reconnect churn.";
     }
     if (state.pausedManually) {
-      reasons.unshift('Sending paused manually by operator');
-      recommendation = 'Resume manually only after reviewing device health.';
+      reasons.unshift("Sending paused manually by operator");
+      recommendation = "Resume manually only after reviewing device health.";
     }
 
     return {
@@ -794,7 +909,11 @@ export class AntiBanManager {
     };
   }
 
-  private getRecentSendStats(state: DeviceAntiBanState, now: number, contentHash: string | null): {
+  private getRecentSendStats(
+    state: DeviceAntiBanState,
+    now: number,
+    contentHash: string | null,
+  ): {
     lastMinute: number;
     lastHour: number;
     lastDay: number;
@@ -803,11 +922,22 @@ export class AntiBanManager {
     oldestHourAt: number | null;
     oldestIdenticalAt: number | null;
   } {
-    const minuteEvents = state.sendEvents.filter((event) => now - event.at <= MINUTE_MS);
-    const hourEvents = state.sendEvents.filter((event) => now - event.at <= HOUR_MS);
-    const dayEvents = state.sendEvents.filter((event) => now - event.at <= DAY_MS);
+    const minuteEvents = state.sendEvents.filter(
+      (event) => now - event.at <= MINUTE_MS,
+    );
+    const hourEvents = state.sendEvents.filter(
+      (event) => now - event.at <= HOUR_MS,
+    );
+    const dayEvents = state.sendEvents.filter(
+      (event) => now - event.at <= DAY_MS,
+    );
     const identicalEvents = contentHash
-      ? state.sendEvents.filter((event) => now - event.at <= this.config.rateLimiter.identicalMessageWindowMs && event.contentHash === contentHash)
+      ? state.sendEvents.filter(
+          (event) =>
+            now - event.at <=
+              this.config.rateLimiter.identicalMessageWindowMs &&
+            event.contentHash === contentHash,
+        )
       : [];
 
     return {

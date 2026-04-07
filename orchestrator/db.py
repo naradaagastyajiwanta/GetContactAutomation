@@ -147,6 +147,18 @@ CREATE TABLE IF NOT EXISTS config (
 );
 """
 
+_DDL_USER_WA_DEVICES = """
+CREATE TABLE IF NOT EXISTS user_wa_devices (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    dms_user_id INTEGER NOT NULL UNIQUE,
+    user_email TEXT NOT NULL,
+    device_id TEXT NOT NULL UNIQUE,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+CREATE INDEX IF NOT EXISTS idx_user_wa_devices_user ON user_wa_devices(dms_user_id);
+CREATE INDEX IF NOT EXISTS idx_user_wa_devices_device ON user_wa_devices(device_id);
+"""
+
 _DDL_AUTH = """
 CREATE TABLE IF NOT EXISTS auth_user_roles (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -962,6 +974,7 @@ async def init_db() -> None:
         await db.executescript(_DDL_AGENT)
         await db.executescript(_DDL_CONFIG)
         await db.executescript(_DDL_AUTH)
+        await db.executescript(_DDL_USER_WA_DEVICES)
         await db.executescript(_INDEXES)
         await db.executescript(_INDEXES_AGENT)
         await db.executescript(_INDEXES_AUTH)
@@ -5183,3 +5196,54 @@ async def increment_email_blast_quota(count: int = 1) -> int:
         )
         row = await cursor.fetchone()
         return row["sent_count"] if row else count
+
+
+# ---------------------------------------------------------------------------
+# user_wa_devices CRUD
+# ---------------------------------------------------------------------------
+
+async def get_user_wa_device(dms_user_id: int) -> dict | None:
+    async with aiosqlite.connect(DATABASE_PATH) as db:
+        db.row_factory = aiosqlite.Row
+        cur = await db.execute(
+            "SELECT * FROM user_wa_devices WHERE dms_user_id = ?", (dms_user_id,)
+        )
+        row = await cur.fetchone()
+        return dict(row) if row else None
+
+
+async def get_user_wa_device_by_device_id(device_id: str) -> dict | None:
+    async with aiosqlite.connect(DATABASE_PATH) as db:
+        db.row_factory = aiosqlite.Row
+        cur = await db.execute(
+            "SELECT * FROM user_wa_devices WHERE device_id = ?", (device_id,)
+        )
+        row = await cur.fetchone()
+        return dict(row) if row else None
+
+
+async def create_user_wa_device(dms_user_id: int, user_email: str, device_id: str) -> dict:
+    async with aiosqlite.connect(DATABASE_PATH) as db:
+        await db.execute(
+            "INSERT INTO user_wa_devices (dms_user_id, user_email, device_id) VALUES (?, ?, ?)",
+            (dms_user_id, user_email, device_id)
+        )
+        await db.commit()
+    return {"dms_user_id": dms_user_id, "user_email": user_email, "device_id": device_id}
+
+
+async def delete_user_wa_device(dms_user_id: int) -> bool:
+    async with aiosqlite.connect(DATABASE_PATH) as db:
+        cur = await db.execute(
+            "DELETE FROM user_wa_devices WHERE dms_user_id = ?", (dms_user_id,)
+        )
+        await db.commit()
+        return cur.rowcount > 0
+
+
+async def list_all_user_wa_devices() -> list[dict]:
+    async with aiosqlite.connect(DATABASE_PATH) as db:
+        db.row_factory = aiosqlite.Row
+        cur = await db.execute("SELECT * FROM user_wa_devices ORDER BY created_at")
+        rows = await cur.fetchall()
+        return [dict(r) for r in rows]
