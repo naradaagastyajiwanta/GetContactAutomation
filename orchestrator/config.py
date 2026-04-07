@@ -23,6 +23,7 @@ VISION_MODEL = "gpt-4o-mini"
 # WhatsApp Service
 WA_SERVICE_URL = os.getenv("WA_SERVICE_URL", "http://localhost:3100")
 WEBHOOK_URL = os.getenv("WEBHOOK_URL", "http://localhost:8000/webhook/incoming")
+SYSTEM_DEVICE_ID: str = os.getenv("SYSTEM_DEVICE_ID", "device_1")
 
 TIMEZONE_WIB = "Asia/Jakarta"
 

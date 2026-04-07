@@ -23,7 +23,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel
 
-from orchestrator.config import WA_SERVICE_URL, WEBHOOK_URL, log, is_paused, set_paused, cfg
+from orchestrator.config import WA_SERVICE_URL, WEBHOOK_URL, log, is_paused, set_paused, cfg, SYSTEM_DEVICE_ID
 from orchestrator.websocket import manager as ws_manager
 from orchestrator.db import (
     init_db,
@@ -73,6 +73,16 @@ from orchestrator.db import (
     cleanup_old_pipeline_logs,
     get_email_blast_quota_info,
     get_db,
+    get_user_wa_devices,
+    create_user_wa_device,
+    delete_user_wa_device_by_device_id,
+    update_user_wa_device_label,
+    get_user_wa_device_by_device_id,
+    list_all_user_wa_devices,
+)
+from orchestrator.auth import (
+    get_request_user,
+    has_permission,
 )
 from orchestrator.config_registry import (
     CONFIG_DEFINITIONS,
@@ -1678,61 +1688,172 @@ async def wa_restart():
 
 
 # ---------------------------------------------------------------------------
-# Bulk Send Endpoints (Multi-Device Support)
+# Multi-Device WA Endpoints (per-user device isolation)
 # ---------------------------------------------------------------------------
 
 
+async def _assert_device_access(device_id: str, user: dict) -> None:
+    """Admin bypasses. Non-admin must own the device."""
+    if has_permission(user, "*"):
+        return
+    mappings = await get_user_wa_devices(user["dms_user_id"])
+    owned_ids = {m["device_id"] for m in mappings}
+    if device_id not in owned_ids:
+        raise HTTPException(status_code=403, detail="You do not have access to this device")
+
+
 @app.get("/wa/devices")
-async def wa_get_devices():
-    """Proxy to WhatsApp service to get all devices with status."""
-    from orchestrator.config import WA_SERVICE_URL
-    async with httpx.AsyncClient() as client:
-        response = await client.get(f"{WA_SERVICE_URL}/devices")
-        return response.json()
+async def wa_get_devices(request: Request):
+    user = await get_request_user(request)
+    async with httpx.AsyncClient(timeout=15) as client:
+        resp = await client.get(f"{WA_SERVICE_URL}/devices")
+        all_devices = resp.json().get("devices", [])
+    if has_permission(user, "*"):
+        return {"devices": all_devices}
+    mappings = await get_user_wa_devices(user["dms_user_id"])
+    owned_ids = {m["device_id"] for m in mappings}
+    return {"devices": [d for d in all_devices if d["id"] in owned_ids]}
+
+
+@app.post("/wa/me/device")
+async def wa_setup_my_device(request: Request):
+    user = await get_request_user(request)
+    body: dict = {}
+    try:
+        if request.headers.get("content-type", "").startswith("application/json"):
+            body = await request.json()
+    except Exception:
+        pass
+    label = (body.get("label") or "").strip() if isinstance(body, dict) else ""
+
+    # Auto-generates device_id internally
+    row = await create_user_wa_device(user["dms_user_id"], user["email"], label=label)
+    device_id = row["device_id"]
+
+    display_name = label or f"WA - {user['email']}"
+    async with httpx.AsyncClient(timeout=15) as client:
+        resp = await client.post(
+            f"{WA_SERVICE_URL}/devices",
+            json={"id": device_id, "name": display_name},
+        )
+        if resp.status_code not in (200, 201):
+            await delete_user_wa_device_by_device_id(device_id)
+            raise HTTPException(status_code=502, detail=f"WA service error: {resp.text}")
+
+    return {"success": True, "device_id": device_id, "already_existed": False}
+
+
+@app.get("/wa/me/device")
+async def wa_get_my_device(request: Request):
+    user = await get_request_user(request)
+    mappings = await get_user_wa_devices(user["dms_user_id"])
+    if not mappings:
+        return {"devices": []}
+
+    results = []
+    async with httpx.AsyncClient(timeout=10) as client:
+        for mapping in mappings:
+            device_id = mapping["device_id"]
+            resp = await client.get(f"{WA_SERVICE_URL}/devices/{device_id}/status")
+            if resp.status_code == 404:
+                results.append({
+                    "device_id": device_id,
+                    "label": mapping["label"],
+                    "has_wa_record": True,
+                    "device": None,
+                    "error": "Device not found in WA service; call POST /wa/me/device to re-register",
+                })
+            else:
+                results.append({
+                    "device_id": device_id,
+                    "label": mapping["label"],
+                    "has_wa_record": True,
+                    "device": resp.json(),
+                    "error": None,
+                })
+
+    return {"devices": results}
+
+
+@app.delete("/wa/me/device/{device_id}")
+async def wa_delete_my_device(device_id: str, request: Request):
+    user = await get_request_user(request)
+    await _assert_device_access(device_id, user)
+    async with httpx.AsyncClient(timeout=15) as client:
+        resp = await client.delete(f"{WA_SERVICE_URL}/devices/{device_id}")
+        if resp.status_code not in (200, 404):
+            raise HTTPException(status_code=502, detail=f"WA service error: {resp.text}")
+    await delete_user_wa_device_by_device_id(device_id)
+    return {"success": True, "device_id": device_id}
+
+
+@app.patch("/wa/me/device/{device_id}/label")
+async def wa_update_my_device_label(device_id: str, request: Request):
+    user = await get_request_user(request)
+    await _assert_device_access(device_id, user)
+    body = await request.json()
+    label = (body.get("label") or "").strip()
+    updated = await update_user_wa_device_label(device_id, label)
+    if not updated:
+        raise HTTPException(status_code=404, detail="Device not found")
+    return {"success": True}
 
 
 @app.get("/wa/devices/{device_id}/qr")
-async def wa_get_device_qr(device_id: str):
+async def wa_get_device_qr(device_id: str, request: Request):
     """Proxy to WhatsApp service to get QR code for a device."""
-    from orchestrator.config import WA_SERVICE_URL
+    user = await get_request_user(request)
+    await _assert_device_access(device_id, user)
     async with httpx.AsyncClient() as client:
         response = await client.get(f"{WA_SERVICE_URL}/devices/{device_id}/qr")
         return response.json()
 
 
 @app.post("/wa/devices/{device_id}/connect")
-async def wa_connect_device(device_id: str):
+async def wa_connect_device(device_id: str, request: Request):
     """Proxy to WhatsApp service to connect a device (triggers QR generation)."""
-    from orchestrator.config import WA_SERVICE_URL
+    user = await get_request_user(request)
+    await _assert_device_access(device_id, user)
     async with httpx.AsyncClient() as client:
         response = await client.post(f"{WA_SERVICE_URL}/devices/{device_id}/connect")
         return response.json()
 
 
 @app.post("/wa/devices/{device_id}/disconnect")
-async def wa_disconnect_device(device_id: str):
+async def wa_disconnect_device(device_id: str, request: Request):
     """Proxy to WhatsApp service to disconnect a device."""
-    from orchestrator.config import WA_SERVICE_URL
+    user = await get_request_user(request)
+    await _assert_device_access(device_id, user)
     async with httpx.AsyncClient() as client:
         response = await client.post(f"{WA_SERVICE_URL}/devices/{device_id}/disconnect")
         return response.json()
 
 
 @app.post("/wa/bulk-send")
-async def wa_bulk_send(payload: dict):
+async def wa_bulk_send(payload: dict, request: Request):
     """
     Bulk send WhatsApp text messages to multiple phone numbers.
 
     Body: {
       phone_numbers: ["628xxx", ...],
       message: "Hello!",
-      device_id: "device_1"  # Optional, defaults to "device_1"
+      device_id: "device_1"  # Optional, defaults to user's own first device
     }
     """
     try:
+        user = await get_request_user(request)
         phone_numbers = payload.get("phone_numbers", [])
         message = payload.get("message", "")
-        device_id = payload.get("device_id", "device_1")
+
+        # Resolve device_id — default to user's own first device
+        payload_device_id = payload.get("device_id") if isinstance(payload, dict) else None
+        if payload_device_id:
+            if not has_permission(user, "*"):
+                await _assert_device_access(payload_device_id, user)
+            resolved_device_id = payload_device_id
+        else:
+            mappings = await get_user_wa_devices(user["dms_user_id"])
+            resolved_device_id = mappings[0]["device_id"] if mappings else SYSTEM_DEVICE_ID
 
         if not phone_numbers:
             return {"success": False, "error": "No phone numbers provided"}
@@ -1740,13 +1861,15 @@ async def wa_bulk_send(payload: dict):
             return {"success": False, "error": "No message provided"}
 
         for phone in phone_numbers:
-            await message_queue.enqueue_send(phone, message, device_id=device_id)
+            await message_queue.enqueue_send(phone, message, device_id=resolved_device_id)
 
         return {
             "success": True,
             "queued": len(phone_numbers),
-            "device_id": device_id,
+            "device_id": resolved_device_id,
         }
+    except HTTPException:
+        raise
     except Exception as e:
         log.error("Bulk send failed: %s", e)
         return JSONResponse(
@@ -1756,7 +1879,7 @@ async def wa_bulk_send(payload: dict):
 
 
 @app.post("/wa/bulk-send-document")
-async def wa_bulk_send_document(payload: dict):
+async def wa_bulk_send_document(payload: dict, request: Request):
     """
     Bulk send WhatsApp document messages to multiple phone numbers.
 
@@ -1765,15 +1888,25 @@ async def wa_bulk_send_document(payload: dict):
       file_path: "/path/to/file.pdf",
       file_name: "document.pdf",
       caption: "Optional caption",
-      device_id: "device_1"  # Optional, defaults to "device_1"
+      device_id: "device_1"  # Optional, defaults to user's own first device
     }
     """
     try:
+        user = await get_request_user(request)
         phone_numbers = payload.get("phone_numbers", [])
         file_path = payload.get("file_path", "")
         file_name = payload.get("file_name", "")
         caption = payload.get("caption")
-        device_id = payload.get("device_id", "device_1")
+
+        # Resolve device_id — default to user's own first device
+        payload_device_id = payload.get("device_id") if isinstance(payload, dict) else None
+        if payload_device_id:
+            if not has_permission(user, "*"):
+                await _assert_device_access(payload_device_id, user)
+            resolved_device_id = payload_device_id
+        else:
+            mappings = await get_user_wa_devices(user["dms_user_id"])
+            resolved_device_id = mappings[0]["device_id"] if mappings else SYSTEM_DEVICE_ID
 
         if not phone_numbers:
             return {"success": False, "error": "No phone numbers provided"}
@@ -1784,35 +1917,22 @@ async def wa_bulk_send_document(payload: dict):
 
         for phone in phone_numbers:
             await message_queue.enqueue_send_document(
-                phone, file_path, file_name, caption, device_id=device_id
+                phone, file_path, file_name, caption, device_id=resolved_device_id
             )
 
         return {
             "success": True,
             "queued": len(phone_numbers),
-            "device_id": device_id,
+            "device_id": resolved_device_id,
             "file_name": file_name,
         }
+    except HTTPException:
+        raise
     except Exception as e:
         log.error("Bulk send document failed: %s", e)
         return JSONResponse(
             status_code=500,
             content={"success": False, "error": f"Bulk send document failed: {e}"},
-        )
-
-
-@app.get("/wa/devices")
-async def wa_get_devices():
-    """Get all WhatsApp devices and their status."""
-    try:
-        async with httpx.AsyncClient(timeout=15) as client:
-            resp = await client.get(f"{WA_SERVICE_URL}/devices")
-            return resp.json()
-    except Exception as e:
-        log.error("Failed to get devices: %s", e)
-        return JSONResponse(
-            status_code=502,
-            content={"success": False, "error": f"Failed to get devices: {e}"},
         )
 
 

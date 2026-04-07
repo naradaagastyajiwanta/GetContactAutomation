@@ -684,6 +684,103 @@ CREATE INDEX IF NOT EXISTS idx_group_members_univ ON university_group_members(un
 """
 
 # ---------------------------------------------------------------------------
+# Auth Tables
+# ---------------------------------------------------------------------------
+
+_DDL_AUTH = """
+CREATE TABLE IF NOT EXISTS auth_user_roles (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    dms_user_id INTEGER NOT NULL,
+    user_email TEXT NOT NULL,
+    user_name TEXT NOT NULL,
+    role_key TEXT NOT NULL,
+    is_active INTEGER DEFAULT 1,
+    granted_by_email TEXT,
+    created_at TEXT DEFAULT (datetime('now')),
+    updated_at TEXT DEFAULT (datetime('now')),
+    UNIQUE(dms_user_id, role_key)
+);
+
+CREATE TABLE IF NOT EXISTS auth_sessions (
+    session_hash TEXT PRIMARY KEY,
+    dms_user_id INTEGER NOT NULL,
+    user_email TEXT NOT NULL,
+    user_name TEXT NOT NULL,
+    dms_user_level TEXT,
+    expires_at TEXT NOT NULL,
+    created_at TEXT DEFAULT (datetime('now')),
+    last_seen_at TEXT DEFAULT (datetime('now')),
+    revoked_at TEXT,
+    user_agent TEXT,
+    ip_address TEXT
+);
+
+CREATE TABLE IF NOT EXISTS auth_audit_logs (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    action TEXT NOT NULL,
+    actor_dms_user_id INTEGER,
+    actor_email TEXT,
+    subject_dms_user_id INTEGER,
+    subject_email TEXT,
+    role_key TEXT,
+    success INTEGER DEFAULT 1,
+    detail TEXT,
+    ip_address TEXT,
+    user_agent TEXT,
+    created_at TEXT DEFAULT (datetime('now'))
+);
+
+CREATE TABLE IF NOT EXISTS auth_role_upgrade_requests (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    requester_dms_user_id INTEGER NOT NULL,
+    requester_email TEXT NOT NULL,
+    requester_name TEXT NOT NULL,
+    current_role_key TEXT NOT NULL,
+    requested_role_key TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'pending',
+    request_note TEXT,
+    reviewed_by_dms_user_id INTEGER,
+    reviewed_by_email TEXT,
+    review_note TEXT,
+    reviewed_at TEXT,
+    created_at TEXT DEFAULT (datetime('now')),
+    updated_at TEXT DEFAULT (datetime('now'))
+);
+"""
+
+_INDEXES_AUTH = """
+CREATE INDEX IF NOT EXISTS idx_auth_user_roles_user ON auth_user_roles(dms_user_id);
+CREATE INDEX IF NOT EXISTS idx_auth_user_roles_email ON auth_user_roles(user_email);
+CREATE INDEX IF NOT EXISTS idx_auth_user_roles_active ON auth_user_roles(is_active);
+CREATE INDEX IF NOT EXISTS idx_auth_sessions_user ON auth_sessions(dms_user_id);
+CREATE INDEX IF NOT EXISTS idx_auth_sessions_expiry ON auth_sessions(expires_at);
+CREATE INDEX IF NOT EXISTS idx_auth_audit_logs_action ON auth_audit_logs(action);
+CREATE INDEX IF NOT EXISTS idx_auth_audit_logs_actor_email ON auth_audit_logs(actor_email);
+CREATE INDEX IF NOT EXISTS idx_auth_audit_logs_subject_email ON auth_audit_logs(subject_email);
+CREATE INDEX IF NOT EXISTS idx_auth_audit_logs_created_at ON auth_audit_logs(created_at);
+CREATE INDEX IF NOT EXISTS idx_auth_role_upgrade_requests_requester ON auth_role_upgrade_requests(requester_dms_user_id);
+CREATE INDEX IF NOT EXISTS idx_auth_role_upgrade_requests_status ON auth_role_upgrade_requests(status);
+CREATE INDEX IF NOT EXISTS idx_auth_role_upgrade_requests_created_at ON auth_role_upgrade_requests(created_at);
+"""
+
+# ---------------------------------------------------------------------------
+# User WA Devices Table (multi-device per user)
+# ---------------------------------------------------------------------------
+
+_DDL_USER_WA_DEVICES = """
+CREATE TABLE IF NOT EXISTS user_wa_devices (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    dms_user_id INTEGER NOT NULL,
+    user_email  TEXT    NOT NULL,
+    device_id   TEXT    NOT NULL UNIQUE,
+    label       TEXT    NOT NULL DEFAULT '',
+    created_at  TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+CREATE INDEX IF NOT EXISTS idx_user_wa_devices_user   ON user_wa_devices(dms_user_id);
+CREATE INDEX IF NOT EXISTS idx_user_wa_devices_device ON user_wa_devices(device_id);
+"""
+
+# ---------------------------------------------------------------------------
 # Initialization & connection helper
 # ---------------------------------------------------------------------------
 
@@ -718,6 +815,56 @@ async def init_db() -> None:
         await db.executescript(_INDEXES_CRM)
         await db.executescript(_DDL_UNIVERSITY_GROUPS)
         await db.executescript(_INDEXES_UNIVERSITY_GROUPS)
+        await db.executescript(_DDL_AUTH)
+        await db.executescript(_INDEXES_AUTH)
+        await db.executescript(_DDL_USER_WA_DEVICES)
+
+        # --- Migration: user_wa_devices multi-device support ---
+        cursor = await db.execute("PRAGMA table_info(user_wa_devices)")
+        uwd_columns = {row[1] for row in await cursor.fetchall()}
+
+        # Step 1: add label column if missing
+        if "label" not in uwd_columns:
+            await db.execute(
+                "ALTER TABLE user_wa_devices ADD COLUMN label TEXT NOT NULL DEFAULT ''"
+            )
+            await db.commit()
+
+        # Step 2: rebuild table if UNIQUE(dms_user_id) constraint still exists
+        cursor = await db.execute(
+            """
+            SELECT COUNT(*) FROM sqlite_master
+            WHERE type='index'
+              AND tbl_name='user_wa_devices'
+              AND sql LIKE '%dms_user_id%'
+              AND name NOT LIKE 'idx_user_wa_devices_%'
+            """
+        )
+        has_old_unique = (await cursor.fetchone())[0] > 0
+
+        if has_old_unique:
+            await db.executescript("""
+                ALTER TABLE user_wa_devices RENAME TO _user_wa_devices_old;
+                CREATE TABLE user_wa_devices (
+                    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+                    dms_user_id INTEGER NOT NULL,
+                    user_email  TEXT    NOT NULL,
+                    device_id   TEXT    NOT NULL UNIQUE,
+                    label       TEXT    NOT NULL DEFAULT '',
+                    created_at  TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                );
+                INSERT INTO user_wa_devices (id, dms_user_id, user_email, device_id, label, created_at)
+                SELECT id, dms_user_id, user_email, device_id,
+                       COALESCE(label, '') AS label,
+                       created_at
+                FROM _user_wa_devices_old;
+                DROP TABLE _user_wa_devices_old;
+                CREATE INDEX IF NOT EXISTS idx_user_wa_devices_user
+                    ON user_wa_devices(dms_user_id);
+                CREATE INDEX IF NOT EXISTS idx_user_wa_devices_device
+                    ON user_wa_devices(device_id);
+            """)
+
         # Migration: add agent_reasoning column to conversations (idempotent)
         try:
             await db.execute(
@@ -3891,3 +4038,389 @@ async def increment_email_blast_quota(count: int = 1) -> int:
         )
         row = await cursor.fetchone()
         return row["sent_count"] if row else count
+
+
+# ---------------------------------------------------------------------------
+# Auth CRUD
+# ---------------------------------------------------------------------------
+
+
+async def count_active_auth_roles() -> int:
+    """Return the number of active auth role assignments."""
+    async with get_db() as db:
+        cursor = await db.execute(
+            "SELECT COUNT(*) AS total FROM auth_user_roles WHERE is_active = 1"
+        )
+        row = await cursor.fetchone()
+        return int(row["total"] if row else 0)
+
+
+async def count_active_auth_role_assignments(role_key: str) -> int:
+    """Return the number of active assignments for a specific local role."""
+    async with get_db() as db:
+        cursor = await db.execute(
+            """
+            SELECT COUNT(*) AS total
+            FROM auth_user_roles
+            WHERE is_active = 1 AND role_key = ?
+            """,
+            (role_key,),
+        )
+        row = await cursor.fetchone()
+        return int(row["total"] if row else 0)
+
+
+async def get_auth_role_keys_for_user(dms_user_id: int) -> list[str]:
+    """Return active local role keys assigned to a DMS user."""
+    async with get_db() as db:
+        cursor = await db.execute(
+            """
+            SELECT role_key
+            FROM auth_user_roles
+            WHERE dms_user_id = ? AND is_active = 1
+            ORDER BY role_key ASC
+            """,
+            (dms_user_id,),
+        )
+        rows = await cursor.fetchall()
+        return [str(row["role_key"]) for row in rows]
+
+
+async def list_auth_role_assignments() -> list[dict[str, Any]]:
+    """Return all active local auth role assignments."""
+    async with get_db() as db:
+        cursor = await db.execute(
+            """
+            SELECT id, dms_user_id, user_email, user_name, role_key,
+                   granted_by_email, created_at, updated_at
+            FROM auth_user_roles
+            WHERE is_active = 1
+            ORDER BY user_email ASC, role_key ASC
+            """
+        )
+        rows = await cursor.fetchall()
+        return _rows_to_dicts(rows)
+
+
+async def get_active_auth_role_assignment(dms_user_id: int, role_key: str) -> dict[str, Any] | None:
+    """Return one active role assignment for a user and role key."""
+    async with get_db() as db:
+        cursor = await db.execute(
+            """
+            SELECT id, dms_user_id, user_email, user_name, role_key,
+                   granted_by_email, created_at, updated_at
+            FROM auth_user_roles
+            WHERE dms_user_id = ? AND role_key = ? AND is_active = 1
+            LIMIT 1
+            """,
+            (dms_user_id, role_key),
+        )
+        row = await cursor.fetchone()
+        return _row_to_dict(row) if row else None
+
+
+async def upsert_auth_user_role(
+    dms_user_id: int,
+    user_email: str,
+    user_name: str,
+    role_key: str,
+    granted_by_email: str | None = None,
+) -> None:
+    """Create or reactivate a local role assignment for a DMS user."""
+    now = _utcnow()
+    async with get_db() as db:
+        await db.execute(
+            """
+            INSERT INTO auth_user_roles (
+                dms_user_id, user_email, user_name, role_key,
+                is_active, granted_by_email, created_at, updated_at
+            )
+            VALUES (?, ?, ?, ?, 1, ?, ?, ?)
+            ON CONFLICT(dms_user_id, role_key) DO UPDATE SET
+                user_email = excluded.user_email,
+                user_name = excluded.user_name,
+                is_active = 1,
+                granted_by_email = excluded.granted_by_email,
+                updated_at = excluded.updated_at
+            """,
+            (dms_user_id, user_email, user_name, role_key, granted_by_email, now, now),
+        )
+        await db.commit()
+
+
+async def deactivate_auth_user_role(dms_user_id: int, role_key: str) -> None:
+    """Deactivate a local role assignment."""
+    async with get_db() as db:
+        await db.execute(
+            """
+            UPDATE auth_user_roles
+            SET is_active = 0, updated_at = ?
+            WHERE dms_user_id = ? AND role_key = ?
+            """,
+            (_utcnow(), dms_user_id, role_key),
+        )
+        await db.commit()
+
+
+async def create_auth_session(
+    session_hash: str,
+    dms_user_id: int,
+    user_email: str,
+    user_name: str,
+    dms_user_level: str | None,
+    expires_at: str,
+    user_agent: str | None = None,
+    ip_address: str | None = None,
+) -> None:
+    """Persist a new authenticated browser session."""
+    now = _utcnow()
+    async with get_db() as db:
+        await db.execute(
+            """
+            INSERT INTO auth_sessions (
+                session_hash, dms_user_id, user_email, user_name, dms_user_level,
+                expires_at, created_at, last_seen_at, user_agent, ip_address
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                session_hash,
+                dms_user_id,
+                user_email,
+                user_name,
+                dms_user_level,
+                expires_at,
+                now,
+                now,
+                user_agent,
+                ip_address,
+            ),
+        )
+        await db.commit()
+
+
+async def get_auth_session(session_hash: str) -> dict[str, Any] | None:
+    """Return an auth session by hash."""
+    async with get_db() as db:
+        cursor = await db.execute(
+            """
+            SELECT session_hash, dms_user_id, user_email, user_name, dms_user_level,
+                   expires_at, created_at, last_seen_at, revoked_at, user_agent, ip_address
+            FROM auth_sessions
+            WHERE session_hash = ?
+            LIMIT 1
+            """,
+            (session_hash,),
+        )
+        row = await cursor.fetchone()
+        return _row_to_dict(row) if row else None
+
+
+async def touch_auth_session(session_hash: str) -> None:
+    """Update last-seen timestamp for an active session."""
+    async with get_db() as db:
+        await db.execute(
+            "UPDATE auth_sessions SET last_seen_at = ? WHERE session_hash = ?",
+            (_utcnow(), session_hash),
+        )
+        await db.commit()
+
+
+async def revoke_auth_session(session_hash: str) -> None:
+    """Revoke a single auth session."""
+    async with get_db() as db:
+        await db.execute(
+            "UPDATE auth_sessions SET revoked_at = ? WHERE session_hash = ?",
+            (_utcnow(), session_hash),
+        )
+        await db.commit()
+
+
+async def revoke_auth_sessions_for_user(dms_user_id: int) -> None:
+    """Revoke all sessions for a DMS user."""
+    async with get_db() as db:
+        await db.execute(
+            "UPDATE auth_sessions SET revoked_at = ? WHERE dms_user_id = ? AND revoked_at IS NULL",
+            (_utcnow(), dms_user_id),
+        )
+        await db.commit()
+
+
+async def create_auth_audit_log(
+    action: str,
+    actor_dms_user_id: int | None = None,
+    actor_email: str | None = None,
+    subject_dms_user_id: int | None = None,
+    subject_email: str | None = None,
+    role_key: str | None = None,
+    success: bool = True,
+    detail: str | None = None,
+    ip_address: str | None = None,
+    user_agent: str | None = None,
+) -> None:
+    """Persist an auth-related audit event."""
+    async with get_db() as db:
+        await db.execute(
+            """
+            INSERT INTO auth_audit_logs (
+                action, actor_dms_user_id, actor_email, subject_dms_user_id,
+                subject_email, role_key, success, detail, ip_address, user_agent, created_at
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                action,
+                actor_dms_user_id,
+                actor_email,
+                subject_dms_user_id,
+                subject_email,
+                role_key,
+                1 if success else 0,
+                detail,
+                ip_address,
+                user_agent,
+                _utcnow(),
+            ),
+        )
+        await db.commit()
+
+
+async def count_auth_audit_logs() -> int:
+    """Return total auth audit log rows."""
+    async with get_db() as db:
+        cursor = await db.execute("SELECT COUNT(*) AS total FROM auth_audit_logs")
+        row = await cursor.fetchone()
+        return int(row["total"] if row else 0)
+
+
+async def list_auth_audit_logs(limit: int = 50, offset: int = 0) -> list[dict[str, Any]]:
+    """Return auth audit logs ordered from newest to oldest."""
+    async with get_db() as db:
+        cursor = await db.execute(
+            """
+            SELECT id, action, actor_dms_user_id, actor_email, subject_dms_user_id,
+                   subject_email, role_key, success, detail, ip_address, user_agent, created_at
+            FROM auth_audit_logs
+            ORDER BY created_at DESC, id DESC
+            LIMIT ? OFFSET ?
+            """,
+            (limit, offset),
+        )
+        rows = await cursor.fetchall()
+        items = _rows_to_dicts(rows)
+        for item in items:
+            item["success"] = bool(item.get("success"))
+        return items
+
+
+async def get_auth_role_upgrade_request(request_id: int) -> dict[str, Any] | None:
+    """Return one role-upgrade request by id."""
+    async with get_db() as db:
+        cursor = await db.execute(
+            """
+            SELECT id, requester_dms_user_id, requester_email, requester_name,
+                   current_role_key, requested_role_key, status, request_note,
+                   reviewed_by_dms_user_id, reviewed_by_email, review_note,
+                   reviewed_at, created_at, updated_at
+            FROM auth_role_upgrade_requests
+            WHERE id = ?
+            LIMIT 1
+            """,
+            (request_id,),
+        )
+        row = await cursor.fetchone()
+        return _row_to_dict(row) if row else None
+
+
+# ---------------------------------------------------------------------------
+# user_wa_devices CRUD (multi-device per user)
+# ---------------------------------------------------------------------------
+
+
+async def _next_device_slot(db, dms_user_id: int) -> int:
+    """Return the next slot number for a user (used to generate device_id)."""
+    cur = await db.execute(
+        "SELECT device_id FROM user_wa_devices WHERE dms_user_id = ?",
+        (dms_user_id,)
+    )
+    rows = await cur.fetchall()
+    max_n = 0
+    for (did,) in rows:
+        parts = did.rsplit("_", 1)
+        if len(parts) == 2 and parts[1].isdigit():
+            max_n = max(max_n, int(parts[1]))
+    return max_n + 1
+
+
+async def get_user_wa_devices(dms_user_id: int) -> list[dict]:
+    """Return all WA devices for a user, ordered by created_at."""
+    async with aiosqlite.connect(DATABASE_PATH) as db:
+        db.row_factory = aiosqlite.Row
+        cur = await db.execute(
+            "SELECT * FROM user_wa_devices WHERE dms_user_id = ? ORDER BY created_at",
+            (dms_user_id,)
+        )
+        rows = await cur.fetchall()
+        return [dict(r) for r in rows]
+
+
+async def get_user_wa_device_by_device_id(device_id: str) -> dict | None:
+    async with aiosqlite.connect(DATABASE_PATH) as db:
+        db.row_factory = aiosqlite.Row
+        cur = await db.execute(
+            "SELECT * FROM user_wa_devices WHERE device_id = ?", (device_id,)
+        )
+        row = await cur.fetchone()
+        return dict(row) if row else None
+
+
+async def create_user_wa_device(
+    dms_user_id: int,
+    user_email: str,
+    label: str = "",
+) -> dict:
+    """Create a new WA device for this user. device_id is auto-generated as u{id}_{n}."""
+    async with aiosqlite.connect(DATABASE_PATH) as db:
+        n = await _next_device_slot(db, dms_user_id)
+        device_id = f"u{dms_user_id}_{n}"
+        await db.execute(
+            "INSERT INTO user_wa_devices (dms_user_id, user_email, device_id, label)"
+            " VALUES (?, ?, ?, ?)",
+            (dms_user_id, user_email, device_id, label)
+        )
+        await db.commit()
+    return {
+        "dms_user_id": dms_user_id,
+        "user_email": user_email,
+        "device_id": device_id,
+        "label": label,
+    }
+
+
+async def delete_user_wa_device_by_device_id(device_id: str) -> bool:
+    """Delete a specific device by device_id. Returns True if deleted."""
+    async with aiosqlite.connect(DATABASE_PATH) as db:
+        cur = await db.execute(
+            "DELETE FROM user_wa_devices WHERE device_id = ?", (device_id,)
+        )
+        await db.commit()
+        return cur.rowcount > 0
+
+
+async def update_user_wa_device_label(device_id: str, label: str) -> bool:
+    """Update the label of a specific device. Returns True if row found."""
+    async with aiosqlite.connect(DATABASE_PATH) as db:
+        cur = await db.execute(
+            "UPDATE user_wa_devices SET label = ? WHERE device_id = ?",
+            (label, device_id)
+        )
+        await db.commit()
+        return cur.rowcount > 0
+
+
+async def list_all_user_wa_devices() -> list[dict]:
+    async with aiosqlite.connect(DATABASE_PATH) as db:
+        db.row_factory = aiosqlite.Row
+        cur = await db.execute("SELECT * FROM user_wa_devices ORDER BY created_at")
+        rows = await cur.fetchall()
+        return [dict(r) for r in rows]
