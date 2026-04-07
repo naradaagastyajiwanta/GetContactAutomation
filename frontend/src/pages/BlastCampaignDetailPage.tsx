@@ -3,7 +3,7 @@
  * sending settings, preview messages, and start/pause/cancel the blast.
  */
 
-import { useState, useRef, useCallback, useMemo } from "react";
+import { useState, useRef, useCallback, useMemo, useEffect } from "react";
 import { useParams, useNavigate, Link } from "react-router-dom";
 import {
   ArrowLeft,
@@ -880,7 +880,7 @@ export default function BlastCampaignDetailPage() {
 
   // Derived values (draft state overrides server value)
   const currentTemplate = templateDraft ?? campaign?.template_message ?? "";
-  const currentDevice = deviceDraft ?? campaign?.device_id ?? "device_1";
+  const currentDevice = deviceDraft ?? campaign?.device_id ?? "";
   const currentDelay = delayDraft ?? campaign?.delay_between_ms ?? 5000;
   const currentHumanMin = humanMinDraft ?? campaign?.human_delay_min_ms ?? 2000;
   const currentHumanMax = humanMaxDraft ?? campaign?.human_delay_max_ms ?? 8000;
@@ -922,6 +922,22 @@ export default function BlastCampaignDetailPage() {
   ).length;
   const templateCharacterCount = currentTemplate.trim().length;
   const primaryPreview = previewData?.previews?.[0] ?? null;
+
+  // Auto-select device: if the campaign's stored device_id is not in the user's
+  // device list (e.g., old "device_1" default, or device belonging to another user),
+  // auto-select the first connected device, then first any device.
+  useEffect(() => {
+    if (deviceDraft !== null) return; // user already made a choice this session
+    if (!myDevicesData || myDevices.length === 0) return;
+    const storedId = campaign?.device_id ?? "";
+    const inList = myDevices.some((d) => d.id === storedId);
+    if (inList) return; // stored device is valid — nothing to do
+    const firstConnected = myDevices.find(
+      (d) => d.connectionState === "connected",
+    );
+    const autoId = firstConnected?.id ?? myDevices[0]?.id ?? "";
+    if (autoId) setDeviceDraft(autoId);
+  }, [myDevicesData, campaign?.device_id, deviceDraft]);
 
   // Contact selector modal
   const [showContactModal, setShowContactModal] = useState(false);

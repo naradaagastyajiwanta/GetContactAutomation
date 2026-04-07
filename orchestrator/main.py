@@ -506,6 +506,9 @@ def _required_permission_for_request(method: str, path: str) -> str | None:
         return "pipeline.manage"
 
     if normalized.startswith("/wa"):
+        # bulk-send is open to all users with a WA device — only whatsapp.view required
+        if normalized in ("/wa/bulk-send", "/wa/bulk-send-document"):
+            return "whatsapp.view"
         return "whatsapp.view" if upper_method == "GET" else "whatsapp.manage"
 
     if normalized.startswith("/pipeline"):
@@ -2555,29 +2558,31 @@ async def wa_get_my_device(request: Request):
     if not mappings:
         return {"devices": []}
 
-    results = []
-    async with httpx.AsyncClient(timeout=10) as client:
-        for mapping in mappings:
-            device_id = mapping["device_id"]
-            resp = await client.get(f"{WA_SERVICE_URL}/devices/{device_id}/status")
-            if resp.status_code == 404:
-                results.append({
-                    "device_id": device_id,
-                    "label": mapping["label"],
-                    "has_wa_record": True,
-                    "device": None,
-                    "error": "Device not found in WA service; call POST /wa/me/device to re-register",
-                })
-            else:
-                results.append({
-                    "device_id": device_id,
-                    "label": mapping["label"],
-                    "has_wa_record": True,
-                    "device": resp.json(),
-                    "error": None,
-                })
+    async def _fetch_device_status(client: httpx.AsyncClient, mapping: dict) -> dict:
+        device_id = mapping["device_id"]
+        resp = await client.get(f"{WA_SERVICE_URL}/devices/{device_id}/status")
+        if resp.status_code == 404:
+            return {
+                "device_id": device_id,
+                "label": mapping["label"],
+                "has_wa_record": True,
+                "device": None,
+                "error": "Device not found in WA service; call POST /wa/me/device to re-register",
+            }
+        return {
+            "device_id": device_id,
+            "label": mapping["label"],
+            "has_wa_record": True,
+            "device": resp.json(),
+            "error": None,
+        }
 
-    return {"devices": results}
+    async with httpx.AsyncClient(timeout=10) as client:
+        results = await asyncio.gather(
+            *[_fetch_device_status(client, m) for m in mappings]
+        )
+
+    return {"devices": list(results)}
 
 
 @app.delete("/wa/me/device/{device_id}")
@@ -4992,10 +4997,19 @@ async def blast_create_campaign(payload: dict, request: Request):
 
     current_user = await get_request_user(request)
 
+    # Resolve device_id: explicit payload > user's first device > system default
+    resolved_device_id = payload.get("device_id") or ""
+    if not resolved_device_id:
+        if current_user.get("dms_user_id"):
+            user_mappings = await get_user_wa_devices(current_user["dms_user_id"])
+            resolved_device_id = user_mappings[0]["device_id"] if user_mappings else SYSTEM_DEVICE_ID
+        else:
+            resolved_device_id = SYSTEM_DEVICE_ID
+
     campaign = await blast_service.create_campaign(
         name=name,
         template_message=payload.get("template_message", ""),
-        device_id=payload.get("device_id", "device_1"),
+        device_id=resolved_device_id,
         delay_between_ms=payload.get("delay_between_ms", 5000),
         human_delay_min_ms=payload.get("human_delay_min_ms", 2000),
         human_delay_max_ms=payload.get("human_delay_max_ms", 8000),
