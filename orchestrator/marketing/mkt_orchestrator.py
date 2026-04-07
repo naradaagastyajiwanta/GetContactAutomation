@@ -25,6 +25,7 @@ from openai import AsyncOpenAI, APIStatusError, APITimeoutError, APIConnectionEr
 from orchestrator.config import log, cfg, responses_kwargs, is_reasoning_model
 from orchestrator import db
 from . import groups as mkt
+from .search import is_mobile_phone
 from .mkt_sub_agents import (
     WebSearchSubAgent,
     InstagramSubAgent,
@@ -205,7 +206,7 @@ _ORCHESTRATOR_TOOL_SCHEMAS: list[dict] = [
             "type": "object",
             "properties": {
                 "company_name": {"type": "string", "description": "Company or organization name to search for"},
-                "hints": {"type": "object", "description": "Optional hints like client_type", "additionalProperties": True},
+                "hints": {"type": "object", "description": "Optional search hints: refined_query (string), avoid_source_domains (array of strings), force_domain (string), target_contact_type (string)", "additionalProperties": True},
             },
             "required": ["company_name"],
         },
@@ -306,45 +307,10 @@ _ORCHESTRATOR_TOOL_SCHEMAS: list[dict] = [
     },
     {
         "type": "function",
-        "name": "verify_contacts_batch",
-        "description": (
-            "Evaluasi setiap kontak yang dikembalikan sub-agent SEBELUM merekam ke database. "
-            "Panggil ini SETELAH setiap sub-agent return, SEBELUM record_contact. "
-            "Berikan verdict untuk setiap kontak: accept/reject/uncertain."
-        ),
-        "parameters": {
-            "type": "object",
-            "properties": {
-                "verdicts": {
-                    "type": "array",
-                    "items": {
-                        "type": "object",
-                        "properties": {
-                            "contact_type": {"type": "string"},
-                            "value": {"type": "string"},
-                            "source_url": {"type": "string"},
-                            "verdict": {"type": "string", "enum": ["accept", "reject", "uncertain"]},
-                            "reason": {"type": "string", "description": "Mengapa accept/reject/uncertain"},
-                            "adjusted_confidence": {"type": "number"},
-                        },
-                        "required": ["contact_type", "value", "verdict", "reason"],
-                    },
-                },
-                "overall_quality": {
-                    "type": "string",
-                    "enum": ["good", "mixed", "poor"],
-                    "description": "good=hasil bersih; mixed=ada yg baik ada yg buruk; poor=mayoritas tidak valid",
-                },
-            },
-            "required": ["verdicts", "overall_quality"],
-        },
-    },
-    {
-        "type": "function",
         "name": "request_retry",
         "description": (
-            "Re-spawn sub-agent dengan pendekatan yang lebih baik setelah verify_contacts_batch "
-            "menunjukkan overall_quality='poor' atau tidak ada kontak valid. Maximum 1x per tipe agent."
+            "Re-spawn sub-agent dengan pendekatan yang lebih baik jika sub-agent tidak menemukan "
+            "kontak sama sekali. Maximum 1x per tipe agent. Validasi kontak dilakukan otomatis oleh record_contact."
         ),
         "parameters": {
             "type": "object",
@@ -809,7 +775,7 @@ class MarketingOrchestratorAgent:
             result = await agent.run(
                 company_name=company_name,
                 client_type=context.client_type,
-                extra_data=hints.get("extra_data"),
+                extra_data=hints if hints else None,
             )
             self._record_sub_agent_call(context, "spawn_web_search_agent", result)
             return self._summarize_result(result)
@@ -924,6 +890,33 @@ class MarketingOrchestratorAgent:
 
             if not value or not contact_type:
                 return json.dumps({"error": "contact_type and value are required"})
+
+            # Structural validation — deterministic, no LLM needed
+            if contact_type == "wa_phone":
+                if not is_mobile_phone(value):
+                    return json.dumps({
+                        "error": f"Rejected: '{value}' bukan nomor mobile Indonesia yang valid (harus 62-8xx atau 08xx)",
+                        "hint": "Pastikan format: 628xxxxxxxxx atau 08xxxxxxxxx"
+                    })
+
+            if contact_type == "email":
+                domain = value.split("@")[-1].lower() if "@" in value else ""
+                _PERSONAL_DOMAINS = {"gmail.com", "yahoo.com", "yahoo.co.id", "outlook.com", "hotmail.com"}
+                if domain in _PERSONAL_DOMAINS:
+                    return json.dumps({"error": f"Rejected: email domain '{domain}' adalah personal, bukan organisasi resmi"})
+                if value.lower().startswith(("noreply@", "no-reply@", "donotreply@", "info@")):
+                    if domain in _PERSONAL_DOMAINS or not domain:
+                        return json.dumps({"error": "Rejected: noreply/generic email tidak berguna untuk outreach"})
+                _GOV_TYPES = {"kementerian", "lembaga_negara", "lsp_p1", "lsp_p2", "lsp_p3"}
+                if context.client_type in _GOV_TYPES and domain and not domain.endswith(".go.id"):
+                    return json.dumps({
+                        "error": f"Rejected: klien '{context.client_type}' harus email domain .go.id, diterima '{domain}'",
+                        "hint": "Cari email dengan domain .go.id untuk instansi pemerintah"
+                    })
+
+            if contact_type == "website":
+                if not value.startswith(("http://", "https://")):
+                    return json.dumps({"error": f"Rejected: website URL harus dimulai dengan http/https, diterima '{value}'"})
 
             # Avoid recording duplicates in this run
             existing_values = {c.get("value") for c in context.contacts_recorded}

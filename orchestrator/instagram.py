@@ -1583,6 +1583,80 @@ def verify_ig_handle(handle: str, university_name: str) -> dict:
 # Fallback wrappers: 4-tier Playwright -> IG Session -> Apify -> ScrapingBot â†’ Apify â†’ ScrapingBot
 # ---------------------------------------------------------------------------
 
+def _scrape_ig_posts_instaloader(
+    handle: str,
+    max_posts: int,
+    known_post_urls: set[str] | None = None,
+) -> list[dict]:
+    """
+    Scrape Instagram posts using Instaloader — no session required.
+    Works for public profiles. Free forever.
+
+    Returns list of {"post_url", "image_url", "caption", "timestamp", "source"}.
+    Returns empty list on any failure (caller falls through to next tier).
+    """
+    try:
+        import instaloader  # lazy import — optional dependency
+    except ImportError:
+        log.warning("[Tier1-Instaloader] instaloader not installed — run: pip install instaloader>=4.10")
+        return []
+
+    known = known_post_urls or set()
+    request_delay = float(cfg.get("INSTALOADER_REQUEST_DELAY", 2.0))
+
+    try:
+        log.info("[Tier1-Instaloader] @%s: attempting scrape (max %d posts)", handle, max_posts)
+        L = instaloader.Instaloader(
+            download_videos=False,
+            download_video_thumbnails=False,
+            download_geotags=False,
+            download_comments=False,
+            save_metadata=False,
+            compress_json=False,
+            quiet=True,
+            request_timeout=15,
+            sleep=True,
+        )
+        # Set rate limit delay
+        L.context.sleep_func = lambda secs: __import__("time").sleep(
+            max(secs, request_delay)
+        )
+
+        profile = instaloader.Profile.from_username(L.context, handle)
+        posts: list[dict] = []
+
+        for post in profile.get_posts():
+            if len(posts) >= max_posts:
+                break
+            post_url = f"https://www.instagram.com/p/{post.shortcode}/"
+            if post_url in known:
+                continue
+            try:
+                image_url = post.url or ""
+                caption = post.caption or ""
+                timestamp = post.date_utc.isoformat() if post.date_utc else None
+            except Exception:
+                continue
+            posts.append({
+                "post_url": post_url,
+                "image_url": image_url,
+                "caption": caption,
+                "timestamp": timestamp,
+                "source": "instaloader",
+            })
+
+        log.info("[Tier1-Instaloader] @%s: got %d posts", handle, len(posts))
+        return posts
+
+    except Exception as e:
+        err_str = str(e).lower()
+        if "login" in err_str or "not found" in err_str or "private" in err_str:
+            log.info("[Tier1-Instaloader] @%s: %s", handle, e)
+        else:
+            log.warning("[Tier1-Instaloader] @%s failed: %s", handle, e)
+        return []
+
+
 def scrape_ig_posts_with_fallback(
     ig_handle: str,
     max_posts: int | None = None,
@@ -1612,6 +1686,8 @@ def scrape_ig_posts_with_fallback(
         "reason": None,
         "playwright_attempted": False,
         "playwright_error": None,
+        "instaloader_attempted": False,
+        "instaloader_success": False,
         "session_configured": False,
         "session_error": None,
         "scrapingbot_configured": scrapingbot_client.is_configured(),
@@ -1665,13 +1741,13 @@ def scrape_ig_posts_with_fallback(
                 # so WA phone numbers embedded in real captions are not lost.
                 if posts:
                     meaningful = sum(1 for p in posts if len(p.get("caption", "")) >= 30)
-                    if meaningful == 0 and scrapingbot_client.is_configured():
+                    if meaningful == 0:
                         log.warning(
-                            "[Tier0-Playwright] @%s: %d posts returned but all captions <30 chars "
-                            "(likely alt-text fallback) — trying ScrapingBot for real captions",
+                            "[Tier0-Playwright] @%s: %d posts but all captions <30 chars "
+                            "(likely alt-text) — trying Instaloader for real captions",
                             handle, len(posts),
                         )
-                        # Fall through to ScrapingBot below
+                        # Fall through to Instaloader / ScrapingBot below
                     else:
                         return _result(posts)
                 else:
@@ -1684,9 +1760,25 @@ def scrape_ig_posts_with_fallback(
             log.warning("[Tier0-Playwright] @%s failed: %s", handle, e)
             diagnostics["playwright_error"] = str(e)
     else:
-        log.info("[Tier0-Playwright] Skipping -- not available (daily_used=%d)",
-                 playwright_ig._pw_status.get("profiles_today", 0))
+        log.info(
+            "[Tier0-Playwright] Skipping -- no IG accounts configured or daily limit reached "
+            "(daily_used=%d). Configure IG accounts in Settings or install instaloader as fallback.",
+            playwright_ig._pw_status.get("profiles_today", 0),
+        )
         diagnostics["playwright_error"] = "not available"
+
+    # Tier 1: Instaloader (no session, public profiles, free)
+    if cfg.get("INSTALOADER_ENABLED", True):
+        il_posts = _scrape_ig_posts_instaloader(handle, effective_max, known)
+        if il_posts:
+            meaningful_il = sum(1 for p in il_posts if len(p.get("caption", "")) >= 30)
+            if meaningful_il > 0:
+                log.info("[Tier1-Instaloader] @%s: returning %d posts with real captions", handle, len(il_posts))
+                diagnostics["instaloader_success"] = True
+                return _result(il_posts, "instaloader")
+            else:
+                log.info("[Tier1-Instaloader] @%s: got %d posts but captions still short, continuing", handle, len(il_posts))
+        diagnostics["instaloader_attempted"] = True
 
     # Tier 1: Direct IG session
     session_status = get_ig_session_status()

@@ -25,7 +25,7 @@ from orchestrator.config import log, cfg
 _client: genai.Client | None = None
 
 GEMINI_MODEL = "gemini-3.1-pro-preview"
-GEMINI_MAX_OUTPUT_TOKENS = 4096
+GEMINI_MAX_OUTPUT_TOKENS = 8192
 GEMINI_MAX_ATTEMPTS = 2
 
 
@@ -209,11 +209,13 @@ async def call_gemini(
 
     # Always use Google Search grounding for factual accuracy.
     tools = [types.Tool(google_search=types.GoogleSearch())] if use_search_grounding else []
+    # NOTE: response_mime_type="application/json" must NOT be set when grounding tools
+    # are active — combining them causes Gemini to truncate JSON mid-string.
     config = types.GenerateContentConfig(
         tools=tools,
         temperature=0,
         max_output_tokens=GEMINI_MAX_OUTPUT_TOKENS,
-        response_mime_type="application/json",
+        **({"response_mime_type": "application/json"} if not tools else {}),
     )
 
     retry_instruction = (
@@ -239,6 +241,14 @@ async def call_gemini(
 
         raw_text = response.text or ""
         log.info("Gemini call response length: %d chars (attempt %d)", len(raw_text), attempt)
+
+        # Log finish_reason for diagnostics
+        try:
+            finish_reason = response.candidates[0].finish_reason.name if response.candidates else "UNKNOWN"
+            if finish_reason not in ("STOP", "MAX_TOKENS"):
+                log.warning("Gemini finish_reason=%s — response may be incomplete", finish_reason)
+        except Exception:
+            pass
 
         grounding_urls = _extract_grounding_urls(response) if use_search_grounding else []
         if grounding_urls:

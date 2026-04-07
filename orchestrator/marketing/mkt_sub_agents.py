@@ -1,17 +1,423 @@
 """
 Specialized sub-agent workers for marketing contact discovery.
 
-Each sub-agent wraps existing pipeline functions and returns structured SubAgentResult.
-The orchestrator (mkt_orchestrator.py) decides which sub-agents to spawn and in what order.
+WebSearchSubAgent and InstagramSubAgent now use LLM ReAct loops (model: MARKETING_SUB_AGENT_MODEL)
+with graceful fallback to the deterministic pipeline if the LLM call fails or returns nothing.
+
+RegistrySearchSubAgent and GeminiGapFillSubAgent remain deterministic (their logic is already smart).
 """
 
 from __future__ import annotations
 
+import asyncio
+import json
 import time
 from dataclasses import dataclass, field
+from typing import Any, Callable
 
-from orchestrator.config import log
+from openai import AsyncOpenAI, APIStatusError, APITimeoutError, APIConnectionError
+
+from orchestrator.config import log, cfg, responses_kwargs
+from orchestrator.osint.tools import (
+    web_search,
+    fetch_page,
+    extract_text_from_html,
+    extract_emails,
+    extract_phones_from_text,
+    extract_social_links,
+)
 from . import search as search_flow
+from .mkt_prompts import build_web_search_prompt, build_instagram_prompt
+
+
+# ---------------------------------------------------------------------------
+# OpenAI client singleton for sub-agents
+# ---------------------------------------------------------------------------
+
+_sub_agent_client: AsyncOpenAI | None = None
+_sub_agent_client_key: str = ""
+
+
+def _get_sub_agent_openai() -> AsyncOpenAI:
+    global _sub_agent_client, _sub_agent_client_key
+    current_key = cfg.OPENAI_API_KEY
+    if _sub_agent_client is None or current_key != _sub_agent_client_key:
+        _sub_agent_client = AsyncOpenAI(api_key=current_key)
+        _sub_agent_client_key = current_key
+    return _sub_agent_client
+
+
+# ---------------------------------------------------------------------------
+# Generic sub-agent LLM loop (mirrors react_agent.py pattern)
+# ---------------------------------------------------------------------------
+
+async def _run_sub_agent_llm_loop(
+    system_prompt: str,
+    initial_message: str,
+    tool_schemas: list[dict],
+    terminal_tools: set[str],
+    tool_dispatch: dict[str, Callable],
+    max_iterations: int = 8,
+) -> tuple[dict, int]:
+    """
+    Generic ReAct loop for sub-agents using OpenAI Responses API.
+    Returns (terminal_tool_args, total_tokens).
+    terminal_tool_args is the arguments dict from the first terminal tool called.
+    """
+    client = _get_sub_agent_openai()
+    model = cfg.MARKETING_SUB_AGENT_MODEL
+    total_tokens = 0
+
+    response = await client.responses.create(
+        model=model,
+        instructions=system_prompt,
+        input=[{"role": "user", "content": initial_message}],
+        tools=tool_schemas,
+        store=True,
+        **responses_kwargs(model, temperature=0.2, max_output_tokens=1500),
+    )
+    if response.usage:
+        total_tokens += response.usage.input_tokens + response.usage.output_tokens
+
+    for _ in range(max_iterations):
+        function_calls = [item for item in response.output if item.type == "function_call"]
+        if not function_calls:
+            break
+
+        outputs = []
+        terminal_args: dict | None = None
+
+        for fc in function_calls:
+            name = fc.name
+            try:
+                args = json.loads(fc.arguments)
+            except (json.JSONDecodeError, TypeError):
+                args = {}
+
+            if name in terminal_tools:
+                terminal_args = args
+                result_str = json.dumps({"status": "done"})
+            else:
+                fn = tool_dispatch.get(name)
+                if fn is None:
+                    result_str = json.dumps({"error": f"Unknown tool: {name}"})
+                else:
+                    try:
+                        result_str = await fn(args)
+                    except Exception as exc:
+                        log.warning("[SubAgentLLMLoop] tool %s error: %s", name, exc)
+                        result_str = json.dumps({"error": str(exc)})
+
+            outputs.append({
+                "type": "function_call_output",
+                "call_id": fc.call_id,
+                "output": result_str,
+            })
+
+        if terminal_args is not None:
+            return terminal_args, total_tokens
+
+        next_kwargs: dict = {
+            "model": model,
+            "input": outputs,
+            "previous_response_id": response.id,
+            "store": True,
+            **responses_kwargs(model, temperature=0.2, max_output_tokens=1500),
+        }
+        if not terminal_args:
+            next_kwargs["tools"] = tool_schemas
+
+        response = await client.responses.create(**next_kwargs)
+        if response.usage:
+            total_tokens += response.usage.input_tokens + response.usage.output_tokens
+
+    return {}, total_tokens
+
+
+# ---------------------------------------------------------------------------
+# WebSearchSubAgent tool schemas
+# ---------------------------------------------------------------------------
+
+_WEB_SEARCH_AGENT_TOOLS: list[dict] = [
+    {
+        "type": "function",
+        "name": "search_web",
+        "description": "Cari di internet. Returns list of {title, link, snippet}.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "query": {"type": "string", "description": "Search query"},
+                "num_results": {"type": "integer", "description": "Jumlah hasil (default 8)", "default": 8},
+            },
+            "required": ["query"],
+        },
+    },
+    {
+        "type": "function",
+        "name": "fetch_page",
+        "description": "Buka halaman web dan ekstrak teks bersih + email + telepon. Gunakan untuk /kontak, /about, /tentang-kami.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "url": {"type": "string", "description": "URL yang akan di-fetch"},
+            },
+            "required": ["url"],
+        },
+    },
+    {
+        "type": "function",
+        "name": "finish",
+        "description": "TERMINAL: Selesai mencari. Kembalikan semua kontak yang ditemukan.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "contacts": {
+                    "type": "array",
+                    "description": "Daftar kontak yang ditemukan",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "type": {"type": "string", "enum": ["website", "email", "wa_phone"]},
+                            "value": {"type": "string"},
+                            "source_url": {"type": "string"},
+                            "confidence": {"type": "number"},
+                            "pic_name": {"type": "string"},
+                        },
+                        "required": ["type", "value", "source_url", "confidence"],
+                    },
+                },
+                "queries_tried": {"type": "array", "items": {"type": "string"}},
+                "summary": {"type": "string"},
+            },
+            "required": ["contacts", "summary"],
+        },
+    },
+]
+_WEB_SEARCH_TERMINAL = {"finish"}
+
+
+async def _web_search_tool(args: dict) -> str:
+    query = args.get("query", "")
+    num = int(args.get("num_results", 8))
+    results = await web_search(query, max_results=min(num, 10))
+    return json.dumps(results[:10], ensure_ascii=False)
+
+
+async def _fetch_page_tool(args: dict) -> str:
+    url = args.get("url", "")
+    html = await fetch_page(url, timeout=20.0)
+    if not html:
+        return json.dumps({"error": "Could not fetch page", "url": url})
+    text = extract_text_from_html(html, max_chars=8000)
+    emails = extract_emails(html)
+    phones = extract_phones_from_text(html)
+    return json.dumps({
+        "url": url,
+        "text_preview": text[:4000],
+        "emails_found": emails[:10],
+        "phones_found": phones[:10],
+    }, ensure_ascii=False)
+
+
+_WEB_SEARCH_DISPATCH: dict[str, Callable] = {
+    "search_web": _web_search_tool,
+    "fetch_page": _fetch_page_tool,
+}
+
+
+# ---------------------------------------------------------------------------
+# InstagramSubAgent tool schemas
+# ---------------------------------------------------------------------------
+
+_INSTAGRAM_AGENT_TOOLS: list[dict] = [
+    {
+        "type": "function",
+        "name": "find_ig_handle",
+        "description": "Cari akun Instagram resmi perusahaan. Returns daftar kandidat handle.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "company_name": {"type": "string"},
+                "website_url": {"type": "string", "description": "URL website (jika ada, akan di-scan untuk IG link)"},
+            },
+            "required": ["company_name"],
+        },
+    },
+    {
+        "type": "function",
+        "name": "scrape_ig_contacts",
+        "description": "Scrape posts dari IG handle tertentu dan ekstrak nomor WA + nama PIC dari foto/caption.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "handle": {"type": "string", "description": "Instagram handle (tanpa @)"},
+                "limit": {"type": "integer", "description": "Jumlah posts (default 20)", "default": 20},
+            },
+            "required": ["handle"],
+        },
+    },
+    {
+        "type": "function",
+        "name": "finish",
+        "description": "TERMINAL: Selesai. Kembalikan kontak dan handle yang ditemukan.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "contacts": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "type": {"type": "string", "enum": ["wa_phone", "email"]},
+                            "value": {"type": "string"},
+                            "source_url": {"type": "string"},
+                            "confidence": {"type": "number"},
+                            "pic_name": {"type": "string"},
+                        },
+                        "required": ["type", "value", "source_url", "confidence"],
+                    },
+                },
+                "ig_handle": {"type": "string", "description": "Handle IG yang terverifikasi (tanpa @)"},
+                "summary": {"type": "string"},
+            },
+            "required": ["contacts", "summary"],
+        },
+    },
+]
+_INSTAGRAM_TERMINAL = {"finish"}
+
+
+async def _find_ig_handle_tool(args: dict) -> str:
+    """Search for IG handle: check website social links first, then search DDG."""
+    company_name = args.get("company_name", "")
+    website_url = args.get("website_url")
+
+    candidates: list[dict] = []
+
+    # Step 1: Check website's social links if website_url provided
+    if website_url:
+        try:
+            html = await fetch_page(website_url, timeout=15.0)
+            if html:
+                social = extract_social_links(html)
+                ig_links = social.get("instagram", [])
+                for link in ig_links[:3]:
+                    handle = link.rstrip("/").split("/")[-1]
+                    if handle and len(handle) > 1 and "." not in handle:
+                        candidates.append({
+                            "handle": handle,
+                            "source": "website_social_link",
+                            "confidence": 0.9,
+                            "url": link,
+                        })
+        except Exception as e:
+            log.debug("[InstagramSubAgent] website fetch failed: %s", e)
+
+    # Step 2: DDG search for IG handle
+    try:
+        query = f'"{company_name}" site:instagram.com'
+        results = await web_search(query, max_results=8)
+        for r in results:
+            link = r.get("link", "")
+            if "instagram.com/" in link:
+                handle = link.rstrip("/").split("instagram.com/")[-1].split("/")[0]
+                if handle and len(handle) > 1 and handle not in {"p", "reel", "explore"}:
+                    candidates.append({
+                        "handle": handle,
+                        "source": "search_result",
+                        "confidence": 0.6,
+                        "url": link,
+                        "context": r.get("snippet", "")[:200],
+                    })
+    except Exception as e:
+        log.debug("[InstagramSubAgent] DDG search failed: %s", e)
+
+    # Deduplicate by handle
+    seen: set[str] = set()
+    unique: list[dict] = []
+    for c in candidates:
+        h = c["handle"].lower()
+        if h not in seen:
+            seen.add(h)
+            unique.append(c)
+
+    return json.dumps({
+        "candidates": unique[:6],
+        "note": "Pilih handle yang paling relevan dengan perusahaan. website_social_link paling dipercaya.",
+    }, ensure_ascii=False)
+
+
+async def _scrape_ig_contacts_tool(args: dict) -> str:
+    """Scrape IG posts for a specific handle and extract WA contacts."""
+    handle = args.get("handle", "").strip().lstrip("@")
+    limit = int(args.get("limit", 20))
+
+    if not handle:
+        return json.dumps({"error": "handle is required"})
+
+    try:
+        from orchestrator.instagram import scrape_ig_posts_with_fallback, extract_phone_from_image, extract_named_contacts_from_text
+
+        posts: list[dict] = await asyncio.to_thread(
+            scrape_ig_posts_with_fallback, handle, min(limit, 25)
+        )
+
+        if not posts:
+            return json.dumps({"handle": handle, "posts_found": 0, "contacts": [], "note": "Tidak ada posts ditemukan"})
+
+        wa_contacts: list[dict] = []
+        for post in posts[:20]:
+            caption = post.get("caption") or post.get("text") or ""
+            image_url = post.get("image_url") or post.get("thumbnail_url") or ""
+            post_url = post.get("url") or post.get("link") or f"https://instagram.com/{handle}/"
+
+            # Extract from caption text
+            if caption:
+                named = extract_named_contacts_from_text(caption)
+                for nc in named:
+                    if nc.phone and search_flow.is_mobile_phone(nc.phone):
+                        wa_contacts.append({
+                            "type": "wa_phone",
+                            "value": nc.phone,
+                            "source_url": post_url,
+                            "confidence": 0.8,
+                            "pic_name": nc.name or "",
+                        })
+
+            # Extract from image via Vision API
+            if image_url:
+                try:
+                    phone_contacts = await extract_phone_from_image(image_url, caption, require_person_name=False)
+                    for pc in phone_contacts:
+                        if pc.phone and search_flow.is_mobile_phone(pc.phone):
+                            wa_contacts.append({
+                                "type": "wa_phone",
+                                "value": pc.phone,
+                                "source_url": post_url,
+                                "confidence": 0.85,
+                                "pic_name": getattr(pc, "name", "") or "",
+                            })
+                except Exception:
+                    pass
+
+        # Deduplicate by value
+        seen_vals: set[str] = set()
+        unique_contacts = []
+        for c in wa_contacts:
+            if c["value"] not in seen_vals:
+                seen_vals.add(c["value"])
+                unique_contacts.append(c)
+
+        return json.dumps({
+            "handle": handle,
+            "posts_found": len(posts),
+            "contacts": unique_contacts[:5],
+            "summary": f"Scraped {len(posts)} posts, found {len(unique_contacts)} WA contacts.",
+        }, ensure_ascii=False)
+
+    except Exception as exc:
+        log.warning("[InstagramSubAgent] scrape_ig_contacts_tool error for %s: %s", handle, exc)
+        return json.dumps({"error": str(exc), "handle": handle})
 
 
 @dataclass
@@ -59,7 +465,8 @@ def _contacts_to_serializable(
 class WebSearchSubAgent:
     """
     Searches for official website and extracts contacts from web pages.
-    Wraps search_flow.website_discovery().
+    PRIMARY: LLM ReAct loop (MARKETING_SUB_AGENT_MODEL) with search_web + fetch_page tools.
+    FALLBACK: search_flow.website_discovery() if LLM unavailable or returns nothing.
     """
 
     async def run(
@@ -69,9 +476,58 @@ class WebSearchSubAgent:
         extra_data: dict | None = None,
     ) -> SubAgentResult:
         start = time.monotonic()
-        log.info("[WebSearchSubAgent] Starting for: %s (type=%s)", company_name, client_type)
+        hints = extra_data or {}
+        log.info("[WebSearchSubAgent] Starting for: %s (type=%s, hints=%s)", company_name, client_type, list(hints.keys()))
+
+        # --- PRIMARY: LLM ReAct loop ---
+        if cfg.OPENAI_API_KEY:
+            try:
+                system_prompt = build_web_search_prompt(
+                    company_name,
+                    client_type=client_type,
+                    refined_query=hints.get("refined_query"),
+                    avoid_domains=hints.get("avoid_source_domains"),
+                    force_domain=hints.get("force_domain"),
+                )
+                initial_msg = f"Temukan kontak resmi untuk: {company_name}"
+                if hints.get("refined_query"):
+                    initial_msg += f"\nGunakan query ini sebagai titik awal: {hints['refined_query']}"
+                if hints.get("force_domain"):
+                    initial_msg += f"\nCoba langsung ke domain: {hints['force_domain']}"
+
+                terminal_args, tokens = await _run_sub_agent_llm_loop(
+                    system_prompt=system_prompt,
+                    initial_message=initial_msg,
+                    tool_schemas=_WEB_SEARCH_AGENT_TOOLS,
+                    terminal_tools=_WEB_SEARCH_TERMINAL,
+                    tool_dispatch=_WEB_SEARCH_DISPATCH,
+                    max_iterations=8,
+                )
+
+                llm_contacts = terminal_args.get("contacts", [])
+                queries_tried = terminal_args.get("queries_tried", [])
+                summary = terminal_args.get("summary", "")
+
+                if llm_contacts:
+                    duration = time.monotonic() - start
+                    log.info("[WebSearchSubAgent/LLM] Done in %.1fs: %d contacts, %d tokens", duration, len(llm_contacts), tokens)
+                    return SubAgentResult(
+                        contacts=llm_contacts,
+                        tool_calls_made=["llm_web_search"],
+                        summary=summary or f"LLM web search: {len(llm_contacts)} kontak ditemukan.",
+                        queries_tried=queries_tried,
+                        tokens_used=tokens,
+                        duration_seconds=duration,
+                        success=True,
+                    )
+                else:
+                    log.info("[WebSearchSubAgent/LLM] LLM returned 0 contacts — falling back to website_discovery")
+
+            except Exception as llm_exc:
+                log.warning("[WebSearchSubAgent] LLM loop failed: %s — falling back", llm_exc)
+
+        # --- FALLBACK: deterministic pipeline ---
         try:
-            hints = extra_data or {}
             avoid_domains = hints.get("avoid_source_domains", [])
             refined_query = hints.get("refined_query")
             force_domain = hints.get("force_domain")
@@ -85,25 +541,20 @@ class WebSearchSubAgent:
             )
             contacts = _contacts_to_serializable(results)
 
-            # Build summary
             wa_count = sum(1 for c in contacts if c["type"] == "wa_phone")
             email_count = sum(1 for c in contacts if c["type"] == "email")
             website_count = sum(1 for c in contacts if c["type"] == "website")
-
-            summary_parts = []
+            parts = []
             if website_count:
-                summary_parts.append("website ditemukan")
+                parts.append("website ditemukan")
             if email_count:
-                summary_parts.append(f"{email_count} email")
+                parts.append(f"{email_count} email")
             if wa_count:
-                summary_parts.append(f"{wa_count} WA phone")
-            summary = (
-                f"Web search: {', '.join(summary_parts)}." if summary_parts
-                else "Web search: tidak ada kontak ditemukan."
-            )
+                parts.append(f"{wa_count} WA phone")
+            summary = f"Web search: {', '.join(parts)}." if parts else "Web search: tidak ada kontak ditemukan."
 
             duration = time.monotonic() - start
-            log.info("[WebSearchSubAgent] Done in %.1fs: %s contacts", duration, len(contacts))
+            log.info("[WebSearchSubAgent/Fallback] Done in %.1fs: %d contacts", duration, len(contacts))
             return SubAgentResult(
                 contacts=contacts,
                 tool_calls_made=["website_discovery"],
@@ -113,7 +564,7 @@ class WebSearchSubAgent:
             )
         except Exception as exc:
             duration = time.monotonic() - start
-            log.warning("[WebSearchSubAgent] Error for %s: %s", company_name, exc)
+            log.warning("[WebSearchSubAgent] Fallback also failed for %s: %s", company_name, exc)
             return SubAgentResult(
                 success=False,
                 error=str(exc),
@@ -126,7 +577,8 @@ class WebSearchSubAgent:
 class InstagramSubAgent:
     """
     Finds Instagram handle and extracts WA phone numbers from IG posts.
-    Wraps search_flow.ig_discovery().
+    PRIMARY: LLM ReAct loop that intelligently selects handles and scrapes contacts.
+    FALLBACK: search_flow.ig_discovery() if LLM unavailable or returns nothing.
     """
 
     async def run(
@@ -136,14 +588,68 @@ class InstagramSubAgent:
         client_type: str = "",
     ) -> SubAgentResult:
         start = time.monotonic()
-        log.info("[InstagramSubAgent] Starting for: %s", company_name)
-        try:
-            ig_result: search_flow.InstagramDiscoveryResult = await search_flow.ig_discovery(company_name, client_type=client_type)
+        log.info("[InstagramSubAgent] Starting for: %s (website_url=%s)", company_name, bool(website_url))
 
+        # Build dispatch with website_url closure
+        async def _find_ig(args: dict) -> str:
+            args_with_website = dict(args)
+            if website_url and not args_with_website.get("website_url"):
+                args_with_website["website_url"] = website_url
+            return await _find_ig_handle_tool(args_with_website)
+
+        ig_dispatch: dict[str, Callable] = {
+            "find_ig_handle": _find_ig,
+            "scrape_ig_contacts": _scrape_ig_contacts_tool,
+        }
+
+        # --- PRIMARY: LLM ReAct loop ---
+        if cfg.OPENAI_API_KEY:
+            try:
+                system_prompt = build_instagram_prompt(company_name, website_url=website_url)
+                initial_msg = f"Temukan akun Instagram dan nomor WA untuk: {company_name}"
+                if website_url:
+                    initial_msg += f"\nWebsite resmi: {website_url} — scan untuk IG link dulu"
+
+                terminal_args, tokens = await _run_sub_agent_llm_loop(
+                    system_prompt=system_prompt,
+                    initial_message=initial_msg,
+                    tool_schemas=_INSTAGRAM_AGENT_TOOLS,
+                    terminal_tools=_INSTAGRAM_TERMINAL,
+                    tool_dispatch=ig_dispatch,
+                    max_iterations=6,
+                )
+
+                llm_contacts = terminal_args.get("contacts", [])
+                ig_handle = (terminal_args.get("ig_handle") or "").lstrip("@") or None
+                summary = terminal_args.get("summary", "")
+
+                if llm_contacts or ig_handle:
+                    duration = time.monotonic() - start
+                    log.info("[InstagramSubAgent/LLM] Done in %.1fs: %d contacts, handle=%s, %d tokens",
+                             duration, len(llm_contacts), ig_handle, tokens)
+                    return SubAgentResult(
+                        contacts=llm_contacts,
+                        ig_handle=ig_handle,
+                        tool_calls_made=["llm_instagram_search"],
+                        summary=summary or f"IG LLM: {len(llm_contacts)} WA contacts, handle=@{ig_handle}",
+                        tokens_used=tokens,
+                        duration_seconds=duration,
+                        success=True,
+                    )
+                else:
+                    log.info("[InstagramSubAgent/LLM] LLM returned nothing — falling back to ig_discovery")
+
+            except Exception as llm_exc:
+                log.warning("[InstagramSubAgent] LLM loop failed: %s — falling back", llm_exc)
+
+        # --- FALLBACK: deterministic pipeline ---
+        try:
+            ig_result: search_flow.InstagramDiscoveryResult = await search_flow.ig_discovery(
+                company_name, client_type=client_type
+            )
             contacts = _contacts_to_serializable(ig_result.contacts)
             candidates = ig_result.candidates or []
 
-            # Build summary
             wa_count = sum(1 for c in contacts if c["type"] == "wa_phone")
             handle = ig_result.handle or "tidak ditemukan"
             posts = len(ig_result.posts) if ig_result.posts else 0
@@ -151,12 +657,12 @@ class InstagramSubAgent:
             if wa_count:
                 summary = f"IG: @{handle}, {posts} posts, {wa_count} WA phone ditemukan."
             elif ig_result.handle:
-                summary = f"IG: @{handle} ditemukan, {posts} posts, tapi tidak ada WA phone di posts."
+                summary = f"IG: @{handle} ditemukan, {posts} posts, tapi tidak ada WA phone."
             else:
                 summary = f"IG: Tidak ada akun yang cocok ditemukan untuk {company_name}."
 
             duration = time.monotonic() - start
-            log.info("[InstagramSubAgent] Done in %.1fs: handle=%s, %d contacts", duration, handle, len(contacts))
+            log.info("[InstagramSubAgent/Fallback] Done in %.1fs: handle=%s, %d contacts", duration, handle, len(contacts))
             return SubAgentResult(
                 contacts=contacts,
                 ig_handle=ig_result.handle,
@@ -169,7 +675,7 @@ class InstagramSubAgent:
             )
         except Exception as exc:
             duration = time.monotonic() - start
-            log.warning("[InstagramSubAgent] Error for %s: %s", company_name, exc)
+            log.warning("[InstagramSubAgent] Fallback also failed for %s: %s", company_name, exc)
             return SubAgentResult(
                 success=False,
                 error=str(exc),

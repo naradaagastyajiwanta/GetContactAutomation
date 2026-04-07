@@ -32,3 +32,4 @@ pysocks>=1.7.1
 ddgs>=7.0.0
 playwright>=1.49.0
 playwright-stealth>=1.0.6
+instaloader>=4.10

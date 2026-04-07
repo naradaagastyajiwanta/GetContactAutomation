@@ -2672,38 +2672,87 @@ async def wa_get_devices():
 
 
 _CHAT_MODEL_EXCLUDE = {"audio", "realtime", "tts", "transcribe", "image", "instruct", "search", "diarize", "codex", "deep-research"}
+_GEMINI_EXCLUDE = {"image", "audio", "tts", "native-audio", "embedding", "robotics", "live", "transcribe", "computer-use"}
+
+
+async def _list_openai_models() -> list[str]:
+    from openai import AsyncOpenAI
+    api_key = cfg.OPENAI_API_KEY
+    if not api_key:
+        return []
+    client = AsyncOpenAI(api_key=api_key)
+    response = await client.models.list()
+    models: list[str] = []
+    for m in response.data:
+        mid = m.id
+        if not (mid.startswith("gpt-") or mid.startswith("o1") or mid.startswith("o3") or mid.startswith("o4")):
+            continue
+        if mid.startswith("ft:"):
+            continue
+        if any(excl in mid for excl in _CHAT_MODEL_EXCLUDE):
+            continue
+        models.append(mid)
+    models.sort()
+    return models
+
+
+async def _list_gemini_models() -> list[str]:
+    gemini_key = str(cfg.get("GEMINI_API_KEY", "") or "")
+    if not gemini_key:
+        return []
+    from google import genai as _genai
+    client = _genai.Client(api_key=gemini_key)
+    models: list[str] = []
+    for m in client.models.list():
+        name = m.name  # e.g. "models/gemini-2.5-pro"
+        if name.startswith("models/"):
+            name = name[len("models/"):]
+        if not name.startswith("gemini-"):
+            continue
+        if any(excl in name for excl in _GEMINI_EXCLUDE):
+            continue
+        models.append(name)
+    models.sort()
+    return models
 
 
 @app.get("/config/models")
-async def list_openai_models():
-    """Fetch chat-completion-capable models from OpenAI."""
-    from openai import AsyncOpenAI
+async def list_models(provider: str = "openai"):
+    """Fetch chat-capable models from OpenAI, Gemini, or both.
 
-    api_key = cfg.OPENAI_API_KEY
-    if not api_key:
-        return {"models": []}
+    provider: "openai" | "gemini" | "all"
+    """
+    import asyncio
+    errors: list[str] = []
+    openai_models: list[str] = []
+    gemini_models: list[str] = []
 
-    try:
-        client = AsyncOpenAI(api_key=api_key)
-        response = await client.models.list()
-        models: list[str] = []
-        for m in response.data:
-            mid = m.id
-            # Only gpt / o-series models
-            if not (mid.startswith("gpt-") or mid.startswith("o1") or mid.startswith("o3") or mid.startswith("o4")):
-                continue
-            # Skip fine-tuned
-            if mid.startswith("ft:"):
-                continue
-            # Skip non-chat models (audio, image, realtime, etc.)
-            if any(excl in mid for excl in _CHAT_MODEL_EXCLUDE):
-                continue
-            models.append(mid)
-        models.sort()
-        return {"models": models}
-    except Exception as e:
-        log.warning("Failed to list OpenAI models: %s", e)
-        return {"models": [], "error": str(e)}
+    if provider in ("openai", "all"):
+        try:
+            openai_models = await _list_openai_models()
+        except Exception as e:
+            log.warning("Failed to list OpenAI models: %s", e)
+            errors.append(str(e))
+
+    if provider in ("gemini", "all"):
+        try:
+            gemini_models = await _list_gemini_models()
+        except Exception as e:
+            log.warning("Failed to list Gemini models: %s", e)
+            errors.append(str(e))
+
+    if provider == "gemini":
+        models = gemini_models
+    elif provider == "all":
+        # Gemini first (preferred for orchestrator), then OpenAI
+        models = gemini_models + openai_models
+    else:
+        models = openai_models
+
+    result: dict = {"models": models}
+    if errors:
+        result["error"] = "; ".join(errors)
+    return result
 
 
 def _mask_value(value: str) -> str:
@@ -2736,6 +2785,8 @@ async def get_config():
             "max_value": defn.max_value,
             "sensitive": defn.sensitive,
             "has_value": bool(raw_value) if defn.sensitive else None,
+            "choices": defn.choices,
+            "model_picker": defn.model_picker,
         })
     return {"settings": settings}
 

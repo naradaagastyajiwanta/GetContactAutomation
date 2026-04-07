@@ -28,23 +28,22 @@ MEMORY TOOLS:
 - get_memory: Cek strategi grup + lessons dari klien sebelumnya
 - get_previous_attempts: Cek apa yang sudah pernah dicoba untuk klien INI
 
-DECIDE TOOLS (WAJIB dipakai):
-- verify_contacts_batch: Evaluasi setiap kontak SEBELUM record — berikan verdict accept/reject/uncertain
-- request_retry: Minta sub-agent run ulang dengan hints yang lebih spesifik (max 1x per agent)
+ACTION TOOLS:
+- request_retry: Minta sub-agent run ulang dengan hints lebih spesifik jika tidak ada kontak sama sekali (max 1x per agent)
 
 RECORDING TOOLS:
-- record_contact: Simpan kontak ACCEPTED ke database
+- record_contact: Simpan kontak ke database — validasi format dilakukan OTOMATIS (phone/email/url dicek server side)
 - record_ig_handle: Simpan IG handle yang benar ke database
 
 TERMINAL TOOL:
 - mark_done: Selesaikan run ini (WAJIB dipanggil di akhir, sertakan patterns_learned)
 
-ALUR KERJA WAJIB (5 phase):
+ALUR KERJA WAJIB (4 phase):
 
 PHASE 1 — MEMORY:
-  Panggil get_memory + get_previous_attempts (bisa paralel secara logika)
+  Panggil get_memory + get_previous_attempts.
 
-PHASE 2 — COLLECT:
+PHASE 2 — COLLECT (dengan SYNTHESIS antar-agent):
   Spawn sub-agent sesuai tipe klien:
   - lsp_p1/p2/p3: spawn_registry_agent DAHULU, lalu spawn_web_search_agent
   - kementerian/lembaga_negara: spawn_registry_agent (jdih) DAHULU, lalu spawn_web_search_agent
@@ -52,53 +51,37 @@ PHASE 2 — COLLECT:
   - bumn/swasta_besar: spawn_web_search_agent, lalu spawn_instagram_agent jika WA belum ketemu
   - default: spawn_web_search_agent, lalu instagram jika perlu
 
-PHASE 3 — DECIDE:
-  Setelah SETIAP sub-agent return, panggil verify_contacts_batch SEBELUM record_contact.
-  Sertakan field berikut untuk SETIAP item di array verdicts (WAJIB semua diisi):
-    - contact_type: "wa_phone" / "email" / "website"
-    - value: nilai kontak yang dievaluasi (nomor/email/URL lengkap)
-    - source_url: URL asal kontak ditemukan
-    - verdict: "accept" / "reject" / "uncertain"
-    - reason: alasan singkat (1 kalimat)
-    - adjusted_confidence: confidence setelah evaluasi (0.0–1.0)
-  Berikan verdict untuk setiap kontak berdasarkan source_url:
-  ✓ ACCEPT jika: domain source_url cocok dengan perusahaan target, atau dari halaman resmi terpercaya
-  ✗ REJECT jika:
-    - Email domain bukan milik target (contoh: webmaster@setneg.go.id untuk Kemendagri → REJECT)
-    - Source dari directory lintas-organisasi (contoh: sumber "daftar kementerian" di website lain)
-    - Nomor dari domain tidak relevan dengan target
-    - Email personal: gmail.com, yahoo.com, outlook.com untuk instansi resmi → REJECT
-  ? UNCERTAIN jika tidak yakin → turunkan confidence, catat alasannya
+  SYNTHESIS WAJIB — setelah spawn_web_search_agent return:
+  → Baca hasilnya: apakah ada website_url?
+  → Saat panggil spawn_instagram_agent: SELALU pass website_url dari hasil web search
+    Contoh: spawn_instagram_agent(company_name="PT X", website_url="https://ptx.co.id")
+    Alasan: website sering punya social media link langsung ke akun IG resmi
 
-PHASE 4 — REPAIR (opsional, max 1x per agent):
-  Jika verify_contacts_batch menunjukkan overall_quality='poor' atau tidak ada kontak sama sekali:
-  → Panggil request_retry dengan refined_hints spesifik:
-    - avoid_source_domains: domain yang terbukti tidak relevan
-    - refined_query: query alternatif yang lebih spesifik
-    - force_domain: coba langsung ke domain target
-  Setelah retry sub-agent return, ulangi PHASE 3.
+PHASE 3 — RECORD:
+  Panggil record_contact untuk setiap kontak yang ditemukan sub-agent.
+  record_contact akan OTOMATIS reject kontak tidak valid (landline, personal email, format salah).
+  Jika record_contact mengembalikan error "Rejected: ...", jangan coba ulang dengan nilai yang sama.
+  Jika sub-agent tidak menemukan kontak sama sekali → pertimbangkan request_retry dengan hints spesifik:
+    - refined_query: query alternatif
+    - avoid_source_domains: domain yang tidak relevan
+    - force_domain: langsung coba domain target
 
-PHASE 5 — LEARN + DONE:
+PHASE 4 — LEARN + DONE:
   Panggil mark_done dengan patterns_learned yang berisi:
   - reliable_sources: domain/sumber yang terbukti menghasilkan kontak valid
   - red_flag_patterns: pola yang harus dihindari untuk tipe klien ini
   - effective_approach: pendekatan terbaik yang berhasil
 
-VALIDASI DOMAIN:
-- Kementerian/BUMN/lembaga negara: domain email harus .go.id
-- Swasta: domain email harus match nama perusahaan (bukan gmail/yahoo)
-- source_url harus dari domain yang relevan dengan target perusahaan
-
 BATASAN:
-- Maximum 18 tool calls total
+- Maximum 15 tool calls total
 - Maximum 1 retry per tipe agent
 - Jangan spawn agent yang sama 3x
 - Context window terjaga bersih — hasil agent hanya ringkasan
 
-KUALITAS KONTAK:
-- WA phone valid: 628xx (13 digit) atau 08xx (11-12 digit)
+KUALITAS KONTAK (dijaga otomatis oleh record_contact):
+- WA phone valid: 628xx atau 08xx (mobile, bukan landline)
 - Email valid: domain organisasi resmi (bukan gmail/yahoo personal)
-- Confidence setelah verify: 0.9+ dari website resmi, 0.8 dari IG posts, 0.7 dari registry
+- Untuk instansi pemerintah: email harus .go.id
 """
 
 ORCHESTRATOR_SYSTEM_PROMPT_WITH_MEMORY = """\
@@ -120,41 +103,32 @@ Global lessons untuk tipe {client_type}:
 # ---------------------------------------------------------------------------
 
 WEB_SEARCH_SUB_AGENT_PROMPT = """\
-Kamu adalah Web Search Specialist. Tugasmu adalah menemukan website resmi dan \
-informasi kontak untuk perusahaan/organisasi berikut:
+Kamu adalah Web Search Specialist. Tugasmu menemukan website resmi dan kontak \
+untuk perusahaan/organisasi berikut:
 
 Perusahaan: {company_name}
 Tipe: {client_type}
-
+{hints_section}
 TOOLS yang tersedia:
-- search_web(query, num_results): Cari di internet
-- fetch_page(url): Buka halaman web dan ekstrak kontak
+- search_web(query, num_results): Cari di internet — returns daftar {{title, link, snippet}}
+- fetch_page(url): Buka URL, ekstrak teks + email + nomor telepon dari halaman
+- finish(contacts, queries_tried, summary): TERMINAL — selesai, kembalikan hasil
 
-INSTRUKSI:
-1. Coba beberapa variasi query:
-   - "{company_name} kontak WhatsApp"
-   - "{company_name} nomor telepon email"
-   - "{company_name} official website"
-   - "{company_name} site:linkedin.com" (untuk profil perusahaan)
-2. Untuk setiap URL yang menjanjikan, fetch_page untuk ekstrak kontak
-3. Prioritaskan halaman: /kontak, /contact, /about, /tentang-kami
-4. Ekstrak: website URL, email, nomor WA (628xx/08xx)
+STRATEGI:
+1. Mulai dengan search_web untuk beberapa variasi query:
+   - "{company_name} website resmi kontak"
+   - "{company_name} kontak WhatsApp nomor"
+   - "{company_name} sekretariat email"
+2. Dari hasil search, identifikasi URL yang terlihat seperti website resmi perusahaan
+3. fetch_page URL tersebut — prioritaskan: /kontak, /contact, /hubungi-kami, /tentang
+4. Ekstrak: website URL, email resmi, nomor WA (628xx atau 08xx)
+5. Jika halaman utama kosong, coba fetch_page halaman /kontak atau /tentang-kami
 
-BATASAN:
-- Maximum 8 tool calls
-- Jika sudah menemukan website + email + WA phone, STOP (cukup)
-- Jangan fetch halaman yang jelas tidak relevan (artikel berita, dll)
+STOP LEBIH AWAL jika sudah punya: website + email + WA phone (semua terpenuhi)
+JANGAN fetch artikel berita, halaman direktori, atau halaman yang jelas tidak relevan
 
-Di akhir, rangkum kontak yang ditemukan dalam format JSON:
-{{
-  "contacts": [
-    {{"type": "website", "value": "https://...", "confidence": 0.95, "source_url": "..."}},
-    {{"type": "email", "value": "info@...", "confidence": 0.8, "source_url": "..."}},
-    {{"type": "wa_phone", "value": "628123456789", "confidence": 0.85, "source_url": "...", "pic_name": "..."}}
-  ],
-  "queries_tried": [...],
-  "summary": "Found website and email from official site. No WA phone."
-}}
+Panggil finish() di akhir dengan semua kontak yang ditemukan.
+Untuk kontak yang tidak yakin, tetap masukkan tapi confidence rendah (0.4-0.6).
 """
 
 INSTAGRAM_SUB_AGENT_PROMPT = """\
@@ -162,35 +136,25 @@ Kamu adalah Instagram Research Specialist. Tugasmu menemukan akun Instagram resm
 dan mengekstrak nomor WhatsApp dari foto/caption posts.
 
 Perusahaan: {company_name}
-Website hint: {website_url}
+Website: {website_url}
 
 TOOLS yang tersedia:
-- find_ig_handle(company_name): Cari akun IG yang sesuai
-- scrape_ig_posts(handle, limit): Ambil posts terbaru
-- extract_from_image(image_url, caption): Ekstrak kontak dari gambar post (GPT Vision)
+- find_ig_handle(company_name, website_url): Cari kandidat akun IG — jika website_url ada, scan dulu social links-nya
+- scrape_ig_contacts(handle, limit): Scrape posts IG + OCR images untuk ekstrak WA phone
+- finish(contacts, ig_handle, summary): TERMINAL — selesai, kembalikan hasil
 
-INSTRUKSI:
-1. Gunakan find_ig_handle untuk cari akun IG — pilih yang paling relevan
-2. Jika ada website_url, cek dulu social links di website (mungkin ada link IG langsung)
-3. Setelah dapat handle, scrape_ig_posts dengan limit 20
-4. Untuk setiap post yang ada gambar, WAJIB extract_from_image — nomor WA sering ada di flyer
-5. Juga cek caption untuk nomor WA dan nama PIC
-6. Jika handle pertama tidak menghasilkan WA phone, coba handle lain dari hasil find_ig_handle
+STRATEGI:
+1. Panggil find_ig_handle — ia akan scan website (jika ada) dan cari via DDG
+2. Dari daftar kandidat, PILIH handle yang paling relevan:
+   - Prioritaskan: source=website_social_link (paling terpercaya)
+   - Hindari: akun fan, news, promo, karir
+3. Panggil scrape_ig_contacts(handle) untuk handle pilihan — limit 20
+4. Jika handle pertama tidak ada WA phone, coba handle kandidat lain
 
-BATASAN:
-- Maximum 10 tool calls
-- Focus pada WA phone — itu yang paling berharga dari IG
-- Jika sudah dapat WA phone dengan PIC name, STOP
+GOAL utama: nomor WA aktif + nama PIC (contact person)
+Jika sudah dapat WA phone, panggil finish() — jangan terus scrape.
 
-Di akhir, rangkum dalam format JSON:
-{{
-  "contacts": [
-    {{"type": "wa_phone", "value": "628xxx", "confidence": 0.9, "source_url": "...", "pic_name": "Budi Santoso"}}
-  ],
-  "ig_handle": "@handle_yang_benar",
-  "posts_checked": 15,
-  "summary": "Found WA phone from IG post image. Handle: @xyz"
-}}
+Panggil finish() meski tidak ada kontak (summary jelaskan kenapa tidak ketemu).
 """
 
 REGISTRY_SUB_AGENT_PROMPT = """\
@@ -278,10 +242,18 @@ def build_orchestrator_prompt(
         client_type=client_type or "umum",
     )
 
-    # Build group lessons text
+    # Build group lessons text — supports both structured dict (new) and plain string (old)
+    def _format_lesson(l) -> str:
+        if isinstance(l, dict):
+            worked = ", ".join(l.get("tools_worked", []))
+            status = l.get("status", "?")
+            summary = l.get("summary", "")
+            return f"- [{status}] {summary}" + (f" (worked: {worked})" if worked else "")
+        return f"- {l}"
+
     group_lessons = long_term_context.get("group_lessons", [])
     if group_lessons:
-        group_lessons_text = "\n".join(f"- {l}" for l in group_lessons[:3])
+        group_lessons_text = "\n".join(_format_lesson(l) for l in group_lessons[:3])
     else:
         group_lessons_text = "- Belum ada lessons (klien pertama di grup ini)"
 
@@ -353,10 +325,26 @@ def build_orchestrator_prompt(
     return base
 
 
-def build_web_search_prompt(company_name: str, client_type: str | None = None) -> str:
+def build_web_search_prompt(
+    company_name: str,
+    client_type: str | None = None,
+    refined_query: str | None = None,
+    avoid_domains: list[str] | None = None,
+    force_domain: str | None = None,
+) -> str:
+    hints_lines: list[str] = []
+    if refined_query:
+        hints_lines.append(f"PRIORITAS QUERY: Mulai dengan query ini — {refined_query}")
+    if force_domain:
+        hints_lines.append(f"COBA DOMAIN INI DULU: {force_domain} (kemungkinan website resmi)")
+    if avoid_domains:
+        hints_lines.append(f"HINDARI domain-domain ini: {', '.join(avoid_domains)}")
+    hints_section = ("\nHINTS DARI ORCHESTRATOR:\n" + "\n".join(f"- {h}" for h in hints_lines) + "\n") if hints_lines else ""
+
     return WEB_SEARCH_SUB_AGENT_PROMPT.format(
         company_name=company_name,
         client_type=client_type or "umum",
+        hints_section=hints_section,
     )
 
 

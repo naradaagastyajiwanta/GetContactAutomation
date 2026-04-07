@@ -44,6 +44,8 @@ class ConfigDef:
     max_value: float | None = None
     sensitive: bool = False  # if True, value is masked in GET response
     env_only: bool = False  # if True, cannot be changed via DB or FE API — env var only
+    choices: list[str] | None = None  # if set, rendered as static dropdown in UI
+    model_picker: str | None = None  # if set, rendered as dynamic model dropdown: "openai" | "gemini" | "all"
 
 
 CONFIG_DEFINITIONS: list[ConfigDef] = [
@@ -157,6 +159,19 @@ CONFIG_DEFINITIONS: list[ConfigDef] = [
         description="Minutes to cool down a rate-limited account before retrying.",
         min_value=5, max_value=240,
     ),
+    ConfigDef(
+        key="INSTALOADER_ENABLED",
+        type=ConfigType.BOOL, default=True, group=ConfigGroup.PLAYWRIGHT,
+        label="Instaloader Enabled",
+        description="Enable Instaloader (no-session, free) as fallback for Instagram post scraping when Playwright returns alt-text captions.",
+    ),
+    ConfigDef(
+        key="INSTALOADER_REQUEST_DELAY",
+        type=ConfigType.FLOAT, default=2.0, group=ConfigGroup.PLAYWRIGHT,
+        label="Instaloader Request Delay (s)",
+        description="Seconds to wait between Instaloader post fetches to avoid IP bans. Default: 2.0",
+        min_value=0.5, max_value=30.0,
+    ),
     # --- Outreach ---
     ConfigDef(
         key="OUTREACH_START_HOUR",
@@ -241,12 +256,14 @@ CONFIG_DEFINITIONS: list[ConfigDef] = [
         type=ConfigType.STRING, default="gemini-3.1-pro-preview", group=ConfigGroup.AI_AGENT,
         label="Marketing Orchestrator Model",
         description="Model for the marketing discovery orchestrator agent. Prefix 'gemini-' uses Gemini API (recommended), 'gpt-' uses OpenAI Responses API.",
+        model_picker="all",
     ),
     ConfigDef(
         key="MARKETING_SUB_AGENT_MODEL",
         type=ConfigType.STRING, default="gpt-4o-mini", group=ConfigGroup.AI_AGENT,
         label="Marketing Sub-Agent Model",
-        description="OpenAI model used by marketing sub-agents (web search, registry, etc.).",
+        description="OpenAI model for marketing sub-agents (web search, instagram, etc.).",
+        model_picker="openai",
     ),
     ConfigDef(
         key="MARKETING_AGENT_MAX_TOOL_ITERATIONS",

@@ -157,6 +157,19 @@ async def update_group_strategy(group_id: int, strategy: dict) -> None:
     log.info("[MktMemory] Updated group strategy for group_id=%d", group_id)
 
 
+def _extract_auto_patterns(run_summary: dict) -> dict:
+    """Deterministically extract reliable_sources and red_flags from run data.
+    Does NOT depend on LLM providing patterns_learned in mark_done."""
+    patterns: dict = {"reliable_sources": [], "red_flag_patterns": []}
+    for tool in run_summary.get("tools_that_worked", []):
+        label = tool.replace("spawn_", "").replace("_agent", "") + "_effective"
+        patterns["reliable_sources"].append(label)
+    for tool in run_summary.get("tools_that_failed", []):
+        label = tool.replace("spawn_", "").replace("_agent", "") + "_insufficient"
+        patterns["red_flag_patterns"].append(label)
+    return patterns
+
+
 async def write_post_run_lessons(
     group_id: int,
     client_type: str | None,
@@ -211,15 +224,34 @@ async def write_post_run_lessons(
     completed = strategy["completed_clients"]
     strategy["found_rate"] = found / completed if completed > 0 else 0.0
 
-    # Add lesson if summary is meaningful
+    # Add lesson if summary is meaningful — stored as structured dict (backward compat: old entries may be plain strings)
     summary_text = run_summary.get("summary", "")
     if summary_text and len(summary_text) > 10:
         lessons = strategy.get("lessons", [])
-        # Keep max 20 lessons, newest first
-        lessons.insert(0, summary_text)
+        lessons.insert(0, {
+            "summary": summary_text[:300],
+            "status": run_summary.get("status"),
+            "tools_worked": run_summary.get("tools_that_worked", []),
+            "tools_failed": run_summary.get("tools_that_failed", []),
+        })
         strategy["lessons"] = lessons[:20]
 
-    # Store structured patterns from patterns_learned (v2 schema)
+    # Deterministic pattern extraction — always runs, does not depend on LLM patterns_learned
+    dp = strategy.setdefault("decision_patterns", {
+        "reliable_sources": [],
+        "red_flag_patterns": [],
+        "effective_approaches": {},
+    })
+    auto_patterns = _extract_auto_patterns(run_summary)
+    for src in auto_patterns.get("reliable_sources", []):
+        if src not in dp.get("reliable_sources", []):
+            dp.setdefault("reliable_sources", []).append(src)
+    for flag in auto_patterns.get("red_flag_patterns", []):
+        if flag not in dp.get("red_flag_patterns", []):
+            dp.setdefault("red_flag_patterns", []).append(flag)
+    strategy["decision_patterns"] = dp
+
+    # Also merge LLM-provided patterns_learned on top (when orchestrator includes them in mark_done)
     patterns = run_summary.get("patterns_learned", {})
     if patterns:
         dp = strategy.setdefault("decision_patterns", {
