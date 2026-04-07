@@ -85,7 +85,7 @@
         }
       ],
       "warmUp": {
-        "startedAt": 1775562787991,
+        "startedAt": 1775564991846,
         "dailyCounts": {}
       },
       "timelock": {
@@ -196,7 +196,8 @@
     },
     "u90": {
       "knownChats": [
-        "6285121084588@s.whatsapp.net"
+        "6285121084588@s.whatsapp.net",
+        "6287811152506@s.whatsapp.net"
       ],
       "sendEvents": [],
       "failedEvents": [],
