@@ -174,7 +174,7 @@ async def _get_phone_lock(phone: str) -> asyncio.Lock:
 # ---------------------------------------------------------------------------
 
 _IG_HEALTH_INTERVAL = 300  # 5 minutes
-_SMTP_HEALTH_INTERVAL = 60  # 1 minute
+_SMTP_HEALTH_INTERVAL = 300  # 5 minutes
 
 async def _periodic_ig_health_check():
     """
@@ -293,6 +293,11 @@ async def _run_managed_smtp_health_checks() -> dict[str, int]:
         for payload in health_updates:
             await ws_manager.broadcast_type("email_smtp_account_health", account=payload)
 
+    if failed > 0:
+        log.warning("[SMTPHealthCheck] %d/%d accounts unhealthy", failed, checked)
+    else:
+        log.debug("[SMTPHealthCheck] %d/%d accounts healthy", healthy, checked)
+
     return {"checked": checked, "healthy": healthy, "failed": failed}
 
 
@@ -321,6 +326,23 @@ async def lifespan(app: FastAPI):
     await init_db()
     await cfg.init_from_db()
     await _sync_managed_smtp_accounts_from_storage()
+
+    # Recover orphaned marketing states from any prior crash
+    try:
+        from orchestrator.marketing import groups as _mkt_groups
+        _recovery = await _mkt_groups.recover_orphaned_states()
+        if any(_recovery.values()):
+            log.info(
+                "Marketing startup recovery: %d run(s) interrupted, "
+                "%d client(s) orchestration-state reset, "
+                "%d client(s) search-status reset to pending",
+                _recovery["runs_interrupted"],
+                _recovery["clients_state_reset"],
+                _recovery["clients_searching_reset"],
+            )
+    except Exception as _e:
+        log.warning("Marketing startup recovery failed (non-critical): %s", _e)
+
     log.info("Database initialized")
 
     # Register the running event loop so LogStreamHandler can broadcast log lines
@@ -1855,6 +1877,15 @@ async def get_group_university_ids(group_id: int):
 
 
 # ---------------------------------------------------------------------------
+# Marketing endpoints
+# ---------------------------------------------------------------------------
+
+from orchestrator.marketing import router as marketing_router
+
+app.include_router(marketing_router, prefix="/marketing", tags=["marketing"])
+
+
+# ---------------------------------------------------------------------------
 # Conversations endpoints
 # ---------------------------------------------------------------------------
 
@@ -2646,38 +2677,87 @@ async def wa_get_devices():
 
 
 _CHAT_MODEL_EXCLUDE = {"audio", "realtime", "tts", "transcribe", "image", "instruct", "search", "diarize", "codex", "deep-research"}
+_GEMINI_EXCLUDE = {"image", "audio", "tts", "native-audio", "embedding", "robotics", "live", "transcribe", "computer-use"}
+
+
+async def _list_openai_models() -> list[str]:
+    from openai import AsyncOpenAI
+    api_key = cfg.OPENAI_API_KEY
+    if not api_key:
+        return []
+    client = AsyncOpenAI(api_key=api_key)
+    response = await client.models.list()
+    models: list[str] = []
+    for m in response.data:
+        mid = m.id
+        if not (mid.startswith("gpt-") or mid.startswith("o1") or mid.startswith("o3") or mid.startswith("o4")):
+            continue
+        if mid.startswith("ft:"):
+            continue
+        if any(excl in mid for excl in _CHAT_MODEL_EXCLUDE):
+            continue
+        models.append(mid)
+    models.sort()
+    return models
+
+
+async def _list_gemini_models() -> list[str]:
+    gemini_key = str(cfg.get("GEMINI_API_KEY", "") or "")
+    if not gemini_key:
+        return []
+    from google import genai as _genai
+    client = _genai.Client(api_key=gemini_key)
+    models: list[str] = []
+    for m in client.models.list():
+        name = m.name  # e.g. "models/gemini-2.5-pro"
+        if name.startswith("models/"):
+            name = name[len("models/"):]
+        if not name.startswith("gemini-"):
+            continue
+        if any(excl in name for excl in _GEMINI_EXCLUDE):
+            continue
+        models.append(name)
+    models.sort()
+    return models
 
 
 @app.get("/config/models")
-async def list_openai_models():
-    """Fetch chat-completion-capable models from OpenAI."""
-    from openai import AsyncOpenAI
+async def list_models(provider: str = "openai"):
+    """Fetch chat-capable models from OpenAI, Gemini, or both.
 
-    api_key = cfg.OPENAI_API_KEY
-    if not api_key:
-        return {"models": []}
+    provider: "openai" | "gemini" | "all"
+    """
+    import asyncio
+    errors: list[str] = []
+    openai_models: list[str] = []
+    gemini_models: list[str] = []
 
-    try:
-        client = AsyncOpenAI(api_key=api_key)
-        response = await client.models.list()
-        models: list[str] = []
-        for m in response.data:
-            mid = m.id
-            # Only gpt / o-series models
-            if not (mid.startswith("gpt-") or mid.startswith("o1") or mid.startswith("o3") or mid.startswith("o4")):
-                continue
-            # Skip fine-tuned
-            if mid.startswith("ft:"):
-                continue
-            # Skip non-chat models (audio, image, realtime, etc.)
-            if any(excl in mid for excl in _CHAT_MODEL_EXCLUDE):
-                continue
-            models.append(mid)
-        models.sort()
-        return {"models": models}
-    except Exception as e:
-        log.warning("Failed to list OpenAI models: %s", e)
-        return {"models": [], "error": str(e)}
+    if provider in ("openai", "all"):
+        try:
+            openai_models = await _list_openai_models()
+        except Exception as e:
+            log.warning("Failed to list OpenAI models: %s", e)
+            errors.append(str(e))
+
+    if provider in ("gemini", "all"):
+        try:
+            gemini_models = await _list_gemini_models()
+        except Exception as e:
+            log.warning("Failed to list Gemini models: %s", e)
+            errors.append(str(e))
+
+    if provider == "gemini":
+        models = gemini_models
+    elif provider == "all":
+        # Gemini first (preferred for orchestrator), then OpenAI
+        models = gemini_models + openai_models
+    else:
+        models = openai_models
+
+    result: dict = {"models": models}
+    if errors:
+        result["error"] = "; ".join(errors)
+    return result
 
 
 def _mask_value(value: str) -> str:
@@ -2710,6 +2790,8 @@ async def get_config():
             "max_value": defn.max_value,
             "sensitive": defn.sensitive,
             "has_value": bool(raw_value) if defn.sensitive else None,
+            "choices": defn.choices,
+            "model_picker": defn.model_picker,
         })
     return {"settings": settings}
 

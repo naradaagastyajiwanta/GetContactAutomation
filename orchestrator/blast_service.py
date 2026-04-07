@@ -504,6 +504,66 @@ async def add_recipients_bulk(
     return {"added": added, "skipped": skipped, "total": total}
 
 
+async def add_recipients_from_marketing_contacts(
+    campaign_id: int,
+    contacts: list[dict],
+) -> dict:
+    """Add recipients to a blast campaign from marketing contact results.
+
+    Does NOT require university_id FK — marketing contacts live outside the
+    university domain.
+
+    Args:
+        campaign_id: blast campaign ID
+        contacts: list of dicts with keys:
+            - phone_number  (required)
+            - contact_name  (optional, client name)
+            - university_name (optional, usually the value/display name)
+
+    Returns:
+        {"added": int, "skipped": int, "total": int}
+    """
+    added = 0
+    skipped = 0
+
+    async with get_db() as db:
+        for contact in contacts:
+            phone = contact.get("phone_number")
+            if not phone:
+                skipped += 1
+                continue
+
+            try:
+                await db.execute(
+                    """INSERT INTO blast_recipients
+                       (campaign_id, contact_id, university_id, phone_number, contact_name, university_name)
+                       VALUES (?, NULL, NULL, ?, ?, ?)""",
+                    (
+                        campaign_id,
+                        phone,
+                        contact.get("contact_name"),
+                        contact.get("university_name"),
+                    ),
+                )
+                added += 1
+            except Exception:
+                # UNIQUE constraint — phone already in campaign
+                skipped += 1
+
+        count_cursor = await db.execute(
+            "SELECT COUNT(*) FROM blast_recipients WHERE campaign_id = ?",
+            (campaign_id,),
+        )
+        total = (await count_cursor.fetchone())[0]
+        await db.execute(
+            "UPDATE blast_campaigns SET total_recipients = ? WHERE id = ?",
+            (total, campaign_id),
+        )
+        await db.commit()
+
+    return {"added": added, "skipped": skipped, "total": total}
+
+
 async def remove_recipient(campaign_id: int, recipient_id: int) -> bool:
     """Remove a single recipient from a campaign."""
     async with get_db() as db:

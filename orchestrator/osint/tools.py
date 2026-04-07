@@ -61,6 +61,89 @@ async def ddg_search(query: str, max_results: int = 5) -> list[dict]:
         return []
 
 
+_GOOGLE_USER_AGENTS = [
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:123.0) Gecko/20100101 Firefox/123.0",
+    "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
+]
+
+
+async def google_search(query: str, max_results: int = 10) -> list[dict]:
+    """
+    Scrape Google search results (free, no API key, Indonesian locale).
+    Returns [{title, link, snippet}]. Falls back gracefully on rate limit or block.
+    """
+    import random
+    params = {
+        "q": query,
+        "num": min(max_results, 10),
+        "hl": "id",
+        "gl": "id",
+    }
+    headers = {
+        "User-Agent": random.choice(_GOOGLE_USER_AGENTS),
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+        "Accept-Language": "id-ID,id;q=0.9,en-US;q=0.8",
+        "Accept-Encoding": "gzip, deflate, br",
+        "Referer": "https://www.google.com/",
+        "DNT": "1",
+    }
+    try:
+        async with httpx.AsyncClient(timeout=15, follow_redirects=True) as client:
+            resp = await client.get(
+                "https://www.google.com/search",
+                params=params,
+                headers=headers,
+            )
+            if resp.status_code in (429, 503):
+                log.debug("[Google Search] Rate limited for '%s'", query[:50])
+                return []
+            if resp.status_code != 200:
+                log.debug("[Google Search] HTTP %d for '%s'", resp.status_code, query[:50])
+                return []
+
+            soup = BeautifulSoup(resp.text, "html.parser")
+            results: list[dict] = []
+
+            # Multiple selectors for Google's varied DOM structure
+            for g in soup.select("div.g, div.tF2Cxc, div[data-sokoban-container]"):
+                title_el = g.select_one("h3")
+                link_el = g.select_one("a[href]")
+                if not title_el or not link_el:
+                    continue
+                url = (link_el.get("href") or "").strip()
+                if not url.startswith("http") or "google.com" in url:
+                    continue
+                snippet_el = g.select_one(".VwiC3b, .IsZvec, .lEBKkf, span.aCOpRe, [data-sncf]")
+                results.append({
+                    "title": title_el.get_text(strip=True),
+                    "link": url,
+                    "snippet": snippet_el.get_text(strip=True) if snippet_el else "",
+                })
+                if len(results) >= max_results:
+                    break
+
+            if results:
+                log.debug("[Google Search] '%s' → %d results", query[:50], len(results))
+            return results
+    except Exception as exc:
+        log.debug("[Google Search] Failed for '%s': %s", query[:50], exc)
+        return []
+
+
+async def web_search(query: str, max_results: int = 10) -> list[dict]:
+    """
+    Search using Google first (free scraping, Indonesian locale), fallback to DDG.
+    Returns [{title, link, snippet}].
+    """
+    results = await google_search(query, max_results=max_results)
+    if results:
+        return results
+    log.debug("[Web Search] Google returned nothing for '%s', trying DDG", query[:50])
+    return await ddg_search(query, max_results=max_results)
+
+
 # ---------------------------------------------------------------------------
 # PDDIKTI wrappers (all run in thread to avoid blocking)
 # ---------------------------------------------------------------------------
@@ -355,12 +438,58 @@ def extract_social_links(html: str) -> dict[str, list[str]]:
     return found
 
 
+_EMAIL_PATTERN = re.compile(
+    r'(?<![a-zA-Z0-9._%+-])[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}(?![a-zA-Z0-9._%+-])'
+)
+
+
+def _is_truncated_email_variant(email: str, other: str) -> bool:
+    local, _, domain = email.lower().partition('@')
+    other_local, _, other_domain = other.lower().partition('@')
+    if not local or not other_local or domain != other_domain:
+        return False
+    if len(other_local) <= len(local):
+        return False
+    local_gap = len(other_local) - len(local)
+    if local_gap > 2:
+        return False
+    return other_local.endswith(local)
+
+
+def _decode_cloudflare_email(encoded: str) -> str | None:
+    encoded = (encoded or "").strip()
+    if len(encoded) < 4 or len(encoded) % 2 != 0:
+        return None
+
+    try:
+        key = int(encoded[:2], 16)
+        chars = [chr(int(encoded[index:index + 2], 16) ^ key) for index in range(2, len(encoded), 2)]
+    except ValueError:
+        return None
+
+    email = "".join(chars).strip()
+    if "@" not in email:
+        return None
+    return email
+
+
+def _extract_cloudflare_protected_emails(text: str) -> list[str]:
+    matches = re.findall(r'data-cfemail=["\']([0-9a-fA-F]+)["\']', text or "")
+    emails: list[str] = []
+    for match in matches:
+        decoded = _decode_cloudflare_email(match)
+        if decoded:
+            emails.append(decoded)
+    return emails
+
+
 def extract_emails(text: str) -> list[str]:
     """Extract email addresses from text with basic validation."""
-    pattern = r'[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}'
-    emails = re.findall(pattern, text)
+    emails = _EMAIL_PATTERN.findall(text)
+    emails.extend(_extract_cloudflare_protected_emails(text))
     # Filter out invalid emails
-    valid_emails = []
+    valid_emails: list[str] = []
+    seen_lower: set[str] = set()
     for email in emails:
         email_lower = email.lower()
         # Skip if contains invalid patterns
@@ -376,10 +505,20 @@ def extract_emails(text: str) -> list[str]:
             continue
         # Skip test/fake TLDs
         tld = email_lower.split('.')[-1]
-        if tld in ('test', 'example', 'localhost', 'invalid'):
+        if tld in ('test', 'example', 'localhost', 'invalid', 'png', 'jpg', 'jpeg', 'gif', 'webp', 'svg', 'ico', 'js', 'css', 'json', 'xml', 'woff', 'woff2'):
             continue
+        if email_lower in seen_lower:
+            continue
+        seen_lower.add(email_lower)
         valid_emails.append(email)
-    return list(set(valid_emails))
+
+    filtered_emails: list[str] = []
+    for email in valid_emails:
+        if any(_is_truncated_email_variant(email, other) for other in valid_emails if other != email):
+            continue
+        filtered_emails.append(email)
+
+    return filtered_emails
 
 
 def extract_phones_from_text(text: str) -> list[str]:

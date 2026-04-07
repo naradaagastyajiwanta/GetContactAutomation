@@ -1,5 +1,5 @@
-import { useState, useEffect } from 'react'
-import { Link, useLocation } from 'react-router-dom'
+import { useState, useEffect } from "react";
+import { Link, useLocation } from "react-router-dom";
 import {
   Bot,
   LayoutDashboard,
@@ -19,143 +19,235 @@ import {
   Settings,
   ChevronRight,
   Folder,
+  Search,
+  Database,
   type LucideIcon,
-} from 'lucide-react'
-import { cn } from '../../lib/utils'
-import { useAuth } from '../../context/AuthContext'
+} from "lucide-react";
+import { cn } from "../../lib/utils";
+import { useAuth } from "../../context/AuthContext";
 
 // Re-export for MobileNav
-export { NAV_SECTIONS }
-export type { NavSection }
+export { NAV_SECTIONS };
+export type { NavSection };
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 
 interface NavItem {
-  to: string
-  label: string
-  icon: LucideIcon
-  permission?: string
+  to: string;
+  label: string;
+  icon: LucideIcon;
+  permission?: string;
 }
 
 interface NavSection {
-  id: string
-  label: string
-  icon: LucideIcon
-  items: NavItem[]
+  id: string;
+  label: string;
+  icon: LucideIcon;
+  items: NavItem[];
 }
 
 // ─── Navigation Structure ─────────────────────────────────────────────────────
 
 const NAV_SECTIONS: NavSection[] = [
   {
-    id: 'overview',
-    label: 'Overview',
+    id: "overview",
+    label: "Overview",
     icon: LayoutDashboard,
     items: [
-      { to: '/', label: 'Dashboard', icon: LayoutDashboard, permission: 'dashboard.view' },
-      { to: '/pipeline', label: 'Pipeline', icon: GitBranch, permission: 'pipeline.view' },
+      {
+        to: "/",
+        label: "Dashboard",
+        icon: LayoutDashboard,
+        permission: "dashboard.view",
+      },
+      {
+        to: "/pipeline",
+        label: "Pipeline",
+        icon: GitBranch,
+        permission: "pipeline.view",
+      },
     ],
   },
   {
-    id: 'outreach',
-    label: 'Outreach',
+    id: "data-list",
+    label: "Data List",
+    icon: Database,
+    items: [
+      {
+        to: "/universities",
+        label: "Universities",
+        icon: GraduationCap,
+        permission: "universities.view",
+      },
+      {
+        to: "/marketing",
+        label: "Corporate",
+        icon: Search,
+        permission: "marketing.view",
+      },
+    ],
+  },
+  {
+    id: "outreach",
+    label: "Outreach",
     icon: GraduationCap,
     items: [
-      { to: '/universities', label: 'Universities', icon: GraduationCap, permission: 'universities.view' },
-      { to: '/university-groups', label: 'Groups', icon: Folder, permission: 'universities.view' },
-      { to: '/conversations', label: 'Conversations', icon: MessageSquare, permission: 'conversations.view' },
-      { to: '/audiensi', label: 'Audiensi', icon: Video, permission: 'audiensi.view' },
-      { to: '/dms-schedules', label: 'Audiensi Schedules', icon: CalendarClock, permission: 'audiensi.view' },
+      {
+        to: "/university-groups",
+        label: "Groups",
+        icon: Folder,
+        permission: "universities.view",
+      },
+      {
+        to: "/conversations",
+        label: "Conversations",
+        icon: MessageSquare,
+        permission: "conversations.view",
+      },
+      {
+        to: "/audiensi",
+        label: "Audiensi",
+        icon: Video,
+        permission: "audiensi.view",
+      },
+      {
+        to: "/dms-schedules",
+        label: "Audiensi Schedules",
+        icon: CalendarClock,
+        permission: "audiensi.view",
+      },
     ],
   },
   {
-    id: 'broadcast',
-    label: 'Broadcast',
+    id: "broadcast",
+    label: "Broadcast",
     icon: Smartphone,
     items: [
-      { to: '/whatsapp', label: 'WhatsApp', icon: Smartphone, permission: 'whatsapp.view' },
-      { to: '/blast', label: 'WA Blast', icon: Megaphone, permission: 'blast.view' },
-      { to: '/email-blast', label: 'Email Blast', icon: Mail, permission: 'blast.view' },
+      {
+        to: "/whatsapp",
+        label: "WhatsApp",
+        icon: Smartphone,
+        permission: "whatsapp.view",
+      },
+      {
+        to: "/blast",
+        label: "WA Blast",
+        icon: Megaphone,
+        permission: "blast.view",
+      },
+      {
+        to: "/email-blast",
+        label: "Email Blast",
+        icon: Mail,
+        permission: "blast.view",
+      },
     ],
   },
   {
-    id: 'ai-data',
-    label: 'AI & Data',
+    id: "ai-data",
+    label: "AI & Data",
     icon: Lightbulb,
     items: [
-      { to: '/learning', label: 'Learning', icon: Lightbulb, permission: 'learning.view' },
-      { to: '/knowledge', label: 'Knowledge Base', icon: BookOpen, permission: 'knowledge.view' },
-      { to: '/crm', label: 'PIC Profiling', icon: UserSearch, permission: 'crm.view' },
+      {
+        to: "/learning",
+        label: "Learning",
+        icon: Lightbulb,
+        permission: "learning.view",
+      },
+      {
+        to: "/knowledge",
+        label: "Knowledge Base",
+        icon: BookOpen,
+        permission: "knowledge.view",
+      },
+      {
+        to: "/crm",
+        label: "PIC Profiling",
+        icon: UserSearch,
+        permission: "crm.view",
+      },
     ],
   },
   {
-    id: 'system',
-    label: 'System',
+    id: "system",
+    label: "System",
     icon: ScrollText,
     items: [
-      { to: '/api-logs', label: 'API Logs', icon: ScrollText, permission: 'settings.manage' },
-      { to: '/logs', label: 'System Logs', icon: Terminal, permission: 'settings.manage' },
+      {
+        to: "/api-logs",
+        label: "API Logs",
+        icon: ScrollText,
+        permission: "settings.manage",
+      },
+      {
+        to: "/logs",
+        label: "System Logs",
+        icon: Terminal,
+        permission: "settings.manage",
+      },
     ],
   },
-]
+];
 
-export function getVisibleNavSections(hasPermission: (permission?: string) => boolean): NavSection[] {
-  return NAV_SECTIONS
-    .map((section) => ({
-      ...section,
-      items: section.items.filter((item) => hasPermission(item.permission)),
-    }))
-    .filter((section) => section.items.length > 0)
+export function getVisibleNavSections(
+  hasPermission: (permission?: string) => boolean,
+): NavSection[] {
+  return NAV_SECTIONS.map((section) => ({
+    ...section,
+    items: section.items.filter((item) => hasPermission(item.permission)),
+  })).filter((section) => section.items.length > 0);
 }
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 
 function isActivePath(pathname: string, to: string): boolean {
-  if (to === '/') return pathname === '/'
-  return pathname.startsWith(to)
+  if (to === "/") return pathname === "/";
+  return pathname.startsWith(to);
 }
 
 function getActiveSection(pathname: string): string | null {
   for (const section of NAV_SECTIONS) {
     for (const item of section.items) {
-      if (isActivePath(pathname, item.to)) return section.id
+      if (isActivePath(pathname, item.to)) return section.id;
     }
   }
-  return null
+  return null;
 }
 
 // ─── Sidebar ───────────────────────────────────────────────────────────────
 
 export function Sidebar() {
-  const { pathname } = useLocation()
-  const { hasPermission } = useAuth()
-  const visibleSections = getVisibleNavSections((permission) => hasPermission(permission))
-  const activeSection = getActiveSection(pathname)
+  const { pathname } = useLocation();
+  const { hasPermission } = useAuth();
+  const visibleSections = getVisibleNavSections((permission) =>
+    hasPermission(permission),
+  );
+  const activeSection = getActiveSection(pathname);
 
   const [openSections, setOpenSections] = useState<Set<string>>(() => {
-    const all = new Set(visibleSections.map((s) => s.id))
-    if (activeSection) all.delete(activeSection)
-    return all
-  })
+    const all = new Set(visibleSections.map((s) => s.id));
+    if (activeSection) all.delete(activeSection);
+    return all;
+  });
 
   useEffect(() => {
     if (activeSection) {
       setOpenSections((prev) => {
-        if (prev.has(activeSection)) return prev
-        const next = new Set(prev)
-        next.add(activeSection)
-        return next
-      })
+        if (prev.has(activeSection)) return prev;
+        const next = new Set(prev);
+        next.add(activeSection);
+        return next;
+      });
     }
-  }, [activeSection])
+  }, [activeSection]);
 
   function toggleSection(id: string) {
     setOpenSections((prev) => {
-      const next = new Set(prev)
-      if (next.has(id)) next.delete(id)
-      else next.add(id)
-      return next
-    })
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
   }
 
   return (
@@ -173,8 +265,8 @@ export function Sidebar() {
       {/* Navigation */}
       <nav className="flex-1 space-y-3 overflow-y-auto px-3 py-4 scrollbar-thin">
         {visibleSections.map((section, idx) => {
-          const isOpen = openSections.has(section.id)
-          const Icon = section.icon
+          const isOpen = openSections.has(section.id);
+          const Icon = section.icon;
 
           return (
             <div key={section.id}>
@@ -192,8 +284,8 @@ export function Sidebar() {
                 <span className="flex-1 text-left">{section.label}</span>
                 <ChevronRight
                   className={cn(
-                    'h-3 w-3 transition-transform duration-200',
-                    isOpen && 'rotate-90',
+                    "h-3 w-3 transition-transform duration-200",
+                    isOpen && "rotate-90",
                   )}
                 />
               </button>
@@ -201,46 +293,46 @@ export function Sidebar() {
               {/* Items */}
               <div
                 className={cn(
-                  'overflow-hidden transition-all duration-250 ease-in',
-                  isOpen ? 'max-h-64 opacity-100' : 'max-h-0 opacity-0',
+                  "overflow-hidden transition-all duration-250 ease-in",
+                  isOpen ? "max-h-64 opacity-100" : "max-h-0 opacity-0",
                 )}
               >
                 {section.items.map((item) => {
-                  const ItemIcon = item.icon
-                  const active = isActivePath(pathname, item.to)
+                  const ItemIcon = item.icon;
+                  const active = isActivePath(pathname, item.to);
 
                   return (
                     <Link
                       key={item.to}
                       to={item.to}
                       className={cn(
-                        'group relative mb-0.5 flex items-center gap-2.5 rounded-lg px-2 py-2 text-[13px] font-medium transition-all duration-150',
+                        "group relative mb-0.5 flex items-center gap-2.5 rounded-lg px-2 py-2 text-[13px] font-medium transition-all duration-150",
                         active
-                          ? 'bg-gray-900 text-white dark:bg-indigo-600 dark:text-white'
-                          : 'text-gray-500 hover:bg-gray-50 hover:text-gray-900 dark:text-gray-400 dark:hover:bg-gray-800/60 dark:hover:text-white',
+                          ? "bg-gray-900 text-white dark:bg-indigo-600 dark:text-white"
+                          : "text-gray-500 hover:bg-gray-50 hover:text-gray-900 dark:text-gray-400 dark:hover:bg-gray-800/60 dark:hover:text-white",
                       )}
                     >
                       <ItemIcon className="h-4 w-4 shrink-0 opacity-70" />
                       {item.label}
                     </Link>
-                  )
+                  );
                 })}
               </div>
             </div>
-          )
+          );
         })}
       </nav>
 
       {/* Settings */}
       <div className="border-t border-gray-100 px-3 py-4 dark:border-gray-800/80">
-        {hasPermission('settings.manage') && (
+        {hasPermission("settings.manage") && (
           <Link
             to="/settings"
             className={cn(
-              'flex items-center gap-2.5 rounded-lg px-2 py-2 text-[13px] font-medium transition-all duration-150',
-              isActivePath(pathname, '/settings')
-                ? 'bg-gray-900 text-white dark:bg-indigo-600 dark:text-white'
-                : 'text-gray-500 hover:bg-gray-50 hover:text-gray-900 dark:text-gray-400 dark:hover:bg-gray-800/60 dark:hover:text-white',
+              "flex items-center gap-2.5 rounded-lg px-2 py-2 text-[13px] font-medium transition-all duration-150",
+              isActivePath(pathname, "/settings")
+                ? "bg-gray-900 text-white dark:bg-indigo-600 dark:text-white"
+                : "text-gray-500 hover:bg-gray-50 hover:text-gray-900 dark:text-gray-400 dark:hover:bg-gray-800/60 dark:hover:text-white",
             )}
           >
             <Settings className="h-4 w-4 shrink-0 opacity-70" />
@@ -272,5 +364,5 @@ export function Sidebar() {
         }
       `}</style>
     </aside>
-  )
+  );
 }

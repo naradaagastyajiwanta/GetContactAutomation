@@ -99,6 +99,8 @@ SMTP_SOCKS_HOST=...
 SMTP_SOCKS_PORT=1080
 ```
 
+> **Windows tip:** DuckDuckGo search (used by marketing agents) works more reliably with a local SOCKS proxy at `127.0.0.1:1080`. The backend auto-detects it if available — no env var needed. See the troubleshooting table below for the WARP setup command.
+
 ## Local Development Startup
 
 ### 1. Install dependencies
@@ -300,6 +302,9 @@ docker compose down
 | Messages are sent too slowly or not at all | Queue backlog, anti-ban restrictions, device connectivity | Check WhatsApp status, queue stats, and backend logs |
 | IG scraping is weak | IG session issue, proxy issue, or fallback provider issue | Check IG account health and provider config |
 | Email blast features fail | SMTP, IMAP, or SOCKS proxy misconfigured | Validate mailbox and proxy environment values |
+| Marketing search always `error` / `DDG unavailable` | No local SOCKS proxy running | Start WARP proxy: `docker rm -f gc-warp-host && docker run -d --name gc-warp-host --cap-add NET_ADMIN --sysctl net.ipv6.conf.all.disable_ipv6=0 --sysctl net.ipv4.conf.all.src_valid_mark=1 -e WARP_SLEEP=2 -p 1080:1080 caomingjun/warp:latest` |
+| Database error on startup | Corrupt or schema-mismatched DB | Delete `data/getcontact.db` and restart — schema will be recreated (data loss) |
+| WhatsApp asks to re-scan | Session expired | Delete `whatsapp-service/auth_store/` then scan new QR |
 
 ## Shutdown
 

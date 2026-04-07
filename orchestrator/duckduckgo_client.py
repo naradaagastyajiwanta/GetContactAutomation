@@ -16,6 +16,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+import socket
 import time as _time
 from typing import Any
 
@@ -31,12 +32,18 @@ for _noisy in ("primp", "httpx", "httpcore", "ddgs", "ddgs.ddgs"):
 
 # SOCKS5 proxy to bypass ISP DPI blocking (e.g. Cloudflare WARP)
 _DDG_PROXY: str | None = os.environ.get("DDG_PROXY")
+_LOCAL_WARP_PROXY = "socks5h://127.0.0.1:1080"
+_LOCAL_WARP_PROXY_ALT = "socks5h://127.0.0.1:40000"  # WARP in proxy mode (port 40000)
+_proxy_probe_checked_at: float = 0.0
+_proxy_probe_result: str | None = None
 
 # Engine rotation for ddgs v9.x (html/lite/api backends no longer exist).
 # ddgs v9 is a metasearch engine: each backend is a real search engine.
 # 'duckduckgo' is best for site: queries; 'google' and 'brave' as fallbacks.
-# 'auto' uses all engines but includes wikipedia/grokipedia which pollute results.
-_DDG_BACKEND_ROTATION = ["duckduckgo", "google", "brave", "yahoo"]
+# 'yahoo' was removed from rotation because it produces unstable RequestError
+# failures for some quoted site: queries and can incorrectly flip marketing
+# search runs into a hard dependency error.
+_DDG_BACKEND_ROTATION = ["duckduckgo", "google", "brave"]
 
 # Comma-delimited string for passing multiple backends at once
 _DDG_BACKENDS = "auto"
@@ -66,6 +73,46 @@ def _rate_limit_wait() -> None:
     if elapsed < _MIN_QUERY_GAP:
         _time.sleep(_MIN_QUERY_GAP - elapsed)
     _last_query_time = _time.monotonic()
+
+
+def _resolve_ddg_proxy() -> str | None:
+    """Resolve the proxy to use for DDG queries.
+
+    Priority:
+    1. Explicit DDG_PROXY env var — but verify it's reachable first (avoids using a dead proxy)
+    2. Host-local WARP proxy probed on port 40000 (WarpProxy mode) or 1080 (tunnel mode)
+    3. No proxy (try direct)
+    """
+    global _proxy_probe_checked_at, _proxy_probe_result
+
+    now = _time.monotonic()
+    if now - _proxy_probe_checked_at < 15:
+        return _proxy_probe_result
+
+    _proxy_probe_checked_at = now
+
+    # Build candidate list: explicit env var first, then well-known local ports
+    candidates: list[tuple[int, str]] = []
+    if _DDG_PROXY:
+        # Extract port from socks5h://host:port or socks5://host:port
+        try:
+            port = int(_DDG_PROXY.rsplit(":", 1)[-1])
+            candidates.append((port, _DDG_PROXY))
+        except (ValueError, IndexError):
+            candidates.append((1080, _DDG_PROXY))  # fallback assumption
+    # Always probe common WARP ports as fallback
+    candidates += [(40000, _LOCAL_WARP_PROXY_ALT), (1080, _LOCAL_WARP_PROXY)]
+
+    for port, proxy_url in candidates:
+        try:
+            with socket.create_connection(("127.0.0.1", port), timeout=0.5):
+                _proxy_probe_result = proxy_url
+                return _proxy_probe_result
+        except OSError:
+            continue
+
+    _proxy_probe_result = None
+    return None
 
 
 def search_text(
@@ -101,7 +148,7 @@ def search_text(
 
     for backend in _DDG_BACKEND_ROTATION:
         try:
-            with DDGS(proxy=_DDG_PROXY, timeout=10) as ddgs:
+            with DDGS(proxy=_resolve_ddg_proxy(), timeout=10) as ddgs:
                 raw = list(ddgs.text(query, region=region, max_results=max_results, backend=backend))
 
             if not raw:
@@ -159,7 +206,7 @@ def search_text(
             _time.sleep(wait)
             # Retry the same backend once for transient errors
             try:
-                with DDGS(proxy=_DDG_PROXY, timeout=10) as ddgs2:
+                with DDGS(proxy=_resolve_ddg_proxy(), timeout=10) as ddgs2:
                     raw = list(ddgs2.text(query, region=region, max_results=max_results, backend=backend))
                 if raw:
                     _ddg_status["ok"] = True

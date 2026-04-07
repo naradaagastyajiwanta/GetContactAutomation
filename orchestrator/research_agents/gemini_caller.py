@@ -25,6 +25,8 @@ from orchestrator.config import log, cfg
 _client: genai.Client | None = None
 
 GEMINI_MODEL = "gemini-3.1-pro-preview"
+GEMINI_MAX_OUTPUT_TOKENS = 8192
+GEMINI_MAX_ATTEMPTS = 2
 
 
 def _get_client() -> genai.Client:
@@ -205,33 +207,63 @@ async def call_gemini(
     """
     client = _get_client()
 
-    # Always use Google Search grounding for factual accuracy
+    # Always use Google Search grounding for factual accuracy.
     tools = [types.Tool(google_search=types.GoogleSearch())] if use_search_grounding else []
-    config = types.GenerateContentConfig(tools=tools) if tools else None
-
-    contents = [
-        types.Content(
-            role="user",
-            parts=[types.Part.from_text(text=prompt)],
-        ),
-    ]
-
-    # Run synchronous SDK call in thread pool
-    response = await asyncio.to_thread(
-        client.models.generate_content,
-        model=GEMINI_MODEL,
-        contents=contents,
-        config=config,
+    # NOTE: response_mime_type="application/json" must NOT be set when grounding tools
+    # are active — combining them causes Gemini to truncate JSON mid-string.
+    config = types.GenerateContentConfig(
+        tools=tools,
+        temperature=0,
+        max_output_tokens=GEMINI_MAX_OUTPUT_TOKENS,
+        **({"response_mime_type": "application/json"} if not tools else {}),
     )
 
-    raw_text = response.text or ""
-    log.info("Gemini call response length: %d chars", len(raw_text))
+    retry_instruction = (
+        "\n\nIMPORTANT: Return exactly one complete JSON value that matches the requested schema. "
+        "Do not add markdown, commentary, or trailing text."
+    )
+    effective_prompt = prompt
 
-    grounding_urls = _extract_grounding_urls(response) if use_search_grounding else []
-    if grounding_urls:
-        log.info("Grounding URLs: %d resolved", len(grounding_urls))
-    elif use_search_grounding:
-        log.warning("Gemini returned NO grounding URLs — response may be unverified")
+    for attempt in range(1, GEMINI_MAX_ATTEMPTS + 1):
+        contents = [
+            types.Content(
+                role="user",
+                parts=[types.Part.from_text(text=effective_prompt)],
+            ),
+        ]
 
-    parsed = parse_json_response(raw_text)
-    return parsed, grounding_urls
+        response = await asyncio.to_thread(
+            client.models.generate_content,
+            model=GEMINI_MODEL,
+            contents=contents,
+            config=config,
+        )
+
+        raw_text = response.text or ""
+        log.info("Gemini call response length: %d chars (attempt %d)", len(raw_text), attempt)
+
+        # Log finish_reason for diagnostics
+        try:
+            finish_reason = response.candidates[0].finish_reason.name if response.candidates else "UNKNOWN"
+            if finish_reason not in ("STOP", "MAX_TOKENS"):
+                log.warning("Gemini finish_reason=%s — response may be incomplete", finish_reason)
+        except Exception:
+            pass
+
+        grounding_urls = _extract_grounding_urls(response) if use_search_grounding else []
+        if grounding_urls:
+            log.info("Grounding URLs: %d resolved", len(grounding_urls))
+        elif use_search_grounding:
+            log.warning("Gemini returned NO grounding URLs — response may be unverified")
+
+        parsed = parse_json_response(raw_text)
+        if not parsed.get("_parse_failed"):
+            return parsed, grounding_urls
+
+        if attempt == GEMINI_MAX_ATTEMPTS:
+            return parsed, grounding_urls
+
+        log.warning("Gemini JSON parse failed on attempt %d, retrying with stricter formatting instructions", attempt)
+        effective_prompt = f"{prompt}{retry_instruction}"
+
+    return {"_raw": "", "_parse_failed": True}, []

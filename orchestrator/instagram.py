@@ -18,6 +18,7 @@ When direct sessions fail/expire, Apify is tried automatically.
 If Apify also fails, Scraping-Bot is used as the final fallback.
 """
 import base64
+import asyncio
 import json
 import os
 import re
@@ -1582,12 +1583,87 @@ def verify_ig_handle(handle: str, university_name: str) -> dict:
 # Fallback wrappers: 4-tier Playwright -> IG Session -> Apify -> ScrapingBot â†’ Apify â†’ ScrapingBot
 # ---------------------------------------------------------------------------
 
+def _scrape_ig_posts_instaloader(
+    handle: str,
+    max_posts: int,
+    known_post_urls: set[str] | None = None,
+) -> list[dict]:
+    """
+    Scrape Instagram posts using Instaloader — no session required.
+    Works for public profiles. Free forever.
+
+    Returns list of {"post_url", "image_url", "caption", "timestamp", "source"}.
+    Returns empty list on any failure (caller falls through to next tier).
+    """
+    try:
+        import instaloader  # lazy import — optional dependency
+    except ImportError:
+        log.warning("[Tier1-Instaloader] instaloader not installed — run: pip install instaloader>=4.10")
+        return []
+
+    known = known_post_urls or set()
+    request_delay = float(cfg.get("INSTALOADER_REQUEST_DELAY", 2.0))
+
+    try:
+        log.info("[Tier1-Instaloader] @%s: attempting scrape (max %d posts)", handle, max_posts)
+        L = instaloader.Instaloader(
+            download_videos=False,
+            download_video_thumbnails=False,
+            download_geotags=False,
+            download_comments=False,
+            save_metadata=False,
+            compress_json=False,
+            quiet=True,
+            request_timeout=15,
+            sleep=True,
+        )
+        # Set rate limit delay
+        L.context.sleep_func = lambda secs: __import__("time").sleep(
+            max(secs, request_delay)
+        )
+
+        profile = instaloader.Profile.from_username(L.context, handle)
+        posts: list[dict] = []
+
+        for post in profile.get_posts():
+            if len(posts) >= max_posts:
+                break
+            post_url = f"https://www.instagram.com/p/{post.shortcode}/"
+            if post_url in known:
+                continue
+            try:
+                image_url = post.url or ""
+                caption = post.caption or ""
+                timestamp = post.date_utc.isoformat() if post.date_utc else None
+            except Exception:
+                continue
+            posts.append({
+                "post_url": post_url,
+                "image_url": image_url,
+                "caption": caption,
+                "timestamp": timestamp,
+                "source": "instaloader",
+            })
+
+        log.info("[Tier1-Instaloader] @%s: got %d posts", handle, len(posts))
+        return posts
+
+    except Exception as e:
+        err_str = str(e).lower()
+        if "login" in err_str or "not found" in err_str or "private" in err_str:
+            log.info("[Tier1-Instaloader] @%s: %s", handle, e)
+        else:
+            log.warning("[Tier1-Instaloader] @%s failed: %s", handle, e)
+        return []
+
+
 def scrape_ig_posts_with_fallback(
     ig_handle: str,
     max_posts: int | None = None,
     deeper: bool = False,
     known_post_urls: set[str] | None = None,
-) -> list[dict]:
+    include_diagnostics: bool = False,
+) -> list[dict] | tuple[list[dict], dict[str, object]]:
     """
     Smart scrape with 4-tier fallback.
 
@@ -1601,10 +1677,28 @@ def scrape_ig_posts_with_fallback(
     Known post URLs are filtered out before returning.
 
     Returns list of {"post_url", "image_url", "caption", "timestamp", "source"}.
+    When include_diagnostics=True, returns (posts, diagnostics).
     """
     handle = ig_handle.lstrip("@")
     effective_max = max_posts or IG_MAX_POSTS_PER_PROFILE
     known = known_post_urls or set()
+    diagnostics: dict[str, object] = {
+        "reason": None,
+        "playwright_attempted": False,
+        "playwright_error": None,
+        "instaloader_attempted": False,
+        "instaloader_success": False,
+        "session_configured": False,
+        "session_error": None,
+        "scrapingbot_configured": scrapingbot_client.is_configured(),
+    }
+
+    def _result(posts: list[dict], reason: str | None = None):
+        if reason:
+            diagnostics["reason"] = reason
+        if include_diagnostics:
+            return posts, diagnostics
+        return posts
 
     # For Apify/ScrapingBot we do NOT inflate fetch_count â€” they can only
     # return the N most-recent posts and don't support cursor pagination.
@@ -1621,6 +1715,7 @@ def scrape_ig_posts_with_fallback(
     # Tier 0: Playwright Stealth Browser (free, ban-resistant)
     if playwright_ig.is_available():
         log.info("[Tier0-Playwright] @%s: attempting scrape (max %d posts)", handle, effective_max)
+        diagnostics["playwright_attempted"] = True
         try:
             posts = playwright_ig.pw_get_posts(handle, max_posts=effective_max)
             if posts:
@@ -1639,27 +1734,70 @@ def scrape_ig_posts_with_fallback(
                 # we have -- even an empty list means "scrape worked, nothing
                 # new".  Do NOT cascade to paid tiers just because all posts
                 # are already in the DB; that wastes credits.
-                return posts
+                #
+                # Exception: if ALL captions are suspiciously short (<30 chars)
+                # the Playwright fallback likely only captured img alt-text
+                # (not real captions).  If ScrapingBot is available, fall through
+                # so WA phone numbers embedded in real captions are not lost.
+                if posts:
+                    meaningful = sum(1 for p in posts if len(p.get("caption", "")) >= 30)
+                    if meaningful == 0:
+                        log.warning(
+                            "[Tier0-Playwright] @%s: %d posts but all captions <30 chars "
+                            "(likely alt-text) — trying Instaloader for real captions",
+                            handle, len(posts),
+                        )
+                        # Fall through to Instaloader / ScrapingBot below
+                    else:
+                        return _result(posts)
+                else:
+                    return _result(posts)
             else:
                 log.info("[Tier0-Playwright] @%s: returned 0 posts, falling through to next tier", handle)
+                pw_status = playwright_ig.get_status()
+                diagnostics["playwright_error"] = pw_status.get("error") or "returned 0 posts"
         except Exception as e:
             log.warning("[Tier0-Playwright] @%s failed: %s", handle, e)
+            diagnostics["playwright_error"] = str(e)
     else:
-        log.info("[Tier0-Playwright] Skipping -- not available (daily_used=%d)",
-                 playwright_ig._pw_status.get("profiles_today", 0))
+        log.info(
+            "[Tier0-Playwright] Skipping -- no IG accounts configured or daily limit reached "
+            "(daily_used=%d). Configure IG accounts in Settings or install instaloader as fallback.",
+            playwright_ig._pw_status.get("profiles_today", 0),
+        )
+        diagnostics["playwright_error"] = "not available"
+
+    # Tier 1: Instaloader (no session, public profiles, free)
+    if cfg.get("INSTALOADER_ENABLED", True):
+        il_posts = _scrape_ig_posts_instaloader(handle, effective_max, known)
+        if il_posts:
+            meaningful_il = sum(1 for p in il_posts if len(p.get("caption", "")) >= 30)
+            if meaningful_il > 0:
+                log.info("[Tier1-Instaloader] @%s: returning %d posts with real captions", handle, len(il_posts))
+                diagnostics["instaloader_success"] = True
+                return _result(il_posts, "instaloader")
+            else:
+                log.info("[Tier1-Instaloader] @%s: got %d posts but captions still short, continuing", handle, len(il_posts))
+        diagnostics["instaloader_attempted"] = True
 
     # Tier 1: Direct IG session
+    session_status = get_ig_session_status()
+    diagnostics["session_configured"] = bool(session_status.get("healthy"))
+    diagnostics["session_error"] = session_status.get("error")
     if _ig_pool.get_current_session_id():
         try:
             results = scrape_ig_posts_sync(ig_handle, max_posts, deeper, known_post_urls)
             if results:
                 log.info("[Tier1-Direct] @%s: got %d posts", handle, len(results))
-                return results
+                return _result(results)
             # If zero results but no error, session might still be OK
+            diagnostics["session_error"] = diagnostics.get("session_error") or "returned 0 posts"
         except Exception as e:
             log.warning("[Tier1-Direct] @%s failed: %s", handle, e)
+            diagnostics["session_error"] = str(e)
     else:
         log.info("[Tier1-Direct] Skipping â€” no healthy IG sessions")
+        diagnostics["session_error"] = diagnostics.get("session_error") or "no healthy IG sessions"
 
         # Tier 2: Apify — DISABLED (no longer in use)
     # if apify_client.is_configured():
@@ -1685,14 +1823,16 @@ def scrape_ig_posts_with_fallback(
                 else:
                     log.info("[Tier3-ScrapingBot] @%s: got %d posts", handle, len(posts))
                 if posts:
-                    return posts
+                    return _result(posts)
         except Exception as e:
             log.warning("[Tier3-ScrapingBot] @%s failed: %s", handle, e)
+            diagnostics["scrapingbot_error"] = str(e)
     else:
         log.debug("[Tier3-ScrapingBot] Skipping â€” not configured")
+        diagnostics["scrapingbot_error"] = "not configured"
 
     log.warning("[Fallback] @%s: all tiers failed or 0 new posts", handle)
-    return []
+    return _result([], "all tiers failed or returned 0 posts")
 
 
 def search_ig_handle_with_fallback(
@@ -1769,37 +1909,53 @@ def verify_ig_handle_with_fallback(handle: str, university_name: str) -> dict:
 
     Returns: {"verified": bool, "confidence_boost": float, "bio": str, "reason": str}
     """
-    # Tier 0: Playwright Stealth Browser (free, ban-resistant)
-    if playwright_ig.is_available():
-        try:
-            profile = playwright_ig.pw_get_profile(handle)
-            if profile:
-                return _verify_from_profile_data(handle, university_name, profile)
-        except Exception as e:
-            log.warning("[Tier0-Playwright] Verify failed for @%s: %s", handle, e)
-    else:
-        log.debug("[Tier0-Playwright] Skipping verify - not available")
-
-    # Tier 1: Direct IG session
-    if _ig_pool.get_current_session_id():
-        try:
-            result = verify_ig_handle(handle, university_name)
-            if result.get("reason") != "no session":
-                return result
-        except Exception as e:
-            log.warning("[Tier1-Direct] Verify failed for @%s: %s", handle, e)
-
-    # Apify fallback intentionally disabled for handle verification.
-    # Tier 2: Scraping-Bot profile fetch
-    if scrapingbot_client.is_configured():
-        try:
-            profile = scrapingbot_client.scrapingbot_get_profile(handle, posts_number=0)
-            if profile:
-                return _verify_from_profile_data(handle, university_name, profile)
-        except Exception as e:
-            log.warning("[Tier2-ScrapingBot] Verify failed for @%s: %s", handle, e)
+    profile = _fetch_profile_with_fallback(handle)
+    if profile:
+        return _verify_from_profile_data(handle, university_name, profile)
 
     return {"verified": True, "confidence_boost": 0, "bio": "", "reason": "all providers failed (skipped)"}
+
+
+def _fetch_profile_with_fallback(handle: str) -> dict | None:
+    """Fetch an Instagram profile using the same provider order as handle verification.
+
+    Returns a normalized profile dict with ``bio``, ``full_name``,
+    ``external_url``, and ``is_verified`` when any provider succeeds.
+    """
+    normalized_handle = handle.lstrip("@")
+
+    if playwright_ig.is_available():
+        try:
+            profile = playwright_ig.pw_get_profile(normalized_handle)
+            if profile:
+                return profile
+        except Exception as exc:
+            log.warning("[Tier0-Playwright] Profile fetch failed for @%s: %s", normalized_handle, exc)
+    else:
+        log.debug("[Tier0-Playwright] Skipping profile fetch - not available")
+
+    if _ig_pool.get_current_session_id():
+        client: httpx.Client | None = None
+        try:
+            client = _get_ig_web_client()
+            profile = _ig_web_fetch_profile(client, normalized_handle)
+            if profile:
+                return profile
+        except Exception as exc:
+            log.warning("[Tier1-Direct] Profile fetch failed for @%s: %s", normalized_handle, exc)
+        finally:
+            if client is not None:
+                client.close()
+
+    if scrapingbot_client.is_configured():
+        try:
+            profile = scrapingbot_client.scrapingbot_get_profile(normalized_handle, posts_number=0)
+            if profile:
+                return profile
+        except Exception as exc:
+            log.warning("[Tier2-ScrapingBot] Profile fetch failed for @%s: %s", normalized_handle, exc)
+
+    return None
 
 
 def _verify_from_profile_data(handle: str, university_name: str, profile: dict) -> dict:
@@ -1883,16 +2039,25 @@ def _verify_from_profile_data(handle: str, university_name: str, profile: dict) 
 # Phase 3b: Extract Phone Numbers from Images (OpenAI Vision)
 # ---------------------------------------------------------------------------
 
-async def extract_phone_from_image(image_url: str, caption: str = "") -> list[PhoneContact]:
+async def extract_phone_from_image(
+    image_url: str,
+    caption: str = "",
+    *,
+    require_person_name: bool = True,
+) -> list[PhoneContact]:
     """
     Extract Indonesian phone numbers with contact names from a flyer/poster image.
     Uses GPT for both caption text and Vision OCR on images.
-    Only returns contacts that have a real person's name (not generic names).
+    By default only returns contacts that have a real person's name.
+    Corporate marketing flows can opt out and accept nameless mobile numbers.
     """
     by_phone: dict[str, PhoneContact] = {}
 
     # 1. Extract named contacts from caption text via GPT
-    caption_contacts = await extract_named_contacts_from_text(caption)
+    caption_contacts = await extract_named_contacts_from_text(
+        caption,
+        require_person_name=require_person_name,
+    )
     for c in caption_contacts:
         by_phone[c["phone"]] = c
 
@@ -1900,7 +2065,10 @@ async def extract_phone_from_image(image_url: str, caption: str = "") -> list[Ph
     try:
         image_b64 = await _download_image_as_base64(image_url)
         if image_b64:
-            vision_contacts = await _vision_extract_named_contacts(image_b64)
+            vision_contacts = await _vision_extract_named_contacts(
+                image_b64,
+                require_person_name=require_person_name,
+            )
             for c in vision_contacts:
                 existing = by_phone.get(c["phone"])
                 if not existing or (not existing["name"] and c["name"]):
@@ -1911,11 +2079,16 @@ async def extract_phone_from_image(image_url: str, caption: str = "") -> list[Ph
     return list(by_phone.values())
 
 
-async def extract_named_contacts_from_text(text: str) -> list[PhoneContact]:
+async def extract_named_contacts_from_text(
+    text: str,
+    *,
+    require_person_name: bool = True,
+) -> list[PhoneContact]:
     """
     Extract phone numbers with contact names from text using GPT-4o-mini.
-    Only returns contacts where a person's name is associated with the number.
-    Skips GPT call if no phone number is detected in the text.
+    By default only returns contacts where a person's name is associated with the
+    number. Corporate marketing flows can opt out and keep nameless mobile
+    numbers. Skips GPT call if no phone number is detected in the text.
     """
     if not text or not _PHONE_QUICK_RE.search(text.replace(" ", "").replace("-", "")):
         return []
@@ -1951,7 +2124,10 @@ async def extract_named_contacts_from_text(text: str) -> list[PhoneContact]:
         return []
 
     raw = response.choices[0].message.content or ""
-    return _parse_phone_contacts_json(raw)
+    return _parse_phone_contacts_json(
+        raw,
+        require_person_name=require_person_name,
+    )
 
 
 def extract_phones_from_text(text: str) -> list[str]:
@@ -1991,7 +2167,11 @@ async def _download_image_as_base64(url: str) -> str | None:
             return None
 
 
-async def _vision_extract_named_contacts(image_b64: str) -> list[PhoneContact]:
+async def _vision_extract_named_contacts(
+    image_b64: str,
+    *,
+    require_person_name: bool = True,
+) -> list[PhoneContact]:
     """Use OpenAI Vision to extract phone numbers with contact names from image."""
     from orchestrator.config import is_paused
 
@@ -2052,10 +2232,17 @@ async def _vision_extract_named_contacts(image_b64: str) -> list[PhoneContact]:
     if "NONE" in raw.upper():
         return []
 
-    return _parse_phone_contacts_json(raw)
+    return _parse_phone_contacts_json(
+        raw,
+        require_person_name=require_person_name,
+    )
 
 
-def _parse_phone_contacts_json(raw: str) -> list[PhoneContact]:
+def _parse_phone_contacts_json(
+    raw: str,
+    *,
+    require_person_name: bool = True,
+) -> list[PhoneContact]:
     """Parse GPT JSON response into validated PhoneContact list."""
     # Try to extract JSON array from response
     raw = raw.strip()
@@ -2093,7 +2280,7 @@ def _parse_phone_contacts_json(raw: str) -> list[PhoneContact]:
         if name and _is_generic_name(name):
             name = ""
         validated = validate_phone(phone)
-        if validated:
+        if validated and (name or not require_person_name):
             results.append(PhoneContact(phone=validated, name=name))
 
     return results
@@ -2867,8 +3054,8 @@ def fetch_bios_for_candidates(
 
     Strategy:
       1. Enrich the top-ranked candidates, or all candidates when requested.
-      2. Prefer Playwright profile fetch (more ban-resistant).
-      3. Fall back to session-cookie API only for unresolved candidates.
+            2. Use the same fallback order as handle verification.
+            3. Preserve existing ranking metadata while filling profile evidence.
 
     Returns a new list with the same candidates augmented by ``bio``.
     Sync function — call from executor in async context.
@@ -2880,87 +3067,50 @@ def fetch_bios_for_candidates(
         max_candidates = len(candidates)
 
     max_candidates = min(len(candidates), max_candidates)
-    playwright_enabled = playwright_ig.is_available()
-    session_enabled = bool(_ig_pool.get_current_session_id())
 
     enriched: list[dict] = [{**c, "bio": c.get("bio", "") or ""} for c in candidates]
-    unresolved_indexes = list(range(max_candidates))
-    playwright_hits = 0
-    session_hits = 0
 
-    if playwright_enabled:
-        next_unresolved: list[int] = []
-        for idx in unresolved_indexes:
-            candidate = enriched[idx]
-            handle = candidate.get("handle", "")
-            if not handle:
-                continue
+    for idx in range(max_candidates):
+        candidate = enriched[idx]
+        handle = candidate.get("handle", "")
+        if not handle:
+            continue
 
-            profile = playwright_ig.pw_get_profile(handle)
-            if not profile:
-                next_unresolved.append(idx)
-                continue
+        if any(
+            str(candidate.get(field_name) or "").strip()
+            for field_name in ("bio", "full_name", "external_url")
+        ):
+            continue
 
-            bio = profile.get("bio", "") or ""
-            full_name = profile.get("full_name", "") or ""
-            external_url = profile.get("external_url", "") or ""
-            if bio:
-                candidate["bio"] = bio
-                playwright_hits += 1
-            # Prefer profile data over search-result titles/snippets.
-            if full_name:
-                candidate["full_name"] = full_name
-            if external_url:
-                candidate["external_url"] = external_url
+        profile = _fetch_profile_with_fallback(handle)
+        if not profile:
+            continue
 
-            if not bio and not full_name:
-                next_unresolved.append(idx)
+        bio = profile.get("bio", "") or ""
+        full_name = profile.get("full_name", "") or ""
+        external_url = profile.get("external_url", "") or ""
+        is_verified = bool(profile.get("is_verified", False))
 
-        unresolved_indexes = next_unresolved
+        if bio:
+            candidate["bio"] = bio
+        if full_name:
+            candidate["full_name"] = full_name
+        if external_url:
+            candidate["external_url"] = external_url
+        if is_verified:
+            candidate["is_verified"] = True
 
-    if unresolved_indexes and session_enabled:
-        rate_limited = False
-        try:
-            client = _get_ig_web_client()
-        except RuntimeError:
-            client = None
-
-        if client is not None:
-            try:
-                for idx in unresolved_indexes:
-                    candidate = enriched[idx]
-                    handle = candidate.get("handle", "")
-                    if not handle or rate_limited:
-                        continue
-
-                    profile = _ig_web_fetch_profile(client, handle)
-                    if profile is None:
-                        # Stop after the first session-side 429/401 to avoid cascading limits.
-                        rate_limited = True
-                        log.warning("[BEM-Bio] Session error for @%s — stopping session fallback", handle)
-                        continue
-                    if not profile:
-                        continue
-
-                    bio = profile.get("bio", "") or ""
-                    full_name = profile.get("full_name", "") or ""
-                    external_url = profile.get("external_url", "") or ""
-                    if bio:
-                        candidate["bio"] = bio
-                        session_hits += 1
-                    # Prefer profile data over search-result titles/snippets.
-                    if full_name:
-                        candidate["full_name"] = full_name
-                    if external_url:
-                        candidate["external_url"] = external_url
-                    _time.sleep(2)
-            finally:
-                client.close()
-
-    fetched = sum(1 for c in enriched if c.get("bio"))
+    fetched = sum(
+        1
+        for candidate in enriched[:max_candidates]
+        if any(
+            str(candidate.get(field_name) or "").strip()
+            for field_name in ("bio", "full_name", "external_url")
+        )
+    )
     log.info(
-        "[BEM-Bio] Fetched bio for %d/%d candidates (target=%d, playwright=%d, session=%d)",
-        fetched, len(enriched), max_candidates, playwright_hits, session_hits,
+        "[IG-Profile] Fetched profile evidence for %d/%d candidates (target=%d)",
+        fetched, len(enriched), max_candidates,
     )
     return enriched
 
@@ -3164,6 +3314,134 @@ async def llm_verify_ig_handle(handle: str, bio: str, full_name: str, university
         return result
     except Exception as e:
         log.warning("[LLM-Verify] Failed for @%s (%s): %s", handle, university_name[:40], e)
+        return {"is_correct": None, "confidence": 0.0, "reason": f"llm_error: {e}"}
+
+
+async def gemini_compare_corporate_ig_candidates(
+    candidates: list[dict],
+    company_name: str,
+    client_type: str = "",
+) -> list[dict]:
+    """Use Gemini 3.1 Pro to evaluate all IG candidates at once comparatively.
+
+    Returns a list of dicts: [{handle, is_correct, confidence, reason}].
+    Falls back to empty list on error so callers can fall through to rule-based logic.
+    """
+    if not candidates:
+        return []
+
+    from orchestrator.research_agents.gemini_caller import call_gemini
+
+    lines = []
+    for i, c in enumerate(candidates, 1):
+        bio_snippet = (c.get("bio") or "")[:120].strip()
+        lines.append(
+            f"{i}. @{c['handle']}"
+            f" | Nama: {c.get('full_name') or '-'}"
+            f" | Bio: {bio_snippet or '-'}"
+            f" | URL: {c.get('external_url') or '-'}"
+            f" | Source: {c.get('source') or '-'}"
+        )
+
+    type_hint = f" (Jenis: {client_type})" if client_type else ""
+    prompt = (
+        f"Perusahaan: {company_name}{type_hint}\n\n"
+        f"Berikut {len(candidates)} kandidat akun Instagram yang ditemukan:\n"
+        + "\n".join(lines)
+        + "\n\n"
+        "Untuk SETIAP kandidat, tentukan apakah itu akun Instagram OFFICIAL perusahaan tersebut. "
+        "Perhatikan: bio/full_name yang match nama perusahaan adalah sinyal kuat; "
+        "external URL yang sesuai domain perusahaan adalah sinyal kuat; "
+        "sumber 'website_social' = ditemukan di website resmi perusahaan (bukti terkuat). "
+        "Tolak: akun berita, fan page, komunitas tidak resmi, akun regional/anak perusahaan berbeda, "
+        "atau akun yang tidak ada kaitannya sama sekali.\n"
+        "Kembalikan JSON persis: {\"results\": ["
+        "{\"handle\": \"...\", \"is_correct\": true/false, \"confidence\": 0.0-1.0, \"reason\": \"...\"}"
+        "]}"
+    )
+
+    try:
+        result, _ = await call_gemini(prompt, use_search_grounding=False)
+        raw_results = result.get("results", [])
+        log.info(
+            "[Gemini-Compare-IG] %s: evaluated %d candidates — %d correct",
+            company_name[:40],
+            len(candidates),
+            sum(1 for r in raw_results if r.get("is_correct")),
+        )
+        return raw_results
+    except Exception as exc:
+        log.warning("[Gemini-Compare-IG] Failed for '%s': %s", company_name[:40], exc)
+        return []
+
+
+async def llm_verify_company_ig_handle(
+    handle: str,
+    bio: str,
+    full_name: str,
+    company_name: str,
+    external_url: str = "",
+) -> dict:
+    """Use GPT-4o-mini to decide if an IG account is the official account for a company.
+
+    Returns the same structure as ``llm_verify_ig_handle`` so callers can apply
+    the same accept/reject loop used by the university handle finder.
+    """
+    if not bio.strip() and not full_name.strip() and not external_url.strip():
+        log.debug("[LLM-Verify-Company] @%s — no profile evidence, skipping LLM", handle)
+        return {"is_correct": None, "confidence": 0.0, "reason": "no profile evidence to verify"}
+
+    client = _get_openai()
+
+    user_prompt = (
+        f"Company: {company_name}\n"
+        f"Instagram account:\n"
+        f"- Handle: @{handle}\n"
+        f'- Full name: "{full_name}"\n'
+        f'- Bio: "{bio}"\n'
+        f'- External URL: "{external_url}"\n\n'
+        f"Is @{handle} likely the OFFICIAL Instagram account for {company_name}?\n"
+        f'Answer JSON: {{"is_correct": true/false, "confidence": 0.0-1.0, "reason": "brief explanation"}}'
+    )
+
+    try:
+        response = await client.chat.completions.create(
+            model="gpt-4o-mini",
+            messages=[
+                {
+                    "role": "system",
+                    "content": (
+                        "You are an expert at identifying official Indonesian company Instagram accounts. "
+                        "Decide if the given account is the main or clearly official Instagram account for that exact company. "
+                        "Be strict: reject news repost accounts, fan pages, keyword landing pages, unrelated brands, and generic topic pages. "
+                        "A strong signal is when the bio, full name, or external URL clearly points to the same company or its official domain. "
+                        "Respond ONLY with valid JSON — no markdown, no explanation."
+                    ),
+                },
+                {"role": "user", "content": user_prompt},
+            ],
+            temperature=0,
+            max_tokens=120,
+            response_format={"type": "json_object"},
+        )
+        raw = response.choices[0].message.content or ""
+        data = json.loads(raw)
+        result = {
+            "is_correct": bool(data.get("is_correct", False)),
+            "confidence": float(data.get("confidence", 0.0)),
+            "reason": data.get("reason", ""),
+        }
+        log.info(
+            "[LLM-Verify-Company] @%s for '%s': is_correct=%s (conf=%.2f) — %s",
+            handle,
+            company_name[:40],
+            result["is_correct"],
+            result["confidence"],
+            result["reason"],
+        )
+        return result
+    except Exception as e:
+        log.warning("[LLM-Verify-Company] Failed for @%s (%s): %s", handle, company_name[:40], e)
         return {"is_correct": None, "confidence": 0.0, "reason": f"llm_error: {e}"}
 
 

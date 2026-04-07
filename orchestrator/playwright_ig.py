@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import asyncio
 import base64 as _b64
+import html as _html
 import json
 import os
 import random
@@ -806,6 +807,11 @@ class _PlaywrightBrowser:
         Fetch full profile info + recent posts via IG's internal
         ``/api/v1/users/web_profile_info/`` endpoint.
 
+        On 401, do not destroy the imported browser session immediately.
+        Some accounts retain browser/profile access while IG rejects the
+        internal API from the current runtime fingerprint. Callers can then
+        fall back to HTML scraping in the same browser context.
+
         On 401 (session expired), attempts one re-login and retries.
         Returns the raw ``data.user`` dict on success, or *None*.
         """
@@ -814,15 +820,17 @@ class _PlaywrightBrowser:
         if resp is None:
             return None
 
-        # Detect 401 — session possibly expired despite ensure_logged_in passing
+        # Detect 401 — API auth may be limited even though the browser session
+        # is still usable for page navigation / HTML scraping.
         if resp.get("__error") and resp.get("status") == 401 and not _retried:
             acct_label = self._account.username if self._account else "(legacy)"
-            log.info("[Playwright] @%s: web_profile_info returned 401, "
-                     "attempting re-login for @%s...", username, acct_label)
-            if self._force_relogin():
-                _time.sleep(2)
-                return self.ig_get_web_profile(username, _retried=True)
-            log.warning("[Playwright] @%s: re-login failed, giving up API path", acct_label)
+            _pw_status["error"] = "profile_api_auth_limited"
+            log.info(
+                "[Playwright] @%s: web_profile_info returned 401 on @%s; "
+                "keeping browser session and falling back to HTML profile scraping",
+                username,
+                acct_label,
+            )
             return None
 
         if resp.get("__error"):
@@ -2121,13 +2129,13 @@ def pw_search_profiles(query: str, max_results: int = 10) -> list[dict]:
                         status = resp.get("status", 0)
                         last_error = f"search_api_http_{status}" if status else "search_api_error"
                         if status == 401:
-                            _account_pool.mark_login_failed(acct_label, last_error)
+                            _pw_status["error"] = "search_api_auth_limited"
                             log.warning(
-                                "[Playwright] Search API 401 on @%s for '%s' — trying next account (%d/%d)",
-                                acct_label, query[:50], account_attempts, max_account_retries,
+                                "[Playwright] Search API 401 on @%s for '%s' — keeping session and falling back to UI search",
+                                acct_label,
+                                query[:50],
                             )
-                            continue
-                        if status == 429:
+                        elif status == 429:
                             _account_pool.mark_rate_limited(acct_label)
                             log.warning(
                                 "[Playwright] Search API 429 on @%s for '%s' — trying next account (%d/%d)",
@@ -2389,120 +2397,145 @@ def pw_get_posts(handle: str, max_posts: int = 12) -> list[dict]:
                     total_available = media.get("count", 0)
                     user_id = user.get("id")
 
-                    if max_posts <= 12 or not user_id:
-                        # Initial response has enough posts — no pagination needed
-                        all_edges = initial_edges
-                        pagination_done = True
-                        log.info("[Playwright] API @%s (acct @%s): %d posts available, %d in response",
-                                 handle, acct_label, total_available, len(all_edges))
-                    else:
-                        # Need pagination — use /api/v1/feed/user/ endpoint.
-                        # If this account is rate-limited (401), mark it and
-                        # retry with the next healthy account.
-                        all_edges = []
-                        next_max_id = ""
-                        pagination_failed = False
-                        for page_num in range(1, (max_posts // 12) + 3):
-                            if len(all_edges) >= max_posts:
-                                break
-                            _human_delay(2, 5)
-                            feed = browser.ig_get_user_feed(
-                                user_id, max_id=next_max_id,
-                                count=min(max_posts - len(all_edges), 12),
-                            )
-                            if not feed:
-                                # 401 or other error — mark account as rate-limited
-                                pagination_failed = True
-                                break
-                            new_edges = feed.get("edges") or []
-                            if not new_edges:
-                                break
-                            all_edges.extend(new_edges)
-                            pi = feed.get("page_info") or {}
-                            if not pi.get("has_next_page"):
-                                break
-                            next_max_id = pi.get("end_cursor", "")
-                            if not next_max_id:
-                                break
-                            log.debug("[Playwright] API @%s (acct @%s): page %d, cumulative %d edges",
-                                      handle, acct_label, page_num, len(all_edges))
+                    if total_available and not initial_edges:
+                        recovered_feed = browser.ig_get_user_feed(
+                            user_id,
+                            count=min(max_posts, 12),
+                        ) if user_id else None
+                        recovered_edges = list((recovered_feed or {}).get("edges") or [])
 
-                        if pagination_failed and not all_edges:
-                            # Pagination failed on first page — mark this account
-                            # as rate-limited and try the next one.
-                            _account_pool.mark_rate_limited(acct_label)
+                        if recovered_edges:
+                            initial_edges = recovered_edges
                             log.info(
-                                "[Playwright] @%s rate-limited on pagination for @%s, "
-                                "trying next account (%d/%d)...",
-                                acct_label, handle, account_attempts, max_account_retries,
+                                "[Playwright] API @%s (acct @%s): profile timeline empty, recovered %d posts from feed fallback",
+                                handle,
+                                acct_label,
+                                len(initial_edges),
                             )
-                            # Fall back to initial 12 if no more accounts
-                            if not _account_pool.has_healthy_account() or account_attempts >= max_account_retries:
-                                all_edges = initial_edges
-                                pagination_done = True
-                                log.info("[Playwright] No more healthy accounts, using %d initial posts for @%s",
-                                         len(all_edges), handle)
-                            else:
-                                continue  # retry with next account
-                        elif all_edges:
-                            pagination_done = True
-                            log.info("[Playwright] API @%s (acct @%s): %d posts available, %d fetched (paginated)",
-                                     handle, acct_label, total_available, len(all_edges))
                         else:
-                            # Pagination returned 0 edges without error — unusual
+                            log.info(
+                                "[Playwright] API @%s (acct @%s): profile resolved but timeline empty (count=%d), falling back to DOM",
+                                handle,
+                                acct_label,
+                                total_available,
+                            )
+                            user = None
+
+                    if user is not None:
+                        if max_posts <= 12 or not user_id:
+                            # Initial response has enough posts — no pagination needed
                             all_edges = initial_edges
                             pagination_done = True
-                            log.info("[Playwright] API @%s: pagination empty, using %d initial posts",
-                                     handle, len(all_edges))
-
-                    for edge in all_edges[:max_posts]:
-                        node = edge.get("node") or {}
-                        shortcode = node.get("shortcode", "")
-                        if not shortcode:
-                            continue
-
-                        # Caption
-                        caption = ""
-                        caption_edges = (node.get("edge_media_to_caption") or {}).get("edges") or []
-                        if caption_edges:
-                            caption = (caption_edges[0].get("node") or {}).get("text", "")
-
-                        # Image
-                        image_url = node.get("display_url", "")
-
-                        # Timestamp
-                        timestamp = None
-                        taken_at = node.get("taken_at_timestamp")
-                        if taken_at:
-                            try:
-                                timestamp = datetime.fromtimestamp(int(taken_at), tz=timezone.utc).isoformat()
-                            except (ValueError, OSError):
-                                pass
-
-                        # Determine post vs reel
-                        is_video = node.get("is_video", False)
-                        typename = node.get("__typename", "")
-                        if is_video and typename == "GraphVideo":
-                            post_url = f"https://www.instagram.com/reel/{shortcode}/"
+                            log.info("[Playwright] API @%s (acct @%s): %d posts available, %d in response",
+                                     handle, acct_label, total_available, len(all_edges))
                         else:
-                            post_url = f"https://www.instagram.com/p/{shortcode}/"
+                            # Need pagination — use /api/v1/feed/user/ endpoint.
+                            # If this account is rate-limited (401), mark it and
+                            # retry with the next healthy account.
+                            all_edges = []
+                            next_max_id = ""
+                            pagination_failed = False
+                            for page_num in range(1, (max_posts // 12) + 3):
+                                if len(all_edges) >= max_posts:
+                                    break
+                                _human_delay(2, 5)
+                                feed = browser.ig_get_user_feed(
+                                    user_id, max_id=next_max_id,
+                                    count=min(max_posts - len(all_edges), 12),
+                                )
+                                if not feed:
+                                    # 401 or other error — mark account as rate-limited
+                                    pagination_failed = True
+                                    break
+                                new_edges = feed.get("edges") or []
+                                if not new_edges:
+                                    break
+                                all_edges.extend(new_edges)
+                                pi = feed.get("page_info") or {}
+                                if not pi.get("has_next_page"):
+                                    break
+                                next_max_id = pi.get("end_cursor", "")
+                                if not next_max_id:
+                                    break
+                                log.debug("[Playwright] API @%s (acct @%s): page %d, cumulative %d edges",
+                                          handle, acct_label, page_num, len(all_edges))
 
-                        posts.append({
-                            "post_url": post_url,
-                            "image_url": image_url,
-                            "caption": caption,
-                            "timestamp": timestamp,
-                            "source": "playwright",
-                        })
+                            if pagination_failed and not all_edges:
+                                # Pagination failed on first page — mark this account
+                                # as rate-limited and try the next one.
+                                _account_pool.mark_rate_limited(acct_label)
+                                log.info(
+                                    "[Playwright] @%s rate-limited on pagination for @%s, "
+                                    "trying next account (%d/%d)...",
+                                    acct_label, handle, account_attempts, max_account_retries,
+                                )
+                                # Fall back to initial 12 if no more accounts
+                                if not _account_pool.has_healthy_account() or account_attempts >= max_account_retries:
+                                    all_edges = initial_edges
+                                    pagination_done = True
+                                    log.info("[Playwright] No more healthy accounts, using %d initial posts for @%s",
+                                             len(all_edges), handle)
+                                else:
+                                    continue  # retry with next account
+                            elif all_edges:
+                                pagination_done = True
+                                log.info("[Playwright] API @%s (acct @%s): %d posts available, %d fetched (paginated)",
+                                         handle, acct_label, total_available, len(all_edges))
+                            else:
+                                # Pagination returned 0 edges without error — unusual
+                                all_edges = initial_edges
+                                pagination_done = True
+                                log.info("[Playwright] API @%s: pagination empty, using %d initial posts",
+                                         handle, len(all_edges))
 
-                    _pw_status["profiles_today"] += 1
-                    if account:
-                        account.profiles_today += 1
-                    _pw_status["ok"] = True
-                    _pw_status["error"] = None
-                    pagination_done = True  # ensure we exit the while loop
+                        for edge in all_edges[:max_posts]:
+                            node = edge.get("node") or {}
+                            shortcode = node.get("shortcode", "")
+                            if not shortcode:
+                                continue
 
-                else:
+                            # Caption
+                            caption = ""
+                            caption_edges = (node.get("edge_media_to_caption") or {}).get("edges") or []
+                            if caption_edges:
+                                caption = (caption_edges[0].get("node") or {}).get("text", "")
+
+                            # Image
+                            image_url = node.get("display_url", "")
+
+                            # Timestamp
+                            timestamp = None
+                            taken_at = node.get("taken_at_timestamp")
+                            if taken_at:
+                                try:
+                                    timestamp = datetime.fromtimestamp(int(taken_at), tz=timezone.utc).isoformat()
+                                except (ValueError, OSError):
+                                    pass
+
+                            # Determine post vs reel
+                            is_video = node.get("is_video", False)
+                            typename = node.get("__typename", "")
+                            if is_video and typename == "GraphVideo":
+                                post_url = f"https://www.instagram.com/reel/{shortcode}/"
+                            else:
+                                post_url = f"https://www.instagram.com/p/{shortcode}/"
+
+                            posts.append({
+                                "post_url": post_url,
+                                "image_url": image_url,
+                                "caption": caption,
+                                "timestamp": timestamp,
+                                "source": "playwright",
+                            })
+
+                        _pw_status["profiles_today"] += 1
+                        if account:
+                            account.profiles_today += 1
+                        _pw_status["ok"] = True
+                        _pw_status["error"] = None
+                        pagination_done = True  # ensure we exit the while loop
+
+                if user is None:
                     # ---- DOM fallback (if API fails) ----
                     log.info("[Playwright] API failed for @%s posts, falling back to HTML", handle)
                     if not browser.navigate(f"https://www.instagram.com/{handle}/"):
@@ -2511,10 +2544,7 @@ def pw_get_posts(handle: str, max_posts: int = 12) -> list[dict]:
                     _human_delay(3, 6)
 
                     content = browser.get_page_content()
-                    if browser.check_login_wall():
-                        _pw_status["error"] = "login_wall_after_nav"
-                        pagination_done = True
-                        break
+                    login_wall_after_nav = browser.check_login_wall()
                     if "Sorry, this page isn't available" in content:
                         pagination_done = True
                         break
@@ -2523,7 +2553,53 @@ def pw_get_posts(handle: str, max_posts: int = 12) -> list[dict]:
                     _human_delay(2, 4)
                     content = browser.get_page_content()
 
-                    post_links = re.findall(r'href="(/(?:p|reel)/[A-Za-z0-9_-]+/)"', content)
+                    dom_posts = _extract_posts_from_profile_dom(browser, max_posts)
+                    if dom_posts:
+                        log.info(
+                            "[Playwright] DOM @%s: extracted %d rendered grid posts — enriching captions",
+                            handle,
+                            len(dom_posts),
+                        )
+                        dom_posts = _enrich_posts_with_full_captions(
+                            browser, dom_posts, max_to_enrich=min(max_posts, 10)
+                        )
+                        posts.extend(dom_posts)
+                        _pw_status["profiles_today"] += 1
+                        if account:
+                            account.profiles_today += 1
+                        _pw_status["ok"] = True
+                        _pw_status["error"] = None
+                        pagination_done = True
+                        continue
+
+                    if login_wall_after_nav:
+                        _pw_status["error"] = "login_wall_after_nav"
+                        pagination_done = True
+                        break
+
+                    preview_posts = _extract_posts_from_profile_html(content, handle, max_posts)
+                    if preview_posts:
+                        log.info(
+                            "[Playwright] DOM @%s: extracted %d grid posts — enriching captions",
+                            handle,
+                            len(preview_posts),
+                        )
+                        preview_posts = _enrich_posts_with_full_captions(
+                            browser, preview_posts, max_to_enrich=min(max_posts, 10)
+                        )
+                        posts.extend(preview_posts)
+                        _pw_status["profiles_today"] += 1
+                        if account:
+                            account.profiles_today += 1
+                        _pw_status["ok"] = True
+                        _pw_status["error"] = None
+                        pagination_done = True
+                        continue
+
+                    post_links = re.findall(
+                        r'href="(/(?:[^"/]+/)?(?:p|reel)/[A-Za-z0-9_-]+/)"',
+                        content,
+                    )
                     post_links = list(dict.fromkeys(post_links))
                     log.info("[Playwright] DOM @%s: found %d post/reel links", handle, len(post_links))
 
@@ -2557,6 +2633,107 @@ def pw_get_posts(handle: str, max_posts: int = 12) -> list[dict]:
 
     log.info("[Playwright] @%s: scraped %d posts total", handle, len(posts))
     return posts
+
+
+def _extract_posts_from_profile_dom(browser, max_posts: int) -> list[dict]:
+    """Extract visible post previews from the rendered profile grid DOM."""
+    try:
+        anchors = browser.page.locator('a[href*="/p/"], a[href*="/reel/"]')
+        anchor_count = anchors.count()
+    except Exception:
+        return []
+
+    posts: list[dict] = []
+    seen_urls: set[str] = set()
+
+    for index in range(min(anchor_count, max_posts)):
+        try:
+            anchor = anchors.nth(index)
+            href = anchor.get_attribute("href") or ""
+            if not href:
+                continue
+
+            post_url = href if href.startswith("http") else f"https://www.instagram.com{href}"
+            if post_url in seen_urls:
+                continue
+            seen_urls.add(post_url)
+
+            image_url = ""
+            caption = ""
+
+            try:
+                image = anchor.locator("img").first
+                image_url = image.get_attribute("src") or ""
+                caption = image.get_attribute("alt") or ""
+            except Exception:
+                image_url = ""
+                caption = ""
+
+            posts.append({
+                "post_url": post_url,
+                "image_url": image_url,
+                "caption": caption,
+                "timestamp": None,
+                "source": "playwright",
+            })
+        except Exception:
+            continue
+
+    return posts
+
+
+def _enrich_posts_with_full_captions(
+    browser,
+    posts: list[dict],
+    max_to_enrich: int = 10,
+) -> list[dict]:
+    """Navigate to individual post pages to replace alt-text captions with full captions.
+
+    Used when web_profile_info API returned 401 and DOM/HTML fallback only captured
+    truncated alt-text or accessibility captions. Full captions contain WA phone numbers.
+
+    Args:
+        browser: Active _PlaywrightBrowser with valid session.
+        posts: Post dicts with post_url but potentially truncated captions.
+        max_to_enrich: Max posts to navigate (keeps runtime reasonable).
+
+    Returns:
+        List of posts with full captions where available; originals for the rest.
+    """
+    enriched: list[dict] = []
+    enriched_count = 0
+
+    for post in posts:
+        post_url = post.get("post_url", "")
+        if not post_url or enriched_count >= max_to_enrich:
+            enriched.append(post)
+            continue
+        try:
+            _human_delay(2, 4)
+            if not browser.navigate(post_url):
+                enriched.append(post)
+                continue
+            _human_delay(1, 2)
+            html = browser.get_page_content()
+            full_post = _extract_post_from_html(html, post_url)
+            if full_post and (full_post.get("caption") or full_post.get("image_url")):
+                full_post["source"] = "playwright"
+                # Preserve CDN image URL from DOM if enrichment page didn't return one
+                if post.get("image_url") and not full_post.get("image_url"):
+                    full_post["image_url"] = post["image_url"]
+                enriched.append(full_post)
+                enriched_count += 1
+                log.debug("[Playwright] Enriched caption for %s (%d chars)",
+                          post_url.split("/p/")[-1].rstrip("/"), len(full_post.get("caption", "")))
+            else:
+                enriched.append(post)
+        except Exception as exc:
+            log.debug("[Playwright] Caption enrichment failed for %s: %s", post_url[:80], exc)
+            enriched.append(post)
+
+    log.info("[Playwright] Caption enrichment: %d/%d posts enriched with full captions",
+             enriched_count, len(posts))
+    return enriched
 
 
 def pw_get_following(handle: str, max_results: int = 200) -> list[dict] | None:
@@ -2841,9 +3018,8 @@ def _extract_profile_from_html(html: str, handle: str) -> dict | None:
 
     # Fallback: try meta tags
     if not bio:
-        m = re.search(r'<meta\s+(?:property|name)="(?:og:)?description"\s+content="([^"]*)"', html)
-        if m:
-            desc = m.group(1)
+        desc = _extract_meta_content(html, "og:description", "description")
+        if desc:
             # IG meta description format: "X Followers, Y Following, Z Posts - See photos..."
             # The bio is after the dash
             if " - " in desc:
@@ -2851,9 +3027,8 @@ def _extract_profile_from_html(html: str, handle: str) -> dict | None:
                 bio = bio_part.strip()
 
     if not full_name:
-        m = re.search(r'<meta\s+property="og:title"\s+content="([^"]*)"', html)
-        if m:
-            title = m.group(1)
+        title = _extract_meta_content(html, "og:title")
+        if title:
             # Format: "Full Name (@handle) • Instagram..."
             if "(" in title:
                 full_name = title.split("(")[0].strip()
@@ -2884,14 +3059,10 @@ def _extract_post_from_html(html: str, post_url: str) -> dict | None:
         caption = m.group(1).encode().decode("unicode_escape", errors="ignore")
     else:
         # Fallback: og:description
-        m = re.search(r'<meta\s+property="og:description"\s+content="([^"]*)"', html)
-        if m:
-            caption = m.group(1)
+        caption = _extract_meta_content(html, "og:description", "description")
 
     # Image URL from meta
-    m = re.search(r'<meta\s+property="og:image"\s+content="([^"]*)"', html)
-    if m:
-        image_url = m.group(1)
+    image_url = _extract_meta_content(html, "og:image")
 
     # Timestamp
     m = re.search(r'"taken_at"\s*:\s*(\d+)', html)
@@ -2912,6 +3083,112 @@ def _extract_post_from_html(html: str, post_url: str) -> dict | None:
         "caption": caption,
         "timestamp": timestamp,
     }
+
+
+def _extract_posts_from_profile_html(html: str, handle: str, max_posts: int) -> list[dict]:
+    """Extract visible post previews from an Instagram profile page HTML snapshot.
+
+    This is a lighter fallback than opening each post page individually and is
+    good enough for downstream OCR because the grid often exposes the image URL.
+    """
+    if not html:
+        return []
+
+    posts: list[dict] = []
+    seen_shortcodes: set[str] = set()
+    pattern = re.compile(
+        r'"shortcode":"(?P<shortcode>[A-Za-z0-9_-]+)"'
+        r'.{0,4000}?'
+        r'"display_url":"(?P<image_url>https:[^"\\]+(?:\\/[^"\\]+)*)"'
+        r'.{0,2500}?'
+        r'(?:"taken_at_timestamp":(?P<timestamp>\d+))?'
+        r'.{0,2500}?'
+        r'(?:"accessibility_caption":"(?P<caption>(?:\\.|[^"\\])*)")?',
+        re.DOTALL,
+    )
+
+    for match in pattern.finditer(html):
+        shortcode = match.group("shortcode")
+        if not shortcode or shortcode in seen_shortcodes:
+            continue
+        seen_shortcodes.add(shortcode)
+
+        raw_image_url = match.group("image_url") or ""
+        image_url = raw_image_url.replace("\\/", "/")
+        raw_caption = match.group("caption") or ""
+        caption = raw_caption.encode().decode("unicode_escape", errors="ignore")
+
+        timestamp = None
+        raw_timestamp = match.group("timestamp")
+        if raw_timestamp:
+            try:
+                timestamp = datetime.fromtimestamp(int(raw_timestamp), tz=timezone.utc).isoformat()
+            except (ValueError, OSError):
+                timestamp = None
+
+        posts.append({
+            "post_url": f"https://www.instagram.com/p/{shortcode}/",
+            "image_url": image_url,
+            "caption": caption,
+            "timestamp": timestamp,
+            "source": "playwright",
+        })
+
+        if len(posts) >= max_posts:
+            break
+
+    if posts:
+        return posts
+
+    link_pattern = re.compile(
+        r'href="/(?:[^"/]+/)?(?P<kind>p|reel)/(?P<shortcode>[A-Za-z0-9_-]+)/"[^>]*>'
+        r'.{0,2500}?'
+        r'<img[^>]+src="(?P<image_url>[^"]+)"'
+        r'(?:[^>]+alt="(?P<caption>[^"]*)")?',
+        re.DOTALL,
+    )
+
+    for match in link_pattern.finditer(html):
+        shortcode = match.group("shortcode")
+        if not shortcode or shortcode in seen_shortcodes:
+            continue
+        seen_shortcodes.add(shortcode)
+
+        kind = match.group("kind") or "p"
+        image_url = _html.unescape(match.group("image_url") or "")
+        caption = _html.unescape(match.group("caption") or "")
+        posts.append({
+            "post_url": f"https://www.instagram.com/{kind}/{shortcode}/",
+            "image_url": image_url,
+            "caption": caption,
+            "timestamp": None,
+            "source": "playwright",
+        })
+
+        if len(posts) >= max_posts:
+            break
+
+    return posts
+
+
+def _extract_meta_content(html: str, *meta_names: str) -> str:
+    """Return the first meta tag content matching any property/name, regardless of attribute order."""
+    if not html or not meta_names:
+        return ""
+
+    meta_tags = re.findall(r"<meta\b[^>]*>", html, flags=re.IGNORECASE)
+    for tag in meta_tags:
+        for attr_name in ("property", "name"):
+            for meta_name in meta_names:
+                attr_pattern = rf'\b{attr_name}\s*=\s*["\']{re.escape(meta_name)}["\']'
+                if not re.search(attr_pattern, tag, flags=re.IGNORECASE):
+                    continue
+
+                content_match = re.search(r'\bcontent\s*=\s*["\']([^"\']*)["\']', tag, flags=re.IGNORECASE)
+                if content_match:
+                    return _html.unescape(content_match.group(1)).strip()
+
+    return ""
 
 
 # ---------------------------------------------------------------------------

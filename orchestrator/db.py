@@ -798,6 +798,156 @@ CREATE INDEX IF NOT EXISTS idx_group_members_group ON university_group_members(g
 CREATE INDEX IF NOT EXISTS idx_group_members_univ ON university_group_members(university_id);
 """
 
+_DDL_MARKETING = """
+CREATE TABLE IF NOT EXISTS marketing_groups (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    name TEXT NOT NULL,
+    client_type TEXT NOT NULL,
+    source TEXT DEFAULT 'manual',
+    status TEXT DEFAULT 'draft',
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS marketing_clients (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    group_id INTEGER NOT NULL REFERENCES marketing_groups(id) ON DELETE CASCADE,
+    name TEXT NOT NULL,
+    extra_data TEXT,
+    search_status TEXT DEFAULT 'pending',
+    error_message TEXT,
+    orchestration_state TEXT DEFAULT 'idle',
+    orchestration_stage TEXT,
+    orchestration_summary TEXT,
+    current_run_id INTEGER,
+    ig_handle TEXT,
+    ig_profile_url TEXT,
+    ig_last_scraped_at DATETIME,
+    ig_post_scrape_status TEXT,
+    ig_post_scrape_error TEXT,
+    ig_post_scrape_last_attempt_at DATETIME,
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS marketing_contact_results (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    client_id INTEGER NOT NULL REFERENCES marketing_clients(id) ON DELETE CASCADE,
+    contact_type TEXT NOT NULL,
+    value TEXT NOT NULL,
+    source_url TEXT,
+    source_type TEXT,
+    confidence REAL DEFAULT 0.0,
+    is_approved INTEGER DEFAULT 0,
+    is_selected INTEGER DEFAULT 0,
+    edited_value TEXT,
+    pic_name TEXT,
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS marketing_contact_handoffs (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    group_id INTEGER NOT NULL REFERENCES marketing_groups(id) ON DELETE CASCADE,
+    result_id INTEGER NOT NULL REFERENCES marketing_contact_results(id) ON DELETE CASCADE,
+    handoff_type TEXT NOT NULL,
+    campaign_id INTEGER,
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS marketing_ig_posts (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    client_id INTEGER NOT NULL REFERENCES marketing_clients(id) ON DELETE CASCADE,
+    ig_handle TEXT,
+    post_url TEXT NOT NULL,
+    image_url TEXT,
+    caption TEXT,
+    post_timestamp TEXT,
+    source TEXT,
+    phone_extracted INTEGER DEFAULT 0,
+    phones_found INTEGER DEFAULT 0,
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE(client_id, post_url)
+);
+
+CREATE TABLE IF NOT EXISTS marketing_ig_candidates (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    client_id INTEGER NOT NULL REFERENCES marketing_clients(id) ON DELETE CASCADE,
+    handle TEXT NOT NULL,
+    profile_url TEXT,
+    source TEXT,
+    title TEXT,
+    snippet TEXT,
+    full_name TEXT,
+    bio TEXT,
+    external_url TEXT,
+    external_domain TEXT,
+    is_verified INTEGER DEFAULT 0,
+    base_score REAL DEFAULT 0.0,
+    affinity_score REAL DEFAULT 0.0,
+    profile_score REAL DEFAULT 0.0,
+    final_score REAL DEFAULT 0.0,
+    llm_is_correct INTEGER,
+    llm_confidence REAL DEFAULT 0.0,
+    llm_reason TEXT,
+    rank_order INTEGER,
+    is_primary INTEGER DEFAULT 0,
+    is_selected INTEGER DEFAULT 0,
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE(client_id, handle)
+);
+
+CREATE TABLE IF NOT EXISTS marketing_orchestration_runs (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    client_id INTEGER NOT NULL REFERENCES marketing_clients(id) ON DELETE CASCADE,
+    group_id INTEGER NOT NULL REFERENCES marketing_groups(id) ON DELETE CASCADE,
+    mode TEXT NOT NULL,
+    trigger_type TEXT NOT NULL DEFAULT 'manual',
+    state TEXT NOT NULL DEFAULT 'queued',
+    current_stage TEXT,
+    plan_json TEXT,
+    summary_json TEXT,
+    error_message TEXT,
+    started_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    completed_at DATETIME,
+    duration_seconds REAL
+);
+
+CREATE TABLE IF NOT EXISTS marketing_orchestration_evidence (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    run_id INTEGER NOT NULL REFERENCES marketing_orchestration_runs(id) ON DELETE CASCADE,
+    client_id INTEGER NOT NULL REFERENCES marketing_clients(id) ON DELETE CASCADE,
+    stage TEXT NOT NULL,
+    evidence_type TEXT NOT NULL,
+    source_type TEXT,
+    source_url TEXT,
+    value TEXT,
+    confidence REAL DEFAULT 0.0,
+    status TEXT DEFAULT 'observed',
+    reason TEXT,
+    payload_json TEXT,
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+);
+"""
+
+_INDEXES_MARKETING = """
+CREATE INDEX IF NOT EXISTS idx_mc_group ON marketing_clients(group_id);
+CREATE INDEX IF NOT EXISTS idx_mc_status ON marketing_clients(search_status);
+CREATE INDEX IF NOT EXISTS idx_mc_orchestration_state ON marketing_clients(orchestration_state);
+CREATE INDEX IF NOT EXISTS idx_mcr_client ON marketing_contact_results(client_id);
+CREATE INDEX IF NOT EXISTS idx_mcr_type ON marketing_contact_results(contact_type);
+CREATE INDEX IF NOT EXISTS idx_mch_group ON marketing_contact_handoffs(group_id);
+CREATE INDEX IF NOT EXISTS idx_mch_result ON marketing_contact_handoffs(result_id);
+CREATE INDEX IF NOT EXISTS idx_mip_client ON marketing_ig_posts(client_id);
+CREATE INDEX IF NOT EXISTS idx_mip_handle ON marketing_ig_posts(ig_handle);
+CREATE INDEX IF NOT EXISTS idx_mic_client ON marketing_ig_candidates(client_id);
+CREATE INDEX IF NOT EXISTS idx_mic_selected ON marketing_ig_candidates(client_id, is_selected, rank_order);
+CREATE INDEX IF NOT EXISTS idx_mor_client ON marketing_orchestration_runs(client_id, started_at DESC);
+CREATE INDEX IF NOT EXISTS idx_mor_group ON marketing_orchestration_runs(group_id, started_at DESC);
+CREATE INDEX IF NOT EXISTS idx_mor_state ON marketing_orchestration_runs(state, current_stage);
+CREATE INDEX IF NOT EXISTS idx_moe_run ON marketing_orchestration_evidence(run_id, stage, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_moe_client ON marketing_orchestration_evidence(client_id, stage, created_at DESC);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_clients_group_name ON marketing_clients(group_id, name);
+"""
+
 # ---------------------------------------------------------------------------
 # Initialization & connection helper
 # ---------------------------------------------------------------------------
@@ -834,6 +984,106 @@ async def init_db() -> None:
         await db.executescript(_INDEXES_CRM)
         await db.executescript(_DDL_UNIVERSITY_GROUPS)
         await db.executescript(_INDEXES_UNIVERSITY_GROUPS)
+        await db.executescript(_DDL_MARKETING)
+
+        # Migration: add error_message column to marketing_clients if missing
+        cursor = await db.execute("PRAGMA table_info(marketing_clients)")
+        columns = {row[1] for row in await cursor.fetchall()}
+        if "error_message" not in columns:
+            await db.execute(
+                "ALTER TABLE marketing_clients ADD COLUMN error_message TEXT"
+            )
+        if "orchestration_state" not in columns:
+            await db.execute(
+                "ALTER TABLE marketing_clients ADD COLUMN orchestration_state TEXT DEFAULT 'idle'"
+            )
+        if "orchestration_stage" not in columns:
+            await db.execute(
+                "ALTER TABLE marketing_clients ADD COLUMN orchestration_stage TEXT"
+            )
+        if "orchestration_summary" not in columns:
+            await db.execute(
+                "ALTER TABLE marketing_clients ADD COLUMN orchestration_summary TEXT"
+            )
+        if "current_run_id" not in columns:
+            await db.execute(
+                "ALTER TABLE marketing_clients ADD COLUMN current_run_id INTEGER"
+            )
+        if "ig_handle" not in columns:
+            await db.execute(
+                "ALTER TABLE marketing_clients ADD COLUMN ig_handle TEXT"
+            )
+        if "ig_profile_url" not in columns:
+            await db.execute(
+                "ALTER TABLE marketing_clients ADD COLUMN ig_profile_url TEXT"
+            )
+        if "ig_last_scraped_at" not in columns:
+            await db.execute(
+                "ALTER TABLE marketing_clients ADD COLUMN ig_last_scraped_at DATETIME"
+            )
+        if "ig_post_scrape_status" not in columns:
+            await db.execute(
+                "ALTER TABLE marketing_clients ADD COLUMN ig_post_scrape_status TEXT"
+            )
+        if "ig_post_scrape_error" not in columns:
+            await db.execute(
+                "ALTER TABLE marketing_clients ADD COLUMN ig_post_scrape_error TEXT"
+            )
+        if "ig_post_scrape_last_attempt_at" not in columns:
+            await db.execute(
+                "ALTER TABLE marketing_clients ADD COLUMN ig_post_scrape_last_attempt_at DATETIME"
+            )
+
+        cursor = await db.execute("PRAGMA table_info(marketing_ig_candidates)")
+        candidate_columns = {row[1] for row in await cursor.fetchall()}
+        if "affinity_score" not in candidate_columns:
+            await db.execute(
+                "ALTER TABLE marketing_ig_candidates ADD COLUMN affinity_score REAL DEFAULT 0.0"
+            )
+
+        cursor = await db.execute("PRAGMA table_info(marketing_ig_posts)")
+        ig_post_columns = {row[1] for row in await cursor.fetchall()}
+        if "phone_extracted" not in ig_post_columns:
+            await db.execute(
+                "ALTER TABLE marketing_ig_posts ADD COLUMN phone_extracted INTEGER DEFAULT 0"
+            )
+        if "phones_found" not in ig_post_columns:
+            await db.execute(
+                "ALTER TABLE marketing_ig_posts ADD COLUMN phones_found INTEGER DEFAULT 0"
+            )
+
+        # Migration: add search_error column to marketing_groups if missing
+        cursor = await db.execute("PRAGMA table_info(marketing_groups)")
+        group_columns = {row[1] for row in await cursor.fetchall()}
+        if "search_error" not in group_columns:
+            await db.execute(
+                "ALTER TABLE marketing_groups ADD COLUMN search_error TEXT"
+            )
+
+        # Migration: add strategy_json to marketing_groups for AI group-level learning
+        cursor = await db.execute("PRAGMA table_info(marketing_groups)")
+        cols = {r[1] for r in await cursor.fetchall()}
+        if "strategy_json" not in cols:
+            await db.execute("ALTER TABLE marketing_groups ADD COLUMN strategy_json TEXT")
+
+        # Migration: add last_response_id to marketing_orchestration_runs for Responses API session chaining
+        cursor = await db.execute("PRAGMA table_info(marketing_orchestration_runs)")
+        cols = {r[1] for r in await cursor.fetchall()}
+        if "last_response_id" not in cols:
+            await db.execute("ALTER TABLE marketing_orchestration_runs ADD COLUMN last_response_id TEXT")
+
+        # Migration: remove duplicate (group_id, name) rows before applying UNIQUE index
+        await db.execute(
+            """DELETE FROM marketing_clients
+               WHERE id NOT IN (
+                   SELECT MIN(id)
+                   FROM marketing_clients
+                   GROUP BY group_id, name
+               )"""
+        )
+        await db.commit()
+
+        await db.executescript(_INDEXES_MARKETING)
 
         async def _rebuild_email_cache_table_if_needed(table_name: str, recreate_script: str) -> None:
             cursor = await db.execute(f"PRAGMA table_info({table_name})")
@@ -1396,6 +1646,15 @@ async def init_db() -> None:
         try:
             await db.execute(
                 "ALTER TABLE blast_campaigns ADD COLUMN started_by_name TEXT"
+            )
+            await db.commit()
+        except Exception:
+            pass  # Column already exists
+
+        # Migration: add pic_name column to marketing_contact_results
+        try:
+            await db.execute(
+                "ALTER TABLE marketing_contact_results ADD COLUMN pic_name TEXT"
             )
             await db.commit()
         except Exception:
@@ -4180,6 +4439,16 @@ async def clear_all_response_ids(table: str) -> None:
     async with get_db() as db:
         await db.execute(
             f"UPDATE {table} SET last_response_id = NULL WHERE last_response_id IS NOT NULL"
+        )
+        await db.commit()
+
+
+async def update_marketing_run_response_id(run_id: int, response_id: str) -> None:
+    """Save a Responses API response_id for marketing orchestration run session chaining."""
+    async with aiosqlite.connect(DATABASE_PATH) as db:
+        await db.execute(
+            "UPDATE marketing_orchestration_runs SET last_response_id=? WHERE id=?",
+            (response_id, run_id),
         )
         await db.commit()
 
