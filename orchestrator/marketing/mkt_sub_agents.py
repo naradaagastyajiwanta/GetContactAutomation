@@ -71,9 +71,17 @@ class WebSearchSubAgent:
         start = time.monotonic()
         log.info("[WebSearchSubAgent] Starting for: %s (type=%s)", company_name, client_type)
         try:
+            hints = extra_data or {}
+            avoid_domains = hints.get("avoid_source_domains", [])
+            refined_query = hints.get("refined_query")
+            force_domain = hints.get("force_domain")
+
             results = await search_flow.website_discovery(
                 company_name,
-                extra_data or {},
+                hints,
+                avoid_domains=avoid_domains or None,
+                refined_query=refined_query,
+                force_domain=force_domain,
             )
             contacts = _contacts_to_serializable(results)
 

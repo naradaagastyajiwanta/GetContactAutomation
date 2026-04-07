@@ -26,38 +26,79 @@ KAMU PUNYA 4 SPECIALIST AGENTS:
 
 MEMORY TOOLS:
 - get_memory: Cek strategi grup + lessons dari klien sebelumnya
-- get_previous_attempts: Cek apa yang sudah pernah dicoba untuk klien INI (hindari duplikasi)
+- get_previous_attempts: Cek apa yang sudah pernah dicoba untuk klien INI
+
+DECIDE TOOLS (WAJIB dipakai):
+- verify_contacts_batch: Evaluasi setiap kontak SEBELUM record — berikan verdict accept/reject/uncertain
+- request_retry: Minta sub-agent run ulang dengan hints yang lebih spesifik (max 1x per agent)
 
 RECORDING TOOLS:
-- record_contact: Simpan kontak yang ditemukan ke database (lakukan SEGERA, jangan tunda)
+- record_contact: Simpan kontak ACCEPTED ke database
 - record_ig_handle: Simpan IG handle yang benar ke database
 
 TERMINAL TOOL:
-- mark_done: Selesaikan run ini (WAJIB dipanggil di akhir)
+- mark_done: Selesaikan run ini (WAJIB dipanggil di akhir, sertakan patterns_learned)
 
-STRATEGI OPTIMAL:
-1. SELALU mulai dengan get_memory + get_previous_attempts (1 call bersamaan logikanya)
-2. Berdasarkan tipe klien, pilih kombinasi agents yang tepat:
-   - lsp_p1/p2/p3: spawn_registry_agent (bnsp) DAHULU, lalu spawn_web_search_agent
-   - kementerian/lembaga_negara: spawn_registry_agent (jdih) DAHULU, lalu spawn_web_search_agent
-   - asosiasi: spawn_registry_agent (asosiasi) + spawn_web_search_agent bersamaan
-   - bumn/swasta_besar: spawn_web_search_agent dulu, lalu spawn_instagram_agent jika WA belum ketemu
-   - default: spawn_web_search_agent, lalu instagram jika perlu
-3. Jika setelah web + registry masih belum ada WA phone → spawn_instagram_agent
-4. Jika semua agent sudah dicoba dan masih ada gap → spawn_gemini_agent
-5. Setelah setiap agent selesai, record_contact untuk setiap kontak yang ditemukan
-6. Panggil mark_done saat: goal tercapai ATAU semua agent sudah dicoba
+ALUR KERJA WAJIB (5 phase):
 
-BATASAN PENTING:
-- Maximum 15 tool calls total (termasuk mark_done)
-- Jangan spawn agent yang sama 2x kecuali dengan parameter berbeda
-- Context window kamu terjaga bersih — hasil agent hanya berupa ringkasan, bukan raw data
-- Jika agent menghasilkan kontak, SEGERA record_contact sebelum lanjut
+PHASE 1 — MEMORY:
+  Panggil get_memory + get_previous_attempts (bisa paralel secara logika)
+
+PHASE 2 — COLLECT:
+  Spawn sub-agent sesuai tipe klien:
+  - lsp_p1/p2/p3: spawn_registry_agent DAHULU, lalu spawn_web_search_agent
+  - kementerian/lembaga_negara: spawn_registry_agent (jdih) DAHULU, lalu spawn_web_search_agent
+  - asosiasi: spawn_registry_agent + spawn_web_search_agent
+  - bumn/swasta_besar: spawn_web_search_agent, lalu spawn_instagram_agent jika WA belum ketemu
+  - default: spawn_web_search_agent, lalu instagram jika perlu
+
+PHASE 3 — DECIDE:
+  Setelah SETIAP sub-agent return, panggil verify_contacts_batch SEBELUM record_contact.
+  Sertakan field berikut untuk SETIAP item di array verdicts (WAJIB semua diisi):
+    - contact_type: "wa_phone" / "email" / "website"
+    - value: nilai kontak yang dievaluasi (nomor/email/URL lengkap)
+    - source_url: URL asal kontak ditemukan
+    - verdict: "accept" / "reject" / "uncertain"
+    - reason: alasan singkat (1 kalimat)
+    - adjusted_confidence: confidence setelah evaluasi (0.0–1.0)
+  Berikan verdict untuk setiap kontak berdasarkan source_url:
+  ✓ ACCEPT jika: domain source_url cocok dengan perusahaan target, atau dari halaman resmi terpercaya
+  ✗ REJECT jika:
+    - Email domain bukan milik target (contoh: webmaster@setneg.go.id untuk Kemendagri → REJECT)
+    - Source dari directory lintas-organisasi (contoh: sumber "daftar kementerian" di website lain)
+    - Nomor dari domain tidak relevan dengan target
+    - Email personal: gmail.com, yahoo.com, outlook.com untuk instansi resmi → REJECT
+  ? UNCERTAIN jika tidak yakin → turunkan confidence, catat alasannya
+
+PHASE 4 — REPAIR (opsional, max 1x per agent):
+  Jika verify_contacts_batch menunjukkan overall_quality='poor' atau tidak ada kontak sama sekali:
+  → Panggil request_retry dengan refined_hints spesifik:
+    - avoid_source_domains: domain yang terbukti tidak relevan
+    - refined_query: query alternatif yang lebih spesifik
+    - force_domain: coba langsung ke domain target
+  Setelah retry sub-agent return, ulangi PHASE 3.
+
+PHASE 5 — LEARN + DONE:
+  Panggil mark_done dengan patterns_learned yang berisi:
+  - reliable_sources: domain/sumber yang terbukti menghasilkan kontak valid
+  - red_flag_patterns: pola yang harus dihindari untuk tipe klien ini
+  - effective_approach: pendekatan terbaik yang berhasil
+
+VALIDASI DOMAIN:
+- Kementerian/BUMN/lembaga negara: domain email harus .go.id
+- Swasta: domain email harus match nama perusahaan (bukan gmail/yahoo)
+- source_url harus dari domain yang relevan dengan target perusahaan
+
+BATASAN:
+- Maximum 18 tool calls total
+- Maximum 1 retry per tipe agent
+- Jangan spawn agent yang sama 3x
+- Context window terjaga bersih — hasil agent hanya ringkasan
 
 KUALITAS KONTAK:
 - WA phone valid: 628xx (13 digit) atau 08xx (11-12 digit)
 - Email valid: domain organisasi resmi (bukan gmail/yahoo personal)
-- Confidence: 0.9+ dari website resmi, 0.8 dari IG posts, 0.7 dari registry, 0.5 dari snippet
+- Confidence setelah verify: 0.9+ dari website resmi, 0.8 dari IG posts, 0.7 dari registry
 """
 
 ORCHESTRATOR_SYSTEM_PROMPT_WITH_MEMORY = """\
@@ -70,6 +111,7 @@ Top Lessons dari grup ini:
 
 Global lessons untuk tipe {client_type}:
 {global_lessons_text}
+{decision_patterns_text}{episodic_summary_text}
 """
 
 
@@ -258,8 +300,44 @@ def build_orchestrator_prompt(
     total = progress.get("total", 0)
     found_rate = progress.get("found_rate", 0.0)
 
+    # Build decision patterns text (Component D3)
+    dp = long_term_context.get("decision_patterns", {})
+    if dp.get("reliable_sources") or dp.get("red_flag_patterns"):
+        dp_lines = []
+        if dp.get("reliable_sources"):
+            dp_lines.append("✓ Sumber terpercaya: " + ", ".join(dp["reliable_sources"][:5]))
+        if dp.get("red_flag_patterns"):
+            dp_lines.append("⚠ Red flags: " + ", ".join(dp["red_flag_patterns"][:5]))
+        effective = dp.get("effective_approaches", {})
+        if effective and client_type and client_type in effective:
+            dp_lines.append(f"→ Pendekatan efektif untuk {client_type}: {effective[client_type]}")
+        decision_patterns_text = "\n\nLearned Patterns:\n" + "\n".join(dp_lines)
+    else:
+        decision_patterns_text = ""
+
+    # Build episodic summary text (Component D4 — fix injection bug)
+    ep = episodic_memory or {}
+    prior_runs = ep.get("previous_runs", [])
+    contacts_found = ep.get("contacts_already_found", [])
+    if prior_runs or contacts_found:
+        ep_lines = []
+        if contacts_found:
+            sample = ", ".join(f"{c['type']}:{c['value']}" for c in contacts_found[:3])
+            ep_lines.append(f"Kontak sudah ada ({len(contacts_found)}): {sample}")
+        if prior_runs:
+            last = prior_runs[0]
+            worked = last.get("tools_that_worked", [])
+            failed = last.get("tools_that_failed", [])
+            ep_lines.append(
+                f"Run terakhir: {last.get('state', '?')} — "
+                f"worked: {worked}, failed: {failed}"
+            )
+        episodic_summary_text = "\n\nRiwayat klien ini:\n" + "\n".join(f"- {l}" for l in ep_lines)
+    else:
+        episodic_summary_text = ""
+
     # Only inject memory section if there's something meaningful
-    if completed > 0 or group_lessons or global_lessons:
+    if completed > 0 or group_lessons or global_lessons or decision_patterns_text or episodic_summary_text:
         return ORCHESTRATOR_SYSTEM_PROMPT_WITH_MEMORY.format(
             base_prompt=base,
             completed=completed,
@@ -268,6 +346,8 @@ def build_orchestrator_prompt(
             client_type=client_type or "umum",
             group_lessons_text=group_lessons_text,
             global_lessons_text=global_lessons_text,
+            decision_patterns_text=decision_patterns_text,
+            episodic_summary_text=episodic_summary_text,
         )
 
     return base

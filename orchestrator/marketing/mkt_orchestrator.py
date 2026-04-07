@@ -172,6 +172,10 @@ class OrchestratorContext:
     done_called: bool = False
     done_status: str = "not_found"
     done_summary: str = ""
+    last_verify_quality: str = "good"       # from verify_contacts_batch
+    last_verify_rejected_count: int = 0     # how many were rejected
+    patterns_learned: dict = field(default_factory=dict)  # from mark_done
+    retry_count: int = 0                    # total retries across all agents
 
 
 @dataclass
@@ -302,6 +306,73 @@ _ORCHESTRATOR_TOOL_SCHEMAS: list[dict] = [
     },
     {
         "type": "function",
+        "name": "verify_contacts_batch",
+        "description": (
+            "Evaluasi setiap kontak yang dikembalikan sub-agent SEBELUM merekam ke database. "
+            "Panggil ini SETELAH setiap sub-agent return, SEBELUM record_contact. "
+            "Berikan verdict untuk setiap kontak: accept/reject/uncertain."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "verdicts": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "contact_type": {"type": "string"},
+                            "value": {"type": "string"},
+                            "source_url": {"type": "string"},
+                            "verdict": {"type": "string", "enum": ["accept", "reject", "uncertain"]},
+                            "reason": {"type": "string", "description": "Mengapa accept/reject/uncertain"},
+                            "adjusted_confidence": {"type": "number"},
+                        },
+                        "required": ["contact_type", "value", "verdict", "reason"],
+                    },
+                },
+                "overall_quality": {
+                    "type": "string",
+                    "enum": ["good", "mixed", "poor"],
+                    "description": "good=hasil bersih; mixed=ada yg baik ada yg buruk; poor=mayoritas tidak valid",
+                },
+            },
+            "required": ["verdicts", "overall_quality"],
+        },
+    },
+    {
+        "type": "function",
+        "name": "request_retry",
+        "description": (
+            "Re-spawn sub-agent dengan pendekatan yang lebih baik setelah verify_contacts_batch "
+            "menunjukkan overall_quality='poor' atau tidak ada kontak valid. Maximum 1x per tipe agent."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "agent": {
+                    "type": "string",
+                    "enum": ["spawn_web_search_agent", "spawn_instagram_agent", "spawn_registry_agent", "spawn_gemini_agent"],
+                },
+                "reason": {"type": "string", "description": "Mengapa retry diperlukan"},
+                "refined_hints": {
+                    "type": "object",
+                    "properties": {
+                        "refined_query": {"type": "string", "description": "Query alternatif yang lebih spesifik"},
+                        "avoid_source_domains": {
+                            "type": "array",
+                            "items": {"type": "string"},
+                            "description": "Domain yang terbukti tidak relevan",
+                        },
+                        "target_contact_type": {"type": "string", "description": "Fokus: wa_phone/email/website"},
+                        "force_domain": {"type": "string", "description": "Coba langsung ke domain ini dulu"},
+                    },
+                },
+            },
+            "required": ["agent", "reason"],
+        },
+    },
+    {
+        "type": "function",
         "name": "mark_done",
         "description": "TERMINAL: End this discovery run. MUST be called when done (goal achieved or all approaches exhausted). Triggers learning and updates database.",
         "parameters": {
@@ -311,6 +382,24 @@ _ORCHESTRATOR_TOOL_SCHEMAS: list[dict] = [
                 "summary": {"type": "string", "description": "Brief 1-2 sentence description of what was found and what approach worked"},
                 "tools_that_worked": {"type": "array", "items": {"type": "string"}, "description": "Sub-agent names that produced contacts"},
                 "tools_that_failed": {"type": "array", "items": {"type": "string"}, "description": "Sub-agent names that found nothing"},
+                "patterns_learned": {
+                    "type": "object",
+                    "description": "Pola yang dipelajari dari run ini",
+                    "properties": {
+                        "reliable_sources": {
+                            "type": "array", "items": {"type": "string"},
+                            "description": "Domain/sumber yang terbukti menghasilkan kontak valid",
+                        },
+                        "red_flag_patterns": {
+                            "type": "array", "items": {"type": "string"},
+                            "description": "Pola yang harus dihindari di run berikutnya",
+                        },
+                        "effective_approach": {
+                            "type": "string",
+                            "description": "Pendekatan paling efektif untuk tipe klien ini",
+                        },
+                    },
+                },
             },
             "required": ["status", "summary"],
         },
@@ -425,6 +514,7 @@ class MarketingOrchestratorAgent:
                             "tools_that_failed": context.tools_that_failed,
                             "contacts_found": len(context.contacts_recorded),
                             "summary": context.done_summary,
+                            "patterns_learned": context.patterns_learned,  # NEW
                         },
                     )
                 except Exception as learn_err:
@@ -502,36 +592,50 @@ class MarketingOrchestratorAgent:
             if not function_calls:
                 break
 
-            function_outputs: list[dict] = []
-            for fc in function_calls:
+            # Parallel tool execution
+            async def _run_one_tool(fc) -> tuple[dict, bool]:
                 name = fc.name
                 try:
                     args = json.loads(fc.arguments)
                 except json.JSONDecodeError:
                     args = {}
-
-                context.tool_calls_made.append(name)
-                context.tool_call_count += 1
                 log.info(
                     "[OrchestratorAgent] tool call: %s(%s)",
                     name,
                     {k: v for k, v in args.items() if k != "hints"},
                 )
-
                 try:
                     result_str = await self._execute_tool(name, args, context)
                 except Exception as tool_err:
                     log.error("[OrchestratorAgent] tool %s error: %s", name, tool_err)
                     result_str = json.dumps({"error": f"Tool {name} failed: {tool_err}"})
-
-                function_outputs.append({
+                output = {
                     "type": "function_call_output",
                     "call_id": fc.call_id,
                     "output": result_str,
-                })
+                }
+                return output, name in _TERMINAL_TOOLS
 
-                if name in _TERMINAL_TOOLS:
+            _tool_results = await asyncio.gather(*[_run_one_tool(fc) for fc in function_calls])
+
+            function_outputs = []
+            terminal_reached = False
+            for _output, _is_terminal in _tool_results:
+                function_outputs.append(_output)
+                if _is_terminal:
                     terminal_reached = True
+
+            # Update context after gather (avoids concurrent list mutation)
+            for fc in function_calls:
+                context.tool_calls_made.append(fc.name)
+                context.tool_call_count += 1
+
+            # Deduplicate contacts_recorded (parallel record_contact race edge case)
+            _seen: set[str] = set()
+            context.contacts_recorded = [
+                c for c in context.contacts_recorded
+                if c["value"] not in _seen and not _seen.add(c["value"])  # type: ignore[func-returns-value]
+            ]
 
             next_kwargs: dict = {
                 "model": model,
@@ -623,38 +727,46 @@ class MarketingOrchestratorAgent:
             if not function_calls:
                 break
 
-            # Execute each tool call and collect responses
-            tool_response_parts = []
-            terminal_reached = False
-
-            for fc in function_calls:
+            # Parallel tool execution
+            async def _run_one_tool_gemini(fc) -> tuple[Any, bool]:
                 name = fc.name
                 args = dict(fc.args) if fc.args else {}
-
-                context.tool_calls_made.append(name)
-                context.tool_call_count += 1
                 log.info(
                     "[OrchestratorAgent/Gemini] tool call: %s(%s)",
                     name,
                     {k: v for k, v in args.items() if k != "hints"},
                 )
-
                 try:
                     result_str = await self._execute_tool(name, args, context)
                 except Exception as tool_err:
                     log.error("[OrchestratorAgent/Gemini] tool %s error: %s", name, tool_err)
                     result_str = json.dumps({"error": f"Tool {name} failed: {tool_err}"})
-
-                # Gemini expects function response as a Part
-                tool_response_parts.append(
-                    gt.Part.from_function_response(
-                        name=name,
-                        response={"result": result_str},
-                    )
+                part = gt.Part.from_function_response(
+                    name=name,
+                    response={"result": result_str},
                 )
+                return part, name in _TERMINAL_TOOLS
 
-                if name in _TERMINAL_TOOLS:
+            _tool_results = await asyncio.gather(*[_run_one_tool_gemini(fc) for fc in function_calls])
+
+            tool_response_parts = []
+            terminal_reached = False
+            for _part, _is_terminal in _tool_results:
+                tool_response_parts.append(_part)
+                if _is_terminal:
                     terminal_reached = True
+
+            # Update context after gather (avoids concurrent list mutation)
+            for fc in function_calls:
+                context.tool_calls_made.append(fc.name)
+                context.tool_call_count += 1
+
+            # Deduplicate contacts_recorded (parallel record_contact race edge case)
+            _seen: set[str] = set()
+            context.contacts_recorded = [
+                c for c in context.contacts_recorded
+                if c["value"] not in _seen and not _seen.add(c["value"])  # type: ignore[func-returns-value]
+            ]
 
             # Send all tool results back in one message
             response = await asyncio.to_thread(chat.send_message, tool_response_parts)
@@ -878,6 +990,7 @@ class MarketingOrchestratorAgent:
             context.done_called = True
             context.done_status = status
             context.done_summary = summary
+            context.patterns_learned = arguments.get("patterns_learned", {})
 
             # Record final evidence summary
             try:
@@ -903,7 +1016,103 @@ class MarketingOrchestratorAgent:
                 "final_status": status,
             })
 
+        if tool_name == "verify_contacts_batch":
+            return await self._handle_verify_contacts_batch(arguments, context)
+
+        if tool_name == "request_retry":
+            return await self._handle_request_retry(arguments, context)
+
         return json.dumps({"error": f"Unknown tool: {tool_name}"})
+
+    async def _handle_verify_contacts_batch(self, arguments: dict, context: OrchestratorContext) -> str:
+        verdicts = arguments.get("verdicts", [])
+        overall_quality = arguments.get("overall_quality", "mixed")
+
+        accepted, rejected, uncertain = [], [], []
+        for v in verdicts:
+            try:
+                contact_value = v.get("value") or v.get("contact_value")
+                await mkt.add_orchestration_evidence(
+                    context.run_id,
+                    context.client_id,
+                    "decide",
+                    f"contact_verdict_{v['verdict']}",
+                    source_url=v.get("source_url"),
+                    value=contact_value,
+                    confidence=float(v.get("adjusted_confidence") or 0.0),
+                    status=v["verdict"],
+                    reason=v.get("reason"),
+                    payload={
+                        "contact_type": v.get("contact_type"),
+                        "value": contact_value,
+                        "source_url": v.get("source_url"),
+                        "reason": v.get("reason"),
+                        "adjusted_confidence": v.get("adjusted_confidence"),
+                    },
+                )
+            except Exception as e:
+                log.warning("[OrchestratorAgent] verify_contacts_batch evidence failed: %s", e)
+
+            if v["verdict"] == "accept":
+                accepted.append(v)
+            elif v["verdict"] == "reject":
+                rejected.append(v)
+            else:
+                uncertain.append(v)
+
+        context.last_verify_quality = overall_quality
+        context.last_verify_rejected_count = len(rejected)
+
+        msg = "Lanjutkan dengan record_contact hanya untuk kontak 'accepted'."
+        if overall_quality == "poor":
+            msg += " Pertimbangkan request_retry karena majority contacts ditolak."
+
+        return json.dumps({
+            "accepted_count": len(accepted),
+            "rejected_count": len(rejected),
+            "uncertain_count": len(uncertain),
+            "overall_quality": overall_quality,
+            "accepted_contacts": accepted,
+            "message": msg,
+        }, ensure_ascii=False)
+
+    async def _handle_request_retry(self, arguments: dict, context: OrchestratorContext) -> str:
+        agent = arguments["agent"]
+        reason = arguments.get("reason", "")
+        refined_hints = arguments.get("refined_hints", {})
+
+        retry_key = f"retry_{agent}"
+        if retry_key in context.tool_calls_made:
+            return json.dumps({
+                "status": "denied",
+                "reason": f"Agent {agent} sudah pernah di-retry. Coba agent lain atau panggil mark_done.",
+            })
+
+        try:
+            await mkt.add_orchestration_evidence(
+                context.run_id,
+                context.client_id,
+                "repair",
+                "retry_requested",
+                value=agent,
+                status="approved",
+                payload={"reason": reason, "refined_hints": refined_hints},
+            )
+        except Exception as e:
+            log.warning("[OrchestratorAgent] request_retry evidence failed: %s", e)
+
+        context.tool_calls_made.append(retry_key)
+        context.retry_count += 1
+
+        return json.dumps({
+            "status": "approved",
+            "message": f"Retry disetujui. Panggil {agent} sekarang dengan hints berikut.",
+            "suggested_hints": refined_hints,
+            "instruction": (
+                f"Panggil {agent} segera dengan hints yang telah di-refine. "
+                "Setelah hasilnya kembali, lakukan verify_contacts_batch lagi."
+            ),
+        }, ensure_ascii=False)
 
     def _summarize_result(self, result: SubAgentResult) -> str:
         """Convert SubAgentResult to compact JSON string for orchestrator context."""
@@ -912,6 +1121,8 @@ class MarketingOrchestratorAgent:
                 "type": c["type"],
                 "value": c["value"],
                 "confidence": round(c["confidence"], 2),
+                "source_url": c.get("source_url", ""),
+                "source_type": c.get("source_type", ""),
                 **({"pic_name": c["pic_name"]} if c.get("pic_name") else {}),
             }
             for c in result.contacts

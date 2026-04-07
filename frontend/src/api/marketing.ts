@@ -509,6 +509,7 @@ export interface GeneratedPreview {
   names: string[];
   grounding_urls: string[];
   suggested_count: number;
+  excluded_count: number;
 }
 
 export interface GenerateConfirmResult {

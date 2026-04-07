@@ -47,6 +47,7 @@ interface ModalState {
   count: number;
   names: string[];
   groundingUrls: string[];
+  excludedCount: number;
   groupId?: number;
   groupName?: string;
   error?: string;
@@ -64,6 +65,7 @@ const INITIAL_STATE: ModalState = {
   count: 50,
   names: [],
   groundingUrls: [],
+  excludedCount: 0,
 };
 
 export function MarketingGenerateGroupModal({
@@ -90,6 +92,7 @@ export function MarketingGenerateGroupModal({
         step: "review",
         names: result.names,
         groundingUrls: result.grounding_urls,
+        excludedCount: result.excluded_count ?? 0,
         error: undefined,
       }));
     } catch {
@@ -301,6 +304,17 @@ export function MarketingGenerateGroupModal({
               {CLIENT_TYPE_LABELS[state.clientType]}
             </span>
           </div>
+
+          {/* Exclusion notice */}
+          {state.excludedCount > 0 && (
+            <div className="flex items-start gap-2 rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-800 dark:border-amber-700 dark:bg-amber-900/20 dark:text-amber-300">
+              <AlertCircle className="mt-0.5 h-4 w-4 shrink-0" />
+              <span>
+                <strong>{state.excludedCount} nama</strong> sudah ada di
+                database untuk kategori ini dan otomatis dikeluarkan dari list.
+              </span>
+            </div>
+          )}
 
           {/* Name list */}
           <div className="max-h-64 overflow-y-auto rounded-lg border border-gray-200 dark:border-gray-700">

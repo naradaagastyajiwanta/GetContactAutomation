@@ -273,6 +273,26 @@ async def batch_create_clients(
         return inserted
 
 
+async def get_all_client_names_by_type(client_type: str) -> list[str]:
+    """Return all client names (across all groups) for a given client_type.
+
+    Used by the generator to build a deduplication exclusion list before
+    calling Gemini. Returns names ordered most-recently-created first so
+    that the 150-name prompt cap covers the most likely duplicates.
+    """
+    async with aiosqlite.connect(DATABASE_PATH) as db:
+        cursor = await db.execute(
+            """SELECT mc.name
+               FROM marketing_clients mc
+               JOIN marketing_groups mg ON mc.group_id = mg.id
+               WHERE mg.client_type = ?
+               ORDER BY mc.created_at DESC""",
+            (client_type,),
+        )
+        rows = await cursor.fetchall()
+        return [row[0] for row in rows if row[0]]
+
+
 async def list_clients(
     group_id: int,
     *,
@@ -1433,6 +1453,87 @@ async def get_pending_clients(group_id: int) -> list[dict[str, Any]]:
             }
             for r in rows
         ]
+
+
+async def get_error_clients(group_id: int) -> list[dict[str, Any]]:
+    """Get clients with search_status='error' for auto-retry loop."""
+    async with aiosqlite.connect(DATABASE_PATH) as db:
+        cursor = await db.execute(
+            """SELECT id, group_id, name, extra_data, search_status, error_message, created_at
+               FROM marketing_clients
+               WHERE group_id = ? AND search_status = 'error'
+               ORDER BY created_at ASC""",
+            (group_id,),
+        )
+        rows = await cursor.fetchall()
+        return [
+            {
+                "id": r[0],
+                "group_id": r[1],
+                "name": r[2],
+                "extra_data": json.loads(r[3]) if r[3] else None,
+                "search_status": r[4],
+                "error_message": r[5],
+                "created_at": r[6],
+            }
+            for r in rows
+        ]
+
+
+async def recover_orphaned_states() -> dict[str, int]:
+    """On startup: reset any clients/runs left in mid-flight state due to crash.
+    Does NOT restart searches — leaves groups at 'draft' so the user can decide."""
+    async with aiosqlite.connect(DATABASE_PATH) as db:
+        await db.execute("BEGIN IMMEDIATE")
+        try:
+            # 1. Mark incomplete orchestration runs as 'interrupted'
+            cur = await db.execute(
+                """UPDATE marketing_orchestration_runs
+                   SET state = 'interrupted',
+                       error_message = 'Server restarted while run was in progress',
+                       completed_at = datetime('now')
+                   WHERE state NOT IN ('completed', 'failed', 'interrupted')"""
+            )
+            runs_fixed = cur.rowcount
+
+            # 2. Reset clients with active orchestration_state → 'idle'
+            cur = await db.execute(
+                """UPDATE marketing_clients
+                   SET orchestration_state = 'idle', orchestration_stage = NULL
+                   WHERE orchestration_state IN
+                     ('planning','collecting','verifying','resolving','deciding','repairing')"""
+            )
+            clients_state_fixed = cur.rowcount
+
+            # 3. Reset clients stuck at search_status='searching' → 'pending'
+            cur = await db.execute(
+                """UPDATE marketing_clients
+                   SET search_status = 'pending',
+                       error_message = 'Reset after server restart'
+                   WHERE search_status = 'searching'"""
+            )
+            clients_searching_fixed = cur.rowcount
+
+            # 4. Revert groups still 'searching' (with no actually-running clients) → 'draft'
+            await db.execute(
+                """UPDATE marketing_groups
+                   SET status = 'draft', updated_at = datetime('now')
+                   WHERE status = 'searching'
+                     AND NOT EXISTS (
+                       SELECT 1 FROM marketing_clients
+                       WHERE group_id = marketing_groups.id
+                         AND search_status = 'searching'
+                     )"""
+            )
+            await db.commit()
+            return {
+                "runs_interrupted": runs_fixed,
+                "clients_state_reset": clients_state_fixed,
+                "clients_searching_reset": clients_searching_fixed,
+            }
+        except Exception:
+            await db.rollback()
+            raise
 
 
 async def get_all_group_contacts_for_export(group_id: int) -> list[dict[str, Any]]:

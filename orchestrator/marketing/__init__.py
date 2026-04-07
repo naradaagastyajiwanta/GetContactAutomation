@@ -114,6 +114,7 @@ async def generate_group_preview(request: Request, body: GroupGenerate):
         "names": result["names"],
         "grounding_urls": result["grounding_urls"],
         "suggested_count": result["suggested_count"],
+        "excluded_count": result["excluded_count"],
     }
 
 
@@ -129,6 +130,31 @@ async def generate_and_create_group(
     """
     await require_permission(request, "marketing.manage")
 
+    # Safety dedup: normalize body.names against all existing names for this client_type
+    from orchestrator.marketing.generator import _normalize_name_for_dedup
+
+    existing_for_type = await mkt.get_all_client_names_by_type(body.client_type)
+    existing_normalized_set: set[str] = {
+        _normalize_name_for_dedup(n) for n in existing_for_type if n.strip()
+    }
+    seen: set[str] = set()
+    names_to_create: list[str] = []
+    for name in body.names:
+        name = name.strip()
+        if not name:
+            continue
+        norm = _normalize_name_for_dedup(name)
+        if norm in existing_normalized_set or norm in seen:
+            continue
+        seen.add(norm)
+        names_to_create.append(name)
+
+    if not names_to_create:
+        raise HTTPException(
+            status_code=400,
+            detail="Semua nama yang dikirim sudah ada dalam database untuk kategori ini.",
+        )
+
     auto_name = f"{body.client_type}_{datetime.now().strftime('%Y-%m-%d_%H-%M')}"
     group = await mkt.create_group(auto_name, body.client_type)
     group_id = group["id"]
@@ -143,10 +169,10 @@ async def generate_and_create_group(
         )
         await db.commit()
 
-    # Batch insert all client names
+    # Batch insert deduplicated client names
     now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     rows: list[tuple[int, str, str | None, str]] = [
-        (group_id, name, None, now_str) for name in body.names
+        (group_id, name, None, now_str) for name in names_to_create
     ]
     clients_created = await mkt.batch_create_clients(rows)
 

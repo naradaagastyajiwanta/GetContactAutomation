@@ -20,6 +20,7 @@ from orchestrator.duckduckgo_client import get_status as get_ddg_status
 from orchestrator import playwright_ig, scrapingbot_client
 from orchestrator.osint.tools import (
     ddg_search,
+    web_search,
     fetch_page,
     extract_emails,
     extract_phones_from_text,
@@ -104,6 +105,94 @@ _LANDLINE_PREFIXES = (
     "063", "064", "065", "071", "072", "073", "074", "075",
     "076", "077", "078", "079",
 )
+
+# Feature C: Expanded Indonesian contact page paths
+_CONTACT_PAGE_PATHS = (
+    "/contact", "/contact-us", "/about", "/tentang-kami", "/hubungi-kami",
+    "/kontak", "/hubungi", "/sekretariat", "/layanan", "/profil",
+    "/tentang", "/cs", "/informasi", "/direktori",
+    "/struktur-organisasi", "/pimpinan", "/profil-perusahaan",
+)
+
+# Feature B: Patterns for plain-text phone numbers in IG bio
+_BIO_PHONE_LABEL_PATTERN = re.compile(
+    r'(?:WA|WhatsApp|Whatsapp|wa|HP|Hp|Tlp|Tlpn|Telp|Phone|Hubungi|Hub|CP|Contact|cs|CS|Order|Info|Pesan)'
+    r'[:\s\.\/]*([0-9+][0-9\s\-\.]{7,16})',
+    re.IGNORECASE,
+)
+_BIO_EMOJI_PHONE_PATTERN = re.compile(
+    r'(?:📱|☎️|📞|💬|✆|☎)\s*([0-9+][0-9\s\-\.]{7,16})',
+)
+_BIO_RAW_MOBILE_PATTERN = re.compile(
+    r'(?<!\d)(0(?:8[1-9]\d{7,10})|628[1-9]\d{7,10})(?!\d)',
+)
+
+# Feature E: Multi-query search variants per client_type
+_WEBSITE_QUERY_VARIANTS: dict[str | None, list[str]] = {
+    "lsp_p1": [
+        '"{name}" LSP sertifikasi kompetensi kontak WA',
+        '"{name}" lembaga sertifikasi profesi sekretariat',
+        '"{name}" BNSP situs resmi kontak',
+    ],
+    "lsp_p2": [
+        '"{name}" LSP P2 sertifikasi kontak WA',
+        '"{name}" lembaga sertifikasi profesi hubungi',
+    ],
+    "lsp_p3": [
+        '"{name}" LSP sertifikasi profesi kontak email',
+        '"{name}" lembaga sertifikasi WA sekretariat',
+    ],
+    "kementerian": [
+        '"{name}" kementerian Indonesia kontak resmi sekretariat',
+        '"{name}" sekretariat jenderal telepon email',
+        'site:go.id "{name}" kontak',
+    ],
+    "lembaga_negara": [
+        '"{name}" lembaga negara Indonesia kontak resmi',
+        '"{name}" sekretariat kontak email telepon',
+        'site:go.id "{name}" kontak',
+    ],
+    "bumn": [
+        '"{name}" BUMN Indonesia hubungi kami kontak WA',
+        '"{name}" customer service email telepon',
+        '"{name}" sekretaris perusahaan kontak',
+    ],
+    "asosiasi": [
+        '"{name}" asosiasi Indonesia kontak sekretariat WA',
+        '"{name}" organisasi kontak email narahubung',
+        '"{name}" association secretariat contact Indonesia',
+    ],
+    "lpk": [
+        '"{name}" LPK pelatihan kerja kontak WA pendaftaran',
+        '"{name}" lembaga pelatihan nomor telepon email',
+        '"{name}" kursus pelatihan kontak daftar',
+    ],
+    "lkp": [
+        '"{name}" LKP lembaga kursus kontak WA',
+        '"{name}" kursus pelatihan nomor hubungi',
+    ],
+    "dinas": [
+        '"{name}" dinas pemerintah kontak resmi',
+        '"{name}" kantor dinas sekretariat telepon',
+        'site:go.id "{name}" kontak',
+    ],
+    "swasta_besar": [
+        '"{name}" perusahaan Indonesia hubungi kami kontak',
+        '"{name}" customer service WA email',
+        '"{name}" corporate contact Indonesia',
+    ],
+    None: [
+        '"{name}" kontak WA telepon email Indonesia',
+        '"{name}" official website contact',
+    ],
+}
+
+
+def _build_website_search_queries(client_name: str, client_type: str | None = None) -> list[str]:
+    """Generate up to 3 search query variants based on client_type."""
+    templates = _WEBSITE_QUERY_VARIANTS.get(client_type) or _WEBSITE_QUERY_VARIANTS[None]
+    return [t.replace("{name}", client_name) for t in templates[:3]]
+
 
 _HIGH_TRUST_CONTACT_SOURCE_TYPES = {
     "website",
@@ -191,9 +280,27 @@ def _extract_office_phones_from_text(text: str) -> list[str]:
     return phones
 
 
+_INDONESIAN_STOP_WORDS = {
+    # Conjunctions / prepositions
+    "dan", "atau", "dari", "untuk", "dengan", "dalam", "pada", "kepada",
+    "oleh", "antara", "tentang", "terhadap", "atas", "bagi", "serta",
+    # Structural words in org names
+    "bidang", "urusan", "unit", "pusat", "kantor", "direktorat",
+    "sub", "bagian", "seksi", "sekretariat",
+}
+
+# .go.id and .or.id are verified Indonesian TLDs — always trust them
+_TRUSTED_INDONESIAN_TLDS = (".go.id", ".or.id", ".ac.id", ".sch.id", ".mil.id")
+
+
 def _normalize_company_tokens(company_name: str) -> list[str]:
     tokens = re.findall(r"[a-z0-9]+", company_name.lower())
-    return [token for token in tokens if len(token) > 2 and token not in _CORPORATE_GENERIC_WORDS]
+    return [
+        token for token in tokens
+        if len(token) > 2
+        and token not in _CORPORATE_GENERIC_WORDS
+        and token not in _INDONESIAN_STOP_WORDS
+    ]
 
 
 def _build_company_abbreviation(company_name: str) -> str:
@@ -239,14 +346,34 @@ def _is_likely_official_company_domain(company_name: str, url: str) -> bool:
 
     host = host.removeprefix("www.")
     host_flat = re.sub(r"[^a-z0-9]", "", host)
+
+    # 1. Trusted Indonesian TLDs (.go.id, .or.id, .ac.id etc.) are verified domains —
+    #    accept unconditionally since they can only be registered by the actual institution.
+    if any(host.endswith(tld) for tld in _TRUSTED_INDONESIAN_TLDS):
+        return True
+
     tokens = _normalize_company_tokens(company_name)
     abbreviation = _build_company_abbreviation(company_name)
 
+    # 2. Full abbreviation match in domain
     if abbreviation and len(abbreviation) >= 3 and abbreviation in host_flat:
         return True
 
-    matching_tokens = [token for token in tokens if token in host_flat]
-    if len(matching_tokens) >= 1:
+    # 3. Partial abbreviation — first 3 or 4 chars of abbreviation (catches ptba, bpom, etc.)
+    if abbreviation and len(abbreviation) >= 4:
+        for length in (4, 3):
+            partial = abbreviation[:length]
+            if partial in host_flat:
+                return True
+
+    # 4. Any meaningful token from company name appears in domain
+    matching_tokens = [token for token in tokens if len(token) >= 4 and token in host_flat]
+    if matching_tokens:
+        return True
+
+    # 5. First meaningful token (primary brand name) appears in domain
+    primary = _primary_company_token(company_name)
+    if primary and len(primary) >= 4 and primary in host_flat:
         return True
 
     return False
@@ -357,7 +484,18 @@ def _build_company_search_aliases(company_name: str) -> list[str]:
         add_alias(f"info {tokens[0]}")
         add_alias(f"{tokens[0]} official")
 
-    return aliases[:6]
+    # Concatenated unspaced tokens — catches handles like "charoenpokphand", "hmsampoerna"
+    # Uses 2-char+ raw tokens so short prefixes like "hm" contribute (bypassing the len>2 filter)
+    raw_tokens = [
+        t for t in re.findall(r"[a-z0-9]+", company_name.lower())
+        if len(t) >= 2 and t not in _CORPORATE_GENERIC_WORDS and t not in _INDONESIAN_STOP_WORDS
+    ]
+    if len(raw_tokens) >= 2:
+        add_alias("".join(raw_tokens[:3]))
+        if len(raw_tokens) >= 3:
+            add_alias("".join(raw_tokens[:2]))
+
+    return aliases[:8]
 
 
 def _extract_instagram_urls_from_html(html: str) -> list[str]:
@@ -574,39 +712,66 @@ def _is_event_account(handle: str, bio: str, title: str) -> bool:
     return True
 
 
+def _normalize_raw_phone(raw: str) -> str | None:
+    """Normalize raw phone string to +62 format. Returns None if not a valid mobile."""
+    digits = re.sub(r"\D", "", raw)
+    if not digits:
+        return None
+    if digits.startswith("0"):
+        normalized = f"+62{digits[1:]}"
+    elif digits.startswith("62"):
+        normalized = f"+{digits}"
+    elif digits.startswith("8"):
+        normalized = f"+62{digits}"
+    else:
+        normalized = f"+{digits}"
+    # Validate: must be mobile Indonesian
+    if not is_mobile_phone(normalized):
+        return None
+    return normalized
+
+
 def _extract_wa_from_bio(bio: str, handle: str) -> list[ContactResult]:
     """
-    Extract WA number from a bio text/URL.
+    Extract WA numbers from IG bio.
 
-    Finds wa.me/NUMBER or api.whatsapp.com/send?phone=NUMBER patterns,
-    normalizes to +62 format, and returns ContactResult list.
+    Detects:
+    1. wa.me / api.whatsapp.com URL links (confidence 0.8)
+    2. Labeled plain-text phones: "WA: 0812xxx", "📱 628xxx" (confidence 0.75)
+    3. Raw mobile numbers embedded in bio text (confidence 0.65)
     """
     results: list[ContactResult] = []
     seen: set[str] = set()
 
-    for pattern in _WHATSAPP_URL_PATTERNS:
-        for raw_digits in pattern.findall(bio):
-            digits = "".join(filter(str.isdigit, raw_digits))
-            if not digits or len(digits) < 9:
-                continue
-            if digits in seen:
-                continue
-            seen.add(digits)
-
-            if digits.startswith("0"):
-                normalized = f"+62{digits[1:]}"
-            elif digits.startswith("62"):
-                normalized = f"+62{digits[2:]}"
-            else:
-                normalized = f"+{digits}"
-
+    def _add(digits: str, source_type: str, confidence: float) -> None:
+        normalized = _normalize_raw_phone(digits)
+        if normalized and normalized not in seen:
+            seen.add(normalized)
             results.append(ContactResult(
                 contact_type="wa_phone",
                 value=normalized,
-                source_url=f"https://wa.me/{digits}",
-                source_type="ig_bio",
-                confidence=0.8,
+                source_url=f"https://www.instagram.com/{handle}/",
+                source_type=source_type,
+                confidence=confidence,
             ))
+
+    # 1. wa.me / api.whatsapp.com URL links
+    for pattern in _WHATSAPP_URL_PATTERNS:
+        for raw_digits in pattern.findall(bio):
+            _add(raw_digits, "ig_bio", 0.8)
+
+    # 2. Labeled plain-text phones: "WA: 0812xxx", "Hub: 0821xxx"
+    for m in _BIO_PHONE_LABEL_PATTERN.finditer(bio):
+        _add(m.group(1), "ig_bio_text", 0.75)
+
+    # 3. Emoji + phone: "📱 62812xxxx"
+    for m in _BIO_EMOJI_PHONE_PATTERN.finditer(bio):
+        _add(m.group(1), "ig_bio_text", 0.75)
+
+    # 4. Raw mobile numbers directly in bio (only if no labeled ones found yet)
+    if not results:
+        for m in _BIO_RAW_MOBILE_PATTERN.finditer(bio):
+            _add(m.group(1), "ig_bio_text", 0.65)
 
     return results
 
@@ -710,18 +875,35 @@ def _upsert_company_candidate(candidates_by_handle: dict[str, dict], candidate: 
             existing[field_name] = candidate[field_name]
 
 
-async def _company_pages_to_check(client_name: str) -> list[tuple[str, str]]:
-    ddg_results = await _ddg_search_or_raise(
-        f'"{client_name}" official website contact',
-        max_results=5,
-        stage="website discovery",
-    )
-    if not ddg_results:
+async def _company_pages_to_check(
+    client_name: str,
+    client_type: str | None = None,
+) -> list[tuple[str, str]]:
+    """
+    Feature A + C + E: Discover official pages using Google-first search
+    with Indonesian-specific multi-query variants and expanded contact paths.
+    """
+    queries = _build_website_search_queries(client_name, client_type)
+
+    # Collect search results across all query variants (Google first, DDG fallback)
+    all_results: list[dict] = []
+    seen_result_links: set[str] = set()
+    for query in queries:
+        results = await web_search(query, max_results=5)
+        for r in results:
+            link = (r.get("link") or "").strip()
+            if link and link not in seen_result_links:
+                seen_result_links.add(link)
+                all_results.append(r)
+        if len(all_results) >= 8:
+            break
+
+    if not all_results:
         return []
 
     pages_to_check: list[tuple[str, str]] = []
     seen_urls: set[str] = set()
-    for result in ddg_results:
+    for result in all_results:
         url = (result.get("link") or "").strip()
         if not url:
             continue
@@ -734,7 +916,8 @@ async def _company_pages_to_check(client_name: str) -> list[tuple[str, str]]:
             candidates.append((base, "website" if index == 0 else "contact_page"))
             if index != 0 or urlparse(base).path.rstrip("/"):
                 continue
-            for path in ("/contact", "/contact-us", "/about", "/tentang-kami", "/hubungi-kami"):
+            # Feature C: expanded contact paths
+            for path in _CONTACT_PAGE_PATHS:
                 candidates.append((base + path, "contact_page"))
 
         for candidate_url, source_type in candidates:
@@ -784,17 +967,21 @@ async def _collect_ig_web_company_candidates(client_name: str) -> list[dict]:
     excluded: set[str] = set()
     candidates: list[dict] = []
 
-    for _ in range(4):
+    # Use all aliases (including concatenated forms) as distinct search queries so
+    # handles like @charoenpokphandid and @hmsampoerna are reachable via the compact form
+    search_names = _build_company_search_aliases(client_name)
+
+    for search_name in search_names[:6]:
         result = await loop.run_in_executor(
             None,
-            partial(search_ig_handle_with_fallback, client_name, excluded),
+            partial(search_ig_handle_with_fallback, search_name, excluded),
         )
         if not result or not result.get("handle"):
-            break
+            continue
 
         handle = (result.get("handle") or "").lower().strip()
         if not handle or handle in excluded:
-            break
+            continue
 
         excluded.add(handle)
         candidates.append({
@@ -1147,12 +1334,12 @@ def _normalize_grounded_items(raw_items: Any) -> list[dict[str, Any]]:
     return normalized
 
 
-def _clamp_contact_confidence(value: Any, default: float) -> float:
+def _clamp_contact_confidence(value: Any, default: float, max_confidence: float = 1.0) -> float:
     try:
         confidence = float(value)
     except (TypeError, ValueError):
         return default
-    return max(0.0, min(confidence, 1.0))
+    return max(0.0, min(confidence, max_confidence))
 
 
 def _normalize_candidate_url(value: str | None) -> str | None:
@@ -1245,7 +1432,7 @@ def _build_grounded_contact_results(
             value=value,
             source_url=source_url or value,
             source_type=source_type,
-            confidence=_clamp_contact_confidence(item.get("confidence"), 0.7),
+            confidence=_clamp_contact_confidence(item.get("confidence"), 0.7, max_confidence=0.8),
         ))
 
     for item in _normalize_grounded_items(payload.get("emails")):
@@ -1258,7 +1445,7 @@ def _build_grounded_contact_results(
             value=value,
             source_url=source_url,
             source_type=source_type,
-            confidence=_clamp_contact_confidence(item.get("confidence"), 0.6),
+            confidence=_clamp_contact_confidence(item.get("confidence"), 0.6, max_confidence=0.75),
         ))
 
     for item in _normalize_grounded_items(payload.get("mobile_phones")):
@@ -1271,7 +1458,7 @@ def _build_grounded_contact_results(
             value=value,
             source_url=source_url,
             source_type=source_type,
-            confidence=_clamp_contact_confidence(item.get("confidence"), 0.65),
+            confidence=_clamp_contact_confidence(item.get("confidence"), 0.65, max_confidence=0.75),
             pic_name=str(item.get("contact_name") or "").strip() or None,
         ))
 
@@ -1325,6 +1512,111 @@ async def gemini_grounded_discovery(
     )
 
 
+def _extract_jsonld_contacts(html: str, source_url: str) -> list[ContactResult]:
+    """
+    Feature D: Extract contacts from JSON-LD structured data (schema.org).
+    Handles Organization, LocalBusiness, GovernmentOrganization, ContactPoint.
+    Confidence 0.92 — data is self-declared by the website owner.
+    """
+    from bs4 import BeautifulSoup as _BS
+    results: list[ContactResult] = []
+    try:
+        soup = _BS(html, "html.parser")
+        for script in soup.find_all("script", type="application/ld+json"):
+            try:
+                data = json.loads(script.string or "")
+            except (json.JSONDecodeError, TypeError):
+                continue
+
+            items: list[dict] = data if isinstance(data, list) else [data]
+            # Expand @graph
+            expanded: list[dict] = []
+            for item in items:
+                if isinstance(item, dict) and "@graph" in item:
+                    expanded.extend(item["@graph"])
+                else:
+                    expanded.append(item)
+
+            for item in expanded:
+                if not isinstance(item, dict):
+                    continue
+                item_type = str(item.get("@type", ""))
+                if not any(t in item_type for t in (
+                    "Organization", "LocalBusiness", "GovernmentOrganization",
+                    "NGO", "Corporation", "EducationalOrganization",
+                )):
+                    continue
+
+                # Phone / fax
+                for field in ("telephone", "faxNumber"):
+                    raw = item.get(field) or ""
+                    if not raw:
+                        continue
+                    normalized = _normalize_raw_phone(str(raw))
+                    if normalized:
+                        results.append(ContactResult(
+                            contact_type="wa_phone",
+                            value=normalized,
+                            source_url=source_url,
+                            source_type="schema_org",
+                            confidence=0.92,
+                        ))
+
+                # Email
+                if email := (item.get("email") or "").strip().lower():
+                    if "@" in email:
+                        results.append(ContactResult(
+                            contact_type="email",
+                            value=email,
+                            source_url=source_url,
+                            source_type="schema_org",
+                            confidence=0.92,
+                        ))
+
+                # Website URL
+                if url := (item.get("url") or "").strip():
+                    if url.startswith("http"):
+                        results.append(ContactResult(
+                            contact_type="website",
+                            value=url,
+                            source_url=source_url,
+                            source_type="schema_org",
+                            confidence=0.95,
+                        ))
+
+                # ContactPoint nested objects
+                contact_points = item.get("contactPoint") or []
+                if isinstance(contact_points, dict):
+                    contact_points = [contact_points]
+                for cp in contact_points:
+                    if not isinstance(cp, dict):
+                        continue
+                    for field in ("telephone", "faxNumber"):
+                        raw = cp.get(field) or ""
+                        if raw:
+                            normalized = _normalize_raw_phone(str(raw))
+                            if normalized:
+                                results.append(ContactResult(
+                                    contact_type="wa_phone",
+                                    value=normalized,
+                                    source_url=source_url,
+                                    source_type="schema_org",
+                                    confidence=0.90,
+                                ))
+                    if cp_email := (cp.get("email") or "").strip().lower():
+                        if "@" in cp_email:
+                            results.append(ContactResult(
+                                contact_type="email",
+                                value=cp_email,
+                                source_url=source_url,
+                                source_type="schema_org",
+                                confidence=0.90,
+                            ))
+    except Exception as exc:
+        log.debug("[JSON-LD] Parse failed for %s: %s", source_url[:60], exc)
+    return results
+
+
 def _results_from_page_content(
     *,
     html: str,
@@ -1336,6 +1628,10 @@ def _results_from_page_content(
 ) -> list[ContactResult]:
     """Build contact results from fetched page content."""
     results: list[ContactResult] = []
+
+    # Feature D: JSON-LD structured data (highest confidence, check first)
+    results.extend(_extract_jsonld_contacts(html, source_url))
+
     combined_email_text = f"{text}\n{html}"
 
     for email in extract_emails(combined_email_text):
@@ -1395,25 +1691,121 @@ async def _ddg_search_or_raise(
 # ---------------------------------------------------------------------------
 
 
-async def website_discovery(client_name: str, extra_data: dict | None = None) -> list[ContactResult]:
+async def website_discovery(
+    client_name: str,
+    extra_data: dict | None = None,
+    avoid_domains: list[str] | None = None,
+    refined_query: str | None = None,
+    force_domain: str | None = None,
+) -> list[ContactResult]:
     """Search for official website → extract emails and phones."""
     results: list[ContactResult] = []
+    client_type: str | None = (extra_data or {}).get("client_type")
 
-    pages_to_check = await _company_pages_to_check(client_name)
-    if not pages_to_check:
+    # Build primary override query from refined_query / force_domain hints
+    if refined_query:
+        primary_query: str | None = refined_query
+        if force_domain:
+            primary_query = f"site:{force_domain} {refined_query}"
+    elif force_domain:
+        primary_query = f"site:{force_domain} {client_name}"
+    else:
+        primary_query = None  # use default auto-built queries
+
+    # Run multi-query search (Google first, DDG fallback)
+    queries = _build_website_search_queries(client_name, client_type)
+    if primary_query:
+        # Prepend the override query so it runs first; drop a duplicate if any
+        queries = [primary_query] + [q for q in queries if q != primary_query]
+
+    all_search_results: list[dict] = []
+    seen_result_links: set[str] = set()
+    for query in queries:
+        for r in await web_search(query, max_results=5):
+            link = (r.get("link") or "").strip()
+            if link and link not in seen_result_links:
+                seen_result_links.add(link)
+                all_search_results.append(r)
+        if len(all_search_results) >= 8:
+            break
+
+    # Filter out avoid_domains from search results
+    if avoid_domains and all_search_results:
+        filtered: list[dict] = []
+        for result in all_search_results:
+            url = result.get("link", "") or result.get("url", "") or ""
+            if not any(domain in url for domain in avoid_domains):
+                filtered.append(result)
+        all_search_results = filtered
+
+    if not all_search_results:
         return results
 
-    for url, source_type in pages_to_check:
-        if source_type != "website":
-            continue
+    # Extract contacts from search snippets (confidence 0.5 — no page visit needed)
+    # Captures phone/email that appear directly in Google/DDG snippet text
+    snippet_text = "\n".join(
+        r.get("snippet") or ""
+        for r in all_search_results
+        if not _is_blocked_marketing_contact_source((r.get("link") or ""))
+    )
+    for email in extract_emails(snippet_text):
         results.append(ContactResult(
-            contact_type="website",
-            value=url,
-            source_url=url,
-            source_type="official_website",
-            confidence=0.9,
+            contact_type="email",
+            value=email,
+            source_url="",
+            source_type="web_snippet",
+            confidence=0.5,
+        ))
+    for phone in filter_mobile_phones(extract_phones_from_text(snippet_text)):
+        results.append(ContactResult(
+            contact_type="wa_phone",
+            value=phone,
+            source_url="",
+            source_type="web_snippet",
+            confidence=0.5,
         ))
 
+    # Build pages to fetch from official-looking domains
+    pages_to_check: list[tuple[str, str]] = []
+    seen_urls: set[str] = set()
+    for result in all_search_results:
+        url = (result.get("link") or "").strip()
+        if not url or not _is_likely_official_company_domain(client_name, url):
+            continue
+        canonical_roots = _canonical_company_page_roots(url)
+        for index, base in enumerate(canonical_roots):
+            source_type = "website" if index == 0 else "contact_page"
+            if base not in seen_urls:
+                seen_urls.add(base)
+                pages_to_check.append((base, source_type))
+            if index != 0 or urlparse(base).path.rstrip("/"):
+                continue
+            for path in _CONTACT_PAGE_PATHS:
+                candidate = base + path
+                if candidate not in seen_urls:
+                    seen_urls.add(candidate)
+                    pages_to_check.append((candidate, "contact_page"))
+
+    if not pages_to_check:
+        log.debug(
+            "[Website Discovery] No official domain found for '%s' (client_type=%s). "
+            "Returned %d snippet contacts.",
+            client_name, client_type, len(results),
+        )
+        return _dedupe_results(results)
+
+    # Record website URLs as contacts
+    for url, source_type in pages_to_check:
+        if source_type == "website":
+            results.append(ContactResult(
+                contact_type="website",
+                value=url,
+                source_url=url,
+                source_type="official_website",
+                confidence=0.9,
+            ))
+
+    # Fetch and extract from each page
     for url, source_type in pages_to_check:
         html = await fetch_page(url)
         if not html:
@@ -1421,7 +1813,6 @@ async def website_discovery(client_name: str, extra_data: dict | None = None) ->
         text = extract_text_from_html(html)
         if not text:
             continue
-
         results.extend(_results_from_page_content(
             html=html,
             text=text,
@@ -1592,8 +1983,19 @@ def _scrape_instagram_posts_for_handles(handles: list[str], primary_handle: str 
             max_posts,
             include_diagnostics=True,
         )
-        if diagnostics.get("reason"):
-            diagnostics_by_handle[clean_handle] = _build_ig_scrape_diagnostic(clean_handle, diagnostics)
+        if not posts:
+            diag_reason = diagnostics.get("reason", "") or ""
+            is_private = diagnostics.get("is_private", False) or "private" in diag_reason.lower()
+            is_rate_limited = "rate" in diag_reason.lower() or "429" in diag_reason
+            is_no_session = "session" in diag_reason.lower() or "no_session" in diag_reason
+            if is_private:
+                diagnostics_by_handle[clean_handle] = "account is private — cannot scrape"
+            elif is_rate_limited:
+                diagnostics_by_handle[clean_handle] = "rate limited — try again later"
+            elif is_no_session:
+                diagnostics_by_handle[clean_handle] = "no active IG session"
+            elif diag_reason:
+                diagnostics_by_handle[clean_handle] = _build_ig_scrape_diagnostic(clean_handle, diagnostics)
 
         for post in posts:
             post_url = post.get("post_url")

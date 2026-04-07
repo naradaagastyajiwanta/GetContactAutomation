@@ -321,6 +321,23 @@ async def lifespan(app: FastAPI):
     await init_db()
     await cfg.init_from_db()
     await _sync_managed_smtp_accounts_from_storage()
+
+    # Recover orphaned marketing states from any prior crash
+    try:
+        from orchestrator.marketing import groups as _mkt_groups
+        _recovery = await _mkt_groups.recover_orphaned_states()
+        if any(_recovery.values()):
+            log.info(
+                "Marketing startup recovery: %d run(s) interrupted, "
+                "%d client(s) orchestration-state reset, "
+                "%d client(s) search-status reset to pending",
+                _recovery["runs_interrupted"],
+                _recovery["clients_state_reset"],
+                _recovery["clients_searching_reset"],
+            )
+    except Exception as _e:
+        log.warning("Marketing startup recovery failed (non-critical): %s", _e)
+
     log.info("Database initialized")
 
     # Register the running event loop so LogStreamHandler can broadcast log lines

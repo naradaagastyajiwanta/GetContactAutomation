@@ -945,6 +945,7 @@ CREATE INDEX IF NOT EXISTS idx_mor_group ON marketing_orchestration_runs(group_i
 CREATE INDEX IF NOT EXISTS idx_mor_state ON marketing_orchestration_runs(state, current_stage);
 CREATE INDEX IF NOT EXISTS idx_moe_run ON marketing_orchestration_evidence(run_id, stage, created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_moe_client ON marketing_orchestration_evidence(client_id, stage, created_at DESC);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_clients_group_name ON marketing_clients(group_id, name);
 """
 
 # ---------------------------------------------------------------------------
@@ -1070,6 +1071,17 @@ async def init_db() -> None:
         cols = {r[1] for r in await cursor.fetchall()}
         if "last_response_id" not in cols:
             await db.execute("ALTER TABLE marketing_orchestration_runs ADD COLUMN last_response_id TEXT")
+
+        # Migration: remove duplicate (group_id, name) rows before applying UNIQUE index
+        await db.execute(
+            """DELETE FROM marketing_clients
+               WHERE id NOT IN (
+                   SELECT MIN(id)
+                   FROM marketing_clients
+                   GROUP BY group_id, name
+               )"""
+        )
+        await db.commit()
 
         await db.executescript(_INDEXES_MARKETING)
 

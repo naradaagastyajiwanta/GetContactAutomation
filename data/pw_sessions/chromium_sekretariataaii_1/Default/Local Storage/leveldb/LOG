@@ -1,6 +1,3 @@
-2026/04/07-04:12:59.660 aa94 Reusing MANIFEST C:\Users\narad\Programming\GetContactAI\data\pw_sessions\chromium_sekretariataaii_1\Default\Local Storage\leveldb/MANIFEST-000001
-2026/04/07-04:12:59.666 aa94 Recovering log #35
-2026/04/07-04:12:59.667 aa94 Reusing old log C:\Users\narad\Programming\GetContactAI\data\pw_sessions\chromium_sekretariataaii_1\Default\Local Storage\leveldb/000035.log 
-2026/04/07-04:13:13.745 78a0 Level-0 table #38: started
-2026/04/07-04:13:13.751 78a0 Level-0 table #38: 12204 bytes OK
-2026/04/07-04:13:13.752 78a0 Delete type=0 #35
+2026/04/07-09:27:16.656 b428 Reusing MANIFEST C:\Users\narad\Programming\GetContactAI\data\pw_sessions\chromium_sekretariataaii_1\Default\Local Storage\leveldb/MANIFEST-000001
+2026/04/07-09:27:16.661 b428 Recovering log #8
+2026/04/07-09:27:16.662 b428 Reusing old log C:\Users\narad\Programming\GetContactAI\data\pw_sessions\chromium_sekretariataaii_1\Default\Local Storage\leveldb/000008.log 

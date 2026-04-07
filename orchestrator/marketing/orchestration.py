@@ -828,21 +828,45 @@ async def run_client_orchestration(
 
 
 async def process_group_orchestration_queue(group_id: int, *, trigger_type: str = "scheduler") -> None:
-    """Run orchestration for all pending clients in a group."""
+    """Run orchestration for all pending clients in a group, with auto-retry for errors."""
     MAX_CONCURRENT = int(os.getenv("MARKETING_MAX_CONCURRENT", "20"))
+    MAX_AUTO_RETRIES = int(os.getenv("MARKETING_MAX_AUTO_RETRIES", "2"))
+    RETRY_DELAY_SECONDS = float(os.getenv("MARKETING_RETRY_DELAY_SECONDS", "30"))
+
     semaphore = asyncio.Semaphore(MAX_CONCURRENT)
 
     await mkt.update_group_status(group_id, "searching")
-    pending_clients = await mkt.get_pending_clients(group_id)
 
     async def bounded_orchestrate(client_id: int) -> None:
         async with semaphore:
             await run_client_orchestration(client_id, mode="full_search", trigger_type=trigger_type)
 
-    tasks = [bounded_orchestrate(client["id"]) for client in pending_clients]
-    if tasks:
-        await asyncio.gather(*tasks, return_exceptions=True)
+    # --- Initial batch ---
+    pending_clients = await mkt.get_pending_clients(group_id)
+    if pending_clients:
+        await asyncio.gather(
+            *[bounded_orchestrate(c["id"]) for c in pending_clients],
+            return_exceptions=True,
+        )
 
+    # --- Auto-retry loop ---
+    for attempt in range(1, MAX_AUTO_RETRIES + 1):
+        error_clients = await mkt.get_error_clients(group_id)
+        if not error_clients:
+            break
+        log.info(
+            "[Marketing Orchestration] Group %d: %d error client(s) — auto-retry %d/%d in %gs",
+            group_id, len(error_clients), attempt, MAX_AUTO_RETRIES, RETRY_DELAY_SECONDS,
+        )
+        await asyncio.sleep(RETRY_DELAY_SECONDS)
+        for client in error_clients:
+            await mkt.update_client_search_status(client["id"], "pending")
+        await asyncio.gather(
+            *[bounded_orchestrate(c["id"]) for c in error_clients],
+            return_exceptions=True,
+        )
+
+    # --- Final status & broadcast ---
     group_status = await mkt.get_group_search_status(group_id)
     next_status = "searching" if (group_status["pending"] or group_status["searching"]) else "done"
     await mkt.update_group_status(group_id, next_status)

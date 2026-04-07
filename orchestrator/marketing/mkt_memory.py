@@ -124,6 +124,7 @@ async def get_long_term_context(group_id: int, client_type: str | None) -> dict:
         "global_lessons": global_lessons,
         "group_progress": group_progress,
         "tool_success_rates": tool_success_rates,
+        "decision_patterns": strategy.get("decision_patterns", {}) if strategy else {},
     }
 
 
@@ -172,10 +173,15 @@ async def write_post_run_lessons(
     }
     """
     strategy = await get_group_strategy(group_id) or {
-        "version": 1,
+        "version": 2,
         "client_type": client_type,
         "tool_success_rates": {},
         "lessons": [],
+        "decision_patterns": {
+            "reliable_sources": [],
+            "red_flag_patterns": [],
+            "effective_approaches": {},
+        },
         "completed_clients": 0,
         "total_clients": 0,
         "found_rate": 0.0,
@@ -212,6 +218,28 @@ async def write_post_run_lessons(
         # Keep max 20 lessons, newest first
         lessons.insert(0, summary_text)
         strategy["lessons"] = lessons[:20]
+
+    # Store structured patterns from patterns_learned (v2 schema)
+    patterns = run_summary.get("patterns_learned", {})
+    if patterns:
+        dp = strategy.setdefault("decision_patterns", {
+            "reliable_sources": [],
+            "red_flag_patterns": [],
+            "effective_approaches": {},
+        })
+        for src in patterns.get("reliable_sources", []):
+            if src and src not in dp.get("reliable_sources", []):
+                dp.setdefault("reliable_sources", []).append(src)
+        for flag in patterns.get("red_flag_patterns", []):
+            if flag and flag not in dp.get("red_flag_patterns", []):
+                dp.setdefault("red_flag_patterns", []).append(flag)
+        effective = patterns.get("effective_approach")
+        if effective and client_type:
+            dp.setdefault("effective_approaches", {})[client_type] = effective
+        # Enforce reasonable caps
+        dp["reliable_sources"] = dp.get("reliable_sources", [])[:30]
+        dp["red_flag_patterns"] = dp.get("red_flag_patterns", [])[:30]
+        strategy["decision_patterns"] = dp
 
     await update_group_strategy(group_id, strategy)
 

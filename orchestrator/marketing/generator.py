@@ -7,6 +7,7 @@ institution names per client_type category.
 
 from __future__ import annotations
 
+import re
 from typing import TypedDict
 
 from orchestrator.research_agents.gemini_caller import call_gemini
@@ -21,12 +22,44 @@ class GenerationResult(TypedDict):
     names: list[str]
     grounding_urls: list[str]
     suggested_count: int
+    excluded_count: int  # how many Gemini-returned names were filtered as duplicates
 
 
 class GenerationError(Exception):
     """Raised when Gemini fails to generate valid names."""
 
     pass
+
+
+# ---------------------------------------------------------------------------
+# Name normalization for deduplication
+# ---------------------------------------------------------------------------
+
+_NAME_LEGAL_PREFIX_RE = re.compile(
+    r"^(?:pt|cv|ud|tb|koperasi|yayasan|lembaga|badan|balai|pusat|dinas)\s+",
+    re.IGNORECASE,
+)
+_NAME_LEGAL_SUFFIX_RE = re.compile(
+    r"\s*[\(,]?\s*(?:persero|tbk|tbk\.|terbatas|perseroan|nv)\s*\)?\.?$",
+    re.IGNORECASE,
+)
+
+
+def _normalize_name_for_dedup(name: str) -> str:
+    """Lowercase + strip legal prefixes/suffixes for fuzzy duplicate detection.
+
+    Examples:
+      "PT Telkom Indonesia (Persero) Tbk"  →  "telkom indonesia"
+      "Telkom Indonesia"                   →  "telkom indonesia"  (MATCH)
+      "PT HM Sampoerna Tbk"                →  "hm sampoerna"
+      "HM Sampoerna"                       →  "hm sampoerna"      (MATCH)
+    """
+    n = name.lower().strip()
+    # Run suffix strip twice: "(Persero) Tbk" needs two passes
+    n = _NAME_LEGAL_SUFFIX_RE.sub("", n).strip()
+    n = _NAME_LEGAL_SUFFIX_RE.sub("", n).strip()
+    n = _NAME_LEGAL_PREFIX_RE.sub("", n).strip()
+    return re.sub(r"\s+", " ", n)
 
 
 # ---------------------------------------------------------------------------
@@ -201,6 +234,10 @@ async def generate_client_names(
     Call Gemini with Google Search grounding to generate institution names
     matching the given client_type category.
 
+    Fetches existing names for this client_type from the DB, injects them
+    into the prompt as an exclusion list, and post-filters the result so
+    that duplicate names are never returned.
+
     Parameters
     ----------
     client_type : str
@@ -211,7 +248,8 @@ async def generate_client_names(
     Returns
     -------
     GenerationResult
-        {"names": [...], "grounding_urls": [...], "suggested_count": int}
+        {"names": [...], "grounding_urls": [...], "suggested_count": int,
+         "excluded_count": int}
 
     Raises
     ------
@@ -226,15 +264,38 @@ async def generate_client_names(
             f"Valid types: {list(PROMPTS.keys())}"
         )
 
-    clamped_count = max(5, min(200, count))
-
+    count = max(5, min(200, count))
     base_prompt = PROMPTS[client_type]
 
+    # --- Layer 1: Fetch existing names for this client_type ---
+    from orchestrator.marketing import groups as _mkt_groups  # local import to avoid circular
+
+    existing_raw = await _mkt_groups.get_all_client_names_by_type(client_type)
+    existing_normalized: set[str] = {
+        _normalize_name_for_dedup(n) for n in existing_raw if n.strip()
+    }
+
+    # Build exclusion block (cap at 150 names ≈ 600–900 extra tokens)
+    exclusion_block = ""
+    if existing_raw:
+        exclusion_lines = "\n".join(f"- {n}" for n in existing_raw[:150])
+        exclusion_block = (
+            "\n\nPERHATIAN — WAJIB DIIKUTI:\n"
+            "Nama-nama berikut SUDAH ADA dalam database dan TIDAK BOLEH kamu masukkan dalam list:\n"
+            f"{exclusion_lines}\n\n"
+            "Hasilkan HANYA nama yang BELUM ada dalam daftar di atas.\n"
+        )
+
+    # Inflate requested count to compensate for expected exclusions
+    buffer = min(len(existing_normalized) // 2, 80)
+    actual_count = min(count + buffer, 200)
+
     prompt = (
-        f"{base_prompt}\n\n"
-        f'Kamu HARUS mengembalikan tepat {clamped_count} nama. '
-        f'Jika jumlah nama yang kamu temukan kurang dari {clamped_count}, '
-        f'kembalikan saja nama-nama yang kamu temukan (bisa kurang dari {clamped_count}). '
+        f"{base_prompt}"
+        f"{exclusion_block}"
+        f"\n\nKamu HARUS mengembalikan tepat {actual_count} nama. "
+        f"Jika jumlah nama baru yang tersedia kurang dari {actual_count}, "
+        f"kembalikan saja nama-nama yang kamu temukan (boleh kurang). "
         f"Jangan menambah nama fiktif. "
         f'Kembalikan HANYA satu JSON object dengan kunci "names" berisi array string. '
         f'Format: {{"names": ["Nama 1", "Nama 2", ...]}}'
@@ -242,34 +303,53 @@ async def generate_client_names(
 
     parsed, grounding_urls = await call_gemini(prompt, use_search_grounding=True)
 
-    if parsed.get("_parse_failed"):
+    if isinstance(parsed, dict) and parsed.get("_parse_failed"):
         raise GenerationError(
             f"Gemini returned unparseable JSON for client_type={client_type!r}. "
             f"Raw: {parsed.get('_raw', '')[:300]}"
         )
 
-    names: list[str] | None = None
-
+    raw_names: list = []
     if isinstance(parsed, dict):
-        raw_names = parsed.get("names")
-        if isinstance(raw_names, list):
-            names = [str(n).strip() for n in raw_names if str(n).strip()]
+        candidate = parsed.get("names")
+        if isinstance(candidate, list):
+            raw_names = candidate
     elif isinstance(parsed, list):
-        names = [str(n).strip() for n in parsed if str(n).strip()]
+        raw_names = parsed
 
-    if names is None:
-        raise GenerationError(
-            f"Gemini response for client_type={client_type!r} "
-            f"did not contain a 'names' array. Got: {str(parsed)[:300]}"
-        )
-
-    if not names:
+    if not raw_names:
         raise GenerationError(
             f"Gemini returned zero names for client_type={client_type!r}."
         )
 
+    # --- Layer 2: Post-generation normalized dedup ---
+    seen_normalized: set[str] = set()
+    deduped_names: list[str] = []
+    excluded_count = 0
+
+    for raw in raw_names:
+        name = str(raw).strip()
+        if not name:
+            continue
+        norm = _normalize_name_for_dedup(name)
+        if norm in existing_normalized or norm in seen_normalized:
+            excluded_count += 1
+            continue
+        seen_normalized.add(norm)
+        deduped_names.append(name)
+        if len(deduped_names) >= count:
+            break
+
+    if not deduped_names:
+        raise GenerationError(
+            f"All {len(raw_names)} Gemini-generated names were duplicates of existing entries "
+            f"for client_type={client_type!r}. "
+            f"Consider clearing old groups or using a different category."
+        )
+
     return GenerationResult(
-        names=names,
+        names=deduped_names,
         grounding_urls=grounding_urls,
-        suggested_count=len(names),
+        suggested_count=len(deduped_names),
+        excluded_count=excluded_count,
     )
