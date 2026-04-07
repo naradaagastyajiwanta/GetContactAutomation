@@ -11,12 +11,23 @@ Available scrapers for Instagram:
   - ``instagramProfile`` → account param → returns profile + posts (with posts_number)
   - ``instagramPost``    → url param → returns single post data
 
-This module is used as Fallback Tier 3 (last resort) when both direct IG
-sessions and Apify fail.
+Supports multiple accounts for free-tier rotation via SCRAPINGBOT_ACCOUNTS config.
+When one account hits quota (HTTP 402), it is automatically skipped for 24 hours
+and the next available account is tried.
+
+Config (choose one):
+  # Multi-account (recommended — maximizes free tier):
+  SCRAPINGBOT_ACCOUNTS=[{"username":"u1","api_key":"k1"},{"username":"u2","api_key":"k2"}]
+
+  # Single account (legacy, backward compatible):
+  SCRAPINGBOT_USERNAME=user1
+  SCRAPINGBOT_API_KEY=key1
 """
 
 import base64
+import json
 import time as _time
+from datetime import datetime
 
 import httpx
 
@@ -30,59 +41,186 @@ _RESPONSE_URL = f"{_API_BASE}/data-scraper-response"
 _MAX_WAIT = 90
 _POLL_INTERVAL = 6  # Scraping-Bot docs recommend >= 5s between polls
 
-# Runtime status tracking
-_sb_status: dict = {"ok": True, "error": None}
+_QUOTA_COOLDOWN_SECONDS = 24 * 3600  # 24 hours
 
 
-def _update_status(ok: bool, error: str | None = None) -> None:
-    _sb_status["ok"] = ok
-    _sb_status["error"] = error if not ok else None
+# ---------------------------------------------------------------------------
+# Internal exception
+# ---------------------------------------------------------------------------
+
+class _QuotaExceededError(Exception):
+    """Raised when ScrapingBot returns HTTP 402 (quota exhausted)."""
+    pass
+
+
+# ---------------------------------------------------------------------------
+# Account & Pool
+# ---------------------------------------------------------------------------
+
+class _SBAccount:
+    """Holds credentials + runtime status for one ScrapingBot account."""
+
+    def __init__(self, username: str, api_key: str):
+        self.username = username
+        self.api_key = api_key
+        self.quota_exceeded_until: float = 0.0  # epoch; 0 = available
+        self.failures: int = 0
+        self.requests_served: int = 0
+
+    def is_available(self) -> bool:
+        return _time.time() >= self.quota_exceeded_until
+
+    def mark_quota_exceeded(self) -> None:
+        """Put account on 24-hour cooldown after HTTP 402."""
+        self.quota_exceeded_until = _time.time() + _QUOTA_COOLDOWN_SECONDS
+        log.warning(
+            "[SBPool] @%s quota exceeded — cooldown until %s",
+            self.username,
+            datetime.fromtimestamp(self.quota_exceeded_until).strftime("%H:%M %d/%m"),
+        )
+
+    def mark_failed(self) -> None:
+        self.failures += 1
+
+    def mark_success(self) -> None:
+        self.requests_served += 1
+        self.failures = 0
+
+    def auth_header(self) -> str:
+        creds = f"{self.username}:{self.api_key}"
+        return "Basic " + base64.b64encode(creds.encode()).decode()
+
+
+class _SBPool:
+    """Round-robin ScrapingBot account pool with quota-exceeded detection."""
+
+    def __init__(self, accounts: list[_SBAccount]):
+        self._accounts = accounts
+        self._rr_index = 0
+
+    def is_configured(self) -> bool:
+        return bool(self._accounts)
+
+    def has_available(self) -> bool:
+        return any(a.is_available() for a in self._accounts)
+
+    def get_next(self) -> _SBAccount | None:
+        """Return next available account (round-robin, skip cooling down)."""
+        available = [a for a in self._accounts if a.is_available()]
+        if not available:
+            return None
+        account = available[self._rr_index % len(available)]
+        self._rr_index += 1
+        return account
+
+    def stats(self) -> list[dict]:
+        return [
+            {
+                "username": a.username,
+                "available": a.is_available(),
+                "quota_exceeded_until": (
+                    datetime.fromtimestamp(a.quota_exceeded_until).isoformat()
+                    if a.quota_exceeded_until > 0 else None
+                ),
+                "requests_served": a.requests_served,
+                "failures": a.failures,
+            }
+            for a in self._accounts
+        ]
+
+
+# ---------------------------------------------------------------------------
+# Pool singleton
+# ---------------------------------------------------------------------------
+
+_pool: _SBPool | None = None
+
+
+def reset_pool() -> None:
+    """Reset pool singleton — call after SCRAPINGBOT_ACCOUNTS config changes."""
+    global _pool
+    _pool = None
+    log.info("[SBPool] Pool reset — will re-initialize on next request")
+
+
+def _get_pool() -> _SBPool | None:
+    """Get singleton pool, lazily initialized from config."""
+    global _pool
+    if _pool is not None:
+        return _pool
+
+    # Priority 1: SCRAPINGBOT_ACCOUNTS (JSON array of {username, api_key})
+    raw = cfg.get("SCRAPINGBOT_ACCOUNTS", "") if hasattr(cfg, "get") else ""
+    if not raw:
+        raw = getattr(cfg, "SCRAPINGBOT_ACCOUNTS", "") or ""
+
+    if raw:
+        try:
+            data = json.loads(raw)
+            accounts = [
+                _SBAccount(a["username"], a["api_key"])
+                for a in data
+                if a.get("username") and a.get("api_key")
+            ]
+        except Exception as e:
+            log.error("[SBPool] Failed to parse SCRAPINGBOT_ACCOUNTS: %s", e)
+            accounts = []
+    else:
+        # Fallback: legacy single-account config
+        username = getattr(cfg, "SCRAPINGBOT_USERNAME", "") or ""
+        api_key = getattr(cfg, "SCRAPINGBOT_API_KEY", "") or ""
+        accounts = [_SBAccount(username, api_key)] if username and api_key else []
+
+    if not accounts:
+        return None
+
+    _pool = _SBPool(accounts)
+    log.info("[SBPool] Initialized with %d ScrapingBot account(s)", len(accounts))
+    return _pool
+
+
+# ---------------------------------------------------------------------------
+# Public helpers
+# ---------------------------------------------------------------------------
+
+def is_configured() -> bool:
+    """Return True if at least one ScrapingBot account is configured."""
+    pool = _get_pool()
+    return bool(pool and pool.is_configured())
 
 
 def get_status() -> dict:
-    """Return ScrapingBot API health for the /health endpoint."""
+    """Return ScrapingBot pool health for the /health endpoint."""
+    pool = _get_pool()
+    if not pool:
+        return {"configured": False, "total_accounts": 0, "available_accounts": 0, "accounts": []}
+    stats = pool.stats()
+    available = sum(1 for a in stats if a["available"])
     return {
-        "ok": _sb_status["ok"],
-        "error": _sb_status["error"],
-        "configured": is_configured(),
+        "configured": pool.is_configured(),
+        "total_accounts": len(stats),
+        "available_accounts": available,
+        "accounts": stats,
     }
 
 
-def _get_auth() -> tuple[str, str] | None:
-    """Return (username, api_key) tuple, or None if not configured."""
-    username = getattr(cfg, "SCRAPINGBOT_USERNAME", None) or None
-    api_key = getattr(cfg, "SCRAPINGBOT_API_KEY", None) or None
-    if not username or not api_key:
-        return None
-    return (username, api_key)
+# ---------------------------------------------------------------------------
+# Internal HTTP logic
+# ---------------------------------------------------------------------------
 
-
-def _get_auth_header(auth: tuple[str, str]) -> str:
-    """Build Basic auth header value."""
-    creds = f"{auth[0]}:{auth[1]}"
-    return "Basic " + base64.b64encode(creds.encode()).decode()
-
-
-def is_configured() -> bool:
-    """Return True if Scraping-Bot credentials are set."""
-    return _get_auth() is not None
-
-
-def _submit_and_poll(payload: dict, scraper: str) -> dict | list | None:
+def _submit_and_poll(account: _SBAccount, payload: dict, scraper: str) -> dict | list | None:
     """
     Submit a social media scraping job and poll until done.
 
-    Returns parsed JSON result or None on failure.
+    Raises:
+        _QuotaExceededError: if HTTP 402 received (quota exhausted for this account).
+    Returns:
+        Parsed JSON result or None on failure.
     """
-    auth = _get_auth()
-    if not auth:
-        log.warning("[ScrapingBot] No credentials configured — skipping")
-        return None
-
     headers = {
         "Accept": "application/json",
         "Content-Type": "application/json",
-        "Authorization": _get_auth_header(auth),
+        "Authorization": account.auth_header(),
     }
 
     try:
@@ -90,22 +228,33 @@ def _submit_and_poll(payload: dict, scraper: str) -> dict | list | None:
             # Step 1: Submit scraping job
             resp = client.post(_SUBMIT_URL, json=payload)
             if resp.status_code != 200:
-                if resp.status_code in (401, 402, 403):
-                    _update_status(False, "quota_exceeded" if resp.status_code == 402 else "invalid_key")
-                log.warning("[ScrapingBot] Submit failed: HTTP %d — %s", resp.status_code, resp.text[:300])
+                if resp.status_code == 402:
+                    raise _QuotaExceededError(f"@{account.username} quota exceeded (HTTP 402)")
+                if resp.status_code in (401, 403):
+                    log.warning(
+                        "[SBPool] @%s invalid credentials (HTTP %d)",
+                        account.username, resp.status_code,
+                    )
+                    account.mark_failed()
+                    return None
+                log.warning(
+                    "[ScrapingBot] Submit failed: HTTP %d — %s",
+                    resp.status_code, resp.text[:300],
+                )
                 return None
-            _update_status(True)
 
             response_data = resp.json()
             response_id = response_data.get("responseId")
             if not response_id:
-                # Might have returned an error
                 error = response_data.get("error")
                 if error:
                     log.warning("[ScrapingBot] API error: %s", error)
                 return None
 
-            log.info("[ScrapingBot] Job submitted (scraper=%s), responseId=%s", scraper, response_id)
+            log.info(
+                "[ScrapingBot] Job submitted (scraper=%s, acct=%s), responseId=%s",
+                scraper, account.username, response_id,
+            )
 
             # Step 2: Poll for result
             deadline = _time.time() + _MAX_WAIT
@@ -122,71 +271,39 @@ def _submit_and_poll(payload: dict, scraper: str) -> dict | list | None:
 
                 result = poll_resp.json()
 
-                # Check for completion
                 if result is None or (isinstance(result, dict) and result.get("status") == "pending"):
                     continue
 
-                # Check for error
                 if isinstance(result, dict) and result.get("error"):
                     log.warning("[ScrapingBot] Scraping error: %s", result["error"])
                     return None
 
-                log.info("[ScrapingBot] Got result for %s (responseId=%s)", scraper, response_id)
+                log.info(
+                    "[ScrapingBot] Got result for %s (acct=%s, responseId=%s)",
+                    scraper, account.username, response_id,
+                )
                 return result
 
-            log.warning("[ScrapingBot] Timeout waiting for %s result", scraper)
+            log.warning("[ScrapingBot] Timeout waiting for %s result (acct=%s)", scraper, account.username)
             return None
 
+    except _QuotaExceededError:
+        raise  # propagate to caller for pool rotation
     except httpx.TimeoutException:
-        log.warning("[ScrapingBot] HTTP timeout for %s", scraper)
+        log.warning("[ScrapingBot] HTTP timeout for %s (acct=%s)", scraper, account.username)
         return None
     except Exception as e:
-        log.error("[ScrapingBot] Unexpected error: %s", e)
+        log.error("[ScrapingBot] Unexpected error (acct=%s): %s", account.username, e)
         return None
 
 
-# ---------------------------------------------------------------------------
-# Public API
-# ---------------------------------------------------------------------------
-
-
-def scrapingbot_get_profile(handle: str, posts_number: int = 12) -> dict | None:
-    """
-    Get IG profile + recent posts via Scraping-Bot ``instagramProfile`` scraper.
-
-    Returns:
-    {
-        "bio": str,
-        "full_name": str,
-        "external_url": str,
-        "is_verified": bool,
-        "followers": int,
-        "posts": [{"post_url", "image_url", "caption", "timestamp"}, ...]
-    }
-    or None on failure.
-    """
-    handle = handle.lstrip("@")
-    log.info("[ScrapingBot] Fetching profile @%s (posts_number=%d)", handle, posts_number)
-
-    result = _submit_and_poll(
-        {
-            "scraper": "instagramProfile",
-            "account": handle,
-            "posts_number": str(posts_number),
-        },
-        scraper="instagramProfile",
-    )
-
-    if not result:
-        return None
-
-    # The response can be a list (wrapping the profile) or a dict
+def _parse_profile_result(result: dict | list, handle: str) -> dict | None:
+    """Parse raw ScrapingBot instagramProfile response into our standard format."""
     profile_data = result[0] if isinstance(result, list) and result else result
     if not isinstance(profile_data, dict):
-        log.warning("[ScrapingBot] Unexpected response format for instagramProfile")
+        log.warning("[ScrapingBot] Unexpected response format for @%s", handle)
         return None
 
-    # Parse posts from the profile data
     raw_posts = profile_data.get("posts", []) or profile_data.get("latestPosts", []) or []
     posts = []
     for p in raw_posts:
@@ -194,7 +311,6 @@ def scrapingbot_get_profile(handle: str, posts_number: int = 12) -> dict | None:
         image_url = p.get("displayUrl", "") or p.get("imageUrl", "") or p.get("image", "")
         caption = p.get("caption", "") or p.get("text", "") or ""
         timestamp = p.get("timestamp", "") or p.get("date", "")
-
         if post_url or caption:
             posts.append({
                 "post_url": post_url,
@@ -211,6 +327,60 @@ def scrapingbot_get_profile(handle: str, posts_number: int = 12) -> dict | None:
         "followers": profile_data.get("followersCount", 0) or profile_data.get("followers", 0) or 0,
         "posts": posts,
     }
+
+
+# ---------------------------------------------------------------------------
+# Public API
+# ---------------------------------------------------------------------------
+
+def scrapingbot_get_profile(handle: str, posts_number: int = 12) -> dict | None:
+    """
+    Get IG profile + recent posts via Scraping-Bot ``instagramProfile`` scraper.
+
+    Automatically rotates through all configured accounts if one hits quota (402).
+
+    Returns:
+    {
+        "bio": str, "full_name": str, "external_url": str,
+        "is_verified": bool, "followers": int,
+        "posts": [{"post_url", "image_url", "caption", "timestamp"}, ...]
+    }
+    or None on failure / all accounts exhausted.
+    """
+    pool = _get_pool()
+    if not pool or not pool.is_configured():
+        return None
+
+    handle = handle.lstrip("@")
+    payload = {
+        "scraper": "instagramProfile",
+        "account": handle,
+        "posts_number": str(posts_number),
+    }
+
+    max_attempts = len(pool._accounts)
+    for _ in range(max_attempts):
+        account = pool.get_next()
+        if account is None:
+            log.warning("[SBPool] All ScrapingBot accounts quota exceeded for @%s", handle)
+            return None
+
+        log.info("[ScrapingBot] Fetching profile @%s via @%s (posts=%d)", handle, account.username, posts_number)
+        try:
+            result = _submit_and_poll(account, payload, scraper="instagramProfile")
+            if result is not None:
+                profile = _parse_profile_result(result, handle)
+                if profile is not None:
+                    account.mark_success()
+                    return profile
+        except _QuotaExceededError:
+            account.mark_quota_exceeded()
+            continue  # try next account
+        except Exception as e:
+            log.warning("[SBPool] @%s (acct %s) unexpected error: %s", handle, account.username, e)
+            account.mark_failed()
+
+    return None
 
 
 def scrapingbot_get_posts(handle: str, posts_number: int = 12) -> list[dict]:

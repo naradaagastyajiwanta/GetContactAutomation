@@ -432,6 +432,16 @@ CONFIG_DEFINITIONS: list[ConfigDef] = [
         ),
         sensitive=True,
     ),
+    ConfigDef(
+        key="SCRAPINGBOT_ACCOUNTS",
+        type=ConfigType.STRING, default="", group=ConfigGroup.CREDENTIALS,
+        label="ScrapingBot Accounts",
+        description=(
+            'Multiple ScrapingBot accounts untuk free tier rotation. '
+            'Akun yang quota habis (402) otomatis di-skip 24 jam. '
+            'Override SCRAPINGBOT_USERNAME/API_KEY jika diisi.'
+        ),
+    ),
     # --- Agent Rolling Position ---
     ConfigDef(
         key="AGENT_LAST_PROCESSED_UNIV_ID",

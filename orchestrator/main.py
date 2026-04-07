@@ -3016,6 +3016,14 @@ async def update_config(payload: ConfigUpdatePayload):
         except Exception as e:
             log.warning("Failed to reschedule outreach jobs: %s", e)
 
+    # Reset ScrapingBot pool if accounts config changed
+    if "SCRAPINGBOT_ACCOUNTS" in validated:
+        try:
+            from orchestrator import scrapingbot_client
+            scrapingbot_client.reset_pool()
+        except Exception as e:
+            log.warning("Failed to reset ScrapingBot pool: %s", e)
+
     # Invalidate Responses API sessions if custom instructions changed
     instruction_keys = {"AGENT_CUSTOM_INSTRUCTIONS", "AUDIENSI_CUSTOM_INSTRUCTIONS"}
     if instruction_keys & set(validated.keys()):
