@@ -149,13 +149,14 @@ CREATE TABLE IF NOT EXISTS config (
 
 _DDL_USER_WA_DEVICES = """
 CREATE TABLE IF NOT EXISTS user_wa_devices (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    dms_user_id INTEGER NOT NULL UNIQUE,
-    user_email TEXT NOT NULL,
-    device_id TEXT NOT NULL UNIQUE,
-    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    dms_user_id INTEGER NOT NULL,
+    user_email  TEXT    NOT NULL,
+    device_id   TEXT    NOT NULL UNIQUE,
+    label       TEXT    NOT NULL DEFAULT '',
+    created_at  TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
-CREATE INDEX IF NOT EXISTS idx_user_wa_devices_user ON user_wa_devices(dms_user_id);
+CREATE INDEX IF NOT EXISTS idx_user_wa_devices_user   ON user_wa_devices(dms_user_id);
 CREATE INDEX IF NOT EXISTS idx_user_wa_devices_device ON user_wa_devices(device_id);
 """
 
@@ -975,6 +976,51 @@ async def init_db() -> None:
         await db.executescript(_DDL_CONFIG)
         await db.executescript(_DDL_AUTH)
         await db.executescript(_DDL_USER_WA_DEVICES)
+
+        # --- Migration: user_wa_devices multi-device support ---
+        cursor = await db.execute("PRAGMA table_info(user_wa_devices)")
+        uwd_columns = {row[1] for row in await cursor.fetchall()}
+
+        if "label" not in uwd_columns:
+            await db.execute(
+                "ALTER TABLE user_wa_devices ADD COLUMN label TEXT NOT NULL DEFAULT ''"
+            )
+            await db.commit()
+
+        cursor = await db.execute(
+            """
+            SELECT COUNT(*) FROM sqlite_master
+            WHERE type='index'
+              AND tbl_name='user_wa_devices'
+              AND sql LIKE '%dms_user_id%'
+              AND name NOT LIKE 'idx_user_wa_devices_%'
+            """
+        )
+        has_old_unique = (await cursor.fetchone())[0] > 0
+
+        if has_old_unique:
+            await db.executescript("""
+                ALTER TABLE user_wa_devices RENAME TO _user_wa_devices_old;
+                CREATE TABLE user_wa_devices (
+                    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+                    dms_user_id INTEGER NOT NULL,
+                    user_email  TEXT    NOT NULL,
+                    device_id   TEXT    NOT NULL UNIQUE,
+                    label       TEXT    NOT NULL DEFAULT '',
+                    created_at  TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                );
+                INSERT INTO user_wa_devices (id, dms_user_id, user_email, device_id, label, created_at)
+                SELECT id, dms_user_id, user_email, device_id,
+                       COALESCE(label, '') AS label,
+                       created_at
+                FROM _user_wa_devices_old;
+                DROP TABLE _user_wa_devices_old;
+                CREATE INDEX IF NOT EXISTS idx_user_wa_devices_user
+                    ON user_wa_devices(dms_user_id);
+                CREATE INDEX IF NOT EXISTS idx_user_wa_devices_device
+                    ON user_wa_devices(device_id);
+            """)
+
         await db.executescript(_INDEXES)
         await db.executescript(_INDEXES_AGENT)
         await db.executescript(_INDEXES_AUTH)
@@ -5199,17 +5245,34 @@ async def increment_email_blast_quota(count: int = 1) -> int:
 
 
 # ---------------------------------------------------------------------------
-# user_wa_devices CRUD
+# user_wa_devices CRUD (multi-device per user)
 # ---------------------------------------------------------------------------
 
-async def get_user_wa_device(dms_user_id: int) -> dict | None:
+async def _next_device_slot(db, dms_user_id: int) -> int:
+    """Return the next slot number for a user (used to generate device_id)."""
+    cur = await db.execute(
+        "SELECT device_id FROM user_wa_devices WHERE dms_user_id = ?",
+        (dms_user_id,)
+    )
+    rows = await cur.fetchall()
+    max_n = 0
+    for (did,) in rows:
+        parts = did.rsplit("_", 1)
+        if len(parts) == 2 and parts[1].isdigit():
+            max_n = max(max_n, int(parts[1]))
+    return max_n + 1
+
+
+async def get_user_wa_devices(dms_user_id: int) -> list[dict]:
+    """Return all WA devices for a user, ordered by created_at."""
     async with aiosqlite.connect(DATABASE_PATH) as db:
         db.row_factory = aiosqlite.Row
         cur = await db.execute(
-            "SELECT * FROM user_wa_devices WHERE dms_user_id = ?", (dms_user_id,)
+            "SELECT * FROM user_wa_devices WHERE dms_user_id = ? ORDER BY created_at",
+            (dms_user_id,)
         )
-        row = await cur.fetchone()
-        return dict(row) if row else None
+        rows = await cur.fetchall()
+        return [dict(r) for r in rows]
 
 
 async def get_user_wa_device_by_device_id(device_id: str) -> dict | None:
@@ -5222,20 +5285,45 @@ async def get_user_wa_device_by_device_id(device_id: str) -> dict | None:
         return dict(row) if row else None
 
 
-async def create_user_wa_device(dms_user_id: int, user_email: str, device_id: str) -> dict:
+async def create_user_wa_device(
+    dms_user_id: int,
+    user_email: str,
+    label: str = "",
+) -> dict:
+    """Create a new WA device for this user. device_id is auto-generated as u{id}_{n}."""
     async with aiosqlite.connect(DATABASE_PATH) as db:
+        n = await _next_device_slot(db, dms_user_id)
+        device_id = f"u{dms_user_id}_{n}"
         await db.execute(
-            "INSERT INTO user_wa_devices (dms_user_id, user_email, device_id) VALUES (?, ?, ?)",
-            (dms_user_id, user_email, device_id)
+            "INSERT INTO user_wa_devices (dms_user_id, user_email, device_id, label)"
+            " VALUES (?, ?, ?, ?)",
+            (dms_user_id, user_email, device_id, label)
         )
         await db.commit()
-    return {"dms_user_id": dms_user_id, "user_email": user_email, "device_id": device_id}
+    return {
+        "dms_user_id": dms_user_id,
+        "user_email": user_email,
+        "device_id": device_id,
+        "label": label,
+    }
 
 
-async def delete_user_wa_device(dms_user_id: int) -> bool:
+async def delete_user_wa_device_by_device_id(device_id: str) -> bool:
+    """Delete a specific device by device_id. Returns True if deleted."""
     async with aiosqlite.connect(DATABASE_PATH) as db:
         cur = await db.execute(
-            "DELETE FROM user_wa_devices WHERE dms_user_id = ?", (dms_user_id,)
+            "DELETE FROM user_wa_devices WHERE device_id = ?", (device_id,)
+        )
+        await db.commit()
+        return cur.rowcount > 0
+
+
+async def update_user_wa_device_label(device_id: str, label: str) -> bool:
+    """Update the label of a specific device. Returns True if row found."""
+    async with aiosqlite.connect(DATABASE_PATH) as db:
+        cur = await db.execute(
+            "UPDATE user_wa_devices SET label = ? WHERE device_id = ?",
+            (label, device_id)
         )
         await db.commit()
         return cur.rowcount > 0

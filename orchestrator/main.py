@@ -89,9 +89,10 @@ from orchestrator.db import (
     upsert_auth_user_role,
     deactivate_auth_user_role,
     revoke_auth_sessions_for_user,
-    get_user_wa_device,
+    get_user_wa_devices,
     create_user_wa_device,
-    delete_user_wa_device,
+    delete_user_wa_device_by_device_id,
+    update_user_wa_device_label,
     list_all_user_wa_devices,
 )
 from orchestrator.config_registry import (
@@ -2500,8 +2501,9 @@ async def _assert_device_access(device_id: str, user: dict) -> None:
     """Admin bypasses. Non-admin must own the device."""
     if has_permission(user, "*"):
         return
-    mapping = await get_user_wa_device(user["dms_user_id"])
-    if not mapping or mapping["device_id"] != device_id:
+    mappings = await get_user_wa_devices(user["dms_user_id"])
+    owned_ids = {m["device_id"] for m in mappings}
+    if device_id not in owned_ids:
         raise HTTPException(status_code=403, detail="You do not have access to this device")
 
 
@@ -2512,70 +2514,94 @@ async def wa_get_devices(request: Request):
     async with httpx.AsyncClient(timeout=15) as client:
         resp = await client.get(f"{WA_SERVICE_URL}/devices")
         all_devices = resp.json().get("devices", [])
-    if has_permission(user, "*"):  # admin sees all
+    if has_permission(user, "*"):
         return {"devices": all_devices}
-    mapping = await get_user_wa_device(user["dms_user_id"])
-    if not mapping:
-        return {"devices": []}
-    return {"devices": [d for d in all_devices if d["id"] == mapping["device_id"]]}
+    mappings = await get_user_wa_devices(user["dms_user_id"])
+    owned_ids = {m["device_id"] for m in mappings}
+    return {"devices": [d for d in all_devices if d["id"] in owned_ids]}
 
 
 @app.post("/wa/me/device")
 async def wa_setup_my_device(request: Request):
     user = await get_request_user(request)
-    existing = await get_user_wa_device(user["dms_user_id"])
-    if existing:
-        return {"success": True, "device_id": existing["device_id"], "already_existed": True}
-    device_id = f"u{user['dms_user_id']}"
+    body: dict = {}
+    try:
+        if request.headers.get("content-type", "").startswith("application/json"):
+            body = await request.json()
+    except Exception:
+        pass
+    label = (body.get("label") or "").strip() if isinstance(body, dict) else ""
+
+    row = await create_user_wa_device(user["dms_user_id"], user["email"], label=label)
+    device_id = row["device_id"]
+
+    display_name = label or f"WA - {user['email']}"
     async with httpx.AsyncClient(timeout=15) as client:
         resp = await client.post(
             f"{WA_SERVICE_URL}/devices",
-            json={"id": device_id, "name": f"WA - {user['email']}"},
+            json={"id": device_id, "name": display_name},
         )
         if resp.status_code not in (200, 201):
+            await delete_user_wa_device_by_device_id(device_id)
             raise HTTPException(status_code=502, detail=f"WA service error: {resp.text}")
-    try:
-        await create_user_wa_device(user["dms_user_id"], user["email"], device_id)
-    except Exception as e:
-        if "UNIQUE constraint" in str(e):
-            existing = await get_user_wa_device(user["dms_user_id"])
-            return {"success": True, "device_id": existing["device_id"], "already_existed": True}
-        raise
+
     return {"success": True, "device_id": device_id, "already_existed": False}
 
 
 @app.get("/wa/me/device")
 async def wa_get_my_device(request: Request):
     user = await get_request_user(request)
-    mapping = await get_user_wa_device(user["dms_user_id"])
-    if not mapping:
-        return {"has_device": False, "device_id": None, "device": None}
-    device_id = mapping["device_id"]
+    mappings = await get_user_wa_devices(user["dms_user_id"])
+    if not mappings:
+        return {"devices": []}
+
+    results = []
     async with httpx.AsyncClient(timeout=10) as client:
-        resp = await client.get(f"{WA_SERVICE_URL}/devices/{device_id}/status")
-    if resp.status_code == 404:
-        return {
-            "has_device": True,
-            "device_id": device_id,
-            "device": None,
-            "error": "Device not found in WA service; call POST /wa/me/device to re-register",
-        }
-    return {"has_device": True, "device_id": device_id, "device": resp.json()}
+        for mapping in mappings:
+            device_id = mapping["device_id"]
+            resp = await client.get(f"{WA_SERVICE_URL}/devices/{device_id}/status")
+            if resp.status_code == 404:
+                results.append({
+                    "device_id": device_id,
+                    "label": mapping["label"],
+                    "has_wa_record": True,
+                    "device": None,
+                    "error": "Device not found in WA service; call POST /wa/me/device to re-register",
+                })
+            else:
+                results.append({
+                    "device_id": device_id,
+                    "label": mapping["label"],
+                    "has_wa_record": True,
+                    "device": resp.json(),
+                    "error": None,
+                })
+
+    return {"devices": results}
 
 
-@app.delete("/wa/me/device")
-async def wa_delete_my_device(request: Request):
+@app.delete("/wa/me/device/{device_id}")
+async def wa_delete_my_device(device_id: str, request: Request):
     user = await get_request_user(request)
-    mapping = await get_user_wa_device(user["dms_user_id"])
-    if not mapping:
-        return {"success": True, "message": "No device to delete"}
-    device_id = mapping["device_id"]
+    await _assert_device_access(device_id, user)
     async with httpx.AsyncClient(timeout=15) as client:
         resp = await client.delete(f"{WA_SERVICE_URL}/devices/{device_id}")
         if resp.status_code not in (200, 404):
             raise HTTPException(status_code=502, detail=f"WA service error: {resp.text}")
-    await delete_user_wa_device(user["dms_user_id"])
+    await delete_user_wa_device_by_device_id(device_id)
     return {"success": True, "device_id": device_id}
+
+
+@app.patch("/wa/me/device/{device_id}/label")
+async def wa_update_my_device_label(device_id: str, request: Request):
+    user = await get_request_user(request)
+    await _assert_device_access(device_id, user)
+    body = await request.json()
+    label = (body.get("label") or "").strip()
+    updated = await update_user_wa_device_label(device_id, label)
+    if not updated:
+        raise HTTPException(status_code=404, detail="Device not found")
+    return {"success": True}
 
 
 @app.get("/wa/devices/{device_id}/status")
@@ -2690,8 +2716,8 @@ async def wa_bulk_send(payload: dict, request: Request):
                 await _assert_device_access(payload_device_id, user)
             resolved_device_id = payload_device_id
         else:
-            mapping = await get_user_wa_device(user["dms_user_id"])
-            resolved_device_id = mapping["device_id"] if mapping else SYSTEM_DEVICE_ID
+            mappings = await get_user_wa_devices(user["dms_user_id"])
+            resolved_device_id = mappings[0]["device_id"] if mappings else SYSTEM_DEVICE_ID
 
         if not phone_numbers:
             return {"success": False, "error": "No phone numbers provided"}
@@ -2743,8 +2769,8 @@ async def wa_bulk_send_document(payload: dict, request: Request):
                 await _assert_device_access(payload_device_id, user)
             resolved_device_id = payload_device_id
         else:
-            mapping = await get_user_wa_device(user["dms_user_id"])
-            resolved_device_id = mapping["device_id"] if mapping else SYSTEM_DEVICE_ID
+            mappings = await get_user_wa_devices(user["dms_user_id"])
+            resolved_device_id = mappings[0]["device_id"] if mappings else SYSTEM_DEVICE_ID
 
         if not phone_numbers:
             return {"success": False, "error": "No phone numbers provided"}
