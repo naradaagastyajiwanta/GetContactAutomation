@@ -244,6 +244,10 @@ def setup_logger(name: str = "getcontact") -> logging.Logger:
 
 log = setup_logger()
 
+# Suppress noisy third-party loggers
+logging.getLogger("uvicorn.access").setLevel(logging.WARNING)
+logging.getLogger("instaloader").setLevel(logging.WARNING)
+
 
 # ---------------------------------------------------------------------------
 # ConfigManager — dynamic, thread-safe configuration store

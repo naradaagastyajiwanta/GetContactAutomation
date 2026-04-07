@@ -1232,7 +1232,22 @@ async def _evaluate_corporate_ig_candidates(client_name: str, client_type: str =
             candidate.setdefault("llm_confidence", 0.0)
             candidate.setdefault("llm_reason", "")
 
-    # Candidates that still need LLM evaluation (not hard-anchored)
+    # Auto-trust ALL website_social candidates — they were found on the company's own website HTML.
+    # No Gemini verification needed: if the company linked it themselves, it's correct.
+    for candidate in enriched:
+        if (
+            candidate.get("source") == "website_social"
+            and candidate.get("llm_is_correct") is None  # not already hard-anchored
+        ):
+            candidate["llm_is_correct"] = True
+            candidate["llm_confidence"] = 0.95
+            candidate["llm_reason"] = "Found directly on company website HTML (auto-trusted)"
+            log.info(
+                "[IG-Auto-Trust] @%s — website_social source bypasses Gemini evaluation",
+                candidate.get("handle"),
+            )
+
+    # Candidates that still need LLM evaluation (not hard-anchored, not website_social)
     needs_llm = [c for c in enriched if c.get("llm_is_correct") is None]
 
     if needs_llm:
@@ -2066,9 +2081,52 @@ def _scrape_instagram_posts_for_handles(handles: list[str], primary_handle: str 
 # ---------------------------------------------------------------------------
 
 
-async def ig_discovery(client_name: str, client_type: str = "", known_website_url: str | None = None) -> InstagramDiscoveryResult:
-    """Find IG handle via DDG → scrape posts → GPT vision OCR."""
+async def ig_discovery(
+    client_name: str,
+    client_type: str = "",
+    known_website_url: str | None = None,
+    known_handle: str | None = None,
+) -> InstagramDiscoveryResult:
+    """Find IG handle via DDG → scrape posts → GPT vision OCR.
+
+    If known_handle is provided, skip candidate discovery entirely and scrape that handle directly.
+    Used when the LLM sub-agent already confirmed a handle but scraping returned 0 contacts.
+    """
     results: list[ContactResult] = []
+
+    if known_handle:
+        # Fast path: bypass all discovery, scrape the confirmed handle directly
+        clean_handle = known_handle.lstrip("@").strip()
+        log.info("[Marketing IG Discovery] known_handle=%s — skipping discovery, scraping directly", clean_handle)
+        loop = asyncio.get_running_loop()
+        try:
+            all_posts, scrape_error = await loop.run_in_executor(
+                None,
+                partial(_scrape_instagram_posts_for_handles, [clean_handle], clean_handle),
+            )
+        except Exception as exc:
+            return InstagramDiscoveryResult(
+                handle=clean_handle,
+                profile_url=f"https://www.instagram.com/{clean_handle}/",
+                scrape_status="failed",
+                scrape_error=str(exc) or type(exc).__name__,
+            )
+        if not all_posts:
+            return InstagramDiscoveryResult(
+                handle=clean_handle,
+                profile_url=f"https://www.instagram.com/{clean_handle}/",
+                scrape_status="empty",
+                scrape_error=scrape_error,
+            )
+        post_results = await _extract_marketing_contacts_from_posts(all_posts)
+        results.extend(post_results)
+        return InstagramDiscoveryResult(
+            handle=clean_handle,
+            profile_url=f"https://www.instagram.com/{clean_handle}/",
+            posts=all_posts,
+            contacts=_dedupe_results(results),
+            scrape_status="success",
+        )
 
     candidates = await _evaluate_corporate_ig_candidates(client_name, client_type, known_website_url=known_website_url)
 
@@ -2130,6 +2188,76 @@ async def ig_discovery(client_name: str, client_type: str = "", known_website_ur
         scrape_status="success",
         scrape_error=None,
     )
+
+
+async def scrape_website_contacts(
+    website_url: str,
+    company_name: str = "",
+) -> list[ContactResult]:
+    """Deep-scrape a known website URL for phone numbers and emails.
+
+    Fetches homepage + all _CONTACT_PAGE_PATHS concurrently (max 5 at a time).
+    Unlike website_discovery(), this function does NOT search for the URL —
+    it requires a confirmed URL from a previous agent or discovery step.
+    """
+    from urllib.parse import urljoin as _urljoin  # already imported at top, local alias for clarity
+
+    base = website_url.rstrip("/")
+    pages_to_check = [base]
+    for path in _CONTACT_PAGE_PATHS:
+        pages_to_check.append(base + path)
+
+    async def _fetch_and_extract(url: str) -> list[ContactResult]:
+        html = await fetch_page(url, timeout=15.0)
+        if not html:
+            return []
+        page_results: list[ContactResult] = []
+        for email in extract_emails(html):
+            if not email.lower().startswith(("noreply@", "no-reply@", "donotreply@")):
+                page_results.append(ContactResult(
+                    contact_type="email",
+                    value=email,
+                    source_url=url,
+                    source_type="website_page",
+                    confidence=0.75,
+                ))
+        for phone in extract_phones_from_text(html):
+            if is_mobile_phone(phone):
+                page_results.append(ContactResult(
+                    contact_type="wa_phone",
+                    value=phone,
+                    source_url=url,
+                    source_type="website_page",
+                    confidence=0.70,
+                ))
+        return page_results
+
+    sem = asyncio.Semaphore(5)
+
+    async def _guarded(url: str) -> list[ContactResult] | Exception:
+        async with sem:
+            try:
+                return await _fetch_and_extract(url)
+            except Exception as exc:
+                return exc
+
+    all_batches = await asyncio.gather(*(_guarded(u) for u in pages_to_check))
+
+    seen_values: set[str] = set()
+    results: list[ContactResult] = []
+    for batch in all_batches:
+        if isinstance(batch, Exception):
+            continue
+        for r in batch:
+            if r.value not in seen_values:
+                seen_values.add(r.value)
+                results.append(r)
+
+    log.info(
+        "[WebsiteScraper] %s: %d contacts from %d pages checked",
+        company_name or website_url, len(results), len(pages_to_check),
+    )
+    return results
 
 
 async def ig_handle_audit_discovery(client_name: str, client_type: str = "") -> InstagramDiscoveryResult:

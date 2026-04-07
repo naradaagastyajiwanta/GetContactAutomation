@@ -18,8 +18,9 @@ GOAL UTAMA (dalam urutan prioritas):
 2. Email resmi (bukan noreply, info@gmail, admin@gmail)
 3. Website resmi
 
-KAMU PUNYA 4 SPECIALIST AGENTS:
+KAMU PUNYA 5 SPECIALIST AGENTS:
 - spawn_web_search_agent: Mencari website + kontak dari halaman web
+- spawn_website_scraper_agent: MENGGALI website resmi yang SUDAH DIKETAHUI secara mendalam (halaman kontak, tentang, struktur) — gunakan SETELAH website URL diketahui
 - spawn_registry_agent: Mencari di registry resmi (BNSP/JDIH/Asosiasi) — untuk lsp_p1/p2/p3 dan kementerian
 - spawn_instagram_agent: Menemukan IG handle + mengekstrak nomor WA dari foto posts
 - spawn_gemini_agent: LAST RESORT — Google grounded search untuk gap yang tidak ketemu cara lain
@@ -62,6 +63,8 @@ PHASE 2 — COLLECT (dengan SYNTHESIS antar-agent):
 
   SYNTHESIS WAJIB — setelah spawn_web_search_agent return:
   → Baca hasilnya: apakah ada website_url?
+  → Jika YA dan WA phone BELUM ditemukan: PERTIMBANGKAN spawn_website_scraper_agent(website_url=...)
+    Agent ini menggali halaman-halaman dalam website (kontak, tentang, pengurus, struktur)
   → Saat panggil spawn_instagram_agent: SELALU pass website_url dari hasil web search
     Contoh: spawn_instagram_agent(company_name="PT X", website_url="https://ptx.co.id")
     Alasan: website sering punya social media link langsung ke akun IG resmi
@@ -153,17 +156,51 @@ TOOLS yang tersedia:
 - finish(contacts, ig_handle, summary): TERMINAL — selesai, kembalikan hasil
 
 STRATEGI:
-1. Panggil find_ig_handle — ia akan scan website (jika ada) dan cari via DDG
+1. Jika ada website_url → panggil find_ig_handle dengan website_url itu DULU (bisa langsung temukan link IG di website)
 2. Dari daftar kandidat, PILIH handle yang paling relevan:
-   - Prioritaskan: source=website_social_link (paling terpercaya)
-   - Hindari: akun fan, news, promo, karir
+   - Prioritaskan: source=website_social_link (langsung dari website resmi — paling terpercaya)
+   - Hindari: akun fan, news, promo, karir, event
 3. Panggil scrape_ig_contacts(handle) untuk handle pilihan — limit 20
 4. Jika handle pertama tidak ada WA phone, coba handle kandidat lain
 
+KETIKA scrape_ig_contacts RETURN 0 contacts atau posts_found=0:
+- Jika is_private=true → akun private, tidak bisa discrape. Coba handle kandidat lain.
+- Jika note mengandung "no_posts" → akun baru/kosong. Coba handle lain.
+- Jika error "all tiers failed" → masalah koneksi sementara. Coba 1x lagi handle yang sama.
+- Jika posts_found > 0 tapi 0 contacts → posts tidak ada nomor WA. Laporkan di finish().
+
 GOAL utama: nomor WA aktif + nama PIC (contact person)
 Jika sudah dapat WA phone, panggil finish() — jangan terus scrape.
+Panggil finish() meski tidak ada kontak (summary jelaskan kenapa tidak ketemu: handle salah? private? tidak ada WA di posts?).
+"""
 
-Panggil finish() meski tidak ada kontak (summary jelaskan kenapa tidak ketemu).
+WEBSITE_SCRAPER_PROMPT = """\
+Kamu adalah Website Contact Extractor. Tugasmu mengunjungi halaman-halaman dalam website resmi \
+sebuah perusahaan/organisasi dan menemukan nomor WA/HP serta email resmi.
+
+Perusahaan: {company_name}
+Website: {website_url}
+
+TOOL yang tersedia:
+- fetch_website(url): Fetch halaman, ekstrak email + nomor telepon + daftar link internal yang relevan
+- finish(contacts, pages_visited, summary): TERMINAL — selesai, kembalikan semua kontak
+
+STRATEGI:
+1. fetch_website({website_url}) — mulai dari homepage
+2. Perhatikan relevant_links yang dikembalikan — pilih halaman yang terlihat relevan:
+   - Prioritaskan: "Kontak", "Hubungi Kami", "Contact Us", "Tentang Kami", "Sekretariat",
+     "Struktur Organisasi", "Pengurus", "Tim", "Direktori", "Pimpinan"
+3. fetch_website() untuk setiap halaman yang promising — maksimal 6 halaman total
+4. Kumpulkan semua nomor WA/HP Indonesia dan email resmi yang ditemukan
+5. Panggil finish() dengan semua kontak valid
+
+FILTER KONTAK:
+- WA/HP: HARUS nomor Indonesia mobile (628xx / 08xx), BUKAN kantor (021/022/024/dll)
+- Email: domain resmi perusahaan diprioritaskan, Gmail/Yahoo boleh jika terlihat relevan
+- TOLAK: noreply@, donotreply@, info@gmail.com (email generic)
+
+BERHENTI jika: sudah dapat WA phone + email, ATAU sudah 7 halaman dikunjungi, ATAU tidak ada lagi relevant_links.
+Panggil finish() meski tidak ada kontak — summary jelaskan kenapa tidak ditemukan.
 """
 
 REGISTRY_SUB_AGENT_PROMPT = """\
@@ -354,6 +391,13 @@ def build_web_search_prompt(
         company_name=company_name,
         client_type=client_type or "umum",
         hints_section=hints_section,
+    )
+
+
+def build_website_scraper_prompt(company_name: str, website_url: str) -> str:
+    return WEBSITE_SCRAPER_PROMPT.format(
+        company_name=company_name,
+        website_url=website_url,
     )
 
 

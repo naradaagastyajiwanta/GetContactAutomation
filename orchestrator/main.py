@@ -174,7 +174,7 @@ async def _get_phone_lock(phone: str) -> asyncio.Lock:
 # ---------------------------------------------------------------------------
 
 _IG_HEALTH_INTERVAL = 300  # 5 minutes
-_SMTP_HEALTH_INTERVAL = 60  # 1 minute
+_SMTP_HEALTH_INTERVAL = 300  # 5 minutes
 
 async def _periodic_ig_health_check():
     """
@@ -292,6 +292,11 @@ async def _run_managed_smtp_health_checks() -> dict[str, int]:
         await _save_managed_smtp_accounts(next_accounts, reset_client=False)
         for payload in health_updates:
             await ws_manager.broadcast_type("email_smtp_account_health", account=payload)
+
+    if failed > 0:
+        log.warning("[SMTPHealthCheck] %d/%d accounts unhealthy", failed, checked)
+    else:
+        log.debug("[SMTPHealthCheck] %d/%d accounts healthy", healthy, checked)
 
     return {"checked": checked, "healthy": healthy, "failed": failed}
 

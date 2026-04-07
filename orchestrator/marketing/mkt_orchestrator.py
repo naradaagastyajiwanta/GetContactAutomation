@@ -28,6 +28,7 @@ from . import groups as mkt
 from .search import is_mobile_phone
 from .mkt_sub_agents import (
     WebSearchSubAgent,
+    WebsiteContactScraperSubAgent,
     InstagramSubAgent,
     RegistrySearchSubAgent,
     GeminiGapFillSubAgent,
@@ -209,6 +210,23 @@ _ORCHESTRATOR_TOOL_SCHEMAS: list[dict] = [
                 "hints": {"type": "object", "description": "Optional search hints: refined_query (string), avoid_source_domains (array of strings), force_domain (string), target_contact_type (string)", "additionalProperties": True},
             },
             "required": ["company_name"],
+        },
+    },
+    {
+        "type": "function",
+        "name": "spawn_website_scraper_agent",
+        "description": (
+            "Spawn a specialist agent that deeply crawls a KNOWN official website URL — "
+            "fetches homepage and all contact/about/structure sub-pages — to extract WA phone numbers and emails. "
+            "Use AFTER spawn_web_search_agent has returned a website URL and WA phone is still missing."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "website_url": {"type": "string", "description": "Official website URL to scrape (must be known)"},
+                "company_name": {"type": "string", "description": "Company name for context"},
+            },
+            "required": ["website_url"],
         },
     },
     {
@@ -784,6 +802,19 @@ class MarketingOrchestratorAgent:
             self._record_sub_agent_call(context, "spawn_web_search_agent", result)
             return self._summarize_result(result)
 
+        if tool_name == "spawn_website_scraper_agent":
+            website_url = arguments.get("website_url", "").strip()
+            company_name = arguments.get("company_name", context.client_name)
+            if not website_url:
+                return json.dumps({"error": "website_url diperlukan untuk spawn_website_scraper_agent"})
+            agent = WebsiteContactScraperSubAgent()
+            result = await agent.run(
+                company_name=company_name,
+                website_url=website_url,
+            )
+            self._record_sub_agent_call(context, "spawn_website_scraper_agent", result)
+            return self._summarize_result(result)
+
         if tool_name == "spawn_registry_agent":
             company_name = arguments.get("company_name", context.client_name)
             client_type = arguments.get("client_type", context.client_type)
@@ -798,10 +829,18 @@ class MarketingOrchestratorAgent:
         if tool_name == "spawn_instagram_agent":
             company_name = arguments.get("company_name", context.client_name)
             website_url = arguments.get("website_url")
+            # Cross-agent knowledge sharing: pass previously recorded website contacts
+            # so Instagram sub-agent can use a website URL already found by WebSearch
+            prior_web_contacts = [
+                c for c in context.contacts_recorded
+                if c.get("type") == "website" and c.get("value")
+            ]
             agent = InstagramSubAgent()
             result = await agent.run(
                 company_name=company_name,
                 website_url=website_url,
+                client_type=context.client_type or "",
+                prior_web_contacts=prior_web_contacts or None,
             )
             self._record_sub_agent_call(context, "spawn_instagram_agent", result)
             # Auto-save IG handle if found

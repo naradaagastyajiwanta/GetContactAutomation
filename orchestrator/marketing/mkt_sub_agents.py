@@ -27,7 +27,7 @@ from orchestrator.osint.tools import (
     extract_social_links,
 )
 from . import search as search_flow
-from .mkt_prompts import build_web_search_prompt, build_instagram_prompt
+from .mkt_prompts import build_web_search_prompt, build_instagram_prompt, build_website_scraper_prompt
 
 
 # ---------------------------------------------------------------------------
@@ -358,12 +358,19 @@ async def _scrape_ig_contacts_tool(args: dict) -> str:
     try:
         from orchestrator.instagram import scrape_ig_posts_with_fallback, extract_phone_from_image, extract_named_contacts_from_text
 
-        posts: list[dict] = await asyncio.to_thread(
-            scrape_ig_posts_with_fallback, handle, min(limit, 25)
+        posts_result = await asyncio.to_thread(
+            scrape_ig_posts_with_fallback, handle, min(limit, 25), False, None, True
+        )
+        posts, scrape_diag = posts_result if isinstance(posts_result, tuple) else (posts_result, {})
+        is_private = scrape_diag.get("is_private", False) or "private" in str(scrape_diag.get("reason", "")).lower()
+        tier_used = scrape_diag.get("tier_used") or (
+            "playwright" if scrape_diag.get("playwright_attempted") and not scrape_diag.get("playwright_error") else
+            "instaloader" if scrape_diag.get("instaloader_success") else "none"
         )
 
         if not posts:
-            return json.dumps({"handle": handle, "posts_found": 0, "contacts": [], "note": "Tidak ada posts ditemukan"})
+            reason = "private_account" if is_private else scrape_diag.get("reason") or "no_posts"
+            return json.dumps({"handle": handle, "posts_found": 0, "contacts": [], "is_private": is_private, "scrape_tier": tier_used, "note": f"Tidak ada posts: {reason}"})
 
         wa_contacts: list[dict] = []
         for post in posts[:20]:
@@ -373,7 +380,7 @@ async def _scrape_ig_contacts_tool(args: dict) -> str:
 
             # Extract from caption text
             if caption:
-                named = extract_named_contacts_from_text(caption)
+                named = await extract_named_contacts_from_text(caption, require_person_name=False)
                 for nc in named:
                     if nc.phone and search_flow.is_mobile_phone(nc.phone):
                         wa_contacts.append({
@@ -412,7 +419,8 @@ async def _scrape_ig_contacts_tool(args: dict) -> str:
             "handle": handle,
             "posts_found": len(posts),
             "contacts": unique_contacts[:5],
-            "summary": f"Scraped {len(posts)} posts, found {len(unique_contacts)} WA contacts.",
+            "scrape_tier": tier_used,
+            "summary": f"Scraped {len(posts)} posts via {tier_used}, found {len(unique_contacts)} WA contacts.",
         }, ensure_ascii=False)
 
     except Exception as exc:
@@ -435,6 +443,11 @@ class SubAgentResult:
     success: bool = True
     error: str | None = None
     queries_tried: list[str] = field(default_factory=list)
+    # Failure diagnostics — help orchestrator reason about what went wrong
+    failure_reason: str | None = None      # e.g. "scrape_failed_private", "handle_not_found", "all_tiers_blocked"
+    is_ig_private: bool = False            # True if account is private
+    scrape_tier_used: str | None = None    # "playwright", "instaloader", "ig_session", "scrapingbot", "none"
+    posts_scraped: int = 0                 # actual posts count scraped
 
 
 def _contact_result_to_dict(result: search_flow.ContactResult) -> dict:
@@ -586,8 +599,18 @@ class InstagramSubAgent:
         company_name: str,
         website_url: str | None = None,
         client_type: str = "",
+        prior_web_contacts: list[dict] | None = None,
     ) -> SubAgentResult:
         start = time.monotonic()
+
+        # Cross-agent knowledge sharing: extract website URL from prior WebSearch results
+        if prior_web_contacts and not website_url:
+            for c in prior_web_contacts:
+                if c.get("type") == "website" and c.get("value"):
+                    website_url = c["value"]
+                    log.info("[InstagramSubAgent] Using website from prior WebSearch: %s", website_url)
+                    break
+
         log.info("[InstagramSubAgent] Starting for: %s (website_url=%s)", company_name, bool(website_url))
 
         # Build dispatch with website_url closure
@@ -601,6 +624,9 @@ class InstagramSubAgent:
             "find_ig_handle": _find_ig,
             "scrape_ig_contacts": _scrape_ig_contacts_tool,
         }
+
+        # Tracks handle discovered by LLM path (may be set even if 0 contacts)
+        ig_handle: str | None = None
 
         # --- PRIMARY: LLM ReAct loop (with retry) ---
         # Attempt 1: normal search with website_url hint
@@ -642,14 +668,15 @@ class InstagramSubAgent:
                         tool_schemas=_INSTAGRAM_AGENT_TOOLS,
                         terminal_tools=_INSTAGRAM_TERMINAL,
                         tool_dispatch=ig_dispatch,
-                        max_iterations=6,
+                        max_iterations=8,
                     )
 
                     llm_contacts = terminal_args.get("contacts", [])
                     ig_handle = (terminal_args.get("ig_handle") or "").lstrip("@") or None
                     summary = terminal_args.get("summary", "")
 
-                    if llm_contacts or ig_handle:
+                    if llm_contacts:
+                        # Contacts found — success, return immediately
                         duration = time.monotonic() - start
                         log.info(
                             "[InstagramSubAgent/LLM] %s done in %.1fs: %d contacts, handle=%s, %d tokens",
@@ -665,6 +692,16 @@ class InstagramSubAgent:
                             success=True,
                         )
 
+                    if ig_handle:
+                        # Handle found but 0 contacts (scraping may have failed) — fall through to
+                        # deterministic fallback with the known handle so it can be scraped directly
+                        log.info(
+                            "[InstagramSubAgent/LLM] Handle @%s found but 0 contacts after %s — "
+                            "passing to deterministic fallback",
+                            ig_handle, llm_cfg["label"],
+                        )
+                        break  # exit LLM attempt loop, keep ig_handle for fallback
+
                     log.info(
                         "[InstagramSubAgent/LLM] %s returned nothing — %s",
                         llm_cfg["label"],
@@ -679,13 +716,19 @@ class InstagramSubAgent:
                     )
 
         # --- FALLBACK: deterministic pipeline with retry loop ---
-        # Outer loop: Round 1 = full name, Round 2 = abbreviation (if round 1 finds no handle)
+        # Round 0 (if LLM found a handle): skip discovery, scrape known handle directly
+        # Round 1 = full name search, Round 2 = abbreviation (if round 1 finds no handle)
         # Inner loop: up to MAX_ATTEMPTS retries per round on transient errors (with backoff)
         _MAX_ATTEMPTS = 2
         _RETRY_DELAY = 3.0  # seconds before retry on error
 
         abbreviation = search_flow._build_company_abbreviation(company_name)
-        search_rounds: list[tuple[str, str]] = [(company_name, "full_name")]
+        # ig_handle may be set from the LLM path above (handle found, 0 contacts)
+        known_handle_from_llm: str | None = ig_handle  # set earlier in this function scope
+        search_rounds: list[tuple[str, str]] = []
+        if known_handle_from_llm:
+            search_rounds.append((company_name, "known_handle"))  # use known handle, skip discovery
+        search_rounds.append((company_name, "full_name"))
         if abbreviation and abbreviation.lower() != company_name.lower():
             search_rounds.append((abbreviation, "abbreviation"))
 
@@ -703,7 +746,8 @@ class InstagramSubAgent:
                     ig_result = await search_flow.ig_discovery(
                         search_name,
                         client_type=client_type,
-                        known_website_url=website_url if round_label == "full_name" else None,
+                        known_website_url=website_url,
+                        known_handle=known_handle_from_llm if round_label == "known_handle" else None,
                     )
                     tool_calls.append(f"ig_discovery_{round_label}_attempt{attempt}")
                     last_result = ig_result
@@ -760,6 +804,19 @@ class InstagramSubAgent:
         else:
             summary = f"IG: Tidak ada akun yang cocok ditemukan untuk {company_name}."
 
+        # Derive failure diagnostics from scrape_status
+        scrape_status = last_result.scrape_status or ""
+        scrape_error = last_result.scrape_error or ""
+        is_private = "private" in scrape_error.lower()
+        if is_private:
+            failure_reason = "scrape_failed_private"
+        elif scrape_status == "no_candidates":
+            failure_reason = "handle_not_found"
+        elif scrape_status in ("empty", "failed"):
+            failure_reason = "scrape_failed_no_posts" if scrape_status == "empty" else "scrape_failed_error"
+        else:
+            failure_reason = None
+
         duration = time.monotonic() - start
         log.info("[InstagramSubAgent/Fallback] Done in %.1fs: handle=%s, %d contacts (%d rounds)",
                  duration, handle, len(contacts), len(tool_calls))
@@ -772,6 +829,9 @@ class InstagramSubAgent:
             summary=summary,
             duration_seconds=duration,
             success=True,
+            failure_reason=failure_reason,
+            is_ig_private=is_private,
+            posts_scraped=posts,
         )
 
 
@@ -842,6 +902,205 @@ class RegistrySearchSubAgent:
                 error=str(exc),
                 summary=f"Registry search gagal ({registry_used}): {exc}",
                 tool_calls_made=[f"search_{registry_used}"],
+                duration_seconds=duration,
+            )
+
+
+# ---------------------------------------------------------------------------
+# WebsiteContactScraperSubAgent — tool schemas, dispatch, and implementation
+# ---------------------------------------------------------------------------
+
+_WEBSITE_SCRAPER_TOOLS: list[dict] = [
+    {
+        "type": "function",
+        "name": "fetch_website",
+        "description": (
+            "Fetch satu halaman website dan ekstrak: email, nomor telepon, dan daftar "
+            "link internal yang relevan (halaman kontak, tentang, struktur organisasi, dll)."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "url": {"type": "string", "description": "URL halaman yang akan di-fetch"},
+            },
+            "required": ["url"],
+        },
+    },
+    {
+        "type": "function",
+        "name": "finish",
+        "description": "TERMINAL: selesai mengekstrak kontak dari website. Kembalikan semua kontak valid.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "contacts": {
+                    "type": "array",
+                    "description": "Daftar kontak yang ditemukan",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "type": {"type": "string", "enum": ["wa_phone", "email"]},
+                            "value": {"type": "string"},
+                            "source_url": {"type": "string"},
+                            "confidence": {"type": "number"},
+                            "pic_name": {"type": "string", "description": "Nama PIC jika ada"},
+                        },
+                        "required": ["type", "value", "source_url", "confidence"],
+                    },
+                },
+                "pages_visited": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "URL halaman yang sudah dikunjungi",
+                },
+                "summary": {"type": "string"},
+            },
+            "required": ["contacts", "summary"],
+        },
+    },
+]
+_WEBSITE_SCRAPER_TERMINAL: set[str] = {"finish"}
+
+
+async def _fetch_website_tool(args: dict) -> str:
+    """Fetch a page and return emails, phones, and contact-relevant internal links."""
+    from urllib.parse import urljoin, urlparse
+    try:
+        from bs4 import BeautifulSoup
+    except ImportError:
+        BeautifulSoup = None  # type: ignore[assignment,misc]
+
+    url = args.get("url", "").strip()
+    if not url:
+        return json.dumps({"error": "url is required"})
+
+    html = await fetch_page(url, timeout=20.0)
+    if not html:
+        return json.dumps({"error": "Tidak bisa fetch halaman", "url": url})
+
+    emails = extract_emails(html)
+    phones = extract_phones_from_text(html)
+    text_preview = extract_text_from_html(html, max_chars=3000)
+
+    # Discover contact-relevant internal links via BeautifulSoup
+    relevant_links: list[dict] = []
+    if BeautifulSoup is not None:
+        _CONTACT_KEYWORDS = {
+            "kontak", "contact", "hubungi", "about", "tentang", "struktur",
+            "pengurus", "direktori", "sekretariat", "pimpinan", "tim", "team",
+            "profil", "info", "layanan", "cs", "informasi",
+        }
+        try:
+            base_domain = urlparse(url).netloc
+            soup = BeautifulSoup(html, "html.parser")
+            seen_links: set[str] = set()
+            for a in soup.find_all("a", href=True):
+                href = str(a.get("href", "")).strip()
+                link_text = a.get_text(strip=True).lower()
+                if not href or href.startswith("#") or "javascript:" in href:
+                    continue
+                full_url = urljoin(url, href)
+                parsed = urlparse(full_url)
+                if parsed.netloc != base_domain:
+                    continue
+                if full_url in seen_links:
+                    continue
+                href_lower = parsed.path.lower()
+                if any(kw in link_text or kw in href_lower for kw in _CONTACT_KEYWORDS):
+                    seen_links.add(full_url)
+                    relevant_links.append({"url": full_url, "text": a.get_text(strip=True)[:60]})
+                    if len(relevant_links) >= 15:
+                        break
+        except Exception as exc:
+            log.debug("[WebsiteScraperTool] Link extraction failed: %s", exc)
+
+    return json.dumps({
+        "url": url,
+        "emails": emails[:10],
+        "phones": phones[:10],
+        "relevant_links": relevant_links,
+        "text_preview": text_preview[:2000],
+    }, ensure_ascii=False)
+
+
+class WebsiteContactScraperSubAgent:
+    """
+    Deep-crawls a known official website URL to extract WA phone numbers and emails.
+    PRIMARY: LLM ReAct loop — LLM decides which sub-pages to visit based on discovered links.
+    FALLBACK: Deterministic — fetches homepage + all _CONTACT_PAGE_PATHS concurrently.
+    """
+
+    async def run(
+        self,
+        company_name: str,
+        website_url: str,
+    ) -> SubAgentResult:
+        start = time.monotonic()
+        log.info("[WebsiteScraperSubAgent] Starting for: %s (%s)", company_name, website_url)
+
+        # --- PRIMARY: LLM ReAct loop ---
+        if cfg.OPENAI_API_KEY:
+            try:
+                system_prompt = build_website_scraper_prompt(company_name, website_url)
+                terminal_args, tokens = await _run_sub_agent_llm_loop(
+                    system_prompt=system_prompt,
+                    initial_message=f"Scrape website resmi {company_name} untuk cari nomor WA dan email: {website_url}",
+                    tool_schemas=_WEBSITE_SCRAPER_TOOLS,
+                    terminal_tools=_WEBSITE_SCRAPER_TERMINAL,
+                    tool_dispatch={"fetch_website": _fetch_website_tool},
+                    max_iterations=10,
+                )
+                llm_contacts = terminal_args.get("contacts", [])
+                pages_visited = terminal_args.get("pages_visited", [])
+                summary = terminal_args.get("summary", "")
+                if llm_contacts:
+                    duration = time.monotonic() - start
+                    log.info(
+                        "[WebsiteScraperSubAgent/LLM] Done in %.1fs: %d contacts, %d pages, %d tokens",
+                        duration, len(llm_contacts), len(pages_visited), tokens,
+                    )
+                    return SubAgentResult(
+                        contacts=llm_contacts,
+                        tool_calls_made=["llm_website_scraper"],
+                        summary=summary or f"Website scrape: {len(llm_contacts)} kontak dari {website_url}",
+                        tokens_used=tokens,
+                        duration_seconds=duration,
+                        success=True,
+                    )
+                log.info("[WebsiteScraperSubAgent/LLM] LLM found 0 contacts — falling back to deterministic")
+            except Exception as exc:
+                log.warning("[WebsiteScraperSubAgent] LLM loop failed: %s — falling back", exc)
+
+        # --- FALLBACK: Deterministic scraper ---
+        try:
+            results = await search_flow.scrape_website_contacts(website_url, company_name)
+            contacts = _contacts_to_serializable(results)
+            wa_count = sum(1 for c in contacts if c["type"] == "wa_phone")
+            email_count = sum(1 for c in contacts if c["type"] == "email")
+            parts = []
+            if wa_count:
+                parts.append(f"{wa_count} WA phone")
+            if email_count:
+                parts.append(f"{email_count} email")
+            summary = f"Website scrape: {', '.join(parts)}." if parts else f"Tidak ada kontak ditemukan di {website_url}"
+
+            duration = time.monotonic() - start
+            log.info("[WebsiteScraperSubAgent/Fallback] Done in %.1fs: %d contacts", duration, len(contacts))
+            return SubAgentResult(
+                contacts=contacts,
+                tool_calls_made=["scrape_website_contacts"],
+                summary=summary,
+                duration_seconds=duration,
+                success=True,
+            )
+        except Exception as exc:
+            duration = time.monotonic() - start
+            log.warning("[WebsiteScraperSubAgent] Fallback also failed for %s: %s", website_url, exc)
+            return SubAgentResult(
+                success=False,
+                error=str(exc),
+                summary=f"Website scrape gagal: {exc}",
+                tool_calls_made=["scrape_website_contacts"],
                 duration_seconds=duration,
             )
 

@@ -38,7 +38,7 @@ class ConnectionManager:
 
         # Skip logging for log_line events — logging would trigger another broadcast, causing infinite loop
         if message.get("type") != "log_line":
-            log.info("[WS] Broadcasting to %d clients: %s", len(self.active_connections), message.get("type"))
+            log.debug("[WS] Broadcasting to %d clients: %s", len(self.active_connections), message.get("type"))
         disconnected = set()
         for connection in self.active_connections:
             try:

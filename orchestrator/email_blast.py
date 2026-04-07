@@ -540,8 +540,11 @@ class SMTPClient:
                 pass
             acc._connection = None
 
-    def _ensure_connected(self) -> bool:
-        """Ensure current account is connected. Rotates if needed."""
+    def _ensure_connected(self, quiet: bool = False) -> bool:
+        """Ensure current account is connected. Rotates if needed.
+
+        quiet=True suppresses routine info logs (used by health-check path).
+        """
         ready, reason = self._ensure_ready_account()
         if not ready:
             log.warning("[EmailBlast] %s", reason)
@@ -560,9 +563,11 @@ class SMTPClient:
                 if _original_create_connection is None:
                     _original_create_connection = socket.create_connection
                     socket.create_connection = _socks_create_connection
-                log.info(f"[EmailBlast] SOCKS5 proxy active: {socks_config['host']}:{socks_config['port']}")
+                if not quiet:
+                    log.info(f"[EmailBlast] SOCKS5 proxy active: {socks_config['host']}:{socks_config['port']}")
 
-            log.info(f"[EmailBlast] SMTP connecting: {acc.host}:{acc.port} as {acc.user} (SOCKS5={socks_config['enabled']})")
+            if not quiet:
+                log.info(f"[EmailBlast] SMTP connecting: {acc.host}:{acc.port} as {acc.user} (SOCKS5={socks_config['enabled']})")
 
             if acc.use_ssl:
                 context = ssl.create_default_context()
@@ -575,7 +580,8 @@ class SMTPClient:
             conn.login(acc.user, acc.password)
             acc._connection = conn
             acc.degraded = False
-            log.info(f"[EmailBlast] SMTP connected: {acc.user}")
+            if not quiet:
+                log.info(f"[EmailBlast] SMTP connected: {acc.user}")
             return True
 
         except Exception as e:
@@ -600,13 +606,14 @@ class SMTPClient:
         for acc in self._accounts:
             self._disconnect_account(acc)
 
-    def connect(self) -> bool:
+    def connect(self, quiet: bool = False) -> bool:
         """Pre-connect the current account. Returns True if connected.
 
+        quiet=True suppresses routine info logs (used by health-check path).
         Backward-compatible with old single-account .connect() usage.
         Prefer letting send_email() handle connection lazily.
         """
-        return self._ensure_connected()
+        return self._ensure_connected(quiet=quiet)
 
     def send_email_with_context(self, to_email: str, subject: str, body: str,
                                 from_email: str = None, from_name: str = None,
@@ -776,7 +783,7 @@ def test_smtp_account(account: dict) -> tuple[bool, str]:
     """Test a single SMTP account without affecting the shared singleton."""
     client = SMTPClient(accounts=[build_smtp_account(account)])
     try:
-        success = client.connect()
+        success = client.connect(quiet=True)  # suppress routine logs — called from health-check
         if success:
             return True, "SMTP connected"
         return False, "SMTP failed"
@@ -2427,7 +2434,7 @@ def get_imap_connection(mailbox: dict | None = None):
         use_ssl = mailbox["use_ssl"]
         mailbox_email = mailbox.get("mailbox_email") or imap_user
 
-        log.info(f"Connecting to IMAP mailbox {mailbox_email}: {imap_host}:{imap_port} (SSL: {use_ssl})")
+        log.debug(f"Connecting to IMAP mailbox {mailbox_email}: {imap_host}:{imap_port} (SSL: {use_ssl})")
 
         if use_ssl:
             conn = imaplib.IMAP4_SSL(imap_host, imap_port)
@@ -2435,12 +2442,10 @@ def get_imap_connection(mailbox: dict | None = None):
             conn = imaplib.IMAP4(imap_host, imap_port)
 
         conn.login(imap_user, imap_pass)
-        log.info(f"IMAP login successful for {mailbox_email}")
+        log.debug(f"IMAP login successful for {mailbox_email}")
         return conn
     except Exception as e:
-        log.error(f"Failed to connect to IMAP: {e}")
-        import traceback
-        log.error(traceback.format_exc())
+        log.warning(f"Failed to connect to IMAP for {mailbox_email}: {e}")
         return None
 
 
@@ -2826,7 +2831,7 @@ async def _blocking_imap_fetch(limit: int, offset: int, unread_only: bool) -> tu
                     log.error("[InboxCache] IMAP select failed for %s: %s", mailbox['mailbox_email'], status)
                     continue
 
-                log.info("[InboxCache] INBOX select for %s: %s messages=%s", mailbox['mailbox_email'], status, folder_count)
+                log.debug("[InboxCache] INBOX select for %s: %s messages=%s", mailbox['mailbox_email'], status, folder_count)
 
                 search_criteria = 'UNSEEN' if unread_only else 'ALL'
                 status, messages = conn.search(None, search_criteria)
@@ -2841,7 +2846,7 @@ async def _blocking_imap_fetch(limit: int, offset: int, unread_only: bool) -> tu
                 new_ids = [email_id for email_id in all_reversed if int(email_id) not in cached_uids][:500]
                 to_fetch_ids = list(dict.fromkeys([*recent_ids, *new_ids]))
 
-                log.info(
+                log.debug(
                     "[InboxCache] Mailbox %s total=%s cached=%s fetching=%s",
                     mailbox['mailbox_email'], len(email_ids), len(cached_uids), len(to_fetch_ids),
                 )
@@ -2873,7 +2878,7 @@ async def _refresh_inbox_cache_background():
     """Background task: fetch new emails and update cache without blocking."""
     global _inbox_bg_refresh_running
     try:
-        log.info("[InboxCache] Background refresh starting")
+        log.debug("[InboxCache] Background refresh starting")
         new_entries: list[dict] = []
 
         for mailbox in get_imap_mailboxes():
@@ -2896,7 +2901,7 @@ async def _refresh_inbox_cache_background():
                 new_ids = [email_id for email_id in all_reversed if int(email_id) not in cached_uids][:500]
 
                 if not new_ids:
-                    log.info("[InboxCache] Mailbox %s: no new emails", mailbox['mailbox_email'])
+                    log.debug("[InboxCache] Mailbox %s: no new emails", mailbox['mailbox_email'])
                     continue
 
                 log.info("[InboxCache] Mailbox %s: fetching %s new emails", mailbox['mailbox_email'], len(new_ids))
@@ -2916,7 +2921,7 @@ async def _refresh_inbox_cache_background():
                 _safe_close_imap_connection(conn)
 
         if not new_entries:
-            log.info("[InboxCache] Background refresh: no parsable new emails")
+            log.debug("[InboxCache] Background refresh: no parsable new emails")
             return
 
         await _store_inbox_entries(new_entries)
@@ -2925,7 +2930,7 @@ async def _refresh_inbox_cache_background():
             campaign_ids = await _lookup_campaign_ids_for_inbound_email(entry['from_email'])
             await broadcast_inbox_received(entry, campaign_ids)
 
-        log.info("[InboxCache] Background refresh complete")
+        log.debug("[InboxCache] Background refresh complete")
     except Exception as e:
         log.error(f"[InboxCache] Background refresh error: {e}")
     finally:
@@ -3273,7 +3278,7 @@ async def _refresh_sent_cache_background():
     """Background task: fetch new sent emails."""
     global _sent_cache_running
     try:
-        log.info("[SentFolder] Background refresh starting")
+        log.debug("[SentFolder] Background refresh starting")
         new_entries: list[dict] = []
 
         for mailbox in get_imap_mailboxes():
@@ -3306,7 +3311,7 @@ async def _refresh_sent_cache_background():
                 new_uids = [uid for uid in raw_uids[::-1] if int(uid) not in cached_uids][:500]
 
                 if not new_uids:
-                    log.info("[SentFolder] Mailbox %s: no new emails", mailbox['mailbox_email'])
+                    log.debug("[SentFolder] Mailbox %s: no new emails", mailbox['mailbox_email'])
                     continue
 
                 log.info("[SentFolder] Mailbox %s: fetching %s new emails", mailbox['mailbox_email'], len(new_uids))
@@ -3331,7 +3336,7 @@ async def _refresh_sent_cache_background():
                 _safe_close_imap_connection(conn)
 
         await _store_sent_entries(new_entries)
-        log.info("[SentFolder] Background refresh complete")
+        log.debug("[SentFolder] Background refresh complete")
     except Exception as e:
         log.error(f"[SentFolder] Background refresh error: {e}")
     finally:
