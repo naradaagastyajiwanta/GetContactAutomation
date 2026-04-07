@@ -385,6 +385,7 @@ class _PlaywrightBrowser:
         self._account = account  # may be None (legacy single-account)
         self._headless_override = headless  # None = use cfg default
         self._on_screenshot = on_screenshot  # callback(step, base64_jpeg, message)
+        self._active_proxy: str | None = None  # Set in __enter__ if proxy pool enabled
 
     def __enter__(self):
         from playwright.sync_api import sync_playwright
@@ -424,6 +425,13 @@ class _PlaywrightBrowser:
             profile_dir = str(_SESSION_DIR / "chromium_profile")
 
         # Use persistent context (keeps cookies/localStorage between runs)
+        from orchestrator.proxy_pool import get_proxy_pool
+        _proxy_pool = get_proxy_pool()
+        _proxy_cfg = _proxy_pool.get_for_playwright() if _proxy_pool else None
+        self._active_proxy = _proxy_cfg.get("server") if _proxy_cfg else None
+        if self._active_proxy:
+            log.debug("[PW] Using proxy: %s", self._active_proxy)
+
         self._context = self._playwright.chromium.launch_persistent_context(
             user_data_dir=profile_dir,
             headless=headless,
@@ -431,6 +439,7 @@ class _PlaywrightBrowser:
             viewport=viewport,
             locale="id-ID",
             timezone_id="Asia/Jakarta",
+            proxy=_proxy_cfg,
             args=[
                 "--disable-blink-features=AutomationControlled",
                 "--disable-dev-shm-usage",
@@ -492,6 +501,24 @@ class _PlaywrightBrowser:
         if self._original_policy is not None:
             asyncio.set_event_loop_policy(self._original_policy)
             self._original_policy = None
+
+    def mark_proxy_failed(self) -> None:
+        """Mark the active proxy as failed (rate-limited/banned by IG)."""
+        if not self._active_proxy:
+            return
+        from orchestrator.proxy_pool import get_proxy_pool
+        pool = get_proxy_pool()
+        if pool:
+            pool.mark_failed(self._active_proxy)
+
+    def mark_proxy_success(self) -> None:
+        """Mark the active proxy as successful (optional, resets failure count)."""
+        if not self._active_proxy:
+            return
+        from orchestrator.proxy_pool import get_proxy_pool
+        pool = get_proxy_pool()
+        if pool:
+            pool.mark_success(self._active_proxy)
 
     @property
     def page(self):
@@ -2137,6 +2164,7 @@ def pw_search_profiles(query: str, max_results: int = 10) -> list[dict]:
                             )
                         elif status == 429:
                             _account_pool.mark_rate_limited(acct_label)
+                            browser.mark_proxy_failed()
                             log.warning(
                                 "[Playwright] Search API 429 on @%s for '%s' — trying next account (%d/%d)",
                                 acct_label, query[:50], account_attempts, max_account_retries,
@@ -2438,7 +2466,16 @@ def pw_get_posts(handle: str, max_posts: int = 12) -> list[dict]:
                             for page_num in range(1, (max_posts // 12) + 3):
                                 if len(all_edges) >= max_posts:
                                     break
-                                _human_delay(2, 5)
+                                # Progressive delay: deeper = slower (human reading behavior)
+                                # Every 4 pages: burst break to avoid sustained request pattern
+                                if page_num > 0 and page_num % 4 == 0:
+                                    _human_delay(20, 45)   # burst break
+                                elif page_num <= 3:
+                                    _human_delay(2, 5)     # early: fast
+                                elif page_num <= 7:
+                                    _human_delay(3, 8)     # mid: slower
+                                else:
+                                    _human_delay(5, 12)    # deep: slowest
                                 feed = browser.ig_get_user_feed(
                                     user_id, max_id=next_max_id,
                                     count=min(max_posts - len(all_edges), 12),
@@ -2464,6 +2501,7 @@ def pw_get_posts(handle: str, max_posts: int = 12) -> list[dict]:
                                 # Pagination failed on first page — mark this account
                                 # as rate-limited and try the next one.
                                 _account_pool.mark_rate_limited(acct_label)
+                                browser.mark_proxy_failed()
                                 log.info(
                                     "[Playwright] @%s rate-limited on pagination for @%s, "
                                     "trying next account (%d/%d)...",
@@ -2574,6 +2612,7 @@ def pw_get_posts(handle: str, max_posts: int = 12) -> list[dict]:
 
                     if login_wall_after_nav:
                         _pw_status["error"] = "login_wall_after_nav"
+                        browser.mark_proxy_failed()
                         pagination_done = True
                         break
 

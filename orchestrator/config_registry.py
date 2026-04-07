@@ -172,6 +172,34 @@ CONFIG_DEFINITIONS: list[ConfigDef] = [
         description="Seconds to wait between Instaloader post fetches to avoid IP bans. Default: 2.0",
         min_value=0.5, max_value=30.0,
     ),
+    ConfigDef(
+        key="MCP_DEVTOOLS_URL",
+        type=ConfigType.STRING, default="", group=ConfigGroup.PLAYWRIGHT,
+        label="Chrome DevTools MCP URL",
+        description="URL MCP server untuk Chrome browser (e.g., http://localhost:3200). Kosong = disabled.",
+        env_only=True,
+    ),
+    ConfigDef(
+        key="MCP_DEVTOOLS_MODEL",
+        type=ConfigType.STRING, default="gpt-4o", group=ConfigGroup.PLAYWRIGHT,
+        label="CDP Agent Model",
+        description="OpenAI model untuk Chrome DevTools sub-agent. Default gpt-4o (butuh vision + reasoning).",
+        env_only=False,
+    ),
+    ConfigDef(
+        key="PROXY_POOL_ENABLED",
+        type=ConfigType.BOOL, default=False, group=ConfigGroup.PLAYWRIGHT,
+        label="Proxy Pool Enabled",
+        description="Gunakan proxy rotation (WARP) untuk Playwright Instagram scraping.",
+        env_only=False,
+    ),
+    ConfigDef(
+        key="PROXY_POOL_WARP_URLS",
+        type=ConfigType.STRING, default="", group=ConfigGroup.PLAYWRIGHT,
+        label="WARP Proxy URLs",
+        description="Comma-separated SOCKS5 URLs WARP instances. e.g. socks5://warp:1080,socks5://warp2:1080",
+        env_only=True,
+    ),
     # --- Outreach ---
     ConfigDef(
         key="OUTREACH_START_HOUR",

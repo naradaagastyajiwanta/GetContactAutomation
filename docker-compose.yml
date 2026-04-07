@@ -58,6 +58,34 @@ services:
       start_period: 15s
 
   # ---------------------------------------------------------------
+  # Cloudflare WARP #2 — second egress IP for proxy rotation
+  # Port 1081 exposed to host so local orchestrator can use it
+  # ---------------------------------------------------------------
+  warp2:
+    image: caomingjun/warp:latest
+    container_name: gc-warp2
+    restart: unless-stopped
+    ports:
+      - "1081:1080"
+    environment:
+      - WARP_SLEEP=2
+    cap_add:
+      - NET_ADMIN
+    sysctls:
+      - net.ipv6.conf.all.disable_ipv6=0
+      - net.ipv4.conf.all.src_valid_mark=1
+    volumes:
+      - warp2-data:/var/lib/cloudflare-warp
+    networks:
+      - gc-network
+    healthcheck:
+      test: ["CMD", "curl", "-f", "--socks5", "127.0.0.1:1080", "https://cloudflare.com/cdn-cgi/trace"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 15s
+
+  # ---------------------------------------------------------------
   # PinchTab (Headless browser automation via HTTP)
   # ---------------------------------------------------------------
   pinchtab:
@@ -106,6 +134,10 @@ services:
         condition: service_healthy
       warp:
         condition: service_healthy
+      warp2:
+        condition: service_healthy
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     networks:
       - gc-network
 
@@ -132,4 +164,5 @@ networks:
 
 volumes:
   warp-data:
+  warp2-data:
   pinchtab-data:

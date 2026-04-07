@@ -16,80 +16,77 @@
         "6281919707099@s.whatsapp.net",
         "6287811152506@s.whatsapp.net"
       ],
-      "sendEvents": [
+      "sendEvents": [],
+      "failedEvents": [],
+      "disconnectEvents": [
         {
-          "at": 1774967673197,
-          "jid": "6289503156128@s.whatsapp.net",
-          "contentHash": "3aaf1bed58363440a37f26b24c1745a9403b0165"
+          "at": 1775552471707,
+          "reason": "401"
         },
         {
-          "at": 1774967690533,
-          "jid": "6289674001702@s.whatsapp.net",
-          "contentHash": "fc1deb6b4450361315cdfdc29c7879e0a39ceef6"
+          "at": 1775552632857,
+          "reason": "408"
         },
         {
-          "at": 1774967707136,
-          "jid": "6281383613557@s.whatsapp.net",
-          "contentHash": "7266fe246cf63d52ad8f2d2c9ca66eb2a88bada4"
+          "at": 1775552796037,
+          "reason": "408"
         },
         {
-          "at": 1774967725406,
-          "jid": "6282353705937@s.whatsapp.net",
-          "contentHash": "9fd2b5e1ae90f9a96327b9daaa18ab5b5d872780"
+          "at": 1775552960086,
+          "reason": "408"
         },
         {
-          "at": 1774967743784,
-          "jid": "6282362302511@s.whatsapp.net",
-          "contentHash": "be17195431342d6d8cc6db8e6663dbf33fffd4a1"
+          "at": 1775553128011,
+          "reason": "408"
         },
         {
-          "at": 1774967762292,
-          "jid": "6289674002077@s.whatsapp.net",
-          "contentHash": "abbe0fb8db78023d61c50635b4bf9b8653dc1e90"
+          "at": 1775553300205,
+          "reason": "408"
         },
         {
-          "at": 1774967779283,
-          "jid": "62895324803217@s.whatsapp.net",
-          "contentHash": "358aebc4e126fcac1773ce5fdd4e06d5c5ecbc23"
+          "at": 1775553481073,
+          "reason": "408"
         },
         {
-          "at": 1774967798950,
-          "jid": "628118046226@s.whatsapp.net",
-          "contentHash": "a65a92b3a75341ac94650dadafcc21263f9dbb26"
+          "at": 1775553661710,
+          "reason": "408"
         },
         {
-          "at": 1774967817150,
-          "jid": "6287761882915@s.whatsapp.net",
-          "contentHash": "e2cbc900dc4c0e7f6d365c8b6bdb04ee791ac8ed"
+          "at": 1775553840806,
+          "reason": "408"
         },
         {
-          "at": 1774967835867,
-          "jid": "6283169824750@s.whatsapp.net",
-          "contentHash": "5322b70fc3ee527f7b27d58c14a47dd05a520bca"
+          "at": 1775554028149,
+          "reason": "408"
         },
         {
-          "at": 1774967856650,
-          "jid": "6281919707099@s.whatsapp.net",
-          "contentHash": "0b374e4d340d9df8e33ace4feaa0a133d1dd2ff4"
+          "at": 1775554208761,
+          "reason": "408"
         },
         {
-          "at": 1774967875585,
-          "jid": "6287811152506@s.whatsapp.net",
-          "contentHash": "84cbe1f5803a44a8d7527a5fcdf46b47eae1d3cd"
+          "at": 1775554393455,
+          "reason": "408"
         },
         {
-          "at": 1774968160528,
-          "jid": "6287811152506@s.whatsapp.net",
-          "contentHash": "47fb58ca3459ba7ba37652989d31d57cbc6b5456"
+          "at": 1775554576565,
+          "reason": "408"
+        },
+        {
+          "at": 1775554762540,
+          "reason": "408"
+        },
+        {
+          "at": 1775554941663,
+          "reason": "408"
+        },
+        {
+          "at": 1775555118684,
+          "reason": "408"
         }
       ],
-      "failedEvents": [],
-      "disconnectEvents": [],
       "warmUp": {
-        "startedAt": 1774967660799,
-        "dailyCounts": {
-          "2026-03-31": 13
-        }
+        "startedAt": 1775562787991,
+        "dailyCounts": {}
       },
       "timelock": {
         "isActive": false,
@@ -161,6 +158,56 @@
       "disconnectEvents": [],
       "warmUp": {
         "startedAt": 1774962440543,
+        "dailyCounts": {}
+      },
+      "timelock": {
+        "isActive": false,
+        "expiresAt": null,
+        "enforcementType": null
+      },
+      "pausedManually": false,
+      "nextAllowedAt": null,
+      "lastSentAt": null
+    },
+    "u195": {
+      "knownChats": [
+        "6281717171037@s.whatsapp.net"
+      ],
+      "sendEvents": [],
+      "failedEvents": [],
+      "disconnectEvents": [
+        {
+          "at": 1775552515715,
+          "reason": "515"
+        }
+      ],
+      "warmUp": {
+        "startedAt": 1775552477265,
+        "dailyCounts": {}
+      },
+      "timelock": {
+        "isActive": false,
+        "expiresAt": null,
+        "enforcementType": null
+      },
+      "pausedManually": false,
+      "nextAllowedAt": null,
+      "lastSentAt": null
+    },
+    "u90": {
+      "knownChats": [
+        "6285121084588@s.whatsapp.net"
+      ],
+      "sendEvents": [],
+      "failedEvents": [],
+      "disconnectEvents": [
+        {
+          "at": 1775562785163,
+          "reason": "515"
+        }
+      ],
+      "warmUp": {
+        "startedAt": 1775552631134,
         "dailyCounts": {}
       },
       "timelock": {

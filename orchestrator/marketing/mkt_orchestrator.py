@@ -32,6 +32,7 @@ from .mkt_sub_agents import (
     InstagramSubAgent,
     RegistrySearchSubAgent,
     GeminiGapFillSubAgent,
+    ChromeDevToolsInstagramSubAgent,
     SubAgentResult,
 )
 from .mkt_memory import get_client_episodic_memory, get_long_term_context, write_post_run_lessons
@@ -127,7 +128,7 @@ def _build_gemini_tools():
         return gt.Schema(**kwargs)
 
     declarations = []
-    for tool in _ORCHESTRATOR_TOOL_SCHEMAS:
+    for tool in _get_tool_schemas():
         params = tool.get("parameters", {})
         props = params.get("properties", {})
         required = params.get("required", [])
@@ -335,7 +336,7 @@ _ORCHESTRATOR_TOOL_SCHEMAS: list[dict] = [
             "properties": {
                 "agent": {
                     "type": "string",
-                    "enum": ["spawn_web_search_agent", "spawn_instagram_agent", "spawn_registry_agent", "spawn_gemini_agent"],
+                    "enum": ["spawn_web_search_agent", "spawn_instagram_agent", "spawn_chrome_devtools_ig_agent", "spawn_registry_agent", "spawn_gemini_agent"],
                 },
                 "reason": {"type": "string", "description": "Mengapa retry diperlukan"},
                 "refined_hints": {
@@ -391,6 +392,33 @@ _ORCHESTRATOR_TOOL_SCHEMAS: list[dict] = [
 ]
 
 _TERMINAL_TOOLS = {"mark_done"}
+
+_CDP_IG_TOOL_SCHEMA: dict = {
+    "type": "function",
+    "name": "spawn_chrome_devtools_ig_agent",
+    "description": (
+        "Spawn agent yang scrape Instagram menggunakan Chrome DevTools MCP — "
+        "pakai real Chrome yang sudah login IG, lebih efektif dan aman dari ban. "
+        "GUNAKAN INI sebagai PRIORITAS UTAMA untuk scrape Instagram, "
+        "sebelum spawn_instagram_agent."
+    ),
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "company_name": {"type": "string", "description": "Company name to find on Instagram"},
+            "website_url": {"type": "string", "description": "Optional: company website URL"},
+        },
+        "required": ["company_name"],
+    },
+}
+
+
+def _get_tool_schemas() -> list[dict]:
+    """Return orchestrator tool schemas, adding CDP tool only if MCP_DEVTOOLS_URL is set."""
+    schemas = list(_ORCHESTRATOR_TOOL_SCHEMAS)
+    if cfg.get("MCP_DEVTOOLS_URL", ""):
+        schemas.append(_CDP_IG_TOOL_SCHEMA)
+    return schemas
 
 
 # ---------------------------------------------------------------------------
@@ -555,7 +583,7 @@ class MarketingOrchestratorAgent:
             "instructions": instructions,
             "input": input_items,
             "store": True,
-            "tools": _ORCHESTRATOR_TOOL_SCHEMAS,
+            "tools": _get_tool_schemas(),
             **responses_kwargs(model, temperature=0.1, max_output_tokens=2048),
         }
         if previous_response_id:
@@ -631,7 +659,7 @@ class MarketingOrchestratorAgent:
                 **responses_kwargs(model, temperature=0.1, max_output_tokens=2048),
             }
             if not terminal_reached:
-                next_kwargs["tools"] = _ORCHESTRATOR_TOOL_SCHEMAS
+                next_kwargs["tools"] = _get_tool_schemas()
 
             # Save response_id for session chaining
             try:
@@ -856,6 +884,33 @@ class MarketingOrchestratorAgent:
                     log.warning("[OrchestratorAgent] Failed to save IG handle: %s", e)
             return self._summarize_result(result)
 
+        if tool_name == "spawn_chrome_devtools_ig_agent":
+            company_name = arguments.get("company_name", context.client_name)
+            website_url = arguments.get("website_url")
+            prior_web_contacts = [
+                c for c in context.contacts_recorded
+                if c.get("type") == "website" and c.get("value")
+            ]
+            agent = ChromeDevToolsInstagramSubAgent()
+            result = await agent.run(
+                company_name=company_name,
+                website_url=website_url,
+                prior_web_contacts=prior_web_contacts or None,
+            )
+            self._record_sub_agent_call(context, "spawn_chrome_devtools_ig_agent", result)
+            # Auto-save IG handle if found
+            if result.ig_handle and not context.ig_handle_saved:
+                try:
+                    await mkt.save_client_instagram_profile(
+                        context.client_id,
+                        result.ig_handle,
+                        f"https://www.instagram.com/{result.ig_handle}/",
+                    )
+                    context.ig_handle_saved = result.ig_handle
+                except Exception as e:
+                    log.warning("[OrchestratorAgent] Failed to save IG handle: %s", e)
+            return self._summarize_result(result)
+
         if tool_name == "spawn_gemini_agent":
             company_name = arguments.get("company_name", context.client_name)
             gaps = arguments.get("gaps", [])
@@ -1022,6 +1077,7 @@ class MarketingOrchestratorAgent:
             )
             instagram_attempted = any(
                 "instagram" in call.get("agent", "").lower()
+                or "chrome_devtools_ig" in call.get("agent", "").lower()
                 for call in context.sub_agent_calls
             )
             gemini_attempted = any(
@@ -1036,13 +1092,13 @@ class MarketingOrchestratorAgent:
                 )
                 return json.dumps({
                     "error": (
-                        "DITOLAK: Nomor WhatsApp belum ditemukan dan spawn_instagram_agent belum pernah dipanggil. "
-                        "WAJIB panggil spawn_instagram_agent terlebih dahulu sebelum mark_done. "
+                        "DITOLAK: Nomor WhatsApp belum ditemukan dan spawn_instagram_agent / spawn_chrome_devtools_ig_agent "
+                        "belum pernah dipanggil. WAJIB panggil salah satu sebelum mark_done. "
                         "Instagram sering mengandung nomor WA yang tidak tercantum di website resmi."
                     ),
                     "hint": (
-                        "Panggil: spawn_instagram_agent(company_name=..., website_url=...) "
-                        "dengan website_url dari hasil web search (jika ada)."
+                        "Panggil: spawn_chrome_devtools_ig_agent(company_name=...) jika MCP tersedia, "
+                        "atau spawn_instagram_agent(company_name=..., website_url=...) sebagai fallback."
                     ),
                 })
 
