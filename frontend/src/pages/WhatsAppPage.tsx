@@ -22,11 +22,11 @@ import {
 import { useStartTestConversation } from "../hooks/useConversations";
 import { Button } from "../components/ui/Button";
 import { DevicePanel, MyDevicePanel } from "../components/whatsapp/DevicePanel";
-import { BulkSendPanel } from "../components/whatsapp/BulkSendPanel";
+import { WaBlastPanel } from "../components/whatsapp/BulkSendPanel";
 import { useAuth } from "../context/AuthContext";
 import { cn } from "../lib/utils";
 
-type TabId = "devices" | "quick-test" | "bulk-send";
+type TabId = "devices" | "quick-test" | "blast";
 
 function TabButton({
   id,
@@ -87,7 +87,11 @@ export default function WhatsAppPage() {
   const isAdmin = hasPermission("*");
 
   useEffect(() => {
-    if (!canManageWhatsApp && activeTab !== "devices") {
+    if (
+      !canManageWhatsApp &&
+      activeTab !== "devices" &&
+      activeTab !== "blast"
+    ) {
       setActiveTab("devices");
     }
   }, [activeTab, canManageWhatsApp]);
@@ -226,15 +230,13 @@ export default function WhatsAppPage() {
             onClick={() => setActiveTab("quick-test")}
           />
         )}
-        {canManageWhatsApp && (
-          <TabButton
-            id="bulk-send"
-            icon={Users}
-            label="Bulk Send"
-            isActive={activeTab === "bulk-send"}
-            onClick={() => setActiveTab("bulk-send")}
-          />
-        )}
+        <TabButton
+          id="blast"
+          icon={Users}
+          label="Blast WA"
+          isActive={activeTab === "blast"}
+          onClick={() => setActiveTab("blast")}
+        />
       </div>
 
       {/* ── Tab Content ────────────────────────────────────── */}
@@ -428,19 +430,10 @@ export default function WhatsAppPage() {
           </div>
         )}
 
-        {/* Bulk Send Tab */}
-        {activeTab === "bulk-send" && canManageWhatsApp && (
+        {/* Blast WA Tab */}
+        {activeTab === "blast" && (
           <div className="p-5">
-            {connectedCount === 0 && (
-              <div className="flex items-center gap-3 p-3 rounded-lg bg-amber-50 dark:bg-amber-900/15 border border-amber-200 dark:border-amber-800 mb-5">
-                <WifiOff className="w-4 h-4 text-amber-500 flex-shrink-0" />
-                <p className="text-sm text-amber-700 dark:text-amber-300">
-                  Connect at least one device in the <strong>Devices</strong>{" "}
-                  tab before sending bulk messages.
-                </p>
-              </div>
-            )}
-            <BulkSendPanel />
+            <WaBlastPanel />
           </div>
         )}
       </div>
