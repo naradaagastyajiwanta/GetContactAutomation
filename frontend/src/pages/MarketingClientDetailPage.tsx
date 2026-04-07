@@ -64,6 +64,51 @@ const statusConfig: Record<
 };
 
 // ---------------------------------------------------------------------------
+// Processing animations
+// ---------------------------------------------------------------------------
+
+function BouncingDots({ className }: { className?: string }) {
+  return (
+    <span className={cn("inline-flex items-center gap-0.5", className)}>
+      {[0, 150, 300].map((delay, i) => (
+        <span
+          key={i}
+          className="inline-block h-1 w-1 animate-bounce rounded-full bg-indigo-500"
+          style={{ animationDelay: `${delay}ms` }}
+        />
+      ))}
+    </span>
+  );
+}
+
+function SearchingBanner({
+  progress,
+  total,
+  activeCount,
+}: {
+  progress: number;
+  total: number;
+  activeCount: number;
+}) {
+  return (
+    <div className="flex items-center gap-3 rounded-xl border border-indigo-100 bg-indigo-50/60 px-4 py-2.5 dark:border-indigo-900/40 dark:bg-indigo-950/20">
+      <BouncingDots />
+      <p className="text-sm font-medium text-indigo-700 dark:text-indigo-300">
+        AI agent sedang mencari kontak
+      </p>
+      {activeCount > 0 && (
+        <span className="rounded-full bg-indigo-100 px-2 py-0.5 text-xs text-indigo-600 dark:bg-indigo-900/40 dark:text-indigo-400">
+          {activeCount} aktif
+        </span>
+      )}
+      <span className="ml-auto shrink-0 text-xs tabular-nums text-indigo-400 dark:text-indigo-500">
+        {progress}/{total}
+      </span>
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
 // Search progress bar — embedded inside stats strip
 // ---------------------------------------------------------------------------
 function SearchProgressBar({
@@ -87,25 +132,29 @@ function SearchProgressBar({
 
   return (
     <div className="mt-3 space-y-1.5">
-      <div className="h-1 overflow-hidden rounded-full bg-gray-100 dark:bg-gray-700/60">
+      {/* Thicker bar with shimmer on pending segment */}
+      <div className="h-1.5 overflow-hidden rounded-full bg-gray-100 dark:bg-gray-700/60">
         <div className="flex h-full">
           {foundPct > 0 && (
             <div
-              className="h-full bg-emerald-500 transition-all duration-500"
+              className="h-full bg-emerald-500 transition-all duration-700"
               style={{ width: `${foundPct}%` }}
             />
           )}
           {notFoundPct > 0 && (
             <div
-              className="h-full bg-gray-300 dark:bg-gray-600 transition-all duration-500"
+              className="h-full bg-gray-300 dark:bg-gray-600 transition-all duration-700"
               style={{ width: `${notFoundPct}%` }}
             />
           )}
           {pendingPct > 0 && pct < 100 && (
             <div
-              className="h-full animate-pulse bg-indigo-300 dark:bg-indigo-700"
+              className="relative h-full overflow-hidden bg-indigo-100 dark:bg-indigo-900/40"
               style={{ width: `${pendingPct}%` }}
-            />
+            >
+              {/* Shimmer sweep on pending segment */}
+              <div className="absolute inset-y-0 w-1/4 animate-shimmer bg-gradient-to-r from-transparent via-indigo-400/60 to-transparent dark:via-indigo-500/40" />
+            </div>
           )}
         </div>
       </div>
@@ -592,14 +641,19 @@ export default function MarketingClientDetailPage() {
             <div className="mt-1 flex items-center gap-2.5 text-xs">
               {/* Status dot + label */}
               <span className="flex items-center gap-1.5">
-                <span
-                  className={cn(
-                    "inline-block h-1.5 w-1.5 rounded-full",
-                    showDoneWarning
-                      ? "bg-gray-400 dark:bg-gray-500"
-                      : statusCfg.dotClass,
+                <span className="relative inline-flex h-1.5 w-1.5 shrink-0">
+                  {isSearching && (
+                    <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-indigo-400 opacity-75" />
                   )}
-                />
+                  <span
+                    className={cn(
+                      "relative inline-block h-1.5 w-1.5 rounded-full",
+                      showDoneWarning
+                        ? "bg-gray-400 dark:bg-gray-500"
+                        : statusCfg.dotClass,
+                    )}
+                  />
+                </span>
                 <span
                   className={
                     showDoneWarning
@@ -706,6 +760,17 @@ export default function MarketingClientDetailPage() {
           </div>
         )}
       </div>
+
+      {/* ── Searching banner ── */}
+      {isSearching && searchStatus && (
+        <SearchingBanner
+          progress={searchStatus.progress}
+          total={searchStatus.total}
+          activeCount={
+            clients.filter((c) => c.search_status === "searching").length
+          }
+        />
+      )}
 
       {/* ── Stats strip ── */}
       {stats && (

@@ -663,9 +663,12 @@ def _candidate_sort_score(candidate: dict) -> float:
     if candidate.get("llm_is_correct") is True:
         llm_bonus = 0.2 + min(float(candidate.get("llm_confidence", 0.0)), 1.0) * 0.1
     elif candidate.get("llm_is_correct") is False:
-        llm_bonus = -0.35
+        # Softer penalty: Gemini can be wrong on ambiguous accounts.
+        # -0.15 instead of -0.35 so high-affinity candidates can still reach the fallback threshold.
+        llm_bonus = -0.15
     if candidate.get("llm_is_correct") is not True:
-        source_bonus *= 0.15
+        # Keep 40% of source bonus (was 15%) so website_social handles survive Gemini rejection
+        source_bonus *= 0.40
     affinity_bonus = float(candidate.get("affinity_score", 0.0)) * 0.18
     return float(candidate.get("final_score", 0.0)) + source_bonus + llm_bonus + affinity_bonus
 
@@ -832,16 +835,24 @@ def _select_ranked_corporate_candidates(ranked: list[dict], company_name: str) -
     if not ranked:
         return []
 
-    # Stricter fallback: only select ranked[0] as a probe if it has at least some
-    # profile evidence and a minimum sort_score. This prevents wasting scrape credits
-    # on clearly wrong accounts when all candidates were rejected.
+    # Fallback: probe ranked[0] if it has evidence + minimum score
+    # OR if the handle strongly matches the company abbreviation/name (even if Gemini rejected).
     top = ranked[0]
     top_score = _candidate_sort_score(top)
     has_evidence = _candidate_has_profile_evidence(top)
-    if has_evidence and top_score >= 0.30:
+    has_name_match = _has_strong_company_match(top, company_name)
+
+    if has_evidence and top_score >= 0.25:
         log.warning(
             "[Selection] No confident match for '%s' — weak fallback: @%s (score=%.2f)",
             company_name, top.get("handle"), top_score,
+        )
+        return [top]
+
+    if has_name_match:
+        log.warning(
+            "[Selection] All candidates rejected for '%s' but @%s has name match — probing anyway",
+            company_name, top.get("handle"),
         )
         return [top]
 
@@ -1104,8 +1115,38 @@ def _maybe_hard_anchor_from_website(candidate: dict, known_domain: str) -> bool:
     return known_core == ext_core or known_domain in ext_domain or ext_domain in known_domain
 
 
-async def _evaluate_corporate_ig_candidates(client_name: str, client_type: str = "") -> list[dict]:
+async def _evaluate_corporate_ig_candidates(client_name: str, client_type: str = "", known_website_url: str | None = None) -> list[dict]:
     candidates_by_handle: dict[str, dict] = {}
+
+    # If caller already knows the website URL, extract IG links from it directly.
+    # This is more reliable than re-discovering the website via search.
+    if known_website_url:
+        try:
+            html = await fetch_page(known_website_url, timeout=15.0)
+            if html:
+                for link in _extract_instagram_urls_from_html(html):
+                    handle = _extract_direct_ig_profile_handle(link)
+                    if not handle:
+                        continue
+                    _upsert_company_candidate(candidates_by_handle, {
+                        "handle": handle,
+                        "url": link,
+                        "source": "website_social",
+                        "title": f"IG link on {known_website_url}",
+                        "snippet": f"Instagram link extracted directly from known website: {known_website_url}",
+                        "base_score": _candidate_base_score_from_source(
+                            client_name, handle,
+                            f"IG link on {known_website_url}", "",
+                            "website_social",
+                        ),
+                    })
+                if candidates_by_handle:
+                    log.info(
+                        "[Marketing IG] %d handle(s) found directly on known website %s",
+                        len(candidates_by_handle), known_website_url,
+                    )
+        except Exception as exc:
+            log.debug("[Marketing IG] known_website_url fetch failed for %s: %s", known_website_url, exc)
 
     for candidate in await _collect_ddg_company_candidates(client_name):
         _upsert_company_candidate(candidates_by_handle, candidate)
@@ -2025,11 +2066,11 @@ def _scrape_instagram_posts_for_handles(handles: list[str], primary_handle: str 
 # ---------------------------------------------------------------------------
 
 
-async def ig_discovery(client_name: str, client_type: str = "") -> InstagramDiscoveryResult:
+async def ig_discovery(client_name: str, client_type: str = "", known_website_url: str | None = None) -> InstagramDiscoveryResult:
     """Find IG handle via DDG → scrape posts → GPT vision OCR."""
     results: list[ContactResult] = []
 
-    candidates = await _evaluate_corporate_ig_candidates(client_name, client_type)
+    candidates = await _evaluate_corporate_ig_candidates(client_name, client_type, known_website_url=known_website_url)
 
     # Collect WA contacts extracted from IG bios (done in _evaluate_corporate_ig_candidates)
     for candidate in candidates:

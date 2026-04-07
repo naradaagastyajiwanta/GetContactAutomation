@@ -580,7 +580,9 @@ class MarketingOrchestratorAgent:
                     "call_id": fc.call_id,
                     "output": result_str,
                 }
-                return output, name in _TERMINAL_TOOLS
+                # mark_done is only truly terminal if context.done_called is True
+                # (it may be rejected by the Instagram gate and return an error)
+                return output, (name in _TERMINAL_TOOLS and context.done_called)
 
             _tool_results = await asyncio.gather(*[_run_one_tool(fc) for fc in function_calls])
 
@@ -711,7 +713,9 @@ class MarketingOrchestratorAgent:
                     name=name,
                     response={"result": result_str},
                 )
-                return part, name in _TERMINAL_TOOLS
+                # mark_done is only truly terminal if context.done_called is True
+                # (it may be rejected by the Instagram gate and return an error)
+                return part, (name in _TERMINAL_TOOLS and context.done_called)
 
             _tool_results = await asyncio.gather(*[_run_one_tool_gemini(fc) for fc in function_calls])
 
@@ -901,18 +905,9 @@ class MarketingOrchestratorAgent:
 
             if contact_type == "email":
                 domain = value.split("@")[-1].lower() if "@" in value else ""
-                _PERSONAL_DOMAINS = {"gmail.com", "yahoo.com", "yahoo.co.id", "outlook.com", "hotmail.com"}
-                if domain in _PERSONAL_DOMAINS:
-                    return json.dumps({"error": f"Rejected: email domain '{domain}' adalah personal, bukan organisasi resmi"})
-                if value.lower().startswith(("noreply@", "no-reply@", "donotreply@", "info@")):
-                    if domain in _PERSONAL_DOMAINS or not domain:
-                        return json.dumps({"error": "Rejected: noreply/generic email tidak berguna untuk outreach"})
-                _GOV_TYPES = {"kementerian", "lembaga_negara", "lsp_p1", "lsp_p2", "lsp_p3"}
-                if context.client_type in _GOV_TYPES and domain and not domain.endswith(".go.id"):
-                    return json.dumps({
-                        "error": f"Rejected: klien '{context.client_type}' harus email domain .go.id, diterima '{domain}'",
-                        "hint": "Cari email dengan domain .go.id untuk instansi pemerintah"
-                    })
+                # Only reject no-reply/do-not-reply — useless for outreach
+                if value.lower().startswith(("noreply@", "no-reply@", "donotreply@")):
+                    return json.dumps({"error": "Rejected: noreply/do-not-reply email tidak berguna untuk outreach"})
 
             if contact_type == "website":
                 if not value.startswith(("http://", "https://")):
@@ -978,6 +973,58 @@ class MarketingOrchestratorAgent:
         if tool_name == "mark_done":
             status = arguments.get("status", "not_found")
             summary = arguments.get("summary", "")
+
+            # ------------------------------------------------------------------
+            # Instagram gate: cannot exit without trying Instagram if no WA phone
+            # ------------------------------------------------------------------
+            has_wa_phone = any(
+                c.get("contact_type") in ("whatsapp", "phone")
+                for c in context.contacts_recorded
+            )
+            instagram_attempted = any(
+                "instagram" in call.get("agent", "").lower()
+                for call in context.sub_agent_calls
+            )
+            gemini_attempted = any(
+                "gemini" in call.get("agent", "").lower()
+                for call in context.sub_agent_calls
+            )
+
+            if not has_wa_phone and not instagram_attempted:
+                log.info(
+                    "[Orchestrator] mark_done BLOCKED for client %d: no WA phone and Instagram not tried",
+                    context.client_id,
+                )
+                return json.dumps({
+                    "error": (
+                        "DITOLAK: Nomor WhatsApp belum ditemukan dan spawn_instagram_agent belum pernah dipanggil. "
+                        "WAJIB panggil spawn_instagram_agent terlebih dahulu sebelum mark_done. "
+                        "Instagram sering mengandung nomor WA yang tidak tercantum di website resmi."
+                    ),
+                    "hint": (
+                        "Panggil: spawn_instagram_agent(company_name=..., website_url=...) "
+                        "dengan website_url dari hasil web search (jika ada)."
+                    ),
+                })
+
+            # Gemini gate: if still no WA phone after Instagram, try Gemini last resort
+            if not has_wa_phone and not gemini_attempted:
+                log.info(
+                    "[Orchestrator] mark_done BLOCKED for client %d: no WA phone and Gemini not tried",
+                    context.client_id,
+                )
+                return json.dumps({
+                    "error": (
+                        "DITOLAK: Nomor WhatsApp masih belum ditemukan dan spawn_gemini_agent belum pernah dipanggil. "
+                        "WAJIB coba spawn_gemini_agent sebagai last resort sebelum mark_done. "
+                        "Gemini dengan Google Search grounding dapat menemukan nomor WA dari sumber yang tidak terindeks biasa."
+                    ),
+                    "hint": (
+                        "Panggil: spawn_gemini_agent(company_name=..., website_url=..., focus='whatsapp mobile phone contact') "
+                        "lalu mark_done setelah hasilnya diterima."
+                    ),
+                })
+
             context.tools_that_worked = arguments.get("tools_that_worked", [])
             context.tools_that_failed = arguments.get("tools_that_failed", [])
             context.done_called = True

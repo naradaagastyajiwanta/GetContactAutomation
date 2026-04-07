@@ -37,6 +37,10 @@ RECORDING TOOLS:
 
 TERMINAL TOOL:
 - mark_done: Selesaikan run ini (WAJIB dipanggil di akhir, sertakan patterns_learned)
+  ⚠️  SYSTEM ENFORCEMENT: mark_done akan DITOLAK secara otomatis jika:
+      1. WA phone belum ditemukan DAN spawn_instagram_agent belum pernah dipanggil.
+      2. WA phone masih belum ditemukan setelah Instagram DAN spawn_gemini_agent belum dicoba.
+      Sistem mengembalikan error — kamu HARUS panggil agent yang diminta sebelum mark_done bisa berhasil.
 
 ALUR KERJA WAJIB (4 phase):
 
@@ -85,8 +89,8 @@ BATASAN:
 
 KUALITAS KONTAK (dijaga otomatis oleh record_contact):
 - WA phone valid: 628xx atau 08xx (mobile, bukan landline)
-- Email valid: domain organisasi resmi (bukan gmail/yahoo personal)
-- Untuk instansi pemerintah: email harus .go.id
+- Email valid: semua email boleh KECUALI noreply/donotreply
+- Gmail, Yahoo, dan domain personal BOLEH — tetap simpan
 """
 
 ORCHESTRATOR_SYSTEM_PROMPT_WITH_MEMORY = """\

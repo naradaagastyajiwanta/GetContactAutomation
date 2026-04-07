@@ -602,87 +602,177 @@ class InstagramSubAgent:
             "scrape_ig_contacts": _scrape_ig_contacts_tool,
         }
 
-        # --- PRIMARY: LLM ReAct loop ---
+        # --- PRIMARY: LLM ReAct loop (with retry) ---
+        # Attempt 1: normal search with website_url hint
+        # Attempt 2 (if nothing found): retry with abbreviation as search hint + broader instruction
+        _LLM_MAX_ATTEMPTS = 2
         if cfg.OPENAI_API_KEY:
-            try:
-                system_prompt = build_instagram_prompt(company_name, website_url=website_url)
-                initial_msg = f"Temukan akun Instagram dan nomor WA untuk: {company_name}"
-                if website_url:
-                    initial_msg += f"\nWebsite resmi: {website_url} — scan untuk IG link dulu"
+            abbreviation_hint = search_flow._build_company_abbreviation(company_name)
+            llm_attempt_configs = [
+                {
+                    "label": "attempt1",
+                    "msg_suffix": "",
+                },
+                {
+                    "label": "attempt2_broader",
+                    "msg_suffix": (
+                        f"\n\nCatatan: pencarian sebelumnya gagal menemukan akun. "
+                        f"Coba cari dengan nama singkatan '{abbreviation_hint}' saja. "
+                        f"Juga coba variasi handle seperti '{abbreviation_hint.lower()}id', "
+                        f"'{abbreviation_hint.lower()}indonesia', '{abbreviation_hint.lower()}_official'."
+                    ) if abbreviation_hint else "\n\nCoba strategi pencarian berbeda.",
+                },
+            ]
 
-                terminal_args, tokens = await _run_sub_agent_llm_loop(
-                    system_prompt=system_prompt,
-                    initial_message=initial_msg,
-                    tool_schemas=_INSTAGRAM_AGENT_TOOLS,
-                    terminal_tools=_INSTAGRAM_TERMINAL,
-                    tool_dispatch=ig_dispatch,
-                    max_iterations=6,
-                )
+            for llm_cfg in llm_attempt_configs[:_LLM_MAX_ATTEMPTS]:
+                try:
+                    system_prompt = build_instagram_prompt(company_name, website_url=website_url)
+                    initial_msg = f"Temukan akun Instagram dan nomor WA untuk: {company_name}"
+                    if website_url:
+                        initial_msg += f"\nWebsite resmi: {website_url} — scan untuk IG link dulu"
+                    initial_msg += llm_cfg["msg_suffix"]
 
-                llm_contacts = terminal_args.get("contacts", [])
-                ig_handle = (terminal_args.get("ig_handle") or "").lstrip("@") or None
-                summary = terminal_args.get("summary", "")
-
-                if llm_contacts or ig_handle:
-                    duration = time.monotonic() - start
-                    log.info("[InstagramSubAgent/LLM] Done in %.1fs: %d contacts, handle=%s, %d tokens",
-                             duration, len(llm_contacts), ig_handle, tokens)
-                    return SubAgentResult(
-                        contacts=llm_contacts,
-                        ig_handle=ig_handle,
-                        tool_calls_made=["llm_instagram_search"],
-                        summary=summary or f"IG LLM: {len(llm_contacts)} WA contacts, handle=@{ig_handle}",
-                        tokens_used=tokens,
-                        duration_seconds=duration,
-                        success=True,
+                    log.info(
+                        "[InstagramSubAgent/LLM] %s for '%s'",
+                        llm_cfg["label"], company_name,
                     )
-                else:
-                    log.info("[InstagramSubAgent/LLM] LLM returned nothing — falling back to ig_discovery")
+                    terminal_args, tokens = await _run_sub_agent_llm_loop(
+                        system_prompt=system_prompt,
+                        initial_message=initial_msg,
+                        tool_schemas=_INSTAGRAM_AGENT_TOOLS,
+                        terminal_tools=_INSTAGRAM_TERMINAL,
+                        tool_dispatch=ig_dispatch,
+                        max_iterations=6,
+                    )
 
-            except Exception as llm_exc:
-                log.warning("[InstagramSubAgent] LLM loop failed: %s — falling back", llm_exc)
+                    llm_contacts = terminal_args.get("contacts", [])
+                    ig_handle = (terminal_args.get("ig_handle") or "").lstrip("@") or None
+                    summary = terminal_args.get("summary", "")
 
-        # --- FALLBACK: deterministic pipeline ---
-        try:
-            ig_result: search_flow.InstagramDiscoveryResult = await search_flow.ig_discovery(
-                company_name, client_type=client_type
+                    if llm_contacts or ig_handle:
+                        duration = time.monotonic() - start
+                        log.info(
+                            "[InstagramSubAgent/LLM] %s done in %.1fs: %d contacts, handle=%s, %d tokens",
+                            llm_cfg["label"], duration, len(llm_contacts), ig_handle, tokens,
+                        )
+                        return SubAgentResult(
+                            contacts=llm_contacts,
+                            ig_handle=ig_handle,
+                            tool_calls_made=[f"llm_instagram_{llm_cfg['label']}"],
+                            summary=summary or f"IG LLM: {len(llm_contacts)} WA contacts, handle=@{ig_handle}",
+                            tokens_used=tokens,
+                            duration_seconds=duration,
+                            success=True,
+                        )
+
+                    log.info(
+                        "[InstagramSubAgent/LLM] %s returned nothing — %s",
+                        llm_cfg["label"],
+                        "retrying with broader hints" if llm_cfg["label"] == "attempt1" else "falling back to ig_discovery",
+                    )
+
+                except Exception as llm_exc:
+                    log.warning(
+                        "[InstagramSubAgent/LLM] %s failed for '%s': %s — %s",
+                        llm_cfg["label"], company_name, llm_exc,
+                        "retrying" if llm_cfg["label"] == "attempt1" else "falling back",
+                    )
+
+        # --- FALLBACK: deterministic pipeline with retry loop ---
+        # Outer loop: Round 1 = full name, Round 2 = abbreviation (if round 1 finds no handle)
+        # Inner loop: up to MAX_ATTEMPTS retries per round on transient errors (with backoff)
+        _MAX_ATTEMPTS = 2
+        _RETRY_DELAY = 3.0  # seconds before retry on error
+
+        abbreviation = search_flow._build_company_abbreviation(company_name)
+        search_rounds: list[tuple[str, str]] = [(company_name, "full_name")]
+        if abbreviation and abbreviation.lower() != company_name.lower():
+            search_rounds.append((abbreviation, "abbreviation"))
+
+        last_result: search_flow.InstagramDiscoveryResult | None = None
+        tool_calls: list[str] = []
+
+        for search_name, round_label in search_rounds:
+            round_succeeded = False
+            for attempt in range(1, _MAX_ATTEMPTS + 1):
+                try:
+                    log.info(
+                        "[InstagramSubAgent/Fallback] Round=%s attempt=%d/%d — searching as '%s'",
+                        round_label, attempt, _MAX_ATTEMPTS, search_name,
+                    )
+                    ig_result = await search_flow.ig_discovery(
+                        search_name,
+                        client_type=client_type,
+                        known_website_url=website_url if round_label == "full_name" else None,
+                    )
+                    tool_calls.append(f"ig_discovery_{round_label}_attempt{attempt}")
+                    last_result = ig_result
+                    round_succeeded = True
+                    break  # no exception → exit retry loop
+
+                except Exception as exc:
+                    log.warning(
+                        "[InstagramSubAgent] Round=%s attempt=%d error for '%s': %s",
+                        round_label, attempt, search_name, exc,
+                    )
+                    tool_calls.append(f"ig_discovery_{round_label}_attempt{attempt}_error")
+                    if attempt < _MAX_ATTEMPTS:
+                        log.info("[InstagramSubAgent] Retrying in %.0fs…", _RETRY_DELAY)
+                        await asyncio.sleep(_RETRY_DELAY)
+
+            if not round_succeeded:
+                log.warning(
+                    "[InstagramSubAgent] Round=%s exhausted all %d attempts — moving on",
+                    round_label, _MAX_ATTEMPTS,
+                )
+                continue  # try next round (abbreviation)
+
+            # Round succeeded — check if we got a useful result
+            if last_result and last_result.handle:
+                break  # handle found → no need for next round
+            log.info(
+                "[InstagramSubAgent/Fallback] Round=%s found no handle — %s",
+                round_label,
+                "retrying with abbreviation" if round_label == "full_name" and len(search_rounds) > 1
+                else "giving up",
             )
-            contacts = _contacts_to_serializable(ig_result.contacts)
-            candidates = ig_result.candidates or []
 
-            wa_count = sum(1 for c in contacts if c["type"] == "wa_phone")
-            handle = ig_result.handle or "tidak ditemukan"
-            posts = len(ig_result.posts) if ig_result.posts else 0
-
-            if wa_count:
-                summary = f"IG: @{handle}, {posts} posts, {wa_count} WA phone ditemukan."
-            elif ig_result.handle:
-                summary = f"IG: @{handle} ditemukan, {posts} posts, tapi tidak ada WA phone."
-            else:
-                summary = f"IG: Tidak ada akun yang cocok ditemukan untuk {company_name}."
-
+        if last_result is None:
             duration = time.monotonic() - start
-            log.info("[InstagramSubAgent/Fallback] Done in %.1fs: handle=%s, %d contacts", duration, handle, len(contacts))
-            return SubAgentResult(
-                contacts=contacts,
-                ig_handle=ig_result.handle,
-                ig_candidates=candidates,
-                ig_posts_count=posts,
-                tool_calls_made=["ig_discovery"],
-                summary=summary,
-                duration_seconds=duration,
-                success=True,
-            )
-        except Exception as exc:
-            duration = time.monotonic() - start
-            log.warning("[InstagramSubAgent] Fallback also failed for %s: %s", company_name, exc)
             return SubAgentResult(
                 success=False,
-                error=str(exc),
-                summary=f"Instagram search gagal: {exc}",
-                tool_calls_made=["ig_discovery"],
+                error="All Instagram search rounds failed",
+                summary=f"Instagram search gagal untuk {company_name}",
+                tool_calls_made=tool_calls,
                 duration_seconds=duration,
             )
+
+        contacts = _contacts_to_serializable(last_result.contacts)
+        candidates = last_result.candidates or []
+        wa_count = sum(1 for c in contacts if c["type"] == "wa_phone")
+        handle = last_result.handle or "tidak ditemukan"
+        posts = len(last_result.posts) if last_result.posts else 0
+
+        if wa_count:
+            summary = f"IG: @{handle}, {posts} posts, {wa_count} WA phone ditemukan."
+        elif last_result.handle:
+            summary = f"IG: @{handle} ditemukan, {posts} posts, tapi tidak ada WA phone."
+        else:
+            summary = f"IG: Tidak ada akun yang cocok ditemukan untuk {company_name}."
+
+        duration = time.monotonic() - start
+        log.info("[InstagramSubAgent/Fallback] Done in %.1fs: handle=%s, %d contacts (%d rounds)",
+                 duration, handle, len(contacts), len(tool_calls))
+        return SubAgentResult(
+            contacts=contacts,
+            ig_handle=last_result.handle,
+            ig_candidates=candidates,
+            ig_posts_count=posts,
+            tool_calls_made=tool_calls,
+            summary=summary,
+            duration_seconds=duration,
+            success=True,
+        )
 
 
 class RegistrySearchSubAgent:
