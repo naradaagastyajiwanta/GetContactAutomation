@@ -49,6 +49,7 @@ export const queryKeys = {
     deviceStatus: (id: string) =>
       ["whatsapp", "devices", id, "status"] as const,
     myDevices: ["whatsapp", "my-devices"] as const,
+    myDevice: ["whatsapp", "my-device"] as const,
   },
   audiensi: {
     all: ["audiensi"] as const,
