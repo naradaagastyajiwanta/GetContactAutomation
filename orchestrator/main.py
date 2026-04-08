@@ -2609,7 +2609,21 @@ async def wa_update_my_device_label(device_id: str, request: Request):
     await _assert_device_access(device_id, user)
     body = await request.json()
     label = (body.get("label") or "").strip()
-    updated = await update_user_wa_device_label(device_id, label)
+
+    async def _patch_wa_service_label() -> None:
+        try:
+            async with httpx.AsyncClient(timeout=10) as client:
+                await client.patch(
+                    f"{WA_SERVICE_URL}/devices/{device_id}",
+                    json={"name": label},
+                )
+        except Exception as exc:
+            log.warning("Failed to sync device label to WA service for %s: %s", device_id, exc)
+
+    updated, _ = await asyncio.gather(
+        update_user_wa_device_label(device_id, label),
+        _patch_wa_service_label(),
+    )
     if not updated:
         raise HTTPException(status_code=404, detail="Device not found")
     return {"success": True}
@@ -2728,7 +2742,12 @@ async def wa_bulk_send(payload: dict, request: Request):
             resolved_device_id = payload_device_id
         else:
             mappings = await get_user_wa_devices(user["dms_user_id"])
-            resolved_device_id = mappings[0]["device_id"] if mappings else SYSTEM_DEVICE_ID
+            if not mappings:
+                raise HTTPException(
+                    status_code=400,
+                    detail="No WhatsApp device configured. Setup a device in the Devices tab first.",
+                )
+            resolved_device_id = mappings[0]["device_id"]
 
         if not phone_numbers:
             return {"success": False, "error": "No phone numbers provided"}
@@ -2781,7 +2800,12 @@ async def wa_bulk_send_document(payload: dict, request: Request):
             resolved_device_id = payload_device_id
         else:
             mappings = await get_user_wa_devices(user["dms_user_id"])
-            resolved_device_id = mappings[0]["device_id"] if mappings else SYSTEM_DEVICE_ID
+            if not mappings:
+                raise HTTPException(
+                    status_code=400,
+                    detail="No WhatsApp device configured. Setup a device in the Devices tab first.",
+                )
+            resolved_device_id = mappings[0]["device_id"]
 
         if not phone_numbers:
             return {"success": False, "error": "No phone numbers provided"}

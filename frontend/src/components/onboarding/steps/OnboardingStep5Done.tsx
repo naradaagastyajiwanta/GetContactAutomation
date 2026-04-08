@@ -63,7 +63,7 @@ export function OnboardingStep5Done({
         kapanpun kamu perlu.
       </p>
 
-      <div className="mt-6 grid w-full grid-cols-3 gap-3">
+      <div className="mt-6 grid w-full grid-cols-1 gap-3 min-[400px]:grid-cols-3">
         {QUICK_LINKS.map(({ icon: Icon, label, to, description }) => (
           <Link
             key={to}
@@ -86,7 +86,7 @@ export function OnboardingStep5Done({
         ))}
       </div>
 
-      <div className="mt-6 flex items-center gap-3">
+      <div className="mt-6 flex w-full flex-col items-stretch gap-2 sm:w-auto sm:flex-row sm:items-center sm:gap-3">
         <Button variant="primary" size="md" onClick={onStartTour}>
           <Map className="h-4 w-4" />
           Mulai Tour Aplikasi

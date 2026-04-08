@@ -86,7 +86,7 @@ export function OnboardingModal({
 
       {/* Panel */}
       <div
-        className={`onboarding-panel relative w-full max-w-2xl overflow-hidden rounded-2xl bg-white shadow-2xl dark:bg-gray-900 ${
+        className={`onboarding-panel relative flex max-h-[90dvh] w-full max-w-2xl flex-col overflow-hidden rounded-2xl bg-white shadow-2xl dark:bg-gray-900 ${
           visible ? "" : "opacity-0"
         }`}
       >
@@ -94,7 +94,7 @@ export function OnboardingModal({
         <div className="h-[3px] w-full bg-gradient-to-r from-indigo-500 via-violet-500 to-purple-500" />
 
         {/* Header */}
-        <div className="flex items-center justify-between px-8 pb-3 pt-5">
+        <div className="flex items-center justify-between px-4 pb-3 pt-5 sm:px-8">
           <div className="flex flex-col gap-0.5">
             <span className="text-[11px] font-semibold uppercase tracking-widest text-indigo-400 dark:text-indigo-400">
               Langkah {currentStep} / {totalSteps}
@@ -114,7 +114,7 @@ export function OnboardingModal({
         </div>
 
         {/* Progress dots */}
-        <div className="px-8 pb-2 pt-1">
+        <div className="px-4 pb-2 pt-1 sm:px-8">
           <OnboardingProgressDots
             currentStep={currentStep}
             totalSteps={totalSteps}
@@ -123,12 +123,12 @@ export function OnboardingModal({
         </div>
 
         {/* Divider */}
-        <div className="mx-8 h-px bg-gray-100 dark:bg-gray-800" />
+        <div className="mx-4 h-px bg-gray-100 dark:bg-gray-800 sm:mx-8" />
 
         {/* Step content */}
         <div
           key={currentStep}
-          className="onboarding-step-content min-h-[360px] overflow-y-auto px-8 py-6"
+          className="onboarding-step-content min-h-[240px] flex-1 overflow-y-auto px-4 py-4 sm:min-h-[360px] sm:px-8 sm:py-6"
         >
           <StepComponent
             user={user}
@@ -138,7 +138,7 @@ export function OnboardingModal({
         </div>
 
         {/* Footer */}
-        <div className="flex items-center justify-between border-t border-gray-100 px-8 py-4 dark:border-gray-800">
+        <div className="flex items-center justify-between border-t border-gray-100 px-4 py-4 dark:border-gray-800 sm:px-8">
           <button
             onClick={onPrev}
             disabled={currentStep === 1}

@@ -8,12 +8,12 @@ interface Props {
 
 export function OnboardingStep1Welcome({ user }: Props) {
   return (
-    <div className="flex flex-col items-center justify-center py-8 text-center">
+    <div className="flex flex-col items-center justify-center py-4 text-center sm:py-8">
       <div className="mb-6 flex h-16 w-16 items-center justify-center rounded-2xl bg-indigo-600 text-white shadow-lg">
         <Sparkles className="h-8 w-8" />
       </div>
 
-      <h2 className="mb-2 text-3xl font-bold text-gray-900 dark:text-white">
+      <h2 className="mb-2 text-2xl font-bold text-gray-900 dark:text-white sm:text-3xl">
         Halo, {user.name}!
       </h2>
 

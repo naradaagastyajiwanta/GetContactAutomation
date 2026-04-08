@@ -75,7 +75,7 @@ export function OnboardingStep4SetupChecklist({ onNavigateAway }: Props) {
           ({ id, icon: Icon, title, description, to, linkLabel }) => (
             <div
               key={id}
-              className="flex items-center gap-4 rounded-xl border border-gray-200 bg-gray-50 p-4 dark:border-gray-700 dark:bg-gray-900/40"
+              className="flex flex-wrap items-center gap-3 rounded-xl border border-gray-200 bg-gray-50 p-3 sm:gap-4 sm:p-4 dark:border-gray-700 dark:bg-gray-900/40"
             >
               <div className="flex h-10 w-10 flex-shrink-0 items-center justify-center rounded-lg bg-indigo-100 text-indigo-600 dark:bg-indigo-900/30 dark:text-indigo-400">
                 <Icon className="h-5 w-5" />
@@ -93,7 +93,7 @@ export function OnboardingStep4SetupChecklist({ onNavigateAway }: Props) {
               <Link
                 to={to}
                 onClick={onNavigateAway}
-                className="flex flex-shrink-0 items-center gap-1 text-xs font-medium text-indigo-600 hover:text-indigo-700 dark:text-indigo-400 dark:hover:text-indigo-300"
+                className="ml-auto flex flex-shrink-0 items-center gap-1 text-xs font-medium text-indigo-600 hover:text-indigo-700 dark:text-indigo-400 dark:hover:text-indigo-300"
               >
                 {linkLabel}
                 <ArrowRight className="h-3 w-3" />
