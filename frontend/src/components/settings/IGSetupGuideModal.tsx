@@ -11,13 +11,14 @@ import {
   AlertTriangle,
   Info,
   MousePointerClick,
+  Bot,
 } from "lucide-react";
 
 // ---------------------------------------------------------------------------
 // Types
 // ---------------------------------------------------------------------------
 
-type GuideTab = "accounts" | "sessions";
+type GuideTab = "accounts" | "sessions" | "scrapingbot";
 
 interface StepDef {
   title: string;
@@ -169,6 +170,53 @@ const STEPS_SESSIONS: StepDef[] = [
   },
 ];
 
+const STEPS_SCRAPINGBOT: StepDef[] = [
+  {
+    title: "Buat email temporary di TempMail",
+    description:
+      "Buka temp-mail.org — email temporary sudah langsung tersedia. Klik Copy untuk menyalin alamat email ini, kita akan pakai untuk daftar akun ScrapingBot.",
+    img: "/guide/13.png",
+    note: {
+      type: "info",
+      text: "Pakai temp email agar kamu bisa daftar banyak akun ScrapingBot gratis dan merotasinya secara otomatis di app.",
+      link: {
+        label: "Buka TempMail",
+        href: "https://temp-mail.org/en/",
+      },
+    },
+  },
+  {
+    title: "Daftar akun ScrapingBot",
+    description:
+      "Buka scraping-bot.io, klik Sign up for free. Isi form registrasi: nama, email (paste dari TempMail), username unik, dan password. Klik Submit.",
+    img: "/guide/14.png",
+    note: {
+      type: "info",
+      text: "Setiap akun free tier dapat 500 kredit/bulan — daftarkan beberapa akun dengan email temporary berbeda untuk kuota lebih besar.",
+      link: {
+        label: "scraping-bot.io — Sign up",
+        href: "https://www.scraping-bot.io/register/",
+      },
+    },
+  },
+  {
+    title: "Salin Username & API Key",
+    description:
+      "Setelah login ke dashboard ScrapingBot, catat YOUR USERNAME dan YOUR API KEY yang tampil di halaman utama. Keduanya dibutuhkan untuk ditambahkan ke app.",
+    img: "/guide/15.png",
+    note: {
+      type: "warning",
+      text: "Jangan share API Key kamu. Jika bocor, klik Regen API KEY untuk generate ulang.",
+    },
+  },
+  {
+    title: "Tambahkan akun ke app",
+    description:
+      "Buka Settings → Instagram → tab ScrapingBot. Klik Tambah Akun, isi Username dan API Key dari dashboard tadi, lalu klik Tambah.",
+    img: "/guide/16.png",
+  },
+];
+
 // ---------------------------------------------------------------------------
 // Sub-components
 // ---------------------------------------------------------------------------
@@ -235,7 +283,12 @@ export function IGSetupGuideModal({
 
   if (!isOpen) return null;
 
-  const steps = tab === "accounts" ? STEPS_ACCOUNTS : STEPS_SESSIONS;
+  const steps =
+    tab === "accounts"
+      ? STEPS_ACCOUNTS
+      : tab === "sessions"
+        ? STEPS_SESSIONS
+        : STEPS_SCRAPINGBOT;
   const current = steps[step];
   const isFirst = step === 0;
   const isLast = step === steps.length - 1;
@@ -303,6 +356,17 @@ export function IGSetupGuideModal({
               >
                 <Cookie className="h-3.5 w-3.5" />
                 Sessions
+              </button>
+              <button
+                onClick={() => handleTabChange("scrapingbot")}
+                className={`flex items-center gap-1.5 rounded-lg px-3 py-2 text-sm font-medium transition-all ${
+                  tab === "scrapingbot"
+                    ? "bg-white text-gray-900 shadow-sm dark:bg-gray-600 dark:text-gray-100"
+                    : "text-gray-500 hover:text-gray-700 dark:text-gray-400 dark:hover:text-gray-200"
+                }`}
+              >
+                <Bot className="h-3.5 w-3.5" />
+                ScrapingBot
               </button>
             </div>
 

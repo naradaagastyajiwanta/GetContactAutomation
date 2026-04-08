@@ -10,6 +10,7 @@ import {
   Loader2,
   Bot,
   ExternalLink,
+  HelpCircle,
 } from "lucide-react";
 import { useQuery } from "@tanstack/react-query";
 import { Card, CardHeader, CardTitle } from "../ui/Card";
@@ -19,6 +20,7 @@ import { useUpdateInstagramConfig } from "../../hooks/useConfig";
 import { useHealth } from "../../hooks/useHealth";
 import { apiClient } from "../../api/client";
 import toast from "react-hot-toast";
+import { IGSetupGuideModal } from "./IGSetupGuideModal";
 
 type SBAccount = { username: string; api_key: string };
 
@@ -160,6 +162,7 @@ export function ScrapingBotAccountsManager() {
 
   const [showAddForm, setShowAddForm] = useState(false);
   const [deleteIdx, setDeleteIdx] = useState<number | null>(null);
+  const [showGuide, setShowGuide] = useState(false);
 
   // Parse accounts from config
   const accounts = useMemo<SBAccount[]>(() => {
@@ -211,188 +214,202 @@ export function ScrapingBotAccountsManager() {
   const isSaving = updateConfig.isPending;
 
   return (
-    <Card>
-      <CardHeader>
-        <div className="flex items-center justify-between">
-          <div className="flex items-center gap-3">
-            <Bot className="h-5 w-5 text-blue-500" />
-            <div>
-              <CardTitle>ScrapingBot Accounts</CardTitle>
-              <p className="text-xs text-gray-500 dark:text-gray-400">
-                Multi-akun free tier rotation — akun bergantian otomatis, quota
-                habis di-skip 24 jam
-              </p>
+    <>
+      <IGSetupGuideModal
+        isOpen={showGuide}
+        onClose={() => setShowGuide(false)}
+        initialTab="scrapingbot"
+      />
+      <Card>
+        <CardHeader>
+          <div className="flex items-center justify-between">
+            <div className="flex items-center gap-3">
+              <Bot className="h-5 w-5 text-blue-500" />
+              <div>
+                <CardTitle>ScrapingBot Accounts</CardTitle>
+                <p className="text-xs text-gray-500 dark:text-gray-400">
+                  Multi-akun free tier rotation — akun bergantian otomatis,
+                  quota habis di-skip 24 jam
+                </p>
+              </div>
             </div>
-          </div>
-          <div className="flex items-center gap-2">
-            {accounts.length > 0 && (
-              <span className="rounded-full bg-gray-100 px-2.5 py-0.5 text-xs font-medium text-gray-600 dark:bg-gray-700 dark:text-gray-300">
-                {poolAccounts.length > 0
-                  ? `${availableCount}/${accounts.length} ready`
-                  : `${accounts.length} akun`}
-              </span>
-            )}
-            <a
-              href="https://www.scraping-bot.io/dashboard/"
-              target="_blank"
-              rel="noopener noreferrer"
-              className="flex items-center gap-1 text-xs text-gray-400 hover:text-blue-500"
-              title="Buka ScrapingBot Dashboard"
-            >
-              <ExternalLink size={13} />
-            </a>
-            <Button
-              size="sm"
-              onClick={() => setShowAddForm((v) => !v)}
-              disabled={isSaving}
-            >
-              <Plus size={14} className="mr-1" />
-              Tambah Akun
-            </Button>
-          </div>
-        </div>
-      </CardHeader>
-
-      <div className="px-4 pb-4 space-y-3">
-        {/* Add form */}
-        {showAddForm && (
-          <AddAccountForm
-            onAdd={handleAdd}
-            onCancel={() => setShowAddForm(false)}
-          />
-        )}
-
-        {/* Empty state */}
-        {accounts.length === 0 && !showAddForm && (
-          <div className="rounded-lg border border-dashed border-gray-300 py-8 text-center dark:border-gray-600">
-            <Bot className="mx-auto mb-2 h-8 w-8 text-gray-300 dark:text-gray-600" />
-            <p className="text-sm text-gray-500 dark:text-gray-400">
-              Belum ada akun ScrapingBot
-            </p>
-            <p className="mt-1 text-xs text-gray-400 dark:text-gray-500">
-              Daftar gratis di{" "}
+            <div className="flex items-center gap-2">
+              {accounts.length > 0 && (
+                <span className="rounded-full bg-gray-100 px-2.5 py-0.5 text-xs font-medium text-gray-600 dark:bg-gray-700 dark:text-gray-300">
+                  {poolAccounts.length > 0
+                    ? `${availableCount}/${accounts.length} ready`
+                    : `${accounts.length} akun`}
+                </span>
+              )}
+              <button
+                onClick={() => setShowGuide(true)}
+                className="p-1.5 rounded-lg text-gray-400 hover:bg-gray-100 hover:text-gray-600 dark:hover:bg-gray-700 dark:hover:text-gray-300 transition-colors"
+                title="Cara daftar ScrapingBot"
+              >
+                <HelpCircle size={15} />
+              </button>
               <a
-                href="https://www.scraping-bot.io"
+                href="https://www.scraping-bot.io/dashboard/"
                 target="_blank"
                 rel="noopener noreferrer"
-                className="text-blue-500 hover:underline"
+                className="flex items-center gap-1 text-xs text-gray-400 hover:text-blue-500"
+                title="Buka ScrapingBot Dashboard"
               >
-                scraping-bot.io
+                <ExternalLink size={13} />
               </a>
-              , lalu tambah akun di sini
-            </p>
+              <Button
+                size="sm"
+                onClick={() => setShowAddForm((v) => !v)}
+                disabled={isSaving}
+              >
+                <Plus size={14} className="mr-1" />
+                Tambah Akun
+              </Button>
+            </div>
           </div>
-        )}
+        </CardHeader>
 
-        {/* Account table */}
-        {accounts.length > 0 && (
-          <div className="overflow-hidden rounded-lg border border-gray-200 dark:border-gray-700">
-            <table className="w-full text-sm">
-              <thead>
-                <tr className="border-b border-gray-200 bg-gray-50 dark:border-gray-700 dark:bg-gray-800/50">
-                  <th className="px-4 py-2.5 text-left text-xs font-medium text-gray-500 dark:text-gray-400">
-                    #
-                  </th>
-                  <th className="px-4 py-2.5 text-left text-xs font-medium text-gray-500 dark:text-gray-400">
-                    Username
-                  </th>
-                  <th className="px-4 py-2.5 text-left text-xs font-medium text-gray-500 dark:text-gray-400">
-                    API Key
-                  </th>
-                  <th className="px-4 py-2.5 text-left text-xs font-medium text-gray-500 dark:text-gray-400">
-                    Status
-                  </th>
-                  <th className="px-4 py-2.5 text-right text-xs font-medium text-gray-500 dark:text-gray-400">
-                    Requests
-                  </th>
-                  <th className="px-4 py-2.5" />
-                </tr>
-              </thead>
-              <tbody className="divide-y divide-gray-100 dark:divide-gray-700">
-                {accounts.map((acc, idx) => {
-                  const poolAcc = poolAccounts.find(
-                    (p) => p.username === acc.username,
-                  );
-                  const isDeleting = deleteIdx === idx;
+        <div className="px-4 pb-4 space-y-3">
+          {/* Add form */}
+          {showAddForm && (
+            <AddAccountForm
+              onAdd={handleAdd}
+              onCancel={() => setShowAddForm(false)}
+            />
+          )}
 
-                  return (
-                    <tr
-                      key={idx}
-                      className={cn(
-                        "transition-colors",
-                        isDeleting
-                          ? "bg-red-50 dark:bg-red-900/10"
-                          : "hover:bg-gray-50 dark:hover:bg-gray-800/30",
-                      )}
-                    >
-                      <td className="px-4 py-3 text-xs text-gray-400">
-                        {idx + 1}
-                      </td>
-                      <td className="px-4 py-3 font-mono text-sm font-medium text-gray-800 dark:text-gray-200">
-                        {acc.username}
-                      </td>
-                      <td className="px-4 py-3 font-mono text-xs text-gray-400">
-                        {maskKey(acc.api_key)}
-                      </td>
-                      <td className="px-4 py-3">
-                        <StatusBadge account={poolAcc} />
-                      </td>
-                      <td className="px-4 py-3 text-right text-xs text-gray-400">
-                        {poolAcc ? poolAcc.requests_served : "—"}
-                      </td>
-                      <td className="px-4 py-3 text-right">
-                        {isDeleting ? (
-                          <div className="flex items-center justify-end gap-2">
-                            <span className="text-xs text-red-600 dark:text-red-400">
-                              Hapus?
-                            </span>
-                            <button
-                              onClick={() => handleDelete(idx)}
-                              disabled={isSaving}
-                              className="rounded px-2 py-0.5 text-xs font-medium text-white bg-red-500 hover:bg-red-600 disabled:opacity-50"
-                            >
-                              {isSaving ? (
-                                <Loader2 size={12} className="animate-spin" />
-                              ) : (
-                                "Ya"
-                              )}
-                            </button>
-                            <button
-                              onClick={() => setDeleteIdx(null)}
-                              className="rounded px-2 py-0.5 text-xs text-gray-500 hover:bg-gray-100 dark:hover:bg-gray-700"
-                            >
-                              Batal
-                            </button>
-                          </div>
-                        ) : (
-                          <button
-                            onClick={() => setDeleteIdx(idx)}
-                            className="rounded p-1.5 text-gray-400 hover:bg-red-50 hover:text-red-500 dark:hover:bg-red-900/20"
-                            title="Hapus akun"
-                          >
-                            <Trash2 size={14} />
-                          </button>
+          {/* Empty state */}
+          {accounts.length === 0 && !showAddForm && (
+            <div className="rounded-lg border border-dashed border-gray-300 py-8 text-center dark:border-gray-600">
+              <Bot className="mx-auto mb-2 h-8 w-8 text-gray-300 dark:text-gray-600" />
+              <p className="text-sm text-gray-500 dark:text-gray-400">
+                Belum ada akun ScrapingBot
+              </p>
+              <p className="mt-1 text-xs text-gray-400 dark:text-gray-500">
+                Daftar gratis di{" "}
+                <a
+                  href="https://www.scraping-bot.io"
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="text-blue-500 hover:underline"
+                >
+                  scraping-bot.io
+                </a>
+                , lalu tambah akun di sini
+              </p>
+            </div>
+          )}
+
+          {/* Account table */}
+          {accounts.length > 0 && (
+            <div className="overflow-hidden rounded-lg border border-gray-200 dark:border-gray-700">
+              <table className="w-full text-sm">
+                <thead>
+                  <tr className="border-b border-gray-200 bg-gray-50 dark:border-gray-700 dark:bg-gray-800/50">
+                    <th className="px-4 py-2.5 text-left text-xs font-medium text-gray-500 dark:text-gray-400">
+                      #
+                    </th>
+                    <th className="px-4 py-2.5 text-left text-xs font-medium text-gray-500 dark:text-gray-400">
+                      Username
+                    </th>
+                    <th className="px-4 py-2.5 text-left text-xs font-medium text-gray-500 dark:text-gray-400">
+                      API Key
+                    </th>
+                    <th className="px-4 py-2.5 text-left text-xs font-medium text-gray-500 dark:text-gray-400">
+                      Status
+                    </th>
+                    <th className="px-4 py-2.5 text-right text-xs font-medium text-gray-500 dark:text-gray-400">
+                      Requests
+                    </th>
+                    <th className="px-4 py-2.5" />
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-gray-100 dark:divide-gray-700">
+                  {accounts.map((acc, idx) => {
+                    const poolAcc = poolAccounts.find(
+                      (p) => p.username === acc.username,
+                    );
+                    const isDeleting = deleteIdx === idx;
+
+                    return (
+                      <tr
+                        key={idx}
+                        className={cn(
+                          "transition-colors",
+                          isDeleting
+                            ? "bg-red-50 dark:bg-red-900/10"
+                            : "hover:bg-gray-50 dark:hover:bg-gray-800/30",
                         )}
-                      </td>
-                    </tr>
-                  );
-                })}
-              </tbody>
-            </table>
-          </div>
-        )}
+                      >
+                        <td className="px-4 py-3 text-xs text-gray-400">
+                          {idx + 1}
+                        </td>
+                        <td className="px-4 py-3 font-mono text-sm font-medium text-gray-800 dark:text-gray-200">
+                          {acc.username}
+                        </td>
+                        <td className="px-4 py-3 font-mono text-xs text-gray-400">
+                          {maskKey(acc.api_key)}
+                        </td>
+                        <td className="px-4 py-3">
+                          <StatusBadge account={poolAcc} />
+                        </td>
+                        <td className="px-4 py-3 text-right text-xs text-gray-400">
+                          {poolAcc ? poolAcc.requests_served : "—"}
+                        </td>
+                        <td className="px-4 py-3 text-right">
+                          {isDeleting ? (
+                            <div className="flex items-center justify-end gap-2">
+                              <span className="text-xs text-red-600 dark:text-red-400">
+                                Hapus?
+                              </span>
+                              <button
+                                onClick={() => handleDelete(idx)}
+                                disabled={isSaving}
+                                className="rounded px-2 py-0.5 text-xs font-medium text-white bg-red-500 hover:bg-red-600 disabled:opacity-50"
+                              >
+                                {isSaving ? (
+                                  <Loader2 size={12} className="animate-spin" />
+                                ) : (
+                                  "Ya"
+                                )}
+                              </button>
+                              <button
+                                onClick={() => setDeleteIdx(null)}
+                                className="rounded px-2 py-0.5 text-xs text-gray-500 hover:bg-gray-100 dark:hover:bg-gray-700"
+                              >
+                                Batal
+                              </button>
+                            </div>
+                          ) : (
+                            <button
+                              onClick={() => setDeleteIdx(idx)}
+                              className="rounded p-1.5 text-gray-400 hover:bg-red-50 hover:text-red-500 dark:hover:bg-red-900/20"
+                              title="Hapus akun"
+                            >
+                              <Trash2 size={14} />
+                            </button>
+                          )}
+                        </td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+          )}
 
-        {/* Info box */}
-        {accounts.length > 0 && (
-          <div className="flex items-start gap-2 rounded-md bg-blue-50 px-3 py-2 text-xs text-blue-700 dark:bg-blue-900/20 dark:text-blue-300">
-            <AlertCircle size={13} className="mt-0.5 shrink-0" />
-            <span>
-              Akun dirotasi otomatis (round-robin). Jika satu akun kena quota
-              (402), sistem skip 24 jam lalu coba akun berikutnya.
-            </span>
-          </div>
-        )}
-      </div>
-    </Card>
+          {/* Info box */}
+          {accounts.length > 0 && (
+            <div className="flex items-start gap-2 rounded-md bg-blue-50 px-3 py-2 text-xs text-blue-700 dark:bg-blue-900/20 dark:text-blue-300">
+              <AlertCircle size={13} className="mt-0.5 shrink-0" />
+              <span>
+                Akun dirotasi otomatis (round-robin). Jika satu akun kena quota
+                (402), sistem skip 24 jam lalu coba akun berikutnya.
+              </span>
+            </div>
+          )}
+        </div>
+      </Card>
+    </>
   );
 }

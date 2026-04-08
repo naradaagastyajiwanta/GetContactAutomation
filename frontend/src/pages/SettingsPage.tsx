@@ -6,6 +6,7 @@ import {
   ShieldCheck,
   Cookie,
   Bot,
+  Zap,
 } from "lucide-react";
 import { cn } from "../lib/utils";
 import { useAuth } from "../context/AuthContext";
@@ -144,6 +145,58 @@ export default function SettingsPage() {
         {/* Instagram tab */}
         {activeTab === "instagram" && (
           <div className="p-6 space-y-6">
+            {/* Info banner */}
+            <div className="rounded-xl border border-indigo-200 bg-gradient-to-r from-indigo-50 to-purple-50 dark:from-indigo-900/20 dark:to-purple-900/20 dark:border-indigo-700/50 p-4">
+              <div className="flex items-start gap-3">
+                <div className="p-1.5 rounded-lg bg-indigo-100 dark:bg-indigo-800/50 flex-shrink-0">
+                  <Zap className="h-4 w-4 text-indigo-600 dark:text-indigo-400" />
+                </div>
+                <div className="space-y-2">
+                  <p className="text-sm font-semibold text-indigo-900 dark:text-indigo-200">
+                    Tambahkan sebanyak mungkin akun untuk performa maksimal
+                  </p>
+                  <div className="grid gap-1.5 sm:grid-cols-3">
+                    <div className="flex items-start gap-2 rounded-lg bg-white/60 dark:bg-gray-800/40 px-3 py-2">
+                      <Instagram className="h-3.5 w-3.5 text-pink-500 mt-0.5 flex-shrink-0" />
+                      <div>
+                        <p className="text-xs font-medium text-gray-800 dark:text-gray-200">
+                          IG Accounts
+                        </p>
+                        <p className="text-[11px] text-gray-500 dark:text-gray-400 leading-snug">
+                          Makin banyak akun, makin cepat scraping following list
+                          & data akun private
+                        </p>
+                      </div>
+                    </div>
+                    <div className="flex items-start gap-2 rounded-lg bg-white/60 dark:bg-gray-800/40 px-3 py-2">
+                      <Cookie className="h-3.5 w-3.5 text-amber-500 mt-0.5 flex-shrink-0" />
+                      <div>
+                        <p className="text-xs font-medium text-gray-800 dark:text-gray-200">
+                          Sessions
+                        </p>
+                        <p className="text-[11px] text-gray-500 dark:text-gray-400 leading-snug">
+                          Rotasi otomatis saat satu sesi kena rate-limit —
+                          minimal 3 sesi untuk optimal
+                        </p>
+                      </div>
+                    </div>
+                    <div className="flex items-start gap-2 rounded-lg bg-white/60 dark:bg-gray-800/40 px-3 py-2">
+                      <Bot className="h-3.5 w-3.5 text-blue-500 mt-0.5 flex-shrink-0" />
+                      <div>
+                        <p className="text-xs font-medium text-gray-800 dark:text-gray-200">
+                          ScrapingBot
+                        </p>
+                        <p className="text-[11px] text-gray-500 dark:text-gray-400 leading-snug">
+                          Free tier 500 kredit/bulan — daftar banyak akun pakai
+                          temp email untuk kuota besar
+                        </p>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </div>
+
             {/* Instagram sub-tab bar — pill style */}
             <div className="flex gap-1 rounded-xl bg-gray-100/80 dark:bg-gray-700/60 p-1 w-fit">
               {igSubTabs.map(({ id, icon: Icon, label }) => (
