@@ -1065,3 +1065,31 @@ async def check_dms_connection() -> dict:
             "host": cfg.get("DMS_MYSQL_HOST", ""),
             "database": cfg.get("DMS_MYSQL_DATABASE", ""),
         }
+
+
+async def get_active_karyawan_by_email(email: str) -> dict[str, Any] | None:
+    """Return an active karyawan record eligible for dashboard login."""
+    normalized = (email or "").strip().lower()
+    if not normalized:
+        return None
+
+    async with get_dms_cursor() as cursor:
+        await cursor.execute(
+            """
+            SELECT
+                id_karywan AS dms_user_id,
+                user_name,
+                user_email,
+                user_password,
+                user_level,
+                statuskerja,
+                last_login
+            FROM karyawan
+            WHERE LOWER(TRIM(user_email)) = %s
+              AND statuskerja = 1
+            LIMIT 1
+            """,
+            (normalized,),
+        )
+        row = await cursor.fetchone()
+        return _serialize_row(row) if row else None

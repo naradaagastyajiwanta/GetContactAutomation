@@ -53,4 +53,4 @@ services:
 #      - /app/node_modules
 #    environment:
 #      - API_TARGET=http://orchestrator:8000
-#    command: ["npx", "vite", "--host", "--port", "80"]
+#    command: ["npx", "vite", "--host", "--port", "3010"]

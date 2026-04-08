@@ -93,7 +93,12 @@ from orchestrator.db import (
     create_user_wa_device,
     delete_user_wa_device_by_device_id,
     update_user_wa_device_label,
+    get_user_wa_device_by_device_id,
     list_all_user_wa_devices,
+)
+from orchestrator.auth import (
+    get_request_user,
+    has_permission,
 )
 from orchestrator.config_registry import (
     CONFIG_DEFINITIONS,
@@ -2496,7 +2501,7 @@ async def wa_restart():
 
 
 # ---------------------------------------------------------------------------
-# Bulk Send Endpoints (Multi-Device Support)
+# Multi-Device WA Endpoints (per-user device isolation)
 # ---------------------------------------------------------------------------
 
 
@@ -2535,6 +2540,7 @@ async def wa_setup_my_device(request: Request):
         pass
     label = (body.get("label") or "").strip() if isinstance(body, dict) else ""
 
+    # Auto-generates device_id internally
     row = await create_user_wa_device(user["dms_user_id"], user["email"], label=label)
     device_id = row["device_id"]
 
@@ -2706,7 +2712,7 @@ async def wa_bulk_send(payload: dict, request: Request):
     Body: {
       phone_numbers: ["628xxx", ...],
       message: "Hello!",
-      device_id: "device_1"  # Optional, defaults to user's own device
+      device_id: "device_1"  # Optional, defaults to user's own first device
     }
     """
     try:
@@ -2714,7 +2720,7 @@ async def wa_bulk_send(payload: dict, request: Request):
         phone_numbers = payload.get("phone_numbers", [])
         message = payload.get("message", "")
 
-        # Resolve device_id — default to user's own device
+        # Resolve device_id — default to user's own first device
         payload_device_id = payload.get("device_id") if isinstance(payload, dict) else None
         if payload_device_id:
             if not has_permission(user, "*"):
@@ -2757,7 +2763,7 @@ async def wa_bulk_send_document(payload: dict, request: Request):
       file_path: "/path/to/file.pdf",
       file_name: "document.pdf",
       caption: "Optional caption",
-      device_id: "device_1"  # Optional, defaults to user's own device
+      device_id: "device_1"  # Optional, defaults to user's own first device
     }
     """
     try:
@@ -2767,7 +2773,7 @@ async def wa_bulk_send_document(payload: dict, request: Request):
         file_name = payload.get("file_name", "")
         caption = payload.get("caption")
 
-        # Resolve device_id — default to user's own device
+        # Resolve device_id — default to user's own first device
         payload_device_id = payload.get("device_id") if isinstance(payload, dict) else None
         if payload_device_id:
             if not has_permission(user, "*"):

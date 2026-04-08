@@ -1,8 +1,10 @@
 # syntax=docker/dockerfile:1.6-labs
 
-# ── Stage 1: Install dependencies ─────────────────────────────
+# Stage 1: Install dependencies using cache mounts for speed
 FROM node:20-alpine AS deps
 WORKDIR /app
+
+# Copy package files (assuming context is project root)
 COPY frontend/package*.json ./
 # Use cache mount for faster builds
 RUN --mount=type=cache,target=/root/.npm \
@@ -13,6 +15,8 @@ FROM node:20-alpine AS build
 WORKDIR /app
 COPY --from=deps /app/node_modules ./node_modules
 COPY frontend/ .
+
+# Build the project (Vite produces 'dist' folder)
 RUN npm run build
 
 # ── Stage 3: Runtime image (small) ───────────────────────────
@@ -23,4 +27,4 @@ COPY --from=build /app/dist ./dist
 
 # Standard port for the serve command in this project
 EXPOSE 3010
-CMD ["serve", "-s", "dist", "-l", "3010"]
+CMD ["serve", "-s", "dist", "-l", "tcp://0.0.0.0:3010"]

@@ -25,11 +25,11 @@ services:
     networks:
       - gc-network
     healthcheck:
-      test: ["CMD", "node", "-e", "require('http').get('http://localhost:3100/status', r => { r.on('data', () => {}); process.exit(r.statusCode === 200 ? 0 : 1) }).on('error', () => process.exit(1))"]
+      test: ["CMD", "node", "-e", "require('http').get('http://localhost:3110/status', r => { r.on('data', () => {}); process.exit(r.statusCode === 200 ? 0 : 1) }).on('error', () => process.exit(1))"]
       interval: 15s
       timeout: 5s
       retries: 5
-      start_period: 20s
+      start_period: 60s
 
   # ---------------------------------------------------------------
   # Cloudflare WARP — SOCKS5 proxy to bypass ISP DPI blocking
@@ -39,23 +39,27 @@ services:
     image: caomingjun/warp:latest
     container_name: gc-warp
     restart: unless-stopped
+    privileged: true
     environment:
-      - WARP_SLEEP=2
+      - WARP_SLEEP=5
     cap_add:
       - NET_ADMIN
+      - SYS_MODULE
     sysctls:
       - net.ipv6.conf.all.disable_ipv6=0
       - net.ipv4.conf.all.src_valid_mark=1
     volumes:
       - warp-data:/var/lib/cloudflare-warp
+    devices:
+      - /dev/net/tun:/dev/net/tun
     networks:
       - gc-network
     healthcheck:
-      test: ["CMD", "curl", "-f", "--socks5", "127.0.0.1:1080", "https://cloudflare.com/cdn-cgi/trace"]
-      interval: 30s
-      timeout: 10s
-      retries: 5
-      start_period: 15s
+      test: ["CMD-SHELL", "curl -fsS --max-time 8 --socks5-hostname 127.0.0.1:1080 https://cloudflare.com/cdn-cgi/trace || exit 1"]
+      interval: 20s
+      timeout: 15s
+      retries: 15
+      start_period: 300s
 
   # ---------------------------------------------------------------
   # Cloudflare WARP #2 — second egress IP for proxy rotation
@@ -133,7 +137,7 @@ services:
       whatsapp:
         condition: service_healthy
       warp:
-        condition: service_healthy
+        condition: service_started
       warp2:
         condition: service_healthy
     extra_hosts:
