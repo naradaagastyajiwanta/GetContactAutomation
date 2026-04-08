@@ -51,12 +51,11 @@ function parseNumbers(raw: string): { valid: string[]; invalid: number } {
       digits.length <= 12
     ) {
       normalized = "62" + digits;
-    } else if (!digits.startsWith("62")) {
-      invalid++;
-      continue;
     }
+    // else: keep as-is — could be any valid international format (1xxx, 44xxx, etc.)
 
-    if (normalized.length < 10 || normalized.length > 15) {
+    // Validate E.164 length: 7–15 digits
+    if (normalized.length < 7 || normalized.length > 15) {
       invalid++;
       continue;
     }
@@ -499,7 +498,7 @@ export function WaBlastPanel() {
             onChange={(e) => handlePasteChange(e.target.value)}
             rows={5}
             placeholder={
-              "Satu nomor per baris, contoh:\n6281234567890\n6289876543210\n\nFormat: internasional (62xxx) atau lokal (08xxx)"
+              "Satu nomor per baris, contoh:\n6281234567890\n6289876543210\n14155552671\n\nFormat: internasional (62xxx, 1xxx, 44xxx) atau lokal (08xxx)"
             }
             className="w-full px-3 py-2.5 border border-gray-300 dark:border-gray-600 rounded-xl text-sm font-mono focus:ring-1 focus:ring-blue-500 focus:border-blue-500 dark:bg-gray-900 dark:text-gray-100 transition-colors resize-none"
           />

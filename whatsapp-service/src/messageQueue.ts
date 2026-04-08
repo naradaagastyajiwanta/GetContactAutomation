@@ -52,6 +52,7 @@ export interface QueuedMessage {
   sent_at?: string;
   wa_message_id?: string;
   device_id: string; // NEW: Device ID for multi-device support
+  retry_after?: string;
 }
 
 // Interface for webhook event
@@ -129,7 +130,8 @@ export class MessageQueue {
         updated_at TEXT DEFAULT (datetime('now')),
         sent_at TEXT,
         wa_message_id TEXT,
-        device_id TEXT DEFAULT 'device_1'
+        device_id TEXT DEFAULT 'device_1',
+        retry_after TEXT DEFAULT NULL
       );
 
       CREATE TABLE IF NOT EXISTS webhook_queue (
@@ -157,6 +159,15 @@ export class MessageQueue {
       CREATE INDEX IF NOT EXISTS idx_message_queue_device ON message_queue(device_id);
       CREATE INDEX IF NOT EXISTS idx_webhook_queue_status ON webhook_queue(status);
     `);
+
+    // Idempotent migration for existing databases
+    try {
+      this.db.exec(
+        `ALTER TABLE message_queue ADD COLUMN retry_after TEXT DEFAULT NULL`,
+      );
+    } catch {
+      // Column already exists — safe to ignore
+    }
   }
 
   /**
@@ -294,6 +305,7 @@ export class MessageQueue {
       stmt = this.db.prepare(`
         SELECT * FROM message_queue
         WHERE status = ? AND device_id = ?
+          AND (retry_after IS NULL OR retry_after <= datetime('now'))
         ORDER BY created_at ASC
         LIMIT ?
       `);
@@ -303,6 +315,7 @@ export class MessageQueue {
       stmt = this.db.prepare(`
         SELECT * FROM message_queue
         WHERE status = ?
+          AND (retry_after IS NULL OR retry_after <= datetime('now'))
         ORDER BY created_at ASC
         LIMIT ?
       `);
@@ -386,15 +399,20 @@ export class MessageQueue {
   /**
    * Mark message for retry
    */
-  markForRetry(id: number): boolean {
+  markForRetry(id: number, retryCount: number = 0): boolean {
+    // Exponential backoff: 30s → 60s → 120s → ... max 600s (10 min)
+    const delaySeconds = Math.min(30 * Math.pow(2, retryCount), 600);
     const stmt = this.db.prepare(`
       UPDATE message_queue
-      SET status = ?, retry_count = retry_count + 1, updated_at = datetime('now')
+      SET status = ?,
+          retry_count = retry_count + 1,
+          retry_after = datetime('now', '+' || ? || ' seconds'),
+          updated_at = datetime('now')
       WHERE id = ?
     `);
 
     try {
-      stmt.run(MessageStatus.PENDING, id);
+      stmt.run(MessageStatus.PENDING, Math.floor(delaySeconds), id);
       return true;
     } catch (err) {
       logger.error({ err, id }, "Failed to mark message for retry");
@@ -561,6 +579,7 @@ export class MessageQueue {
       sent_at: row.sent_at,
       wa_message_id: row.wa_message_id,
       device_id: row.device_id || "device_1",
+      retry_after: row.retry_after,
     };
   }
 

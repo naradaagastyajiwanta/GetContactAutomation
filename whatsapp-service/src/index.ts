@@ -1075,7 +1075,9 @@ async function performProtectedDocumentSend(
  * Process a single queued message by sending it via WhatsApp
  * Now uses DeviceManager for multi-device support
  */
-async function processQueuedMessage(msg: QueuedMessage): Promise<boolean> {
+async function processQueuedMessage(
+  msg: QueuedMessage,
+): Promise<"sent" | "blocked" | "failed"> {
   const deviceId = msg.device_id || "device_1";
   const device = deviceManager.getDevice(deviceId);
 
@@ -1084,7 +1086,7 @@ async function processQueuedMessage(msg: QueuedMessage): Promise<boolean> {
       { messageId: msg.message_id, deviceId },
       "Device not connected, skipping message",
     );
-    return false;
+    return "failed";
   }
 
   try {
@@ -1112,7 +1114,7 @@ async function processQueuedMessage(msg: QueuedMessage): Promise<boolean> {
           },
           "Queued message sent successfully",
         );
-        return true;
+        return "sent";
       }
       if (result.blocked) {
         logger.info(
@@ -1123,7 +1125,7 @@ async function processQueuedMessage(msg: QueuedMessage): Promise<boolean> {
           },
           "Queued message deferred by anti-ban policy",
         );
-        return false;
+        return "blocked";
       }
       throw new Error(result.error || "Failed to send message");
     } else if (msg.type === MessageType.DOCUMENT) {
@@ -1147,7 +1149,7 @@ async function processQueuedMessage(msg: QueuedMessage): Promise<boolean> {
           },
           "Queued document sent successfully",
         );
-        return true;
+        return "sent";
       }
       if (result.blocked) {
         logger.info(
@@ -1158,12 +1160,12 @@ async function processQueuedMessage(msg: QueuedMessage): Promise<boolean> {
           },
           "Queued document deferred by anti-ban policy",
         );
-        return false;
+        return "blocked";
       }
       throw new Error(result.error || "Failed to send document");
     }
 
-    return false;
+    return "failed";
   } catch (err) {
     const error = err instanceof Error ? err.message : String(err);
     messageQueue.markFailed(msg.id, error);
@@ -1174,7 +1176,8 @@ async function processQueuedMessage(msg: QueuedMessage): Promise<boolean> {
         { messageId: msg.message_id, error, retryCount: msg.retry_count },
         "Queued message failed, will retry",
       );
-      messageQueue.markForRetry(msg.id);
+      // Pass retry_count for exponential backoff: 30s → 60s → 120s (max 600s)
+      messageQueue.markForRetry(msg.id, msg.retry_count);
     } else {
       logger.error(
         { messageId: msg.message_id, error, retryCount: msg.retry_count },
@@ -1182,7 +1185,7 @@ async function processQueuedMessage(msg: QueuedMessage): Promise<boolean> {
       );
     }
 
-    return false;
+    return "failed";
   }
 }
 
@@ -1230,13 +1233,17 @@ async function processMessageQueue(): Promise<void> {
         );
 
         for (const msg of pendingMessages) {
-          const sent = await processQueuedMessage(msg);
-          if (!sent) {
+          const result = await processQueuedMessage(msg);
+          if (result === "blocked") {
+            // Anti-ban policy active — stop processing this device's queue
             break;
           }
-          // Small delay between messages to avoid rate limiting
-          await humanDelay(500, 1500);
-          totalProcessed++;
+          if (result === "sent") {
+            // Small delay between messages to avoid rate limiting
+            await humanDelay(500, 1500);
+            totalProcessed++;
+          }
+          // "failed" = message-level error, continue to next message
         }
       }
     }
@@ -1557,9 +1564,27 @@ app.post("/webhook/register", (req: Request, res: Response) => {
     return;
   }
 
+  // Validate URL format
+  let parsedUrl: URL;
+  try {
+    parsedUrl = new URL(url);
+  } catch {
+    res.status(400).json({ success: false, error: "Invalid URL format" });
+    return;
+  }
+
+  // Only allow http/https protocols
+  if (!["http:", "https:"].includes(parsedUrl.protocol)) {
+    res
+      .status(400)
+      .json({ success: false, error: "URL must use http or https protocol" });
+    return;
+  }
+
   webhookUrl = url;
   saveWebhookUrl(url);
-  logger.info({ webhookUrl }, "Webhook URL registered");
+  // Log only host to avoid leaking tokens that may be in query params
+  logger.info({ webhookHost: parsedUrl.host }, "Webhook URL registered");
   res.json({ success: true });
 });
 
