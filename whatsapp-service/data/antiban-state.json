@@ -14,13 +14,19 @@
         "6287761882915@s.whatsapp.net",
         "6283169824750@s.whatsapp.net",
         "6281919707099@s.whatsapp.net",
-        "6287811152506@s.whatsapp.net"
+        "6287811152506@s.whatsapp.net",
+        "6285121084588@s.whatsapp.net"
       ],
       "sendEvents": [],
       "failedEvents": [],
-      "disconnectEvents": [],
+      "disconnectEvents": [
+        {
+          "at": 1775636685944,
+          "reason": "515"
+        }
+      ],
       "warmUp": {
-        "startedAt": 1775626215874,
+        "startedAt": 1775636838360,
         "dailyCounts": {}
       },
       "timelock": {
@@ -113,14 +119,6 @@
       "failedEvents": [],
       "disconnectEvents": [
         {
-          "at": 1775611933910,
-          "reason": "428"
-        },
-        {
-          "at": 1775612287380,
-          "reason": "428"
-        },
-        {
           "at": 1775615668874,
           "reason": "428"
         },
@@ -191,14 +189,6 @@
       "failedEvents": [],
       "disconnectEvents": [
         {
-          "at": 1775611933912,
-          "reason": "428"
-        },
-        {
-          "at": 1775612287384,
-          "reason": "428"
-        },
-        {
           "at": 1775615668834,
           "reason": "428"
         },
@@ -245,6 +235,14 @@
         {
           "at": 1775627752646,
           "reason": "428"
+        },
+        {
+          "at": 1775636677642,
+          "reason": "401"
+        },
+        {
+          "at": 1775636838794,
+          "reason": "408"
         }
       ],
       "warmUp": {

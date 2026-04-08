@@ -49,7 +49,7 @@ import {
   useCancelCampaign,
   useDeleteCampaign,
 } from "../hooks/useBlast";
-import { useMyDevices } from "../hooks/useWhatsApp";
+import { useMyDevices, useWhatsAppDevices } from "../hooks/useWhatsApp";
 import type {
   BlastContact,
   BlastContactsParams,
@@ -831,14 +831,24 @@ export default function BlastCampaignDetailPage() {
     !!id && !!campaign?.template_message,
   );
 
-  // Devices — only user's own devices
+  // Devices — admin sees all system devices, others see only their own
+  const isAdmin = hasPermission("*");
   const { data: myDevicesData } = useMyDevices();
-  const myDevices = (myDevicesData?.devices || []).map((e) => ({
-    id: e.device_id,
-    name: e.label || e.device?.name || e.device_id,
-    phoneNumber: e.device?.phoneNumber ?? null,
-    connectionState: e.device?.connectionState ?? "disconnected",
-  }));
+  const { data: allDevicesData } = useWhatsAppDevices(isAdmin);
+  const myDevices = isAdmin
+    ? (allDevicesData?.devices || []).map((d) => ({
+        id: d.id,
+        name: d.name,
+        phoneNumber: d.phoneNumber ?? null,
+        connectionState: d.connectionState ?? "disconnected",
+      }))
+    : (myDevicesData?.devices || []).map((e) => ({
+        id: e.device_id,
+        name: e.label || e.device?.name || e.device_id,
+        phoneNumber: e.device?.phoneNumber ?? null,
+        connectionState: e.device?.connectionState ?? "disconnected",
+      }));
+  const devicesDataReady = isAdmin ? allDevicesData : myDevicesData;
   const connectedDevices = myDevices.filter(
     (d) => d.connectionState === "connected",
   );
@@ -928,7 +938,7 @@ export default function BlastCampaignDetailPage() {
   // auto-select the first connected device, then first any device.
   useEffect(() => {
     if (deviceDraft !== null) return; // user already made a choice this session
-    if (!myDevicesData || myDevices.length === 0) return;
+    if (!devicesDataReady || myDevices.length === 0) return;
     const storedId = campaign?.device_id ?? "";
     const inList = myDevices.some((d) => d.id === storedId);
     if (inList) return; // stored device is valid — nothing to do
@@ -937,7 +947,7 @@ export default function BlastCampaignDetailPage() {
     );
     const autoId = firstConnected?.id ?? myDevices[0]?.id ?? "";
     if (autoId) setDeviceDraft(autoId);
-  }, [myDevicesData, campaign?.device_id, deviceDraft]);
+  }, [devicesDataReady, campaign?.device_id, deviceDraft]);
 
   // Contact selector modal
   const [showContactModal, setShowContactModal] = useState(false);
