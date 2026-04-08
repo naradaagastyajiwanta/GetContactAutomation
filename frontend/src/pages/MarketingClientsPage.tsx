@@ -13,6 +13,8 @@ import { Pagination } from "../components/ui/Pagination";
 import { useAllMarketingClients } from "../hooks/useMarketing";
 import { formatDate } from "../lib/utils";
 import { CLIENT_TYPE_LABELS, type ClientType } from "../api/marketing";
+import { usePageTour } from "../hooks/usePageTour";
+import { MARKETING_TOUR_STEPS } from "../tours/marketing.tour";
 
 // ---------------------------------------------------------------------------
 // Status dot config — gray · indigo · emerald
@@ -97,6 +99,8 @@ export default function MarketingClientsPage() {
     has_contact: hasContactOnly ? true : undefined,
   });
 
+  usePageTour("marketing", MARKETING_TOUR_STEPS);
+
   const clients = data?.clients ?? [];
   const total = data?.total ?? 0;
   const totalPages = Math.ceil(total / pageSize);
@@ -133,7 +137,7 @@ export default function MarketingClientsPage() {
       </div>
 
       {/* Filters */}
-      <div className="space-y-2.5">
+      <div data-tour="marketing-filters" className="space-y-2.5">
         {/* Search input */}
         <div className="relative">
           <Search className="absolute left-3 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-gray-300 dark:text-gray-600" />
@@ -230,7 +234,7 @@ export default function MarketingClientsPage() {
           </p>
         </div>
       ) : (
-        <div className="space-y-1.5">
+        <div data-tour="marketing-client-list" className="space-y-1.5">
           {/* Column hints */}
           <div className="flex items-center gap-4 px-4 pb-1 text-[11px] font-medium uppercase tracking-wide text-gray-300 dark:text-gray-600">
             <span className="flex-1">Client</span>

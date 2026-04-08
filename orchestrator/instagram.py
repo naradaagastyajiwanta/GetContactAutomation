@@ -353,6 +353,11 @@ def _check_ig_response(resp: httpx.Response) -> bool:
 _openai_client: AsyncOpenAI | None = None
 _openai_client_key: str = ""
 
+# After insufficient_quota, pause Vision calls until this timestamp (float epoch).
+# Retries every _VISION_QUOTA_RETRY_MINUTES minutes to check if credits restored.
+_vision_quota_retry_after: float = 0.0
+_VISION_QUOTA_RETRY_MINUTES = 10
+
 
 def _get_openai() -> AsyncOpenAI:
     global _openai_client, _openai_client_key
@@ -2179,9 +2184,17 @@ async def _vision_extract_named_contacts(
     require_person_name: bool = True,
 ) -> list[PhoneContact]:
     """Use OpenAI Vision to extract phone numbers with contact names from image."""
+    global _vision_quota_retry_after
+    import time
     from orchestrator.config import is_paused
 
     if is_paused():
+        return []
+
+    now = time.monotonic()
+    if _vision_quota_retry_after > now:
+        remaining = int(_vision_quota_retry_after - now)
+        log.debug("Vision quota cooldown aktif, skip (%ds remaining)", remaining)
         return []
 
     client = _get_openai()
@@ -2230,6 +2243,25 @@ async def _vision_extract_named_contacts(
         return []
     except Exception as e:
         error_msg = str(e)
+        if "insufficient_quota" in error_msg:
+            _vision_quota_retry_after = time.monotonic() + _VISION_QUOTA_RETRY_MINUTES * 60
+            log.warning(
+                "OpenAI Vision quota habis — akan coba lagi dalam %d menit.",
+                _VISION_QUOTA_RETRY_MINUTES,
+            )
+            try:
+                from orchestrator.websocket import manager as _ws
+                import asyncio as _asyncio
+                _asyncio.create_task(
+                    _ws.broadcast_type(
+                        "openai_quota_exhausted",
+                        service="vision",
+                        message="API credit OpenAI Vision habis. Hubungi developer untuk isi ulang kredit.",
+                    )
+                )
+            except Exception:
+                pass
+            return []
         if "cannot schedule new futures" not in error_msg and "interpreter shutdown" not in error_msg:
             log.error(f"OpenAI Vision API error: {e}")
         return []

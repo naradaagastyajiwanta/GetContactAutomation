@@ -25,6 +25,8 @@ import { DevicePanel, MyDevicePanel } from "../components/whatsapp/DevicePanel";
 import { WaBlastPanel } from "../components/whatsapp/BulkSendPanel";
 import { useAuth } from "../context/AuthContext";
 import { cn } from "../lib/utils";
+import { usePageTour } from "../hooks/usePageTour";
+import { WHATSAPP_TOUR_STEPS } from "../tours/whatsapp.tour";
 
 type TabId = "devices" | "quick-test" | "blast";
 
@@ -85,6 +87,7 @@ export default function WhatsAppPage() {
   const [showLogoutConfirm, setShowLogoutConfirm] = useState(false);
   const canManageWhatsApp = hasPermission("whatsapp.manage");
   const isAdmin = hasPermission("*");
+  usePageTour("whatsapp", WHATSAPP_TOUR_STEPS);
 
   useEffect(() => {
     if (
@@ -171,7 +174,7 @@ export default function WhatsAppPage() {
           </div>
 
           {/* Status chips */}
-          <div className="flex items-center gap-2">
+          <div data-tour="whatsapp-status" className="flex items-center gap-2">
             <div
               className={cn(
                 "flex items-center gap-1.5 px-3 py-1.5 rounded-full text-xs font-semibold",
@@ -212,7 +215,10 @@ export default function WhatsAppPage() {
       </div>
 
       {/* ── Tabs ───────────────────────────────────────────── */}
-      <div className="flex gap-1 border-b border-gray-200 dark:border-gray-700 mb-0">
+      <div
+        data-tour="whatsapp-tabs"
+        className="flex gap-1 border-b border-gray-200 dark:border-gray-700 mb-0"
+      >
         <TabButton
           id="devices"
           icon={Layers}

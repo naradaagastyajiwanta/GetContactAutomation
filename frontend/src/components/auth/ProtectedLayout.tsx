@@ -6,9 +6,9 @@ import { useAuth } from "../../context/AuthContext";
 import { useTour } from "../../hooks/useTour";
 
 export function ProtectedLayout() {
-  const { user } = useAuth();
+  const { user, hasPermission } = useAuth();
   const onboarding = useOnboarding();
-  const { startTour } = useTour();
+  const { startTour } = useTour(hasPermission);
 
   // Start tour: close wizard first, then launch spotlight tour
   const handleStartTour = () => {

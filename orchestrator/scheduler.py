@@ -778,6 +778,31 @@ def reschedule_outreach_jobs() -> None:
     log.info("Rescheduled outreach jobs to hours %s", hour_range)
 
 
+async def _reset_stale_error_clients(group_id: int, older_than_minutes: int = 60) -> int:
+    """Reset marketing_clients stuck in 'error' state back to 'pending' after a cooldown.
+
+    Clients with [QUOTA_EXHAUSTED] error are NOT reset — they require manual intervention
+    (user tops up credits and restarts the group).
+    """
+    import aiosqlite
+    from orchestrator.config import DATABASE_PATH
+    from orchestrator.marketing.orchestration import _QUOTA_ERROR_MARKER
+    async with aiosqlite.connect(str(DATABASE_PATH)) as db:
+        cur = await db.execute(
+            """UPDATE marketing_clients
+               SET search_status = 'pending', error_message = NULL
+               WHERE group_id = ? AND search_status = 'error'
+                 AND (error_message IS NULL OR error_message NOT LIKE ?)
+                 AND updated_at < datetime('now', ? || ' minutes')""",
+            (group_id, f"%{_QUOTA_ERROR_MARKER}%", f"-{older_than_minutes}"),
+        )
+        await db.commit()
+        count = cur.rowcount or 0
+    if count:
+        log.info("[Scheduler] Group %d: reset %d stale error client(s) → pending", group_id, count)
+    return count
+
+
 async def _run_marketing_search_queue():
     """Run marketing client orchestration for groups that still have pending clients."""
     from orchestrator.marketing.search import process_search_queue
@@ -788,6 +813,12 @@ async def _run_marketing_search_queue():
         if group["status"] not in {"draft", "searching"}:
             continue
         status = await get_group_search_status(group["id"])
+
+        # Reset clients stuck in 'error' for > 1 hour so they get retried next run
+        if status.get("error", 0) > 0:
+            await _reset_stale_error_clients(group["id"], older_than_minutes=60)
+            status = await get_group_search_status(group["id"])
+
         if status["pending"] > 0:
             asyncio.create_task(process_search_queue(group["id"]))
 

@@ -18,6 +18,7 @@ from typing import Any, Callable
 from openai import AsyncOpenAI, APIStatusError, APITimeoutError, APIConnectionError
 
 from orchestrator.config import log, cfg, responses_kwargs
+from .errors import QuotaExhaustedException
 from orchestrator.osint.tools import (
     web_search,
     fetch_page,
@@ -125,6 +126,70 @@ def _llm_available() -> bool:
 
 
 # ---------------------------------------------------------------------------
+# Retry helpers for API calls
+# ---------------------------------------------------------------------------
+
+_SUB_AGENT_RETRIABLE_STATUS = {429, 500, 503}
+
+
+async def _openai_call_with_retry(coro_factory, label: str = "SubAgent/OpenAI"):
+    """Retry OpenAI Responses API calls on 429/500/503 with exponential backoff."""
+    last_exc = None
+    for attempt in range(1, 4):  # 3 attempts
+        try:
+            return await coro_factory()
+        except APITimeoutError as e:
+            last_exc = e
+            log.warning("%s attempt %d/3 timed out", label, attempt)
+        except APIConnectionError as e:
+            last_exc = e
+            log.warning("%s attempt %d/3 connection error", label, attempt)
+        except APIStatusError as e:
+            if e.status_code in _SUB_AGENT_RETRIABLE_STATUS:
+                if "insufficient_quota" in str(e).lower():
+                    raise QuotaExhaustedException(
+                        "OpenAI API credit habis (insufficient_quota). Hubungi developer."
+                    ) from e
+                last_exc = e
+                log.warning("%s attempt %d/3 got %d", label, attempt, e.status_code)
+            else:
+                raise
+        if attempt < 3:
+            await asyncio.sleep(2 ** (attempt - 1))
+    raise last_exc
+
+
+async def _gemini_call_with_retry(coro_factory, label: str = "SubAgent/Gemini"):
+    """Retry Gemini API calls on 429/500/503 with exponential backoff."""
+    last_exc = None
+    for attempt in range(1, 4):  # 3 attempts
+        try:
+            return await coro_factory()
+        except Exception as e:
+            msg = str(e).lower()
+            # Gemini errors come wrapped from asyncio.to_thread; detect by message or code
+            code = getattr(e, "status_code", None) or getattr(e, "code", None)
+            is_retriable = (
+                (code in _SUB_AGENT_RETRIABLE_STATUS) or
+                any(k in msg for k in ("quota", "429", "rate limit", "resource exhausted",
+                                       "500", "503", "unavailable", "overloaded"))
+            )
+            if is_retriable:
+                if any(k in msg for k in ("resource_exhausted", "insufficient_quota",
+                                          "quota exceeded", "quota has been exceeded")):
+                    raise QuotaExhaustedException(
+                        "Gemini API credit habis (RESOURCE_EXHAUSTED). Hubungi developer."
+                    ) from e
+                last_exc = e
+                log.warning("%s attempt %d/3 retriable error: %s", label, attempt, str(e)[:120])
+            else:
+                raise
+        if attempt < 3:
+            await asyncio.sleep(2 ** (attempt - 1))
+    raise last_exc
+
+
+# ---------------------------------------------------------------------------
 # Generic sub-agent LLM loop — routes to Gemini or OpenAI based on model
 # ---------------------------------------------------------------------------
 
@@ -158,13 +223,17 @@ async def _run_sub_agent_llm_loop(
     client = _get_sub_agent_openai()
     total_tokens = 0
 
-    response = await client.responses.create(
+    _init_kwargs = dict(
         model=model,
         instructions=system_prompt,
         input=[{"role": "user", "content": initial_message}],
         tools=tool_schemas,
         store=True,
         **responses_kwargs(model, temperature=0.2, max_output_tokens=1500),
+    )
+    response = await _openai_call_with_retry(
+        lambda: client.responses.create(**_init_kwargs),
+        label="SubAgent/OpenAI initial",
     )
     if response.usage:
         total_tokens += response.usage.input_tokens + response.usage.output_tokens
@@ -217,7 +286,11 @@ async def _run_sub_agent_llm_loop(
         if not terminal_args:
             next_kwargs["tools"] = tool_schemas
 
-        response = await client.responses.create(**next_kwargs)
+        _nk = next_kwargs
+        response = await _openai_call_with_retry(
+            lambda: client.responses.create(**_nk),
+            label="SubAgent/OpenAI loop",
+        )
         if response.usage:
             total_tokens += response.usage.input_tokens + response.usage.output_tokens
 
@@ -253,7 +326,10 @@ async def _run_sub_agent_llm_loop_gemini(
     )
 
     chat = await asyncio.to_thread(client.chats.create, model=model, config=config)
-    response = await asyncio.to_thread(chat.send_message, initial_message)
+    response = await _gemini_call_with_retry(
+        lambda: asyncio.to_thread(chat.send_message, initial_message),
+        label="SubAgent/Gemini initial",
+    )
 
     if response.usage_metadata:
         total_tokens += response.usage_metadata.total_token_count or 0
@@ -296,7 +372,11 @@ async def _run_sub_agent_llm_loop_gemini(
         if terminal_args is not None:
             return terminal_args, total_tokens
 
-        response = await asyncio.to_thread(chat.send_message, outputs)
+        _out = outputs
+        response = await _gemini_call_with_retry(
+            lambda: asyncio.to_thread(chat.send_message, _out),
+            label="SubAgent/Gemini loop",
+        )
         if response.usage_metadata:
             total_tokens += response.usage_metadata.total_token_count or 0
 

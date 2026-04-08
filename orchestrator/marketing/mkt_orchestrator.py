@@ -24,6 +24,7 @@ from openai import AsyncOpenAI, APIStatusError, APITimeoutError, APIConnectionEr
 
 from orchestrator.config import log, cfg, responses_kwargs, is_reasoning_model
 from orchestrator import db
+from .errors import QuotaExhaustedException
 from . import groups as mkt
 from .search import is_mobile_phone
 from .mkt_sub_agents import (
@@ -78,6 +79,12 @@ async def _api_call_with_retry(coro_factory, label: str = "API call"):
             log.warning("%s attempt %d/%d connection error", label, attempt, _MAX_RETRIES)
         except APIStatusError as e:
             if e.status_code in _RETRIABLE_STATUS_CODES:
+                # Distinguish permanent quota exhaustion from temporary rate limiting
+                err_str = str(e).lower()
+                if "insufficient_quota" in err_str:
+                    raise QuotaExhaustedException(
+                        f"OpenAI API credit habis (insufficient_quota). Hubungi developer."
+                    ) from e
                 last_exc = e
                 log.warning("%s attempt %d/%d got %d", label, attempt, _MAX_RETRIES, e.status_code)
             else:
@@ -105,6 +112,40 @@ def _get_gemini():
         _gemini_client = _genai.Client(api_key=current_key)
         _gemini_client_key = current_key
     return _gemini_client
+
+
+_GEMINI_RETRIABLE_CODES = {429, 500, 503}
+
+
+async def _gemini_call_with_retry(coro_factory, label: str = "OrchestratorAgent/Gemini"):
+    """Retry Gemini API calls on 429/500/503 with exponential backoff."""
+    last_exc = None
+    for attempt in range(1, _MAX_RETRIES + 1):
+        try:
+            return await coro_factory()
+        except Exception as e:
+            msg = str(e).lower()
+            code = getattr(e, "status_code", None) or getattr(e, "code", None)
+            is_retriable = (
+                (code in _GEMINI_RETRIABLE_CODES) or
+                any(k in msg for k in ("quota", "429", "rate limit", "resource exhausted",
+                                       "500", "503", "unavailable", "overloaded"))
+            )
+            if is_retriable:
+                # Distinguish permanent quota exhaustion from temporary overload
+                if any(k in msg for k in ("resource_exhausted", "insufficient_quota",
+                                          "quota exceeded", "quota has been exceeded")):
+                    raise QuotaExhaustedException(
+                        f"Gemini API credit habis (RESOURCE_EXHAUSTED). Hubungi developer."
+                    ) from e
+                last_exc = e
+                log.warning("%s attempt %d/%d retriable error: %s",
+                            label, attempt, _MAX_RETRIES, str(e)[:120])
+            else:
+                raise
+        if attempt < _MAX_RETRIES:
+            await asyncio.sleep(2 ** (attempt - 1))
+    raise last_exc
 
 
 def _build_gemini_tools():
@@ -745,7 +786,10 @@ class MarketingOrchestratorAgent:
         )
 
         # Send initial message
-        response = await asyncio.to_thread(chat.send_message, initial_text)
+        response = await _gemini_call_with_retry(
+            lambda: asyncio.to_thread(chat.send_message, initial_text),
+            label="OrchestratorAgent/Gemini initial",
+        )
 
         if response.usage_metadata:
             total_tokens += (response.usage_metadata.total_token_count or 0)
@@ -809,7 +853,11 @@ class MarketingOrchestratorAgent:
             ]
 
             # Send all tool results back in one message
-            response = await asyncio.to_thread(chat.send_message, tool_response_parts)
+            _parts = tool_response_parts
+            response = await _gemini_call_with_retry(
+                lambda: asyncio.to_thread(chat.send_message, _parts),
+                label="OrchestratorAgent/Gemini loop",
+            )
 
             if response.usage_metadata:
                 total_tokens += (response.usage_metadata.total_token_count or 0)

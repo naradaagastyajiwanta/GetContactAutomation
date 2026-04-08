@@ -152,6 +152,25 @@ Pages and hooks are organized by feature domain. Each feature has:
 
 Major feature domains: pipeline, blast (WA), email-blast, marketing, CRM, audiensi, DMS schedules, conversations, university groups, settings/config, logs, auth.
 
+## Frontend Onboarding Tour System
+
+Guided spotlight tour built with **Driver.js**. Two layers:
+
+**1. Global sidebar tour** (`hooks/useTour.ts`) — runs once after wizard completion. Steps are filtered by `hasPermission` — admin-only steps (System, Settings) are excluded for operator/viewer.
+
+**2. Per-page contextual tour** (`hooks/usePageTour.ts` + `tours/`) — auto-starts 800ms after first visit to each page, tracked per-user in localStorage (`page_tour_v1_{pageId}_{userId}`). Tour steps with a `permission` field are skipped if the user lacks that permission.
+
+**Adding a tour to a new page — 3 steps:**
+1. Add `data-tour="pagename-element"` attributes to 3–5 key elements in the page component
+2. Create `frontend/src/tours/pagename.tour.ts` with the step config array
+3. Call `usePageTour('pagename', STEPS)` inside the page component
+
+**Bumping tour version (re-show after major UI change):**
+- Increment key prefix in `usePageTour.ts`: `page_tour_v1_` → `page_tour_v2_` (re-shows all tours)
+- To re-show only one page, change only that page's `pageId` string (e.g. `'pipeline_v2'`)
+
+**Tour configs:** `frontend/src/tours/` — one file per page (dashboard, pipeline, universities, conversations, audiensi, whatsapp, blast, marketing, crm, learning, knowledge).
+
 ## WhatsApp Service
 
 - `index.ts` — Main Express server with all REST routes and Baileys integration

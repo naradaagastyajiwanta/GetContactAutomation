@@ -122,6 +122,16 @@ type WSEvent =
       not_found: number;
       partial: number;
       error_count: number;
+    }
+  | {
+      type: "marketing_quota_exhausted";
+      group_id: number;
+      message: string;
+    }
+  | {
+      type: "openai_quota_exhausted";
+      service: string;
+      message: string;
     };
 
 // Singleton WebSocket across all hook instances
@@ -535,6 +545,24 @@ function handleEventNotifications(
         body: `Got contact for university #${data.uni_id}`,
       });
       break;
+    case "marketing_quota_exhausted":
+      add({
+        type: "marketing_quota_exhausted",
+        title: "API Credit AI Habis",
+        body:
+          data.message ||
+          "API credit AI habis. Hubungi developer untuk isi ulang kredit.",
+      });
+      break;
+    case "openai_quota_exhausted":
+      add({
+        type: "openai_quota_exhausted",
+        title: "API Credit OpenAI Habis",
+        body:
+          data.message ||
+          "API credit OpenAI habis. Hubungi developer untuk isi ulang kredit.",
+      });
+      break;
     case "blast_completed": {
       const failed = data.failed || [];
       const failedCount = failed.length;
@@ -775,6 +803,21 @@ function handleEventQuery(
       void qc.invalidateQueries({
         queryKey: ["marketing", "search", data.group_id],
       });
+      break;
+    case "marketing_quota_exhausted":
+      void qc.invalidateQueries({
+        queryKey: ["marketing", "group", data.group_id],
+      });
+      void qc.invalidateQueries({
+        queryKey: ["marketing", "clients", data.group_id],
+        exact: false,
+      });
+      break;
+    case "openai_quota_exhausted":
+      toast.error(
+        data.message || "API credit OpenAI habis. Hubungi developer.",
+        { duration: 10000, icon: "⚠️" },
+      );
       break;
   }
 }

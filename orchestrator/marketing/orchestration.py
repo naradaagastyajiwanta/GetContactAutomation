@@ -13,6 +13,10 @@ from orchestrator.websocket import manager as ws_manager
 from . import groups as mkt
 from . import search as search_flow
 from .discovery import bnsp_discovery, jdih_discovery, asosiasi_discovery
+from .errors import QuotaExhaustedException
+
+_QUOTA_ERROR_MARKER = "[QUOTA_EXHAUSTED]"
+_QUOTA_USER_MESSAGE = "API credit AI habis. Hubungi developer untuk isi ulang kredit."
 
 DISCOVERY_STAGES: dict[str | None, list[str]] = {
     "lsp_p1": ["bnsp", "website", "ig", "gemini"],
@@ -804,6 +808,17 @@ async def run_client_orchestration(
             "run_id": run_id,
             **summary,
         }
+    except QuotaExhaustedException as exc:
+        # Re-raise as-is so process_group_orchestration_queue can catch and stop the batch
+        log.error(
+            "[Marketing Orchestration] QUOTA EXHAUSTED for client %s group %s: %s",
+            client_id, int(client["group_id"]), exc,
+        )
+        if mode == "full_search":
+            await mkt.update_client_error_message(
+                client_id, f"{_QUOTA_ERROR_MARKER} {_QUOTA_USER_MESSAGE}"
+            )
+        raise
     except Exception as exc:
         error_message = str(exc) or type(exc).__name__
         log.warning("[Marketing Orchestration] Client %s failed in mode %s: %s", client_id, mode, error_message)
@@ -827,31 +842,77 @@ async def run_client_orchestration(
         raise
 
 
+async def _handle_quota_exhausted(group_id: int) -> None:
+    """Stop the group and broadcast quota-exhausted notification to frontend."""
+    log.error("[Marketing Orchestration] Group %d: %s", group_id, _QUOTA_USER_MESSAGE)
+
+    # Mark all pending/searching clients as error with quota marker
+    import aiosqlite
+    from orchestrator.config import DATABASE_PATH
+    from datetime import datetime
+    now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    async with aiosqlite.connect(str(DATABASE_PATH)) as db:
+        await db.execute(
+            """UPDATE marketing_clients
+               SET search_status = 'error',
+                   error_message = ?,
+                   updated_at = ?
+               WHERE group_id = ? AND search_status IN ('pending', 'searching')""",
+            (f"{_QUOTA_ERROR_MARKER} {_QUOTA_USER_MESSAGE}", now, group_id),
+        )
+        await db.commit()
+
+    # Set group back to draft with search_error message
+    await mkt.mark_group_search_failed(group_id, _QUOTA_USER_MESSAGE)
+
+    # Broadcast to frontend
+    await ws_manager.broadcast_type(
+        "marketing_quota_exhausted",
+        group_id=group_id,
+        message=_QUOTA_USER_MESSAGE,
+    )
+
+
 async def process_group_orchestration_queue(group_id: int, *, trigger_type: str = "scheduler") -> None:
     """Run orchestration for all pending clients in a group, with auto-retry for errors."""
     MAX_CONCURRENT = int(os.getenv("MARKETING_MAX_CONCURRENT", "20"))
     MAX_AUTO_RETRIES = int(os.getenv("MARKETING_MAX_AUTO_RETRIES", "2"))
-    RETRY_DELAY_SECONDS = float(os.getenv("MARKETING_RETRY_DELAY_SECONDS", "30"))
+    RETRY_DELAY_SECONDS = float(os.getenv("MARKETING_RETRY_DELAY_SECONDS", "120"))
 
     semaphore = asyncio.Semaphore(MAX_CONCURRENT)
 
     await mkt.update_group_status(group_id, "searching")
 
+    quota_exhausted = False
+
     async def bounded_orchestrate(client_id: int) -> None:
+        nonlocal quota_exhausted
+        if quota_exhausted:
+            return
         async with semaphore:
-            await run_client_orchestration(client_id, mode="full_search", trigger_type=trigger_type)
+            try:
+                await run_client_orchestration(client_id, mode="full_search", trigger_type=trigger_type)
+            except QuotaExhaustedException:
+                quota_exhausted = True
+                raise
 
     # --- Initial batch ---
     pending_clients = await mkt.get_pending_clients(group_id)
     if pending_clients:
-        await asyncio.gather(
+        results = await asyncio.gather(
             *[bounded_orchestrate(c["id"]) for c in pending_clients],
             return_exceptions=True,
         )
+        if quota_exhausted or any(isinstance(r, QuotaExhaustedException) for r in results):
+            await _handle_quota_exhausted(group_id)
+            return
 
-    # --- Auto-retry loop ---
+    # --- Auto-retry loop — skip quota-error clients ---
     for attempt in range(1, MAX_AUTO_RETRIES + 1):
-        error_clients = await mkt.get_error_clients(group_id)
+        error_clients = [
+            c for c in await mkt.get_error_clients(group_id)
+            if _QUOTA_ERROR_MARKER not in (c.get("error_message") or "")
+        ]
         if not error_clients:
             break
         log.info(
@@ -861,10 +922,13 @@ async def process_group_orchestration_queue(group_id: int, *, trigger_type: str 
         await asyncio.sleep(RETRY_DELAY_SECONDS)
         for client in error_clients:
             await mkt.update_client_search_status(client["id"], "pending")
-        await asyncio.gather(
+        results = await asyncio.gather(
             *[bounded_orchestrate(c["id"]) for c in error_clients],
             return_exceptions=True,
         )
+        if quota_exhausted or any(isinstance(r, QuotaExhaustedException) for r in results):
+            await _handle_quota_exhausted(group_id)
+            return
 
     # --- Final status & broadcast ---
     group_status = await mkt.get_group_search_status(group_id)
