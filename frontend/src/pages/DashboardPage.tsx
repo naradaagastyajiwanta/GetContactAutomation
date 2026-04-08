@@ -1,5 +1,5 @@
 import { Link } from "react-router-dom";
-import { useState } from "react";
+import { useState, useEffect, useRef } from "react";
 import {
   Video,
   Building2,
@@ -328,9 +328,9 @@ function AudiensiScheduleCard({
     .slice(0, 5);
 
   return (
-    <div className="rounded-xl border border-gray-200 bg-white dark:border-gray-700 dark:bg-gray-800">
+    <div className="overflow-hidden rounded-xl border border-gray-200 bg-white dark:border-gray-700 dark:bg-gray-800">
       {/* Header */}
-      <div className="flex items-center justify-between border-b border-gray-100 px-5 py-3 dark:border-gray-700">
+      <div className="flex items-center justify-between border-b border-gray-100 px-4 py-3 dark:border-gray-700">
         <div className="flex items-center gap-2">
           <div className="flex h-7 w-7 items-center justify-center rounded-lg bg-gray-100 text-gray-500 dark:bg-gray-700 dark:text-gray-400">
             <Calendar className="h-4 w-4" />
@@ -347,27 +347,42 @@ function AudiensiScheduleCard({
         </Link>
       </div>
 
-      <div className="p-4">
-        {/* Stat pills */}
-        <div className="mb-3 flex flex-wrap items-center gap-2">
-          <span className="rounded-full bg-amber-50 px-2.5 py-0.5 text-[10px] font-semibold text-amber-600 dark:bg-amber-900/30 dark:text-amber-400">
-            {queued} Antrian
-          </span>
-          <span className="rounded-full bg-indigo-50 px-2.5 py-0.5 text-[10px] font-semibold text-indigo-600 dark:bg-indigo-900/30 dark:text-indigo-400">
-            {scheduled} Dijadwalkan
-          </span>
-          <span className="rounded-full bg-emerald-50 px-2.5 py-0.5 text-[10px] font-semibold text-emerald-600 dark:bg-emerald-900/30 dark:text-emerald-400">
-            {completed} Selesai
-          </span>
-        </div>
+      {/* Stat numbers — compact 3-col grid */}
+      <div className="grid grid-cols-3 divide-x divide-gray-100 border-b border-gray-100 dark:divide-gray-700 dark:border-gray-700">
+        {[
+          {
+            label: "Antrian",
+            value: queued,
+            color: "text-amber-600 dark:text-amber-400",
+          },
+          {
+            label: "Dijadwalkan",
+            value: scheduled,
+            color: "text-indigo-600 dark:text-indigo-400",
+          },
+          {
+            label: "Selesai",
+            value: completed,
+            color: "text-emerald-600 dark:text-emerald-400",
+          },
+        ].map((s) => (
+          <div key={s.label} className="py-2.5 text-center">
+            <p className={`text-base font-bold ${s.color}`}>{s.value}</p>
+            <p className="text-[10px] text-gray-400 dark:text-gray-500">
+              {s.label}
+            </p>
+          </div>
+        ))}
+      </div>
 
-        {/* Schedule list */}
+      {/* Schedule list */}
+      <div className="p-3">
         {upcoming.length === 0 ? (
-          <p className="py-2 text-xs text-gray-400 dark:text-gray-500">
+          <p className="py-2 text-center text-xs text-gray-400 dark:text-gray-500">
             Tidak ada jadwal 30 hari ke depan
           </p>
         ) : (
-          <div className="space-y-1">
+          <div className="space-y-0.5">
             {upcoming.map((s) => {
               const date = s.jadwal_audiensi
                 ? new Date(s.jadwal_audiensi)
@@ -377,37 +392,23 @@ function AudiensiScheduleCard({
                 <Link
                   key={`${s.source}-${s.id}`}
                   to={`/dms/schedules/${s.id}?source=${s.source}`}
-                  className="-mx-2 flex items-center gap-3 rounded-lg px-2 py-2 transition-colors hover:bg-gray-50 dark:hover:bg-gray-700/40"
+                  className="flex items-center gap-2 rounded-lg px-2 py-2 transition-colors hover:bg-gray-50 dark:hover:bg-gray-700/40"
                 >
-                  {/* Date chip */}
+                  {/* Date */}
                   <div
                     className={cn(
-                      "w-12 shrink-0 rounded-lg py-1 text-center",
+                      "w-10 shrink-0 rounded-md py-1 text-center text-[10px] font-bold leading-tight",
                       isToday
-                        ? "bg-indigo-100 dark:bg-indigo-900/40"
-                        : "bg-gray-100 dark:bg-gray-700/60",
+                        ? "bg-indigo-100 text-indigo-700 dark:bg-indigo-900/40 dark:text-indigo-300"
+                        : "bg-gray-100 text-gray-600 dark:bg-gray-700/60 dark:text-gray-300",
                     )}
                   >
-                    <p
-                      className={cn(
-                        "text-[10px] font-bold leading-tight",
-                        isToday
-                          ? "text-indigo-700 dark:text-indigo-300"
-                          : "text-gray-600 dark:text-gray-300",
-                      )}
-                    >
-                      {date
-                        ? date.toLocaleDateString("id-ID", {
-                            day: "2-digit",
-                            month: "short",
-                          })
-                        : "—"}
-                    </p>
-                    {isToday && (
-                      <p className="text-[9px] font-semibold text-indigo-500">
-                        Hari ini
-                      </p>
-                    )}
+                    {date
+                      ? date.toLocaleDateString("id-ID", {
+                          day: "2-digit",
+                          month: "short",
+                        })
+                      : "—"}
                   </div>
 
                   {/* Name + time */}
@@ -415,27 +416,21 @@ function AudiensiScheduleCard({
                     <p className="truncate text-xs font-medium text-gray-800 dark:text-gray-100">
                       {s.nama_universitas ?? "—"}
                     </p>
-                    {s.jam_audensi && (
-                      <p className="text-[10px] text-gray-400 dark:text-gray-500">
-                        {s.jam_audensi} WIB
-                      </p>
-                    )}
+                    <p className="text-[10px] text-gray-400 dark:text-gray-500">
+                      {s.jam_audensi
+                        ? `${s.jam_audensi} WIB`
+                        : isToday
+                          ? "Hari ini"
+                          : "\u00A0"}
+                    </p>
                   </div>
 
-                  {/* Meeting type badge */}
-                  <div className="shrink-0">
-                    {s.link_zoom ? (
-                      <span className="flex items-center gap-0.5 rounded-md bg-blue-50 px-1.5 py-0.5 text-[10px] font-medium text-blue-600 dark:bg-blue-900/30 dark:text-blue-400">
-                        <Video className="h-2.5 w-2.5" />
-                        Online
-                      </span>
-                    ) : (
-                      <span className="flex items-center gap-0.5 rounded-md bg-gray-100 px-1.5 py-0.5 text-[10px] font-medium text-gray-500 dark:bg-gray-700 dark:text-gray-400">
-                        <MapPin className="h-2.5 w-2.5" />
-                        Offline
-                      </span>
-                    )}
-                  </div>
+                  {/* Icon only */}
+                  {s.link_zoom ? (
+                    <Video className="h-3.5 w-3.5 shrink-0 text-blue-400" />
+                  ) : (
+                    <MapPin className="h-3.5 w-3.5 shrink-0 text-gray-300 dark:text-gray-600" />
+                  )}
                 </Link>
               );
             })}
@@ -464,6 +459,48 @@ const MOTIVATIONAL_MESSAGES = [
   (name: string) =>
     `🌈 Jangan lupa istirahat juga ya, ${name}. Kamu sudah bekerja keras!`,
 ];
+
+// ─── Motivational Card ───────────────────────────────────────────────────────
+function MotiveCard({ msg, firstName }: { msg: string; firstName: string }) {
+  const containerRef = useRef<HTMLDivElement>(null);
+  const textRef = useRef<HTMLParagraphElement>(null);
+  const [overflow, setOverflow] = useState(0);
+
+  useEffect(() => {
+    const el = textRef.current;
+    const container = containerRef.current;
+    if (el && container && window.innerWidth < 640) {
+      setOverflow(Math.max(0, el.scrollWidth - container.clientWidth));
+    }
+  }, []);
+
+  const parts = msg.split(firstName);
+  return (
+    <div
+      ref={containerRef}
+      className="animate-fade-in overflow-hidden rounded-2xl border border-indigo-100 bg-indigo-50/70 px-4 py-2.5 shadow-sm dark:border-indigo-800/40 dark:bg-indigo-950/30 sm:px-5 sm:py-3"
+    >
+      <p
+        ref={textRef}
+        className="whitespace-nowrap text-sm text-indigo-600 dark:text-indigo-300 sm:text-base"
+        style={
+          overflow > 0
+            ? ({
+                "--marquee-offset": `-${overflow}px`,
+                animation: "marqueeScroll 6s ease-in-out infinite",
+              } as React.CSSProperties)
+            : undefined
+        }
+      >
+        {parts[0]}
+        <span className="font-bold text-indigo-900 dark:text-indigo-100">
+          {firstName}
+        </span>
+        {parts[1]}
+      </p>
+    </div>
+  );
+}
 
 export default function DashboardPage() {
   const { data: stats, isLoading: statsLoading } = useDashboard();
@@ -499,21 +536,10 @@ export default function DashboardPage() {
             DMS Marketing Outreach Overview
           </p>
         </div>
-        {(() => {
-          const msg = MOTIVATIONAL_MESSAGES[msgIndex](firstName);
-          const parts = msg.split(firstName);
-          return (
-            <div className="animate-fade-in rounded-2xl border border-indigo-100 bg-indigo-50/70 px-4 py-2.5 shadow-sm dark:border-indigo-800/40 dark:bg-indigo-950/30 sm:max-w-sm sm:px-5 sm:py-3">
-              <p className="text-sm text-indigo-600 dark:text-indigo-300 sm:text-base">
-                {parts[0]}
-                <span className="font-bold text-indigo-900 dark:text-indigo-100">
-                  {firstName}
-                </span>
-                {parts[1]}
-              </p>
-            </div>
-          );
-        })()}
+        <MotiveCard
+          msg={MOTIVATIONAL_MESSAGES[msgIndex](firstName)}
+          firstName={firstName}
+        />
       </div>
 
       {/* Row 1: 4 Stat Cards */}

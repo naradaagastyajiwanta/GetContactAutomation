@@ -19,6 +19,21 @@
   }
 }
 
+@keyframes marqueeScroll {
+  0%,
+  15% {
+    transform: translateX(0);
+  }
+  50%,
+  65% {
+    transform: translateX(var(--marquee-offset));
+  }
+  85%,
+  100% {
+    transform: translateX(0);
+  }
+}
+
 @layer base {
   body {
     @apply text-gray-900 dark:text-gray-100 antialiased;

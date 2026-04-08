@@ -165,6 +165,9 @@ class _IgSessionPool:
                     "ok": True,
                     "error": None,
                     "label": f"...{sid[-8:]}" if len(sid) > 8 else sid,
+                    "requests_served": 0,
+                    "rotation_threshold": random.randint(25, 40),
+                    "consecutive_429s": 0,
                 })
         return sessions
 
@@ -238,13 +241,35 @@ class _IgSessionPool:
                     self._current_idx = (i + 1) % len(self._sessions)
                     break
 
-    def mark_ok(self, session_id: str) -> None:
-        """Mark a session as healthy (got a successful response)."""
+    def increment_429(self, session_id: str) -> int:
+        # Increment the consecutive 429 counter; returns new count.
         with self._lock:
             for s in self._sessions:
                 if s["session_id"] == session_id:
+                    s["consecutive_429s"] = s.get("consecutive_429s", 0) + 1
+                    return s["consecutive_429s"]
+        return 1
+
+    def mark_ok(self, session_id: str) -> None:
+        # Mark session healthy, increment request counter, proactively rotate
+        # after rotation_threshold requests to stay ahead of rate limits.
+        with self._lock:
+            for i, s in enumerate(self._sessions):
+                if s["session_id"] == session_id:
                     s["ok"] = True
                     s["error"] = None
+                    s["consecutive_429s"] = 0
+                    s["requests_served"] = s.get("requests_served", 0) + 1
+                    threshold = s.get("rotation_threshold", 30)
+                    if s["requests_served"] >= threshold:
+                        s["requests_served"] = 0
+                        s["rotation_threshold"] = random.randint(25, 40)
+                        next_idx = (i + 1) % len(self._sessions)
+                        self._current_idx = next_idx
+                        log.info(
+                            "[IG] Proactive session rotation after %d requests -> %s",
+                            threshold, self._sessions[next_idx]["label"],
+                        )
                     break
 
     def reset_all(self) -> None:
@@ -346,8 +371,10 @@ def _check_ig_response(resp: httpx.Response) -> bool:
         log.warning("IG session unauthorized (401) — session expired or invalid")
         return False
     if resp.status_code == 429:
-        backoff = random.uniform(8.0, 20.0)
-        log.warning("IG rate limited (429) — backing off %.0fs before rotating session", backoff)
+        count = _ig_pool.increment_429(session_id) if session_id else 1
+        base = min(10.0 * (2 ** (count - 1)), 120.0)
+        backoff = base + random.uniform(0, base * 0.3)
+        log.warning("[IG] Rate limited (429, attempt %d) — backing off %.0fs", count, backoff)
         _time.sleep(backoff)
         if session_id:
             _ig_pool.rotate(from_session_id=session_id)
@@ -817,14 +844,31 @@ def _confidence_at_least(score: float, threshold: float, epsilon: float = 1e-9) 
 # Phase 3a: Scrape Instagram Posts (Web API with browser session)
 # ---------------------------------------------------------------------------
 
-_IG_WEB_HEADERS = {
-    "User-Agent": (
-        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
-        "(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
-    ),
+_IG_USER_AGENTS = [
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/129.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
+]
+
+_IG_WEB_HEADERS_BASE = {
     "X-IG-App-ID": "936619743392459",
     "X-Requested-With": "XMLHttpRequest",
+    "Accept": "*/*",
+    "Accept-Language": "id-ID,id;q=0.9,en-US;q=0.8,en;q=0.7",
+    "Accept-Encoding": "gzip, deflate, br",
+    "Referer": "https://www.instagram.com/",
+    "Origin": "https://www.instagram.com",
+    "Sec-Fetch-Dest": "empty",
+    "Sec-Fetch-Mode": "cors",
+    "Sec-Fetch-Site": "same-origin",
 }
+
+
+def _make_ig_headers() -> dict:
+    # Return headers with a randomly-selected User-Agent to avoid fingerprinting.
+    return {**_IG_WEB_HEADERS_BASE, "User-Agent": random.choice(_IG_USER_AGENTS)}
 
 
 def _get_ig_web_client() -> httpx.Client:
@@ -858,7 +902,7 @@ def _get_ig_web_client() -> httpx.Client:
     cookies = {"sessionid": session_id}
     return httpx.Client(
         cookies=cookies,
-        headers=_IG_WEB_HEADERS,
+        headers=_make_ig_headers(),
         timeout=20,
         follow_redirects=True,
         proxy=proxy_url,
