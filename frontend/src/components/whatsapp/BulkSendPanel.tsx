@@ -5,7 +5,7 @@
  * number parsing/deduplication, live queue progress polling.
  */
 
-import { useState, useEffect, useRef, useCallback } from "react";
+import { useState, useEffect, useRef, useCallback, useMemo } from "react";
 import {
   Send,
   FileText,
@@ -19,9 +19,11 @@ import {
 } from "lucide-react";
 import {
   useMyDevices,
+  useWhatsAppDevices,
   useBulkSendWhatsApp,
   useBulkSendDocumentWhatsApp,
 } from "../../hooks/useWhatsApp";
+import { useAuth } from "../../context/AuthContext";
 import { cn } from "../../lib/utils";
 
 // ---------------------------------------------------------------------------
@@ -98,7 +100,11 @@ interface QueueStats {
 }
 
 export function WaBlastPanel() {
+  const { hasPermission } = useAuth();
+  const isAdmin = hasPermission("*");
+
   const { data: myDevicesData } = useMyDevices();
+  const { data: allDevicesData } = useWhatsAppDevices(isAdmin);
   const bulkSendMutation = useBulkSendWhatsApp();
   const bulkSendDocMutation = useBulkSendDocumentWhatsApp();
 
@@ -120,13 +126,26 @@ export function WaBlastPanel() {
 
   const fileInputRef = useRef<HTMLInputElement>(null);
 
-  // All devices (not just connected) for the dropdown
-  const allDevices = (myDevicesData?.devices || []).map((e) => ({
-    id: e.device_id,
-    name: e.label || e.device?.name || e.device_id,
-    phoneNumber: e.device?.phoneNumber ?? null,
-    connected: e.device?.connectionState === "connected",
-  }));
+  // All devices (not just connected) for the dropdown.
+  // Admins see all system devices; non-admins see only their personal devices.
+  // Memoized so the auto-select effect has a stable dependency.
+  const allDevices = useMemo(
+    () =>
+      isAdmin
+        ? (allDevicesData?.devices || []).map((d) => ({
+            id: d.id,
+            name: d.name,
+            phoneNumber: d.phoneNumber,
+            connected: d.connectionState === "connected",
+          }))
+        : (myDevicesData?.devices || []).map((e) => ({
+            id: e.device_id,
+            name: e.label || e.device?.name || e.device_id,
+            phoneNumber: e.device?.phoneNumber ?? null,
+            connected: e.device?.connectionState === "connected",
+          })),
+    [isAdmin, allDevicesData, myDevicesData],
+  );
 
   const hasDevices = allDevices.length > 0;
   const selectedDevice = allDevices.find((d) => d.id === selectedDeviceId);
@@ -134,29 +153,30 @@ export function WaBlastPanel() {
 
   // Auto-select first connected device on mount / when devices load
   useEffect(() => {
-    if (!selectedDeviceId && myDevicesData?.devices.length) {
-      const connected = myDevicesData.devices.find(
-        (e) => e.device?.connectionState === "connected",
-      );
-      if (connected) {
-        setSelectedDeviceId(connected.device_id);
-      } else if (myDevicesData.devices[0]) {
-        setSelectedDeviceId(myDevicesData.devices[0].device_id);
-      }
-    }
-  }, [myDevicesData, selectedDeviceId]);
+    if (selectedDeviceId || allDevices.length === 0) return;
+    const connected = allDevices.find((d) => d.connected);
+    setSelectedDeviceId(connected ? connected.id : allDevices[0].id);
+  }, [allDevices, selectedDeviceId]);
 
   // Extract live queue stats from the selected device's data
   useEffect(() => {
     if (!isSent) return;
-    const deviceEntry = myDevicesData?.devices.find(
-      (e) => e.device_id === selectedDeviceId,
-    );
-    const stats = (deviceEntry?.device as any)?.queueStats as
-      | QueueStats
-      | undefined;
+    let stats: QueueStats | undefined;
+    if (isAdmin) {
+      const deviceEntry = allDevicesData?.devices.find(
+        (d) => d.id === selectedDeviceId,
+      );
+      stats = (deviceEntry as any)?.queueStats as QueueStats | undefined;
+    } else {
+      const deviceEntry = myDevicesData?.devices.find(
+        (e) => e.device_id === selectedDeviceId,
+      );
+      stats = (deviceEntry?.device as any)?.queueStats as
+        | QueueStats
+        | undefined;
+    }
     if (stats) setQueueStats(stats);
-  }, [myDevicesData, isSent, selectedDeviceId]);
+  }, [myDevicesData, allDevicesData, isSent, selectedDeviceId, isAdmin]);
 
   // Parse paste input
   const handlePasteChange = (raw: string) => {

@@ -29,7 +29,8 @@ export function usePageTour(
     const key = getKey(pageId, user.dms_user_id);
     if (localStorage.getItem(key)) return;
 
-    const timer = setTimeout(() => {
+    // Core logic: build and start the driver.js tour.
+    function startTour() {
       const filtered = steps.filter(
         (s) => !s.permission || hasPermission(s.permission),
       );
@@ -67,8 +68,28 @@ export function usePageTour(
       });
 
       d.drive();
-    }, 800);
+    }
 
+    const onboardingKey = `onboarding_v1_${user.dms_user_id}`;
+    const onboardingDone = !!localStorage.getItem(onboardingKey);
+
+    if (!onboardingDone) {
+      // Onboarding wizard is still in progress — defer this page tour until
+      // the wizard completes. Listen for the "onboarding-complete" event
+      // dispatched by useOnboarding.completeOnboarding().
+      const handler = () => {
+        // Re-check in case the tour was somehow marked done during onboarding
+        if (localStorage.getItem(key)) return;
+        const timer = setTimeout(startTour, 800);
+        // No cleanup needed: handler fires once and timer is short-lived
+        return () => clearTimeout(timer);
+      };
+      window.addEventListener("onboarding-complete", handler, { once: true });
+      return () => window.removeEventListener("onboarding-complete", handler);
+    }
+
+    // Onboarding already done — start tour normally after 800ms
+    const timer = setTimeout(startTour, 800);
     return () => clearTimeout(timer);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [user?.dms_user_id, pageId]);

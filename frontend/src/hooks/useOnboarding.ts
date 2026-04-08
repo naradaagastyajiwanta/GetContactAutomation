@@ -36,6 +36,7 @@ export function useOnboarding(): UseOnboardingReturn {
       localStorage.setItem(getStorageKey(user.dms_user_id), "done");
     }
     setIsOpen(false);
+    window.dispatchEvent(new CustomEvent("onboarding-complete"));
   }, [user]);
 
   const goNext = useCallback(() => {

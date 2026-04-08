@@ -89,11 +89,12 @@ export function useWaRestart() {
 // Multi-Device Support Hooks
 // ---------------------------------------------------------------------------
 
-export function useWhatsAppDevices() {
+export function useWhatsAppDevices(enabled = true) {
   return useQuery({
     queryKey: queryKeys.whatsapp.devices,
     queryFn: getWhatsAppDevices,
     refetchInterval: 5_000,
+    enabled,
   });
 }
 

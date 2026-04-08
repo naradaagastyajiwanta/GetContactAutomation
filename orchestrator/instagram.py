@@ -857,7 +857,7 @@ _IG_WEB_HEADERS_BASE = {
     "X-Requested-With": "XMLHttpRequest",
     "Accept": "*/*",
     "Accept-Language": "id-ID,id;q=0.9,en-US;q=0.8,en;q=0.7",
-    "Accept-Encoding": "gzip, deflate, br",
+    "Accept-Encoding": "gzip, deflate",
     "Referer": "https://www.instagram.com/",
     "Origin": "https://www.instagram.com",
     "Sec-Fetch-Dest": "empty",
