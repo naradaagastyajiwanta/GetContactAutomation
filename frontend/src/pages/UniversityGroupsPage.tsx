@@ -3,60 +3,69 @@
  * Two-column layout: group list on left, group detail/members on right.
  */
 
-import { useState } from 'react'
-import { FolderPlus, GraduationCap } from 'lucide-react'
+import { useState } from "react";
+import { FolderPlus, GraduationCap } from "lucide-react";
 import {
   useUniversityGroups,
   useUniversityGroup,
   useDeleteUniversityGroup,
   useUpdateUniversityGroup,
   useCreateUniversityGroup,
-} from '../hooks/useUniversityGroups'
-import { GroupCard } from '../components/universityGroups/GroupCard'
-import { GroupUniversitiesPanel } from '../components/universityGroups/GroupUniversitiesPanel'
-import { Button } from '../components/ui/Button'
-import { Spinner } from '../components/ui/Spinner'
-import { EmptyState } from '../components/ui/EmptyState'
-import type { UniversityGroup } from '../api/universityGroups'
+} from "../hooks/useUniversityGroups";
+import { GroupCard } from "../components/universityGroups/GroupCard";
+import { GroupUniversitiesPanel } from "../components/universityGroups/GroupUniversitiesPanel";
+import { Button } from "../components/ui/Button";
+import { Spinner } from "../components/ui/Spinner";
+import { EmptyState } from "../components/ui/EmptyState";
+import type { UniversityGroup } from "../api/universityGroups";
+import { usePageTour } from "../hooks/usePageTour";
+import { UNIVERSITY_GROUPS_TOUR_STEPS } from "../tours/university-groups.tour";
 
 export default function UniversityGroupsPage() {
-  const [selectedId, setSelectedId] = useState<number | null>(null)
-  const [showCreateForm, setShowCreateForm] = useState(false)
-  const [newName, setNewName] = useState('')
-  const [newDesc, setNewDesc] = useState('')
+  usePageTour("university-groups", UNIVERSITY_GROUPS_TOUR_STEPS);
+  const [selectedId, setSelectedId] = useState<number | null>(null);
+  const [showCreateForm, setShowCreateForm] = useState(false);
+  const [newName, setNewName] = useState("");
+  const [newDesc, setNewDesc] = useState("");
 
-  const { data, isLoading, refetch } = useUniversityGroups()
-  const createMutation = useCreateUniversityGroup()
-  const updateMutation = useUpdateUniversityGroup()
-  const deleteMutation = useDeleteUniversityGroup()
+  const { data, isLoading, refetch } = useUniversityGroups();
+  const createMutation = useCreateUniversityGroup();
+  const updateMutation = useUpdateUniversityGroup();
+  const deleteMutation = useDeleteUniversityGroup();
 
-  const groups: UniversityGroup[] = data?.groups ?? []
-  const selectedGroup = groups.find((g) => g.id === selectedId) ?? null
+  const groups: UniversityGroup[] = data?.groups ?? [];
+  const selectedGroup = groups.find((g) => g.id === selectedId) ?? null;
 
   async function handleCreate() {
-    if (!newName.trim()) return
+    if (!newName.trim()) return;
     try {
-      const result = await createMutation.mutateAsync({ name: newName.trim(), description: newDesc.trim() })
-      setNewName('')
-      setNewDesc('')
-      setShowCreateForm(false)
-      setSelectedId(result.group.id)
+      const result = await createMutation.mutateAsync({
+        name: newName.trim(),
+        description: newDesc.trim(),
+      });
+      setNewName("");
+      setNewDesc("");
+      setShowCreateForm(false);
+      setSelectedId(result.group.id);
     } catch {
       // toast handled in hook
     }
   }
 
   async function handleDelete(id: number) {
-    if (!confirm('Delete this group? This cannot be undone.')) return
-    await deleteMutation.mutateAsync(id)
-    if (selectedId === id) setSelectedId(null)
+    if (!confirm("Delete this group? This cannot be undone.")) return;
+    await deleteMutation.mutateAsync(id);
+    if (selectedId === id) setSelectedId(null);
   }
 
   return (
     <div className="flex h-full overflow-hidden p-4 lg:p-6">
       <div className="flex flex-1 overflow-hidden rounded-xl border border-gray-200 dark:border-gray-800">
         {/* Left column: group list */}
-        <div className="flex w-56 shrink-0 flex-col min-h-0 border-r border-gray-200 bg-gray-50 dark:border-gray-800 dark:bg-gray-900">
+        <div
+          data-tour="uni-groups-left"
+          className="flex w-56 shrink-0 flex-col min-h-0 border-r border-gray-200 bg-gray-50 dark:border-gray-800 dark:bg-gray-900"
+        >
           {/* Header */}
           <div className="border-b border-gray-200 px-4 py-4 dark:border-gray-800">
             <div className="mb-3 flex items-center justify-between">
@@ -76,8 +85,8 @@ export default function UniversityGroupsPage() {
                   placeholder="Group name"
                   className="w-full rounded border border-gray-300 px-2 py-1.5 text-sm focus:border-indigo-500 focus:outline-none focus:ring-1 focus:ring-indigo-500 dark:border-gray-600 dark:bg-gray-700 dark:text-gray-100"
                   onKeyDown={(e) => {
-                    if (e.key === 'Enter') handleCreate()
-                    if (e.key === 'Escape') setShowCreateForm(false)
+                    if (e.key === "Enter") handleCreate();
+                    if (e.key === "Escape") setShowCreateForm(false);
                   }}
                 />
                 <input
@@ -86,8 +95,8 @@ export default function UniversityGroupsPage() {
                   placeholder="Description (optional)"
                   className="w-full rounded border border-gray-300 px-2 py-1.5 text-xs focus:border-indigo-500 focus:outline-none focus:ring-1 focus:ring-indigo-500 dark:border-gray-600 dark:bg-gray-700 dark:text-gray-100"
                   onKeyDown={(e) => {
-                    if (e.key === 'Enter') handleCreate()
-                    if (e.key === 'Escape') setShowCreateForm(false)
+                    if (e.key === "Enter") handleCreate();
+                    if (e.key === "Escape") setShowCreateForm(false);
                   }}
                 />
                 <div className="flex gap-2">
@@ -103,9 +112,9 @@ export default function UniversityGroupsPage() {
                     size="sm"
                     variant="secondary"
                     onClick={() => {
-                      setShowCreateForm(false)
-                      setNewName('')
-                      setNewDesc('')
+                      setShowCreateForm(false);
+                      setNewName("");
+                      setNewDesc("");
                     }}
                   >
                     Cancel
@@ -114,6 +123,7 @@ export default function UniversityGroupsPage() {
               </div>
             ) : (
               <Button
+                data-tour="uni-groups-new-btn"
                 variant="outline"
                 size="sm"
                 onClick={() => setShowCreateForm(true)}
@@ -145,10 +155,15 @@ export default function UniversityGroupsPage() {
                     key={group.id}
                     group={group}
                     isSelected={selectedId === group.id}
-                    onSelect={() => setSelectedId(group.id === selectedId ? null : group.id)}
+                    onSelect={() =>
+                      setSelectedId(group.id === selectedId ? null : group.id)
+                    }
                     onDelete={() => handleDelete(group.id)}
                     onRename={(name, desc) =>
-                      updateMutation.mutate({ groupId: group.id, data: { name, description: desc } })
+                      updateMutation.mutate({
+                        groupId: group.id,
+                        data: { name, description: desc },
+                      })
                     }
                   />
                 ))}
@@ -158,7 +173,10 @@ export default function UniversityGroupsPage() {
         </div>
 
         {/* Right column: group detail */}
-        <div className="flex flex-1 min-h-0 flex-col overflow-hidden bg-white dark:bg-[#111827]">
+        <div
+          data-tour="uni-groups-detail"
+          className="flex flex-1 min-h-0 flex-col overflow-hidden bg-white dark:bg-[#111827]"
+        >
           {selectedGroup ? (
             <GroupDetailWrapper
               groupId={selectedGroup.id}
@@ -177,7 +195,7 @@ export default function UniversityGroupsPage() {
         </div>
       </div>
     </div>
-  )
+  );
 }
 
 // Separate wrapper so it re-fetches when groupId changes
@@ -186,18 +204,18 @@ function GroupDetailWrapper({
   groupName,
   onDeleted,
 }: {
-  groupId: number
-  groupName: string
-  onDeleted: () => void
+  groupId: number;
+  groupName: string;
+  onDeleted: () => void;
 }) {
-  const { data, refetch } = useUniversityGroup(groupId)
+  const { data, refetch } = useUniversityGroup(groupId);
 
   if (!data?.group) {
     return (
       <div className="flex items-center justify-center h-full">
         <Spinner />
       </div>
-    )
+    );
   }
 
   return (
@@ -206,5 +224,5 @@ function GroupDetailWrapper({
       onGroupUpdated={refetch}
       onDelete={onDeleted}
     />
-  )
+  );
 }

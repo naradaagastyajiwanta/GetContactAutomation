@@ -10,7 +10,7 @@ export function OnboardingProgressDots({
   onGoToStep,
 }: OnboardingProgressDotsProps) {
   return (
-    <div className="flex items-center justify-center gap-2">
+    <div className="flex items-center justify-center gap-1.5">
       {Array.from({ length: totalSteps }, (_, i) => {
         const step = i + 1;
         const isActive = step === currentStep;
@@ -20,7 +20,7 @@ export function OnboardingProgressDots({
           return (
             <span
               key={step}
-              className="h-2.5 w-6 rounded-full bg-indigo-600 transition-all duration-200"
+              className="block h-2 w-8 rounded-full bg-gradient-to-r from-indigo-500 to-violet-500 transition-all duration-300 ease-out"
             />
           );
         }
@@ -30,7 +30,7 @@ export function OnboardingProgressDots({
             <button
               key={step}
               onClick={() => onGoToStep(step)}
-              className="h-2.5 w-2.5 rounded-full bg-indigo-300 transition-all duration-200 dark:bg-indigo-700"
+              className="block h-2 w-2 rounded-full bg-indigo-300 transition-all duration-300 ease-out hover:scale-125 hover:bg-indigo-400 dark:bg-indigo-700 dark:hover:bg-indigo-500"
               aria-label={`Kembali ke langkah ${step}`}
             />
           );
@@ -39,7 +39,7 @@ export function OnboardingProgressDots({
         return (
           <span
             key={step}
-            className="h-2.5 w-2.5 rounded-full bg-gray-200 transition-all duration-200 dark:bg-gray-700"
+            className="block h-2 w-2 rounded-full bg-gray-200 transition-all duration-300 ease-out dark:bg-gray-700"
           />
         );
       })}

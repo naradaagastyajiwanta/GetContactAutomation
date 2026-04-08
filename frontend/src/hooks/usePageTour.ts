@@ -32,12 +32,14 @@ export function usePageTour(pageId: string, steps: PageTourStep[]) {
 
       const d = driver({
         animate: true,
-        overlayOpacity: 0.6,
+        overlayOpacity: 0.55,
+        stagePadding: 8,
+        popoverOffset: 14,
         showProgress: true,
-        progressText: "{{current}} dari {{total}}",
+        progressText: "{{current}} / {{total}}",
         nextBtnText: "Lanjut →",
         prevBtnText: "← Kembali",
-        doneBtnText: "Mengerti ✓",
+        doneBtnText: "Selesai ✓",
         allowClose: true,
         onDestroyStarted: () => {
           localStorage.setItem(key, "done");

@@ -586,7 +586,10 @@ export default function PipelinePage() {
       </div>
 
       {/* Activity log */}
-      <div className="rounded-xl border border-gray-200 bg-white dark:border-gray-700 dark:bg-gray-800">
+      <div
+        data-tour="pipeline-activity-log"
+        className="rounded-xl border border-gray-200 bg-white dark:border-gray-700 dark:bg-gray-800"
+      >
         {/* Header */}
         <div className="flex items-center justify-between border-b border-gray-100 px-5 py-3 dark:border-gray-700">
           <div className="flex items-center gap-2">

@@ -17,6 +17,8 @@ import {
   type ClientType,
   CLIENT_TYPE_LABELS,
 } from "../api/marketing";
+import { usePageTour } from "../hooks/usePageTour";
+import { MARKETING_GROUPS_TOUR_STEPS } from "../tours/marketing-groups.tour";
 
 // ---------------------------------------------------------------------------
 // Filter options
@@ -192,6 +194,8 @@ export default function MarketingGetContactPage() {
   const pageSize = 50;
   const canManage = hasPermission("marketing.manage");
 
+  usePageTour("marketing-groups", MARKETING_GROUPS_TOUR_STEPS);
+
   const { data, isLoading } = useMarketingGroups({
     ...(clientTypeFilter ? { client_type: clientTypeFilter } : {}),
     limit: pageSize,
@@ -212,7 +216,10 @@ export default function MarketingGetContactPage() {
   return (
     <div className="space-y-5">
       {/* Header */}
-      <div className="flex items-center justify-between border-b border-gray-100 pb-4 dark:border-gray-800">
+      <div
+        data-tour="mktg-header"
+        className="flex items-center justify-between border-b border-gray-100 pb-4 dark:border-gray-800"
+      >
         <div className="flex items-center gap-3">
           <div className="flex h-9 w-9 items-center justify-center rounded-xl bg-indigo-50 dark:bg-indigo-900/20">
             <Users className="h-4.5 w-4.5 text-indigo-600 dark:text-indigo-400" />
@@ -243,7 +250,7 @@ export default function MarketingGetContactPage() {
       </div>
 
       {/* Filter */}
-      <div className="flex items-center gap-2">
+      <div data-tour="mktg-type-filter" className="flex items-center gap-2">
         <span className="text-xs text-gray-400">Tipe:</span>
         <div className="flex flex-wrap gap-1.5">
           {CLIENT_TYPE_OPTIONS.map((opt) => (
@@ -295,7 +302,7 @@ export default function MarketingGetContactPage() {
           )}
         </div>
       ) : (
-        <div className="space-y-1.5">
+        <div data-tour="mktg-group-list" className="space-y-1.5">
           {groups.map((g) => (
             <GroupCard
               key={g.id}

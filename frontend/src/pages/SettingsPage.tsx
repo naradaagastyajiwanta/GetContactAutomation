@@ -1,11 +1,6 @@
-import {
-  Settings,
-  Activity,
-  Instagram,
-  Sliders,
-  Download,
-  Shield,
-} from "lucide-react";
+import { Settings, Activity, Instagram, Sliders, Download } from "lucide-react";
+import { usePageTour } from "../hooks/usePageTour";
+import { SETTINGS_TOUR_STEPS } from "../tours/settings.tour";
 import {
   SectionNav,
   type SectionItem,
@@ -14,11 +9,7 @@ import { ControlPanel } from "../components/settings/ControlPanel";
 import { HealthStatus } from "../components/settings/HealthStatus";
 import { ConfigDisplay } from "../components/settings/ConfigDisplay";
 import { ExportSection } from "../components/settings/ExportSection";
-import { IGSessionUploader } from "../components/settings/IGSessionUploader";
 import { IGAccountsManager } from "../components/settings/IGAccountsManager";
-import { ScrapingBotAccountsManager } from "../components/settings/ScrapingBotAccountsManager";
-import { AuthAccessManager } from "../components/settings/AuthAccessManager";
-import { AuthAuditLogViewer } from "../components/settings/AuthAuditLogViewer";
 
 const SECTIONS: SectionItem[] = [
   { id: "control", label: "Control", icon: <Settings className="h-4 w-4" /> },
@@ -28,21 +19,24 @@ const SECTIONS: SectionItem[] = [
     label: "Instagram",
     icon: <Instagram className="h-4 w-4" />,
   },
-  { id: "access", label: "Access", icon: <Shield className="h-4 w-4" /> },
   { id: "config", label: "Config", icon: <Sliders className="h-4 w-4" /> },
   { id: "export", label: "Export", icon: <Download className="h-4 w-4" /> },
 ];
 
 export default function SettingsPage() {
+  usePageTour("settings", SETTINGS_TOUR_STEPS);
+
   return (
     <div className="space-y-6">
       <h1 className="text-2xl font-bold text-gray-900 dark:text-gray-100">
         Settings
       </h1>
 
-      <SectionNav sections={SECTIONS} />
+      <div data-tour="settings-nav">
+        <SectionNav sections={SECTIONS} />
+      </div>
 
-      <section id="settings-control">
+      <section id="settings-control" data-tour="settings-control">
         <div className="grid gap-6 lg:grid-cols-2">
           <ControlPanel />
           <HealthStatus />
@@ -51,20 +45,11 @@ export default function SettingsPage() {
 
       <section id="settings-health" />
 
-      <section id="settings-instagram" className="space-y-4">
+      <section id="settings-instagram">
         <IGAccountsManager />
-        <ScrapingBotAccountsManager />
-        <IGSessionUploader />
       </section>
 
-      <section id="settings-access">
-        <div className="space-y-4">
-          <AuthAccessManager />
-          <AuthAuditLogViewer />
-        </div>
-      </section>
-
-      <section id="settings-config">
+      <section id="settings-config" data-tour="settings-config">
         <ConfigDisplay />
       </section>
 

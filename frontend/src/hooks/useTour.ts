@@ -1,9 +1,10 @@
 import { driver } from "driver.js";
+import type { DriveStep } from "driver.js";
 
 export function useTour(hasPermission: (permission?: string) => boolean) {
   const startTour = () => {
     requestAnimationFrame(() => {
-      const baseSteps = [
+      const baseSteps: DriveStep[] = [
         {
           popover: {
             title: "👋 Kenali Aplikasinya",
@@ -74,7 +75,7 @@ export function useTour(hasPermission: (permission?: string) => boolean) {
       ];
 
       // Admin-only steps — only shown if user has settings.manage permission
-      const adminSteps = hasPermission("settings.manage")
+      const adminSteps: DriveStep[] = hasPermission("settings.manage")
         ? [
             {
               element: '[data-tour="nav-settings"]',

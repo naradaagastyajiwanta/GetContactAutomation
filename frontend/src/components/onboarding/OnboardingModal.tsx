@@ -1,6 +1,5 @@
 import React, { useEffect, useState } from "react";
 import { createPortal } from "react-dom";
-import { Button } from "../ui/Button";
 import { OnboardingProgressDots } from "./OnboardingProgressDots";
 import { OnboardingStep1Welcome } from "./steps/OnboardingStep1Welcome";
 import { OnboardingStep2FeatureTour } from "./steps/OnboardingStep2FeatureTour";
@@ -83,24 +82,31 @@ export function OnboardingModal({
   return createPortal(
     <div className="fixed inset-0 z-[200] flex items-center justify-center p-4">
       {/* Backdrop — intentionally non-dismissable */}
-      <div className="fixed inset-0 bg-black/60 backdrop-blur-sm" />
+      <div className="onboarding-backdrop fixed inset-0 bg-black/60 backdrop-blur-sm" />
 
       {/* Panel */}
       <div
-        className={`relative w-full max-w-2xl rounded-2xl bg-white shadow-2xl transition-all duration-300 dark:bg-gray-800 ${
-          visible ? "scale-100 opacity-100" : "scale-95 opacity-0"
+        className={`onboarding-panel relative w-full max-w-2xl overflow-hidden rounded-2xl bg-white shadow-2xl dark:bg-gray-900 ${
+          visible ? "" : "opacity-0"
         }`}
       >
+        {/* Top accent line */}
+        <div className="h-[3px] w-full bg-gradient-to-r from-indigo-500 via-violet-500 to-purple-500" />
+
         {/* Header */}
-        <div className="flex items-center justify-between border-b border-gray-100 px-6 py-4 dark:border-gray-700">
-          <span className="text-sm font-medium text-gray-500 dark:text-gray-400">
-            Langkah {currentStep} dari {totalSteps} —{" "}
-            {STEP_TITLES[currentStep - 1]}
-          </span>
+        <div className="flex items-center justify-between px-8 pb-3 pt-5">
+          <div className="flex flex-col gap-0.5">
+            <span className="text-[11px] font-semibold uppercase tracking-widest text-indigo-400 dark:text-indigo-400">
+              Langkah {currentStep} / {totalSteps}
+            </span>
+            <span className="text-base font-semibold text-gray-900 dark:text-gray-100">
+              {STEP_TITLES[currentStep - 1]}
+            </span>
+          </div>
           {!isLastStep && (
             <button
               onClick={onSkip}
-              className="text-sm text-gray-400 hover:text-gray-600 dark:text-gray-500 dark:hover:text-gray-300"
+              className="rounded-full px-3 py-1 text-xs font-medium text-gray-400 transition-all duration-150 hover:bg-gray-100 hover:text-gray-600 dark:text-gray-500 dark:hover:bg-gray-800 dark:hover:text-gray-300"
             >
               Lewati
             </button>
@@ -108,7 +114,7 @@ export function OnboardingModal({
         </div>
 
         {/* Progress dots */}
-        <div className="px-6 pt-4">
+        <div className="px-8 pb-2 pt-1">
           <OnboardingProgressDots
             currentStep={currentStep}
             totalSteps={totalSteps}
@@ -116,10 +122,13 @@ export function OnboardingModal({
           />
         </div>
 
+        {/* Divider */}
+        <div className="mx-8 h-px bg-gray-100 dark:bg-gray-800" />
+
         {/* Step content */}
         <div
           key={currentStep}
-          className="min-h-[360px] overflow-y-auto px-6 py-4"
+          className="onboarding-step-content min-h-[360px] overflow-y-auto px-8 py-6"
         >
           <StepComponent
             user={user}
@@ -129,19 +138,21 @@ export function OnboardingModal({
         </div>
 
         {/* Footer */}
-        <div className="flex items-center justify-between border-t border-gray-100 px-6 py-4 dark:border-gray-700">
-          <Button
-            variant="secondary"
-            size="md"
+        <div className="flex items-center justify-between border-t border-gray-100 px-8 py-4 dark:border-gray-800">
+          <button
             onClick={onPrev}
             disabled={currentStep === 1}
+            className="rounded-full border border-gray-200 px-5 py-2 text-sm font-medium text-gray-500 transition-all duration-150 hover:scale-105 hover:border-gray-300 hover:bg-gray-50 hover:text-gray-700 disabled:pointer-events-none disabled:opacity-30 dark:border-gray-700 dark:text-gray-400 dark:hover:bg-gray-800"
           >
             ← Kembali
-          </Button>
+          </button>
 
-          <Button variant="primary" size="md" onClick={handleNext}>
+          <button
+            onClick={handleNext}
+            className="rounded-full bg-gradient-to-r from-indigo-500 to-violet-500 px-6 py-2 text-sm font-medium text-white shadow-md shadow-indigo-200 transition-all duration-150 hover:scale-105 hover:from-indigo-600 hover:to-violet-600 hover:shadow-indigo-300 active:scale-100 dark:shadow-indigo-900/40"
+          >
             {isLastStep ? "Selesai ✓" : "Lanjut →"}
-          </Button>
+          </button>
         </div>
       </div>
     </div>,

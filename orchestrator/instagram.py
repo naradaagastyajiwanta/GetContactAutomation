@@ -352,10 +352,12 @@ def _check_ig_response(resp: httpx.Response) -> bool:
 # Lazy-initialized clients
 _openai_client: AsyncOpenAI | None = None
 _openai_client_key: str = ""
+_gemini_vision_client = None
+_gemini_vision_key: str = ""
 
-# After insufficient_quota, pause Vision calls until this timestamp (float epoch).
-# Retries every _VISION_QUOTA_RETRY_MINUTES minutes to check if credits restored.
-_vision_quota_retry_after: float = 0.0
+# Cooldown timestamps (monotonic) after quota exhaustion — retry after N minutes.
+_openai_vision_quota_retry_after: float = 0.0
+_gemini_vision_quota_retry_after: float = 0.0
 _VISION_QUOTA_RETRY_MINUTES = 10
 
 
@@ -366,6 +368,18 @@ def _get_openai() -> AsyncOpenAI:
         _openai_client = AsyncOpenAI(api_key=current_key)
         _openai_client_key = current_key
     return _openai_client
+
+
+def _get_gemini_vision():
+    global _gemini_vision_client, _gemini_vision_key
+    current_key = str(cfg.get("GEMINI_API_KEY", "") or "")
+    if not current_key:
+        return None
+    if _gemini_vision_client is None or current_key != _gemini_vision_key:
+        from google import genai as _genai
+        _gemini_vision_client = _genai.Client(api_key=current_key)
+        _gemini_vision_key = current_key
+    return _gemini_vision_client
 
 
 # ---------------------------------------------------------------------------
@@ -2178,53 +2192,46 @@ async def _download_image_as_base64(url: str) -> str | None:
             return None
 
 
-async def _vision_extract_named_contacts(
+_VISION_PROMPT_SYSTEM = (
+    "Kamu adalah asisten yang mengekstrak nomor HP/WhatsApp Indonesia dari gambar flyer/poster. "
+    "HANYA ambil nomor HANDPHONE/WHATSAPP (08xx/+628xx). ABAIKAN nomor telepon rumah/kantor (021-xxx, 0361-xxx, dll). "
+    "ATURAN:\n"
+    "1. Untuk setiap nomor HP, cari nama orang yang LANGSUNG BERDEKATAN dengan nomor tersebut.\n"
+    "2. Jika tidak ada nama orang di dekat nomor, isi name dengan string kosong \"\".\n"
+    "3. JANGAN pasangkan nama yang letaknya JAUH dari nomor.\n"
+    "4. JANGAN ambil nama dari bagian lain gambar yang tidak terkait (misal: nama mahasiswa, pembicara, rektor).\n"
+    "5. Format: 08xx-xxxx-xxxx atau +62-8xx-xxxx-xxxx.\n"
+    "Jawab dalam format JSON array: [{\"phone\": \"08xxx\", \"name\": \"Nama atau kosong\"}]\n"
+    "Jika tidak ada nomor HP/WA, jawab: []"
+)
+_VISION_PROMPT_USER = "Ekstrak semua nomor telepon/HP/WhatsApp dari gambar ini. Sertakan nama orang jika ada di dekat nomor:"
+
+
+async def _openai_vision_extract(
     image_b64: str,
     *,
     require_person_name: bool = True,
-) -> list[PhoneContact]:
-    """Use OpenAI Vision to extract phone numbers with contact names from image."""
-    global _vision_quota_retry_after
+) -> list[PhoneContact] | None:
+    """Try OpenAI Vision. Returns None if quota exhausted (caller should fallback)."""
+    global _openai_vision_quota_retry_after
     import time
-    from orchestrator.config import is_paused
-
-    if is_paused():
-        return []
 
     now = time.monotonic()
-    if _vision_quota_retry_after > now:
-        remaining = int(_vision_quota_retry_after - now)
-        log.debug("Vision quota cooldown aktif, skip (%ds remaining)", remaining)
-        return []
+    if _openai_vision_quota_retry_after > now:
+        remaining = int(_openai_vision_quota_retry_after - now)
+        log.debug("OpenAI Vision cooldown aktif, skip (%ds remaining)", remaining)
+        return None  # signal: skip to fallback
 
     client = _get_openai()
-
     try:
         response = await client.chat.completions.create(
             model=VISION_MODEL,
             messages=[
-                {
-                    "role": "system",
-                    "content": (
-                        "Kamu adalah asisten yang mengekstrak nomor HP/WhatsApp Indonesia dari gambar flyer/poster. "
-                        "HANYA ambil nomor HANDPHONE/WHATSAPP (08xx/+628xx). ABAIKAN nomor telepon rumah/kantor (021-xxx, 0361-xxx, dll). "
-                        "ATURAN:\n"
-                        "1. Untuk setiap nomor HP, cari nama orang yang LANGSUNG BERDEKATAN dengan nomor tersebut.\n"
-                        "2. Jika tidak ada nama orang di dekat nomor, isi name dengan string kosong \"\".\n"
-                        "3. JANGAN pasangkan nama yang letaknya JAUH dari nomor.\n"
-                        "4. JANGAN ambil nama dari bagian lain gambar yang tidak terkait (misal: nama mahasiswa, pembicara, rektor).\n"
-                        "5. Format: 08xx-xxxx-xxxx atau +62-8xx-xxxx-xxxx.\n"
-                        "Jawab dalam format JSON array: [{\"phone\": \"08xxx\", \"name\": \"Nama atau kosong\"}]\n"
-                        "Jika tidak ada nomor HP/WA, jawab: []"
-                    ),
-                },
+                {"role": "system", "content": _VISION_PROMPT_SYSTEM},
                 {
                     "role": "user",
                     "content": [
-                        {
-                            "type": "text",
-                            "text": "Ekstrak semua nomor telepon/HP/WhatsApp dari gambar ini. Sertakan nama orang jika ada di dekat nomor:",
-                        },
+                        {"type": "text", "text": _VISION_PROMPT_USER},
                         {
                             "type": "image_url",
                             "image_url": {
@@ -2239,41 +2246,120 @@ async def _vision_extract_named_contacts(
             temperature=0,
         )
     except asyncio.CancelledError:
-        log.warning("GPT Vision extraction cancelled (shutdown/pause)")
+        log.warning("OpenAI Vision extraction cancelled (shutdown/pause)")
         return []
     except Exception as e:
         error_msg = str(e)
         if "insufficient_quota" in error_msg:
-            _vision_quota_retry_after = time.monotonic() + _VISION_QUOTA_RETRY_MINUTES * 60
-            log.warning(
-                "OpenAI Vision quota habis — akan coba lagi dalam %d menit.",
-                _VISION_QUOTA_RETRY_MINUTES,
-            )
+            _openai_vision_quota_retry_after = time.monotonic() + _VISION_QUOTA_RETRY_MINUTES * 60
+            log.warning("OpenAI Vision quota habis — fallback ke Gemini, retry dalam %d menit.", _VISION_QUOTA_RETRY_MINUTES)
             try:
                 from orchestrator.websocket import manager as _ws
-                import asyncio as _asyncio
-                _asyncio.create_task(
+                asyncio.create_task(
                     _ws.broadcast_type(
                         "openai_quota_exhausted",
                         service="vision",
-                        message="API credit OpenAI Vision habis. Hubungi developer untuk isi ulang kredit.",
+                        message="API credit OpenAI Vision habis. Fallback ke Gemini Vision.",
                     )
                 )
             except Exception:
                 pass
-            return []
+            return None  # signal: fallback to Gemini
         if "cannot schedule new futures" not in error_msg and "interpreter shutdown" not in error_msg:
-            log.error(f"OpenAI Vision API error: {e}")
+            log.error("OpenAI Vision API error: %s", e)
         return []
 
     raw = response.choices[0].message.content or ""
     if "NONE" in raw.upper():
         return []
+    return _parse_phone_contacts_json(raw, require_person_name=require_person_name)
 
-    return _parse_phone_contacts_json(
-        raw,
-        require_person_name=require_person_name,
-    )
+
+async def _gemini_vision_extract(
+    image_b64: str,
+    *,
+    require_person_name: bool = True,
+) -> list[PhoneContact]:
+    """Try Gemini Vision (gemini-2.0-flash). Returns [] on any error."""
+    global _gemini_vision_quota_retry_after
+    import time
+
+    now = time.monotonic()
+    if _gemini_vision_quota_retry_after > now:
+        remaining = int(_gemini_vision_quota_retry_after - now)
+        log.debug("Gemini Vision cooldown aktif, skip (%ds remaining)", remaining)
+        return []
+
+    client = _get_gemini_vision()
+    if client is None:
+        return []
+
+    from google.genai import types as gt
+
+    image_bytes = __import__("base64").b64decode(image_b64)
+    contents = [
+        gt.Part.from_bytes(data=image_bytes, mime_type="image/jpeg"),
+        f"{_VISION_PROMPT_SYSTEM}\n\n{_VISION_PROMPT_USER}",
+    ]
+
+    try:
+        response = await asyncio.to_thread(
+            client.models.generate_content,
+            model="gemini-2.0-flash",
+            contents=contents,
+        )
+    except asyncio.CancelledError:
+        log.warning("Gemini Vision extraction cancelled (shutdown/pause)")
+        return []
+    except Exception as e:
+        error_msg = str(e).lower()
+        if "resource_exhausted" in error_msg or "quota" in error_msg or "429" in error_msg:
+            _gemini_vision_quota_retry_after = time.monotonic() + _VISION_QUOTA_RETRY_MINUTES * 60
+            log.warning("Gemini Vision quota habis — retry dalam %d menit.", _VISION_QUOTA_RETRY_MINUTES)
+            try:
+                from orchestrator.websocket import manager as _ws
+                asyncio.create_task(
+                    _ws.broadcast_type(
+                        "openai_quota_exhausted",
+                        service="vision_all",
+                        message="API credit Vision habis (OpenAI & Gemini). Hubungi developer untuk isi ulang kredit.",
+                    )
+                )
+            except Exception:
+                pass
+        else:
+            log.error("Gemini Vision API error: %s", e)
+        return []
+
+    raw = (response.text or "").strip()
+    if not raw or "NONE" in raw.upper():
+        return []
+    return _parse_phone_contacts_json(raw, require_person_name=require_person_name)
+
+
+async def _vision_extract_named_contacts(
+    image_b64: str,
+    *,
+    require_person_name: bool = True,
+) -> list[PhoneContact]:
+    """Extract phone numbers from image. Tries OpenAI Vision first, falls back to Gemini."""
+    from orchestrator.config import is_paused
+
+    if is_paused():
+        return []
+
+    # Try OpenAI first; returns None if quota exhausted (signal to fallback)
+    result = await _openai_vision_extract(image_b64, require_person_name=require_person_name)
+    if result is not None:
+        return result
+
+    # Fallback: Gemini Vision
+    gemini_key = str(cfg.get("GEMINI_API_KEY", "") or "")
+    if gemini_key:
+        log.debug("OpenAI Vision unavailable — using Gemini Vision fallback")
+        return await _gemini_vision_extract(image_b64, require_person_name=require_person_name)
+
+    return []
 
 
 def _parse_phone_contacts_json(

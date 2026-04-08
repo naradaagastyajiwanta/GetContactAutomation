@@ -251,7 +251,7 @@ export default function WhatsAppPage() {
         {activeTab === "devices" && (
           <div className="p-5 space-y-6">
             {/* All users see their own device */}
-            <div>
+            <div data-tour="whatsapp-devices">
               <h3 className="text-sm font-semibold text-gray-500 dark:text-gray-400 uppercase tracking-wider mb-3">
                 My WhatsApp
               </h3>

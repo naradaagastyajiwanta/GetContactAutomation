@@ -457,16 +457,18 @@ export default function UniversitiesPage() {
         </Card>
       ) : (
         <>
-          <Card padding={false}>
-            <UniversityTable
-              universities={universities}
-              selected={selected}
-              onSelectedChange={setSelected}
-              canManageUniversities={canManageUniversities}
-              canRunPipeline={canRunPipeline}
-              canSelectUniversities={canSelectUniversities}
-            />
-          </Card>
+          <div data-tour="universities-table">
+            <Card padding={false}>
+              <UniversityTable
+                universities={universities}
+                selected={selected}
+                onSelectedChange={setSelected}
+                canManageUniversities={canManageUniversities}
+                canRunPipeline={canRunPipeline}
+                canSelectUniversities={canSelectUniversities}
+              />
+            </Card>
+          </div>
           <div className="flex justify-center">
             <Pagination
               currentPage={page}
