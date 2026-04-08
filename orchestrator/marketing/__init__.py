@@ -6,7 +6,7 @@ import json
 from datetime import datetime
 
 from fastapi import APIRouter, BackgroundTasks, HTTPException, Query, Request, UploadFile, File as FastAPIFile
-from fastapi.responses import StreamingResponse
+from fastapi.responses import JSONResponse, StreamingResponse
 
 from orchestrator.auth import require_permission
 from . import groups as mkt
@@ -105,9 +105,32 @@ async def generate_group_preview(request: Request, body: GroupGenerate):
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     except generator.GenerationError as exc:
-        raise HTTPException(status_code=502, detail=str(exc)) from exc
+        detail = str(exc)
+        if "timeout" in detail.lower() or "gagal menghasilkan" in detail.lower():
+            error_type = "timeout"
+        elif "sudah ada di database" in detail.lower() or "duplicate" in detail.lower():
+            error_type = "all_duplicates"
+        elif "parse" in detail.lower() or "format" in detail.lower():
+            error_type = "parse_error"
+        else:
+            error_type = "unknown"
+        return JSONResponse(
+            status_code=502,
+            content={
+                "detail": detail,
+                "error_type": error_type,
+                "partial_names": exc.partial_names,
+            },
+        )
     except Exception as exc:  # noqa: BLE001
-        raise HTTPException(status_code=502, detail=f"Generation failed: {exc}") from exc
+        return JSONResponse(
+            status_code=502,
+            content={
+                "detail": f"Generation gagal: {exc}",
+                "error_type": "unknown",
+                "partial_names": [],
+            },
+        )
 
     return {
         "success": True,
@@ -159,13 +182,15 @@ async def generate_and_create_group(
     group = await mkt.create_group(auto_name, body.client_type)
     group_id = group["id"]
 
-    # Update source to gemini_generated
+    # Update source (gemini_generated or manual depending on input method)
+    valid_sources = ("gemini_generated", "manual")
+    group_source = body.source if body.source in valid_sources else "gemini_generated"
     import aiosqlite
     from orchestrator.config import DATABASE_PATH
     async with aiosqlite.connect(DATABASE_PATH) as db:
         await db.execute(
             "UPDATE marketing_groups SET source = ? WHERE id = ?",
-            ("gemini_generated", group_id),
+            (group_source, group_id),
         )
         await db.commit()
 

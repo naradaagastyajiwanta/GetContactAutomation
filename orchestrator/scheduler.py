@@ -784,7 +784,7 @@ async def _run_marketing_search_queue():
     from orchestrator.marketing.groups import get_group_search_status, list_groups
 
     groups = await list_groups()
-    for group in groups:
+    for group in groups["groups"]:
         if group["status"] not in {"draft", "searching"}:
             continue
         status = await get_group_search_status(group["id"])
@@ -964,7 +964,7 @@ def setup_scheduler():
     scheduler.add_job(
         _run_marketing_search_queue,
         "cron",
-        hour="8-22",
+        hour="*",
         minute=0,
         timezone=WIB,
         id="marketing_search_queue",

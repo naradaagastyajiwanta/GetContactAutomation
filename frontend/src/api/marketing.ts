@@ -543,6 +543,7 @@ export async function generateMarketingGroupPreview(payload: {
 export async function confirmGeneratedGroup(payload: {
   client_type: ClientType;
   names: string[];
+  source?: string;
 }): Promise<GenerateConfirmResult> {
   const { data } = await apiClient.post(
     "/marketing/groups/generate/confirm",

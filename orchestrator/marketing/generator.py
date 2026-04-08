@@ -7,11 +7,23 @@ institution names per client_type category.
 
 from __future__ import annotations
 
+import asyncio
+import logging
 import re
 from typing import TypedDict
 
 from orchestrator.research_agents.gemini_caller import call_gemini
 
+log = logging.getLogger(__name__)
+
+# ---------------------------------------------------------------------------
+# Chunked generation config
+# ---------------------------------------------------------------------------
+
+GEMINI_CHUNK_SIZE = 30        # max names per single Gemini call (reliable JSON)
+GEMINI_TIMEOUT_SECONDS = 45   # timeout per chunk call
+MAX_RETRIES_PER_CHUNK = 3
+RETRY_BACKOFF = (2, 5)        # seconds to wait between retries
 
 # ---------------------------------------------------------------------------
 # Types
@@ -28,7 +40,9 @@ class GenerationResult(TypedDict):
 class GenerationError(Exception):
     """Raised when Gemini fails to generate valid names."""
 
-    pass
+    def __init__(self, message: str, partial_names: list[str] | None = None) -> None:
+        super().__init__(message)
+        self.partial_names: list[str] = partial_names or []
 
 
 # ---------------------------------------------------------------------------
@@ -222,6 +236,58 @@ PROMPTS: dict[str, str] = {
 
 
 # ---------------------------------------------------------------------------
+# Internal: single Gemini call with timeout + retry
+# ---------------------------------------------------------------------------
+
+
+async def _call_gemini_with_retry(prompt: str) -> tuple[list[str], list[str]]:
+    """Call Gemini with per-attempt timeout and exponential-backoff retry.
+
+    Returns (names, grounding_urls). On complete failure returns ([], []).
+    """
+    for attempt in range(MAX_RETRIES_PER_CHUNK):
+        try:
+            parsed, grounding_urls = await asyncio.wait_for(
+                call_gemini(prompt, use_search_grounding=True),
+                timeout=GEMINI_TIMEOUT_SECONDS,
+            )
+
+            if isinstance(parsed, dict) and parsed.get("_parse_failed"):
+                log.warning(
+                    "[Generator] Parse failed (attempt %d/%d) — raw: %.200s",
+                    attempt + 1,
+                    MAX_RETRIES_PER_CHUNK,
+                    parsed.get("_raw", ""),
+                )
+                if attempt < MAX_RETRIES_PER_CHUNK - 1:
+                    await asyncio.sleep(RETRY_BACKOFF[min(attempt, len(RETRY_BACKOFF) - 1)])
+                continue
+
+            raw_names: list = []
+            if isinstance(parsed, dict):
+                raw_names = parsed.get("names", [])
+            elif isinstance(parsed, list):
+                raw_names = parsed
+
+            names = [str(n).strip() for n in raw_names if str(n).strip()]
+            return names, grounding_urls
+
+        except asyncio.TimeoutError:
+            log.warning(
+                "[Generator] Gemini timeout (attempt %d/%d)",
+                attempt + 1,
+                MAX_RETRIES_PER_CHUNK,
+            )
+            if attempt < MAX_RETRIES_PER_CHUNK - 1:
+                await asyncio.sleep(RETRY_BACKOFF[min(attempt, len(RETRY_BACKOFF) - 1)])
+        except Exception as exc:  # noqa: BLE001
+            log.error("[Generator] Gemini error: %s", exc)
+            break
+
+    return [], []
+
+
+# ---------------------------------------------------------------------------
 # Generator
 # ---------------------------------------------------------------------------
 
@@ -231,12 +297,11 @@ async def generate_client_names(
     count: int = 50,
 ) -> GenerationResult:
     """
-    Call Gemini with Google Search grounding to generate institution names
-    matching the given client_type category.
+    Call Gemini in chunks (up to GEMINI_CHUNK_SIZE per call) with per-chunk
+    timeout + retry to generate institution names for the given client_type.
 
-    Fetches existing names for this client_type from the DB, injects them
-    into the prompt as an exclusion list, and post-filters the result so
-    that duplicate names are never returned.
+    Fetches existing names from the DB, injects them as an exclusion list,
+    and post-filters the result so that duplicate names are never returned.
 
     Parameters
     ----------
@@ -256,7 +321,7 @@ async def generate_client_names(
     ValueError
         If client_type is not a known PROMPTS key.
     GenerationError
-        If the Gemini call fails, JSON parsing fails, or no names are returned.
+        If all Gemini calls fail or no unique names can be returned.
     """
     if client_type not in PROMPTS:
         raise ValueError(
@@ -275,51 +340,74 @@ async def generate_client_names(
         _normalize_name_for_dedup(n) for n in existing_raw if n.strip()
     }
 
-    # Build exclusion block (cap at 150 names ≈ 600–900 extra tokens)
-    exclusion_block = ""
-    if existing_raw:
-        exclusion_lines = "\n".join(f"- {n}" for n in existing_raw[:150])
-        exclusion_block = (
-            "\n\nPERHATIAN — WAJIB DIIKUTI:\n"
-            "Nama-nama berikut SUDAH ADA dalam database dan TIDAK BOLEH kamu masukkan dalam list:\n"
-            f"{exclusion_lines}\n\n"
-            "Hasilkan HANYA nama yang BELUM ada dalam daftar di atas.\n"
-        )
-
     # Inflate requested count to compensate for expected exclusions
     buffer = min(len(existing_normalized) // 2, 80)
     actual_count = min(count + buffer, 200)
 
-    prompt = (
-        f"{base_prompt}"
-        f"{exclusion_block}"
-        f"\n\nKamu HARUS mengembalikan tepat {actual_count} nama. "
-        f"Jika jumlah nama baru yang tersedia kurang dari {actual_count}, "
-        f"kembalikan saja nama-nama yang kamu temukan (boleh kurang). "
-        f"Jangan menambah nama fiktif. "
-        f'Kembalikan HANYA satu JSON object dengan kunci "names" berisi array string. '
-        f'Format: {{"names": ["Nama 1", "Nama 2", ...]}}'
-    )
+    # --- Chunked generation ---
+    all_raw_names: list[str] = []
+    all_grounding_urls: list[str] = []
+    remaining = actual_count
 
-    parsed, grounding_urls = await call_gemini(prompt, use_search_grounding=True)
+    while remaining > 0:
+        chunk_size = min(remaining, GEMINI_CHUNK_SIZE)
 
-    if isinstance(parsed, dict) and parsed.get("_parse_failed"):
-        raise GenerationError(
-            f"Gemini returned unparseable JSON for client_type={client_type!r}. "
-            f"Raw: {parsed.get('_raw', '')[:300]}"
+        # Build exclusion list: DB names + names already generated this session
+        exclude_list = list(existing_raw[:150]) + all_raw_names[:100]
+        if exclude_list:
+            excl_lines = "\n".join(f"- {n}" for n in exclude_list)
+            excl_block = (
+                "\n\nPERHATIAN — WAJIB DIIKUTI:\n"
+                "Nama-nama berikut SUDAH ADA dalam database dan TIDAK BOLEH kamu masukkan dalam list:\n"
+                f"{excl_lines}\n\n"
+                "Hasilkan HANYA nama yang BELUM ada dalam daftar di atas.\n"
+            )
+        else:
+            excl_block = ""
+
+        prompt = (
+            f"{base_prompt}"
+            f"{excl_block}"
+            f"\n\nKamu HARUS mengembalikan tepat {chunk_size} nama. "
+            f"Jika jumlah nama baru yang tersedia kurang dari {chunk_size}, "
+            f"kembalikan saja nama-nama yang kamu temukan (boleh kurang). "
+            f"Jangan menambah nama fiktif. "
+            f'Kembalikan HANYA satu JSON object dengan kunci "names" berisi array string. '
+            f'Format: {{"names": ["Nama 1", "Nama 2", ...]}}'
         )
 
-    raw_names: list = []
-    if isinstance(parsed, dict):
-        candidate = parsed.get("names")
-        if isinstance(candidate, list):
-            raw_names = candidate
-    elif isinstance(parsed, list):
-        raw_names = parsed
+        chunk_names, chunk_urls = await _call_gemini_with_retry(prompt)
 
-    if not raw_names:
+        # Collect grounding URLs (deduplicated across chunks)
+        for url in chunk_urls:
+            if url not in all_grounding_urls:
+                all_grounding_urls.append(url)
+
+        if not chunk_names:
+            log.warning(
+                "[Generator] Chunk returned empty after retries — "
+                "stopping with %d raw names so far (target %d)",
+                len(all_raw_names),
+                actual_count,
+            )
+            break
+
+        all_raw_names.extend(chunk_names)
+        remaining -= len(chunk_names)
+
+        # If Gemini returned far fewer than asked, assume the category is nearly exhausted
+        if len(chunk_names) < chunk_size * 0.6:
+            log.info(
+                "[Generator] Partial chunk (%d/%d) — assuming category exhausted",
+                len(chunk_names),
+                chunk_size,
+            )
+            break
+
+    if not all_raw_names:
         raise GenerationError(
-            f"Gemini returned zero names for client_type={client_type!r}."
+            f"Gemini gagal menghasilkan nama untuk kategori {client_type!r}. "
+            f"Kemungkinan timeout atau format respons tidak valid. Coba lagi."
         )
 
     # --- Layer 2: Post-generation normalized dedup ---
@@ -327,7 +415,7 @@ async def generate_client_names(
     deduped_names: list[str] = []
     excluded_count = 0
 
-    for raw in raw_names:
+    for raw in all_raw_names:
         name = str(raw).strip()
         if not name:
             continue
@@ -342,14 +430,14 @@ async def generate_client_names(
 
     if not deduped_names:
         raise GenerationError(
-            f"All {len(raw_names)} Gemini-generated names were duplicates of existing entries "
-            f"for client_type={client_type!r}. "
-            f"Consider clearing old groups or using a different category."
+            f"Semua {len(all_raw_names)} nama yang dihasilkan Gemini sudah ada di database "
+            f"untuk kategori {client_type!r}. "
+            f"Coba hapus group lama atau gunakan kategori berbeda."
         )
 
     return GenerationResult(
         names=deduped_names,
-        grounding_urls=grounding_urls,
+        grounding_urls=all_grounding_urls,
         suggested_count=len(deduped_names),
         excluded_count=excluded_count,
     )

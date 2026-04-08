@@ -11,6 +11,7 @@ class GroupGenerate(BaseModel):
 class GroupGenerateResponse(BaseModel):
     client_type: str
     names: list[str]
+    source: str = "gemini_generated"  # "gemini_generated" | "manual"
 
 
 class GroupCreate(BaseModel):

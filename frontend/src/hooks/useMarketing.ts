@@ -405,7 +405,7 @@ export function useGenerateMarketingPreview() {
 export function useConfirmGeneratedGroup() {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: (payload: { client_type: ClientType; names: string[] }) =>
+    mutationFn: (payload: { client_type: ClientType; names: string[]; source?: string }) =>
       confirmGeneratedGroup(payload),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: mkKeys.all });
