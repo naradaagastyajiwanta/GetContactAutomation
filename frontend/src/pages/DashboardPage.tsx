@@ -6,20 +6,21 @@ import {
   Phone,
   MessageSquare,
   CheckCircle,
-  Wifi,
-  Bot,
   Lightbulb,
   ArrowRight,
+  MapPin,
+  Calendar,
 } from "lucide-react";
 import { useDashboard } from "../hooks/useDashboard";
 import { usePipelineStatus } from "../hooks/usePipeline";
 import { useLearningStats } from "../hooks/useLearning";
 import { useAudiensiStats } from "../hooks/useAudiensi";
+import { useDmsSchedules } from "../hooks/useDms";
 import { usePageTour } from "../hooks/usePageTour";
 import { DASHBOARD_TOUR_STEPS } from "../tours/dashboard.tour";
 import { useAuth } from "../context/AuthContext";
 import { Spinner } from "../components/ui/Spinner";
-import { formatNumber } from "../lib/utils";
+import { cn, formatNumber } from "../lib/utils";
 import type { DashboardStats } from "../lib/types";
 import type { PipelineStatus } from "../lib/types";
 
@@ -38,21 +39,23 @@ function StatCard({
   accent?: boolean;
 }) {
   return (
-    <div className="flex items-center gap-4 rounded-xl border border-gray-200 bg-white px-5 py-4 dark:border-gray-700 dark:bg-gray-800">
+    <div className="flex items-center gap-3 rounded-xl border border-gray-200 bg-white px-3 py-3 dark:border-gray-700 dark:bg-gray-800 sm:gap-4 sm:px-5 sm:py-4">
       <div
-        className={`flex h-11 w-11 shrink-0 items-center justify-center rounded-xl ${accent ? "bg-indigo-50 dark:bg-indigo-950/50" : "bg-gray-50 dark:bg-gray-700"}`}
+        className={`flex h-8 w-8 shrink-0 items-center justify-center rounded-lg sm:h-11 sm:w-11 sm:rounded-xl ${accent ? "bg-indigo-50 dark:bg-indigo-950/50" : "bg-gray-50 dark:bg-gray-700"}`}
       >
         {icon}
       </div>
-      <div>
-        <p className="text-2xl font-bold text-gray-900 dark:text-white">
+      <div className="min-w-0">
+        <p className="text-lg font-bold text-gray-900 dark:text-white sm:text-2xl">
           {formatNumber(value)}
         </p>
-        <p className="text-xs font-medium text-gray-500 dark:text-gray-400">
+        <p className="truncate text-xs font-medium text-gray-500 dark:text-gray-400">
           {label}
         </p>
         {sub && (
-          <p className="text-[11px] text-gray-400 dark:text-gray-500">{sub}</p>
+          <p className="hidden truncate text-[11px] text-gray-400 dark:text-gray-500 sm:block">
+            {sub}
+          </p>
         )}
       </div>
     </div>
@@ -97,11 +100,11 @@ function PipelineCard({ status }: { status: PipelineStatus }) {
             const pct = maxCount > 0 ? (count / maxCount) * 100 : 0;
             const isActive = stage.key === "got_number";
             return (
-              <div key={stage.key} className="flex items-center gap-3">
-                <span className="w-24 shrink-0 text-xs font-medium text-gray-500 dark:text-gray-400">
+              <div key={stage.key} className="flex items-center gap-2 sm:gap-3">
+                <span className="w-16 shrink-0 text-xs font-medium text-gray-500 dark:text-gray-400 sm:w-24">
                   {stage.label}
                 </span>
-                <div className="flex-1 h-7 overflow-hidden rounded-md bg-gray-100 dark:bg-gray-700">
+                <div className="h-6 flex-1 overflow-hidden rounded-md bg-gray-100 dark:bg-gray-700 sm:h-7">
                   <div
                     className={`flex h-full items-center justify-end rounded-md px-2 transition-all duration-500 ${
                       isActive
@@ -204,13 +207,16 @@ function QuotaCard({ stats }: { stats: DashboardStats }) {
 
   return (
     <div className="rounded-xl border border-gray-200 bg-white dark:border-gray-700 dark:bg-gray-800">
-      <div className="border-b border-gray-100 px-5 py-4 dark:border-gray-700">
+      <div className="border-b border-gray-100 px-4 py-3 dark:border-gray-700 sm:px-5 sm:py-4">
         <h3 className="text-sm font-semibold text-gray-900 dark:text-white">
           Today's Quota
         </h3>
       </div>
-      <div className="flex items-center gap-4 p-5">
-        <svg width="72" height="72" className="shrink-0 -rotate-90">
+      <div className="flex items-center gap-3 p-4 sm:gap-4 sm:p-5">
+        <svg
+          viewBox="0 0 72 72"
+          className="h-[60px] w-[60px] shrink-0 -rotate-90 sm:h-[72px] sm:w-[72px]"
+        >
           <circle
             cx="36"
             cy="36"
@@ -299,6 +305,147 @@ function AuxCard({
   );
 }
 
+// ─── Audiensi Schedule Card ────────────────────────────────────────────────
+function AudiensiScheduleCard({
+  queued,
+  scheduled,
+  completed,
+}: {
+  queued: number;
+  scheduled: number;
+  completed: number;
+}) {
+  const { data } = useDmsSchedules(30, 0);
+  const todayStr = new Date().toDateString();
+
+  const upcoming = (data?.schedules ?? [])
+    .filter((s) => s.jadwal_audiensi)
+    .sort(
+      (a, b) =>
+        new Date(a.jadwal_audiensi!).getTime() -
+        new Date(b.jadwal_audiensi!).getTime(),
+    )
+    .slice(0, 5);
+
+  return (
+    <div className="rounded-xl border border-gray-200 bg-white dark:border-gray-700 dark:bg-gray-800">
+      {/* Header */}
+      <div className="flex items-center justify-between border-b border-gray-100 px-5 py-3 dark:border-gray-700">
+        <div className="flex items-center gap-2">
+          <div className="flex h-7 w-7 items-center justify-center rounded-lg bg-gray-100 text-gray-500 dark:bg-gray-700 dark:text-gray-400">
+            <Calendar className="h-4 w-4" />
+          </div>
+          <span className="text-xs font-semibold text-gray-700 dark:text-gray-200">
+            Jadwal Audiensi
+          </span>
+        </div>
+        <Link
+          to="/dms"
+          className="flex items-center gap-0.5 text-[10px] font-medium text-indigo-600 hover:text-indigo-800 dark:text-indigo-400"
+        >
+          Lihat Semua <ArrowRight className="h-3 w-3" />
+        </Link>
+      </div>
+
+      <div className="p-4">
+        {/* Stat pills */}
+        <div className="mb-3 flex flex-wrap items-center gap-2">
+          <span className="rounded-full bg-amber-50 px-2.5 py-0.5 text-[10px] font-semibold text-amber-600 dark:bg-amber-900/30 dark:text-amber-400">
+            {queued} Antrian
+          </span>
+          <span className="rounded-full bg-indigo-50 px-2.5 py-0.5 text-[10px] font-semibold text-indigo-600 dark:bg-indigo-900/30 dark:text-indigo-400">
+            {scheduled} Dijadwalkan
+          </span>
+          <span className="rounded-full bg-emerald-50 px-2.5 py-0.5 text-[10px] font-semibold text-emerald-600 dark:bg-emerald-900/30 dark:text-emerald-400">
+            {completed} Selesai
+          </span>
+        </div>
+
+        {/* Schedule list */}
+        {upcoming.length === 0 ? (
+          <p className="py-2 text-xs text-gray-400 dark:text-gray-500">
+            Tidak ada jadwal 30 hari ke depan
+          </p>
+        ) : (
+          <div className="space-y-1">
+            {upcoming.map((s) => {
+              const date = s.jadwal_audiensi
+                ? new Date(s.jadwal_audiensi)
+                : null;
+              const isToday = date?.toDateString() === todayStr;
+              return (
+                <Link
+                  key={`${s.source}-${s.id}`}
+                  to={`/dms/schedules/${s.id}?source=${s.source}`}
+                  className="-mx-2 flex items-center gap-3 rounded-lg px-2 py-2 transition-colors hover:bg-gray-50 dark:hover:bg-gray-700/40"
+                >
+                  {/* Date chip */}
+                  <div
+                    className={cn(
+                      "w-12 shrink-0 rounded-lg py-1 text-center",
+                      isToday
+                        ? "bg-indigo-100 dark:bg-indigo-900/40"
+                        : "bg-gray-100 dark:bg-gray-700/60",
+                    )}
+                  >
+                    <p
+                      className={cn(
+                        "text-[10px] font-bold leading-tight",
+                        isToday
+                          ? "text-indigo-700 dark:text-indigo-300"
+                          : "text-gray-600 dark:text-gray-300",
+                      )}
+                    >
+                      {date
+                        ? date.toLocaleDateString("id-ID", {
+                            day: "2-digit",
+                            month: "short",
+                          })
+                        : "—"}
+                    </p>
+                    {isToday && (
+                      <p className="text-[9px] font-semibold text-indigo-500">
+                        Hari ini
+                      </p>
+                    )}
+                  </div>
+
+                  {/* Name + time */}
+                  <div className="min-w-0 flex-1">
+                    <p className="truncate text-xs font-medium text-gray-800 dark:text-gray-100">
+                      {s.nama_universitas ?? "—"}
+                    </p>
+                    {s.jam_audensi && (
+                      <p className="text-[10px] text-gray-400 dark:text-gray-500">
+                        {s.jam_audensi} WIB
+                      </p>
+                    )}
+                  </div>
+
+                  {/* Meeting type badge */}
+                  <div className="shrink-0">
+                    {s.link_zoom ? (
+                      <span className="flex items-center gap-0.5 rounded-md bg-blue-50 px-1.5 py-0.5 text-[10px] font-medium text-blue-600 dark:bg-blue-900/30 dark:text-blue-400">
+                        <Video className="h-2.5 w-2.5" />
+                        Online
+                      </span>
+                    ) : (
+                      <span className="flex items-center gap-0.5 rounded-md bg-gray-100 px-1.5 py-0.5 text-[10px] font-medium text-gray-500 dark:bg-gray-700 dark:text-gray-400">
+                        <MapPin className="h-2.5 w-2.5" />
+                        Offline
+                      </span>
+                    )}
+                  </div>
+                </Link>
+              );
+            })}
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
 // ─── Page ────────────────────────────────────────────────────────────────
 const MOTIVATIONAL_MESSAGES = [
   (name: string) =>
@@ -343,7 +490,7 @@ export default function DashboardPage() {
   return (
     <div className="space-y-6">
       {/* Header */}
-      <div className="flex items-end justify-between gap-4">
+      <div className="flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between">
         <div>
           <h1 className="text-2xl font-bold text-gray-900 dark:text-white">
             Dashboard
@@ -356,8 +503,8 @@ export default function DashboardPage() {
           const msg = MOTIVATIONAL_MESSAGES[msgIndex](firstName);
           const parts = msg.split(firstName);
           return (
-            <div className="shrink-0 animate-fade-in rounded-2xl border border-indigo-100 bg-indigo-50/70 px-5 py-3 shadow-sm dark:border-indigo-800/40 dark:bg-indigo-950/30">
-              <p className="whitespace-nowrap text-base text-indigo-600 dark:text-indigo-300">
+            <div className="animate-fade-in rounded-2xl border border-indigo-100 bg-indigo-50/70 px-4 py-2.5 shadow-sm dark:border-indigo-800/40 dark:bg-indigo-950/30 sm:max-w-sm sm:px-5 sm:py-3">
+              <p className="text-sm text-indigo-600 dark:text-indigo-300 sm:text-base">
                 {parts[0]}
                 <span className="font-bold text-indigo-900 dark:text-indigo-100">
                   {firstName}
@@ -372,7 +519,7 @@ export default function DashboardPage() {
       {/* Row 1: 4 Stat Cards */}
       <div
         data-tour="dashboard-stats"
-        className="grid grid-cols-2 gap-4 lg:grid-cols-4"
+        className="grid grid-cols-2 gap-3 sm:grid-cols-4 sm:gap-4"
       >
         <StatCard
           icon={
@@ -410,15 +557,15 @@ export default function DashboardPage() {
         />
       </div>
 
-      {/* Row 2: 3 columns */}
+      {/* Row 2: Pipeline + Quota/Overview */}
       <div className="grid gap-5 lg:grid-cols-3">
         {/* Pipeline */}
         <div data-tour="dashboard-pipeline-card" className="lg:col-span-2">
           <PipelineCard status={pipeline} />
         </div>
 
-        {/* Right column */}
-        <div className="space-y-5">
+        {/* Right column — stacked on mobile, side-by-side on tablet, stacked again on desktop */}
+        <div className="grid grid-cols-1 gap-5 sm:grid-cols-2 lg:grid-cols-1">
           <div data-tour="dashboard-quota-card">
             <QuotaCard stats={stats} />
           </div>
@@ -426,41 +573,17 @@ export default function DashboardPage() {
         </div>
       </div>
 
-      {/* Row 3: Aux cards */}
-      <div className="grid gap-5 lg:grid-cols-2">
-        <div data-tour="dashboard-audiensi-card">
-          <AuxCard
-            icon={<Video className="h-4 w-4" />}
-            title="Audiensi"
-            link="/audiensi"
-          >
-            <div className="grid grid-cols-3 gap-4">
-              <div>
-                <p className="text-lg font-bold text-gray-900 dark:text-white">
-                  {audiensiStats?.queued ?? 0}
-                </p>
-                <p className="text-[10px] text-gray-400 dark:text-gray-500">
-                  Queued
-                </p>
-              </div>
-              <div>
-                <p className="text-lg font-bold text-gray-900 dark:text-white">
-                  {audiensiStats?.scheduled ?? 0}
-                </p>
-                <p className="text-[10px] text-gray-400 dark:text-gray-500">
-                  Scheduled
-                </p>
-              </div>
-              <div>
-                <p className="text-lg font-bold text-indigo-600 dark:text-indigo-400">
-                  {audiensiStats?.completed ?? 0}
-                </p>
-                <p className="text-[10px] text-gray-400 dark:text-gray-500">
-                  Completed
-                </p>
-              </div>
-            </div>
-          </AuxCard>
+      {/* Row 3: Audiensi schedule + Learning */}
+      <div className="grid gap-5 md:grid-cols-2 lg:grid-cols-3">
+        <div
+          data-tour="dashboard-audiensi-card"
+          className="md:col-span-1 lg:col-span-2"
+        >
+          <AudiensiScheduleCard
+            queued={audiensiStats?.queued ?? 0}
+            scheduled={audiensiStats?.scheduled ?? 0}
+            completed={audiensiStats?.completed ?? 0}
+          />
         </div>
 
         <AuxCard
@@ -468,7 +591,7 @@ export default function DashboardPage() {
           title="Learning"
           link="/learning"
         >
-          <div className="grid grid-cols-3 gap-4">
+          <div className="grid grid-cols-2 gap-4">
             <div>
               <p className="text-lg font-bold text-gray-900 dark:text-white">
                 {learningStats?.total_active_lessons ?? 0}

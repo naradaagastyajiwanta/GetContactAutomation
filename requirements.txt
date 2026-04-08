@@ -27,6 +27,7 @@ email-validator>=2.1.0
 dnspython>=2.4.0
 aiosmtplib>=3.0.0
 pysocks>=1.7.1
+socksio>=0.2.0
 
 # Free scraping replacements (no API key needed)
 ddgs>=7.0.0

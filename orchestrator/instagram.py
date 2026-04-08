@@ -318,22 +318,31 @@ _tl = _threading.local()
 def _check_ig_response(resp: httpx.Response) -> bool:
     """Check if an IG response indicates a suspended/login-required session.
     Returns True if response is OK, False if session is broken."""
+    from orchestrator.proxy_pool import get_proxy_pool
     url = str(resp.url)
     session_id = getattr(_tl, "current_session_id", None)
+    proxy_url = getattr(_tl, "current_proxy_url", None)
+    proxy_pool = get_proxy_pool()
 
     if "/accounts/suspended" in url:
         if session_id:
             _ig_pool.mark_bad(session_id, "suspended")
+        if proxy_url and proxy_pool:
+            proxy_pool.mark_failed(proxy_url)
         log.warning("IG session is SUSPENDED")
         return False
     if "/accounts/login" in url:
         if session_id:
             _ig_pool.mark_bad(session_id, "login_required")
+        if proxy_url and proxy_pool:
+            proxy_pool.mark_failed(proxy_url)
         log.warning("IG session expired (login required)")
         return False
     if resp.status_code == 401:
         if session_id:
             _ig_pool.mark_bad(session_id, "unauthorized")
+        if proxy_url and proxy_pool:
+            proxy_pool.mark_failed(proxy_url)
         log.warning("IG session unauthorized (401) — session expired or invalid")
         return False
     if resp.status_code == 429:
@@ -342,10 +351,15 @@ def _check_ig_response(resp: httpx.Response) -> bool:
         _time.sleep(backoff)
         if session_id:
             _ig_pool.rotate(from_session_id=session_id)
+        if proxy_url and proxy_pool:
+            proxy_pool.mark_failed(proxy_url)
         return False
-    # If we get a normal 200 response, mark session as OK
-    if resp.status_code == 200 and session_id:
-        _ig_pool.mark_ok(session_id)
+    # If we get a normal 200 response, mark session and proxy as OK
+    if resp.status_code == 200:
+        if session_id:
+            _ig_pool.mark_ok(session_id)
+        if proxy_url and proxy_pool:
+            proxy_pool.mark_success(proxy_url)
     return True
 
 
@@ -819,7 +833,11 @@ def _get_ig_web_client() -> httpx.Client:
     Uses the session pool to pick the current healthy session.
     Stores the active session ID in thread-local so ``_check_ig_response``
     can mark the correct session when errors occur.
+
+    If PROXY_POOL_ENABLED is set, routes requests through WARP (SOCKS5).
+    Requires socksio: pip install socksio
     """
+    from orchestrator.proxy_pool import get_proxy_pool
     session_id = _ig_pool.get_current_session_id()
     if not session_id:
         raise RuntimeError(
@@ -829,12 +847,21 @@ def _get_ig_web_client() -> httpx.Client:
         )
     # Store in thread-local for _check_ig_response to reference
     _tl.current_session_id = session_id
+
+    # Pick next WARP proxy (round-robin); None = direct connection
+    proxy_pool = get_proxy_pool()
+    proxy_url = proxy_pool.get_next() if proxy_pool else None
+    _tl.current_proxy_url = proxy_url
+    if proxy_url:
+        log.debug("[IG] routing direct API via proxy %s", proxy_url[:30])
+
     cookies = {"sessionid": session_id}
     return httpx.Client(
         cookies=cookies,
         headers=_IG_WEB_HEADERS,
         timeout=20,
         follow_redirects=True,
+        proxy=proxy_url,
     )
 
 
