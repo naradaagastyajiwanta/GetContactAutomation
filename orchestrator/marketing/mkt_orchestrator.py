@@ -49,12 +49,17 @@ _openai_client_key: str = ""
 _RETRIABLE_STATUS_CODES = {429, 500, 503}
 _MAX_RETRIES = 3
 
+import httpx as _httpx  # noqa: E402
+
 
 def _get_openai() -> AsyncOpenAI:
     global _openai_client, _openai_client_key
     current_key = cfg.OPENAI_API_KEY
     if _openai_client is None or current_key != _openai_client_key:
-        _openai_client = AsyncOpenAI(api_key=current_key)
+        _openai_client = AsyncOpenAI(
+            api_key=current_key,
+            timeout=_httpx.Timeout(connect=10.0, read=120.0, write=10.0, pool=10.0),
+        )
         _openai_client_key = current_key
     return _openai_client
 
@@ -605,6 +610,8 @@ class MarketingOrchestratorAgent:
                 break
 
             # Parallel tool execution
+            _PER_TOOL_TIMEOUT = int(cfg.get("MARKETING_TOOL_TIMEOUT_SECONDS", 900))
+
             async def _run_one_tool(fc) -> tuple[dict, bool]:
                 name = fc.name
                 try:
@@ -630,7 +637,24 @@ class MarketingOrchestratorAgent:
                 # (it may be rejected by the Instagram gate and return an error)
                 return output, (name in _TERMINAL_TOOLS and context.done_called)
 
-            _tool_results = await asyncio.gather(*[_run_one_tool(fc) for fc in function_calls])
+            async def _run_one_tool_safe(fc) -> tuple[dict, bool]:
+                try:
+                    return await asyncio.wait_for(_run_one_tool(fc), timeout=_PER_TOOL_TIMEOUT)
+                except asyncio.TimeoutError:
+                    log.warning(
+                        "[OrchestratorAgent] tool %s timed out after %ds",
+                        fc.name, _PER_TOOL_TIMEOUT,
+                    )
+                    return {
+                        "type": "function_call_output",
+                        "call_id": fc.call_id,
+                        "output": json.dumps({
+                            "error": f"Tool {fc.name} timed out after {_PER_TOOL_TIMEOUT}s. "
+                                     "Skip this tool and use available results."
+                        }),
+                    }, False
+
+            _tool_results = await asyncio.gather(*[_run_one_tool_safe(fc) for fc in function_calls])
 
             function_outputs = []
             terminal_reached = False
