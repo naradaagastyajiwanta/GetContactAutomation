@@ -1,6 +1,6 @@
 import { useState, useEffect } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { Link, useParams } from "react-router-dom";
+import { Link, useParams, useNavigate } from "react-router-dom";
 import {
   ArrowLeft,
   Play,
@@ -32,6 +32,9 @@ import { MarketingImportModal } from "../components/marketing/MarketingImportMod
 import { MarketingClientResultsTable } from "../components/marketing/MarketingClientResultsTable";
 import { MarketingReadyToBlastPanel } from "../components/marketing/MarketingReadyToBlastPanel";
 import { useAuth } from "../context/AuthContext";
+import { usePageTour } from "../hooks/usePageTour";
+import { MARKETING_GROUP_DETAIL_TOUR_STEPS } from "../tours/marketing-group-detail.tour";
+import { deleteMarketingGroup } from "../api/marketing";
 import toast from "react-hot-toast";
 import {
   type GroupStatus,
@@ -496,6 +499,7 @@ function GroupStrategyPanel({ groupId }: { groupId: number }) {
 export default function MarketingClientDetailPage() {
   const { id } = useParams<{ id: string }>();
   const { hasPermission } = useAuth();
+  const navigate = useNavigate();
   const groupId = Number(id);
   const queryClient = useQueryClient();
 
@@ -515,6 +519,22 @@ export default function MarketingClientDetailPage() {
     search_status: searchStatusFilter || undefined,
   });
   const canManage = hasPermission("marketing.manage");
+  const isDummyGroup =
+    localStorage.getItem("onboarding_dummy_group_id") === String(groupId);
+  usePageTour("marketing-group-detail", MARKETING_GROUP_DETAIL_TOUR_STEPS, {
+    onComplete: async () => {
+      const dummyId = localStorage.getItem("onboarding_dummy_group_id");
+      if (dummyId && Number(dummyId) === groupId) {
+        try {
+          await deleteMarketingGroup(groupId);
+        } catch {
+          // best-effort
+        }
+        localStorage.removeItem("onboarding_dummy_group_id");
+        navigate("/marketing");
+      }
+    },
+  });
 
   const group = data?.group;
   const stats = data?.stats;
@@ -625,8 +645,27 @@ export default function MarketingClientDetailPage() {
 
   return (
     <div className="space-y-5">
+      {/* ── Dummy onboarding banner ── */}
+      {isDummyGroup && (
+        <div className="flex items-center gap-3 rounded-xl border border-indigo-200 bg-indigo-50 px-4 py-3 dark:border-indigo-800/50 dark:bg-indigo-950/30">
+          <span className="text-lg">🎓</span>
+          <div className="flex-1">
+            <p className="text-sm font-medium text-indigo-800 dark:text-indigo-200">
+              Grup Demo Onboarding
+            </p>
+            <p className="text-xs text-indigo-600 dark:text-indigo-400">
+              Ini adalah grup latihan — scraping tidak akan dijalankan. Grup ini
+              akan otomatis dihapus setelah kamu selesai tour.
+            </p>
+          </div>
+        </div>
+      )}
+
       {/* ── Header ── */}
-      <div className="flex items-start justify-between gap-4 pb-4 border-b border-gray-100 dark:border-gray-800">
+      <div
+        data-tour="group-detail-header"
+        className="flex items-start justify-between gap-4 pb-4 border-b border-gray-100 dark:border-gray-800"
+      >
         <div className="flex items-start gap-3">
           <Link
             to="/marketing"
@@ -678,12 +717,17 @@ export default function MarketingClientDetailPage() {
 
         {/* Action buttons */}
         {canManage && (
-          <div className="flex items-center gap-2">
+          <div
+            data-tour="group-detail-actions"
+            className="flex items-center gap-2"
+          >
             {group.status !== "searching" && (
               <Button
                 size="sm"
                 onClick={handleStartSearch}
                 loading={startSearchMutation.isPending}
+                disabled={isDummyGroup}
+                title={isDummyGroup ? "Tidak tersedia di grup demo" : undefined}
               >
                 <Play className="h-3.5 w-3.5" />
                 Mulai Scraping
@@ -774,7 +818,10 @@ export default function MarketingClientDetailPage() {
 
       {/* ── Stats strip ── */}
       {stats && (
-        <div className="overflow-hidden rounded-xl border border-gray-100 bg-white shadow-sm dark:border-gray-700/50 dark:bg-gray-800/60">
+        <div
+          data-tour="group-detail-stats"
+          className="overflow-hidden rounded-xl border border-gray-100 bg-white shadow-sm dark:border-gray-700/50 dark:bg-gray-800/60"
+        >
           <div className="grid grid-cols-4 divide-x divide-gray-100 dark:divide-gray-700/50">
             {/* Total */}
             <div className="px-5 py-4">
@@ -892,7 +939,7 @@ export default function MarketingClientDetailPage() {
       <GroupStrategyPanel groupId={groupId} />
 
       {/* ── Client list ── */}
-      <div>
+      <div data-tour="group-detail-clients">
         {/* Header row */}
         <div className="mb-3 flex flex-wrap items-center justify-between gap-3">
           <p className="text-sm font-medium text-gray-600 dark:text-gray-400">

@@ -190,22 +190,30 @@ async def _save_posts(
 ) -> int:
     """Save posts to DB, return count of newly inserted rows.
 
-    Args:
-        university_id: Parent university ID
-        posts: List of post dictionaries from scraping
-        source_ig_handle: Which IG account this came from
-        source_ig_type: Type of IG account ('main' or 'bem', 'humas', 'pmb', etc.)
+    Downloads and caches image bytes at scrape time so Agent3 doesn't need
+    to re-download CDN URLs that may expire before processing.
     """
+    from orchestrator.instagram import _download_image_as_base64
+
     saved = 0
     for post in posts:
+        image_url = post.get("image_url")
+        image_data: str | None = None
+        if image_url:
+            try:
+                image_data = await _download_image_as_base64(image_url)
+            except Exception:
+                pass  # Cache failure is non-fatal; Agent3 will fall back to URL
+
         result = await add_ig_post(
             university_id=university_id,
             post_url=post["post_url"],
-            image_url=post.get("image_url"),
+            image_url=image_url,
             caption=post.get("caption"),
             post_timestamp=post.get("timestamp"),
             source_ig_handle=source_ig_handle,
             source_ig_type=source_ig_type,
+            image_data=image_data,
         )
         if result is not None:
             saved += 1

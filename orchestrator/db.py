@@ -1430,6 +1430,12 @@ async def init_db() -> None:
             await db.commit()
         except Exception:
             pass  # Column already exists
+        # Migration: add image_data column for cached base64 image bytes
+        try:
+            await db.execute("ALTER TABLE ig_posts ADD COLUMN image_data TEXT")
+            await db.commit()
+        except Exception:
+            pass  # Column already exists
 
         # Migration: add login_status column to ig_accounts
         try:
@@ -2538,6 +2544,7 @@ async def add_ig_post(
     post_timestamp: str | None = None,
     source_ig_handle: str | None = None,
     source_ig_type: str | None = None,
+    image_data: str | None = None,
 ) -> int | None:
     """Insert a scraped post row (INSERT OR IGNORE for dedup).
 
@@ -2549,15 +2556,16 @@ async def add_ig_post(
         post_timestamp: When the post was made
         source_ig_handle: Which IG account this came from (e.g., 'bem.umj', 'univ_official')
         source_ig_type: Type of IG account ('main' for official, or 'bem', 'humas', 'pmb', etc.)
+        image_data: Base64-encoded image bytes (cached at scrape time to avoid CDN URL expiry)
     """
     async with get_db() as db:
         cursor = await db.execute(
             """
             INSERT OR IGNORE INTO ig_posts
-                (university_id, post_url, image_url, caption, post_timestamp, source_ig_handle, source_ig_type)
-            VALUES (?, ?, ?, ?, ?, ?, ?)
+                (university_id, post_url, image_url, caption, post_timestamp, source_ig_handle, source_ig_type, image_data)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
             """,
-            (university_id, post_url, image_url, caption, post_timestamp, source_ig_handle, source_ig_type),
+            (university_id, post_url, image_url, caption, post_timestamp, source_ig_handle, source_ig_type, image_data),
         )
         await db.commit()
         # Touch university updated_at when a new post is added

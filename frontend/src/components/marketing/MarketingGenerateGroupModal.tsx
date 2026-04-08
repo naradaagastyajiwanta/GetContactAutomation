@@ -1,4 +1,5 @@
-import { useState, useRef } from "react";
+import { useState, useRef, useEffect } from "react";
+import { driver } from "driver.js";
 import * as XLSX from "xlsx";
 import { Modal } from "../ui/Modal";
 import { Button } from "../ui/Button";
@@ -166,13 +167,66 @@ function getErrorMessage(errorType?: string, detail?: string): string {
 
 interface MarketingGenerateGroupModalProps {
   onClose: () => void;
+  onGroupCreated?: (groupId: number) => void;
+  isOnboarding?: boolean;
 }
 
 export function MarketingGenerateGroupModal({
   onClose,
+  onGroupCreated,
+  isOnboarding,
 }: MarketingGenerateGroupModalProps) {
   const [state, setState] = useState<ModalState>(INITIAL_STATE);
   const [activeTab, setActiveTab] = useState<InputTab>("gemini");
+
+  useEffect(() => {
+    if (!isOnboarding) return;
+    const timer = setTimeout(() => {
+      const d = driver({
+        animate: true,
+        overlayOpacity: 0.55,
+        stagePadding: 8,
+        popoverOffset: 14,
+        showProgress: true,
+        progressText: "{{current}} / {{total}}",
+        nextBtnText: "Lanjut →",
+        prevBtnText: "← Kembali",
+        doneBtnText: "Paham, Mulai! →",
+        allowClose: true,
+        steps: [
+          {
+            element: '[data-tour="modal-client-type"]',
+            popover: {
+              title: "🏷️ Tipe Client",
+              description:
+                "Pilih kategori industri target grupmu: BUMN, Kementerian, Swasta Besar, Asosiasi, dll. Ini mempengaruhi cara AI mencari nama klien yang relevan.",
+              side: "bottom",
+            },
+          },
+          {
+            element: '[data-tour="modal-input-tabs"]',
+            popover: {
+              title: "3 Cara Input Nama Client",
+              description:
+                "<b>Generate AI</b> — Gemini buat daftar otomatis dari Google Search.<br><b>Paste Nama</b> — tempel daftar nama langsung.<br><b>Upload File</b> — upload Excel atau CSV berisi nama klien.",
+              side: "bottom",
+            },
+          },
+          {
+            element: '[data-tour="modal-gemini-area"]',
+            popover: {
+              title: "⚡ Generate dengan AI",
+              description:
+                "Set jumlah nama yang ingin di-generate, lalu klik <b>Generate dengan AI</b>. Gemini akan mencari nama institusi nyata sesuai tipe yang dipilih. Request besar dibagi otomatis per batch.",
+              side: "top",
+            },
+          },
+        ],
+      });
+      d.drive();
+    }, 400);
+    return () => clearTimeout(timer);
+  }, [isOnboarding]);
 
   // Gemini tab state
   const [geminiError, setGeminiError] = useState<string | null>(null);
@@ -231,7 +285,17 @@ export function MarketingGenerateGroupModal({
         inputSourceLabel: "AI",
       }));
     } catch (err: unknown) {
-      const errData = (err as { response?: { data?: { error_type?: string; partial_names?: string[]; detail?: string } } })?.response?.data;
+      const errData = (
+        err as {
+          response?: {
+            data?: {
+              error_type?: string;
+              partial_names?: string[];
+              detail?: string;
+            };
+          };
+        }
+      )?.response?.data;
       const errorType = errData?.error_type;
       const partialNames = errData?.partial_names ?? [];
 
@@ -381,7 +445,7 @@ export function MarketingGenerateGroupModal({
       {state.step === "setup" && (
         <div className="space-y-5">
           {/* Client type selector */}
-          <div>
+          <div data-tour="modal-client-type">
             <label className="mb-1.5 block text-sm font-medium text-gray-700 dark:text-gray-300">
               Tipe Client
             </label>
@@ -396,7 +460,7 @@ export function MarketingGenerateGroupModal({
           </div>
 
           {/* Input method tabs */}
-          <div>
+          <div data-tour="modal-input-tabs">
             <div className="flex gap-1 rounded-lg border border-gray-200 bg-gray-50 p-1 dark:border-gray-700 dark:bg-gray-800">
               {(
                 [
@@ -424,7 +488,7 @@ export function MarketingGenerateGroupModal({
 
             {/* Tab: Gemini ─────────────────────────────────────────────────── */}
             {activeTab === "gemini" && (
-              <div className="mt-4 space-y-4">
+              <div data-tour="modal-gemini-area" className="mt-4 space-y-4">
                 <div className="rounded-lg border border-indigo-100 bg-indigo-50 p-4 dark:border-indigo-900 dark:bg-indigo-950/30">
                   <div className="flex items-start gap-3">
                     <Sparkles className="mt-0.5 h-5 w-5 shrink-0 text-indigo-600 dark:text-indigo-400" />
@@ -509,7 +573,9 @@ export function MarketingGenerateGroupModal({
                   value={pasteText}
                   onChange={(e) => setPasteText(e.target.value)}
                   rows={10}
-                  placeholder={"PT Telkom Indonesia\nPT Pertamina\nKementerian Keuangan\n..."}
+                  placeholder={
+                    "PT Telkom Indonesia\nPT Pertamina\nKementerian Keuangan\n..."
+                  }
                   className="w-full rounded-lg border border-gray-300 px-3 py-2.5 font-mono text-sm
                     focus:border-indigo-500 focus:outline-none focus:ring-1 focus:ring-indigo-500
                     dark:border-gray-600 dark:bg-gray-700 dark:text-gray-100 dark:placeholder-gray-500"
@@ -528,10 +594,7 @@ export function MarketingGenerateGroupModal({
                       : "Belum ada nama"}
                   </span>
                   <div className="flex gap-2">
-                    <Button
-                      variant="secondary"
-                      onClick={onClose}
-                    >
+                    <Button variant="secondary" onClick={onClose}>
                       Batal
                     </Button>
                     <Button
@@ -603,7 +666,8 @@ export function MarketingGenerateGroupModal({
                       onClick={() => {
                         setUploadFile(null);
                         setUploadNames([]);
-                        if (fileInputRef.current) fileInputRef.current.value = "";
+                        if (fileInputRef.current)
+                          fileInputRef.current.value = "";
                       }}
                       className="ml-2 text-gray-400 hover:text-gray-600"
                     >
@@ -818,6 +882,7 @@ export function MarketingGenerateGroupModal({
             {state.groupId && (
               <Button
                 onClick={() => {
+                  onGroupCreated?.(state.groupId!);
                   onClose();
                   navigate(`/marketing/groups/${state.groupId}`);
                 }}

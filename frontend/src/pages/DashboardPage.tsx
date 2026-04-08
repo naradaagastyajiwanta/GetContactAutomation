@@ -1,4 +1,5 @@
 import { Link } from "react-router-dom";
+import { useState } from "react";
 import {
   Video,
   Building2,
@@ -16,6 +17,7 @@ import { useLearningStats } from "../hooks/useLearning";
 import { useAudiensiStats } from "../hooks/useAudiensi";
 import { usePageTour } from "../hooks/usePageTour";
 import { DASHBOARD_TOUR_STEPS } from "../tours/dashboard.tour";
+import { useAuth } from "../context/AuthContext";
 import { Spinner } from "../components/ui/Spinner";
 import { formatNumber } from "../lib/utils";
 import type { DashboardStats } from "../lib/types";
@@ -298,12 +300,36 @@ function AuxCard({
 }
 
 // ─── Page ────────────────────────────────────────────────────────────────
+const MOTIVATIONAL_MESSAGES = [
+  (name: string) =>
+    `☀️ Selamat datang, ${name}! Hari ini pasti lebih baik dari kemarin.`,
+  (name: string) => `💪 Kamu bisa, ${name}! Mulai hari dengan semangat penuh.`,
+  (name: string) => `🌟 Hai ${name}, kamu sudah luar biasa sampai sejauh ini!`,
+  (name: string) => `🔥 Semangat, ${name}! Kerja kerasmu tidak akan sia-sia.`,
+  (name: string) =>
+    `✨ ${name}, setiap usaha kecil hari ini akan terasa besok.`,
+  (name: string) => `🚀 Ayo ${name}, hari ini giliran kamu bersinar!`,
+  (name: string) => `🎯 ${name}, tetap semangat — hasil terbaik menunggumu!`,
+  (name: string) =>
+    `💡 Ingat, ${name} — perjalanan jauh dimulai dari langkah pertama.`,
+  (name: string) =>
+    `🏆 ${name}, kamu lebih kuat dari tantangan apapun hari ini.`,
+  (name: string) =>
+    `🌈 Jangan lupa istirahat juga ya, ${name}. Kamu sudah bekerja keras!`,
+];
+
 export default function DashboardPage() {
   const { data: stats, isLoading: statsLoading } = useDashboard();
   const { data: pipeline, isLoading: pipelineLoading } = usePipelineStatus();
   const { data: learningStats } = useLearningStats();
   const { data: audiensiStats } = useAudiensiStats();
+  const { user } = useAuth();
   usePageTour("dashboard", DASHBOARD_TOUR_STEPS);
+
+  const firstName = user?.name?.split(" ")[0] ?? "Kamu";
+  const [msgIndex] = useState(() =>
+    Math.floor(Math.random() * MOTIVATIONAL_MESSAGES.length),
+  );
 
   if (statsLoading || pipelineLoading) {
     return (
@@ -317,13 +343,30 @@ export default function DashboardPage() {
   return (
     <div className="space-y-6">
       {/* Header */}
-      <div>
-        <h1 className="text-2xl font-bold text-gray-900 dark:text-white">
-          Dashboard
-        </h1>
-        <p className="mt-1 text-sm text-gray-500 dark:text-gray-400">
-          DMS Marketing Outreach Overview
-        </p>
+      <div className="flex items-end justify-between gap-4">
+        <div>
+          <h1 className="text-2xl font-bold text-gray-900 dark:text-white">
+            Dashboard
+          </h1>
+          <p className="mt-1 text-sm text-gray-500 dark:text-gray-400">
+            DMS Marketing Outreach Overview
+          </p>
+        </div>
+        {(() => {
+          const msg = MOTIVATIONAL_MESSAGES[msgIndex](firstName);
+          const parts = msg.split(firstName);
+          return (
+            <div className="shrink-0 animate-fade-in rounded-2xl border border-indigo-100 bg-indigo-50/70 px-5 py-3 shadow-sm dark:border-indigo-800/40 dark:bg-indigo-950/30">
+              <p className="whitespace-nowrap text-base text-indigo-600 dark:text-indigo-300">
+                {parts[0]}
+                <span className="font-bold text-indigo-900 dark:text-indigo-100">
+                  {firstName}
+                </span>
+                {parts[1]}
+              </p>
+            </div>
+          );
+        })()}
       </div>
 
       {/* Row 1: 4 Stat Cards */}

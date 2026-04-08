@@ -11,7 +11,16 @@ function getKey(pageId: string, userId: number) {
   return `page_tour_v1_${pageId}_${userId}`;
 }
 
-export function usePageTour(pageId: string, steps: PageTourStep[]) {
+interface PageTourOptions {
+  /** Called only when user reaches the last step (tour completed). */
+  onComplete?: () => void | Promise<void>;
+}
+
+export function usePageTour(
+  pageId: string,
+  steps: PageTourStep[],
+  options?: PageTourOptions,
+) {
   const { user, hasPermission } = useAuth();
 
   useEffect(() => {
@@ -30,6 +39,8 @@ export function usePageTour(pageId: string, steps: PageTourStep[]) {
         return;
       }
 
+      let lastStepReached = false;
+
       const d = driver({
         animate: true,
         overlayOpacity: 0.55,
@@ -41,9 +52,16 @@ export function usePageTour(pageId: string, steps: PageTourStep[]) {
         prevBtnText: "← Kembali",
         doneBtnText: "Selesai ✓",
         allowClose: true,
-        onDestroyStarted: () => {
+        onHighlightStarted: () => {
+          if ((d.getActiveIndex() ?? 0) === filtered.length - 1) {
+            lastStepReached = true;
+          }
+        },
+        onDestroyed: () => {
           localStorage.setItem(key, "done");
-          d.destroy();
+          if (lastStepReached) {
+            options?.onComplete?.();
+          }
         },
         steps: filtered,
       });

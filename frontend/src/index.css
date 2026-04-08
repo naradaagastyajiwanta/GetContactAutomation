@@ -2,6 +2,23 @@
 @tailwind components;
 @tailwind utilities;
 
+@layer utilities {
+  .animate-fade-in {
+    animation: fadeInUp 0.45s cubic-bezier(0.22, 1, 0.36, 1) both;
+  }
+}
+
+@keyframes fadeInUp {
+  from {
+    opacity: 0;
+    transform: translateY(6px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
 @layer base {
   body {
     @apply text-gray-900 dark:text-gray-100 antialiased;
@@ -82,7 +99,6 @@
 
 /* ── Base popover ── */
 .driver-popover {
-  position: relative !important;
   overflow: hidden !important;
   border-radius: 18px !important;
   font-family: inherit !important;

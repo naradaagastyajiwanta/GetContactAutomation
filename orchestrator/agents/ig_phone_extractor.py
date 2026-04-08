@@ -87,9 +87,14 @@ async def run_phone_extraction_batch(limit: int = 50) -> dict:
             image_url = post.get("image_url")
 
             if image_url:
-                # Image post: extract from both image and caption via GPT
+                # Image post: extract from both image and caption via GPT.
+                # Prefer cached image_data (downloaded at scrape time) to avoid
+                # CDN URL expiry. Falls back to re-downloading if cache is absent.
+                image_data = post.get("image_data")
                 try:
-                    contacts = await extract_phone_from_image(image_url, caption)
+                    contacts = await extract_phone_from_image(
+                        image_url, caption, image_b64=image_data or None
+                    )
                 except Exception as e:
                     log.warning(
                         "[Agent3] Vision extraction failed for post %d: %s",

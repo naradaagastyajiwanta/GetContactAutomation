@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { Link } from "react-router-dom";
+import { Link, useNavigate } from "react-router-dom";
 import { Users, Plus, Trash2, ChevronRight, Loader2 } from "lucide-react";
 import { cn } from "../lib/utils";
 import { Pagination } from "../components/ui/Pagination";
@@ -188,13 +188,19 @@ function GroupCard({
 // ---------------------------------------------------------------------------
 export default function MarketingGetContactPage() {
   const { hasPermission } = useAuth();
+  const navigate = useNavigate();
   const [clientTypeFilter, setClientTypeFilter] = useState<ClientType | "">("");
   const [createModalOpen, setCreateModalOpen] = useState(false);
+  const [isOnboardingModal, setIsOnboardingModal] = useState(false);
   const [page, setPage] = useState(1);
   const pageSize = 50;
   const canManage = hasPermission("marketing.manage");
 
-  usePageTour("marketing-groups", MARKETING_GROUPS_TOUR_STEPS);
+  usePageTour("marketing-groups", MARKETING_GROUPS_TOUR_STEPS, {
+    onComplete: () => {
+      setIsOnboardingModal(true);
+    },
+  });
 
   const { data, isLoading } = useMarketingGroups({
     ...(clientTypeFilter ? { client_type: clientTypeFilter } : {}),
@@ -241,7 +247,16 @@ export default function MarketingGetContactPage() {
             Semua Client →
           </Link>
           {canManage && (
-            <Button size="sm" onClick={() => setCreateModalOpen(true)}>
+            <Button
+              data-tour="mktg-create-btn"
+              size="sm"
+              onClick={() => setCreateModalOpen(true)}
+              className={
+                isOnboardingModal
+                  ? "animate-pulse ring-2 ring-indigo-400 ring-offset-2"
+                  : ""
+              }
+            >
               <Plus className="h-3.5 w-3.5" />
               Buat Group
             </Button>
@@ -330,7 +345,21 @@ export default function MarketingGetContactPage() {
 
       {createModalOpen && (
         <MarketingGenerateGroupModal
-          onClose={() => setCreateModalOpen(false)}
+          isOnboarding={isOnboardingModal}
+          onClose={() => {
+            setCreateModalOpen(false);
+            setIsOnboardingModal(false);
+          }}
+          onGroupCreated={
+            isOnboardingModal
+              ? (groupId) => {
+                  localStorage.setItem(
+                    "onboarding_dummy_group_id",
+                    String(groupId),
+                  );
+                }
+              : undefined
+          }
         />
       )}
     </div>
