@@ -251,7 +251,10 @@ export function Sidebar() {
   }
 
   return (
-    <aside className="flex h-full w-[220px] shrink-0 flex-col bg-white dark:bg-[#111827]">
+    <aside
+      data-tour="sidebar"
+      className="flex h-full w-[220px] shrink-0 flex-col bg-white dark:bg-[#111827]"
+    >
       {/* Brand */}
       <div className="flex h-14 items-center gap-2.5 border-b border-gray-100 px-5 dark:border-gray-800/80">
         <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-gray-900 dark:bg-indigo-600">
@@ -269,7 +272,7 @@ export function Sidebar() {
           const Icon = section.icon;
 
           return (
-            <div key={section.id}>
+            <div key={section.id} data-tour={`section-${section.id}`}>
               {/* Section divider */}
               {idx > 0 && (
                 <div className="mb-3 mt-1 border-t border-gray-100 dark:border-gray-800/80" />
@@ -327,6 +330,7 @@ export function Sidebar() {
       <div className="border-t border-gray-100 px-3 py-4 dark:border-gray-800/80">
         {hasPermission("settings.manage") && (
           <Link
+            data-tour="nav-settings"
             to="/settings"
             className={cn(
               "flex items-center gap-2.5 rounded-lg px-2 py-2 text-[13px] font-medium transition-all duration-150",

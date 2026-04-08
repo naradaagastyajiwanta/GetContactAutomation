@@ -22,3 +22,87 @@
     @apply bg-gray-400 dark:bg-gray-600;
   }
 }
+
+/* ─── Driver.js Tour Overrides ─────────────────────────────────────────────── */
+.driver-popover {
+  border-radius: 14px !important;
+  font-family: inherit !important;
+  max-width: 320px !important;
+  padding: 18px 20px !important;
+  box-shadow:
+    0 20px 60px rgba(0, 0, 0, 0.25),
+    0 4px 16px rgba(0, 0, 0, 0.1) !important;
+}
+
+.driver-popover-title {
+  font-size: 0.9375rem !important;
+  font-weight: 600 !important;
+  margin-bottom: 6px !important;
+}
+
+.driver-popover-description {
+  font-size: 0.8125rem !important;
+  line-height: 1.6 !important;
+  color: #6b7280 !important;
+}
+
+.driver-popover-progress-text {
+  font-size: 0.75rem !important;
+  color: #9ca3af !important;
+}
+
+.driver-popover-next-btn,
+.driver-popover-done-btn {
+  background-color: #4f46e5 !important;
+  border-color: #4f46e5 !important;
+  border-radius: 8px !important;
+  font-size: 0.8125rem !important;
+  padding: 6px 14px !important;
+}
+
+.driver-popover-next-btn:hover,
+.driver-popover-done-btn:hover {
+  background-color: #4338ca !important;
+  border-color: #4338ca !important;
+}
+
+.driver-popover-prev-btn {
+  border-radius: 8px !important;
+  font-size: 0.8125rem !important;
+  padding: 6px 14px !important;
+}
+
+.driver-popover-close-btn {
+  color: #9ca3af !important;
+}
+
+.driver-popover-arrow-side-left.driver-popover-arrow {
+  border-right-color: white !important;
+}
+
+/* Dark mode overrides */
+@media (prefers-color-scheme: dark) {
+  .driver-popover {
+    background-color: #1f2937 !important;
+    border: 1px solid #374151 !important;
+    color: #f9fafb !important;
+  }
+
+  .driver-popover-title {
+    color: #f9fafb !important;
+  }
+
+  .driver-popover-description {
+    color: #9ca3af !important;
+  }
+
+  .driver-popover-prev-btn {
+    background-color: #374151 !important;
+    border-color: #4b5563 !important;
+    color: #e5e7eb !important;
+  }
+
+  .driver-popover-arrow-side-left.driver-popover-arrow {
+    border-right-color: #1f2937 !important;
+  }
+}

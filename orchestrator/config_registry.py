@@ -288,10 +288,10 @@ CONFIG_DEFINITIONS: list[ConfigDef] = [
     ),
     ConfigDef(
         key="MARKETING_SUB_AGENT_MODEL",
-        type=ConfigType.STRING, default="gpt-4o-mini", group=ConfigGroup.AI_AGENT,
+        type=ConfigType.STRING, default="gemini-2.5-pro-preview", group=ConfigGroup.AI_AGENT,
         label="Marketing Sub-Agent Model",
-        description="OpenAI model for marketing sub-agents (web search, instagram, etc.).",
-        model_picker="openai",
+        description="Model for marketing sub-agents (web search, instagram, etc.). Prefix 'gemini-' uses Gemini API, 'gpt-' uses OpenAI Responses API.",
+        model_picker="all",
     ),
     ConfigDef(
         key="MARKETING_AGENT_MAX_TOOL_ITERATIONS",

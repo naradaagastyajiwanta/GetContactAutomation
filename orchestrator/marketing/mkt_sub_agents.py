@@ -54,7 +54,78 @@ def _get_sub_agent_openai() -> AsyncOpenAI:
 
 
 # ---------------------------------------------------------------------------
-# Generic sub-agent LLM loop (mirrors react_agent.py pattern)
+# Gemini client singleton for sub-agents
+# ---------------------------------------------------------------------------
+
+_sub_agent_gemini_client = None
+_sub_agent_gemini_key: str = ""
+
+
+def _get_sub_agent_gemini():
+    global _sub_agent_gemini_client, _sub_agent_gemini_key
+    from google import genai as _genai
+    current_key = str(cfg.get("GEMINI_API_KEY", "") or "")
+    if _sub_agent_gemini_client is None or current_key != _sub_agent_gemini_key:
+        if not current_key:
+            raise RuntimeError("GEMINI_API_KEY not configured")
+        _sub_agent_gemini_client = _genai.Client(api_key=current_key)
+        _sub_agent_gemini_key = current_key
+    return _sub_agent_gemini_client
+
+
+def _schemas_to_gemini_tools(tool_schemas: list[dict]):
+    """Convert OpenAI JSON Schema tool list → Gemini FunctionDeclaration list."""
+    from google.genai import types as gt
+
+    _type_map = {
+        "string": gt.Type.STRING,
+        "number": gt.Type.NUMBER,
+        "integer": gt.Type.INTEGER,
+        "boolean": gt.Type.BOOLEAN,
+        "array": gt.Type.ARRAY,
+        "object": gt.Type.OBJECT,
+    }
+
+    def _schema(prop: dict) -> gt.Schema:
+        t = _type_map.get(prop.get("type", "string"), gt.Type.STRING)
+        kwargs: dict = {"type": t, "description": prop.get("description", "")}
+        if t == gt.Type.ARRAY and "items" in prop:
+            items_type = _type_map.get(prop["items"].get("type", "string"), gt.Type.STRING)
+            kwargs["items"] = gt.Schema(type=items_type)
+        if t == gt.Type.OBJECT and prop.get("properties"):
+            kwargs["properties"] = {k: _schema(v) for k, v in prop["properties"].items()}
+        if "enum" in prop:
+            kwargs["enum"] = [str(e) for e in prop["enum"]]
+        return gt.Schema(**kwargs)
+
+    declarations = []
+    for tool in tool_schemas:
+        params = tool.get("parameters", {})
+        props = params.get("properties", {})
+        required = params.get("required", [])
+        param_schema = gt.Schema(
+            type=gt.Type.OBJECT,
+            properties={k: _schema(v) for k, v in props.items()} if props else {},
+            required=required,
+        )
+        declarations.append(gt.FunctionDeclaration(
+            name=tool["name"],
+            description=tool.get("description", ""),
+            parameters=param_schema,
+        ))
+    return [gt.Tool(function_declarations=declarations)]
+
+
+def _llm_available() -> bool:
+    """True if the configured sub-agent model has a working API key."""
+    model = cfg.MARKETING_SUB_AGENT_MODEL.lower()
+    if model.startswith("gemini"):
+        return bool(cfg.get("GEMINI_API_KEY"))
+    return bool(cfg.OPENAI_API_KEY)
+
+
+# ---------------------------------------------------------------------------
+# Generic sub-agent LLM loop — routes to Gemini or OpenAI based on model
 # ---------------------------------------------------------------------------
 
 async def _run_sub_agent_llm_loop(
@@ -67,12 +138,24 @@ async def _run_sub_agent_llm_loop(
     model_override: str | None = None,
 ) -> tuple[dict, int]:
     """
-    Generic ReAct loop for sub-agents using OpenAI Responses API.
+    Generic ReAct loop for sub-agents.
+    Routes to Gemini or OpenAI Responses API based on MARKETING_SUB_AGENT_MODEL.
     Returns (terminal_tool_args, total_tokens).
-    terminal_tool_args is the arguments dict from the first terminal tool called.
     """
-    client = _get_sub_agent_openai()
     model = model_override or cfg.MARKETING_SUB_AGENT_MODEL
+    if model.lower().startswith("gemini"):
+        return await _run_sub_agent_llm_loop_gemini(
+            system_prompt=system_prompt,
+            initial_message=initial_message,
+            tool_schemas=tool_schemas,
+            terminal_tools=terminal_tools,
+            tool_dispatch=tool_dispatch,
+            max_iterations=max_iterations,
+            model_override=model,
+        )
+
+    # --- OpenAI Responses API path ---
+    client = _get_sub_agent_openai()
     total_tokens = 0
 
     response = await client.responses.create(
@@ -137,6 +220,85 @@ async def _run_sub_agent_llm_loop(
         response = await client.responses.create(**next_kwargs)
         if response.usage:
             total_tokens += response.usage.input_tokens + response.usage.output_tokens
+
+    return {}, total_tokens
+
+
+async def _run_sub_agent_llm_loop_gemini(
+    system_prompt: str,
+    initial_message: str,
+    tool_schemas: list[dict],
+    terminal_tools: set[str],
+    tool_dispatch: dict[str, Callable],
+    max_iterations: int = 8,
+    model_override: str | None = None,
+) -> tuple[dict, int]:
+    """
+    Gemini-based ReAct loop for sub-agents (mirrors _run_sub_agent_llm_loop).
+    Uses google.genai chat API with function calling.
+    Returns (terminal_tool_args, total_tokens).
+    """
+    from google.genai import types as gt
+
+    client = _get_sub_agent_gemini()
+    model = model_override or cfg.MARKETING_SUB_AGENT_MODEL
+    total_tokens = 0
+
+    gemini_tools = _schemas_to_gemini_tools(tool_schemas)
+    config = gt.GenerateContentConfig(
+        tools=gemini_tools,
+        system_instruction=system_prompt,
+        temperature=0.2,
+        max_output_tokens=1500,
+    )
+
+    chat = await asyncio.to_thread(client.chats.create, model=model, config=config)
+    response = await asyncio.to_thread(chat.send_message, initial_message)
+
+    if response.usage_metadata:
+        total_tokens += response.usage_metadata.total_token_count or 0
+
+    for _ in range(max_iterations):
+        function_calls = []
+        for part in (response.candidates[0].content.parts if response.candidates else []):
+            if hasattr(part, "function_call") and part.function_call and part.function_call.name:
+                function_calls.append(part.function_call)
+
+        if not function_calls:
+            break
+
+        outputs = []
+        terminal_args: dict | None = None
+
+        for fc in function_calls:
+            name = fc.name
+            args = dict(fc.args) if fc.args else {}
+
+            if name in terminal_tools:
+                terminal_args = args
+                result_str = json.dumps({"status": "done"})
+            else:
+                fn = tool_dispatch.get(name)
+                if fn is None:
+                    result_str = json.dumps({"error": f"Unknown tool: {name}"})
+                else:
+                    try:
+                        result_str = await fn(args)
+                    except Exception as exc:
+                        log.warning("[SubAgentLLMLoop/Gemini] tool %s error: %s", name, exc)
+                        result_str = json.dumps({"error": str(exc)})
+
+            outputs.append(gt.Part.from_function_response(
+                name=name,
+                response={"result": result_str},
+            ))
+
+        if terminal_args is not None:
+            return terminal_args, total_tokens
+
+        response = await asyncio.to_thread(chat.send_message, outputs)
+        if response.usage_metadata:
+            total_tokens += response.usage_metadata.total_token_count or 0
 
     return {}, total_tokens
 
@@ -500,7 +662,7 @@ class WebSearchSubAgent:
         log.info("[WebSearchSubAgent] Starting for: %s (type=%s, hints=%s)", company_name, client_type, list(hints.keys()))
 
         # --- PRIMARY: LLM ReAct loop ---
-        if cfg.OPENAI_API_KEY:
+        if _llm_available():
             try:
                 system_prompt = build_web_search_prompt(
                     company_name,
@@ -639,7 +801,7 @@ class InstagramSubAgent:
         # Attempt 1: normal search with website_url hint
         # Attempt 2 (if nothing found): retry with abbreviation as search hint + broader instruction
         _LLM_MAX_ATTEMPTS = 2
-        if cfg.OPENAI_API_KEY:
+        if _llm_available():
             abbreviation_hint = search_flow._build_company_abbreviation(company_name)
             llm_attempt_configs = [
                 {
@@ -1046,7 +1208,7 @@ class WebsiteContactScraperSubAgent:
         log.info("[WebsiteScraperSubAgent] Starting for: %s (%s)", company_name, website_url)
 
         # --- PRIMARY: LLM ReAct loop ---
-        if cfg.OPENAI_API_KEY:
+        if _llm_available():
             try:
                 system_prompt = build_website_scraper_prompt(company_name, website_url)
                 terminal_args, tokens = await _run_sub_agent_llm_loop(
