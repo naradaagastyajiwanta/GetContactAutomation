@@ -498,6 +498,8 @@ def _required_permission_for_request(method: str, path: str) -> str | None:
         return "settings.manage"
 
     if normalized.startswith("/config"):
+        if normalized in ("/config/instagram", "/config/IG_SESSION_ID", "/config/SCRAPINGBOT_ACCOUNTS"):
+            return "settings.instagram"
         return "settings.manage"
 
     if normalized.startswith("/email-smtp-accounts"):
@@ -3059,6 +3061,49 @@ async def update_config(payload: ConfigUpdatePayload):
     if instruction_keys & set(validated.keys()):
         await clear_all_response_ids("conversations")
         await clear_all_response_ids("audiensi_conversations")
+
+    return {"status": "ok", "updated": list(validated.keys())}
+
+
+_INSTAGRAM_CONFIG_KEYS = {"IG_SESSION_ID", "SCRAPINGBOT_ACCOUNTS"}
+
+
+@app.patch("/config/instagram")
+async def update_instagram_config(payload: ConfigUpdatePayload, request: Request):
+    """Update Instagram-related config keys (IG_SESSION_ID, SCRAPINGBOT_ACCOUNTS).
+    Accessible to operators — only the whitelisted keys are accepted.
+    """
+    disallowed = [k for k in payload.settings if k not in _INSTAGRAM_CONFIG_KEYS]
+    if disallowed:
+        return JSONResponse(
+            status_code=403,
+            content={"detail": "Only IG_SESSION_ID and SCRAPINGBOT_ACCOUNTS may be updated via this endpoint.", "keys": disallowed},
+        )
+
+    errors: dict[str, str] = {}
+    validated: dict[str, Any] = {}
+
+    for key, value in payload.settings.items():
+        coerced, err = _validate_config_value(key, value)
+        if err:
+            errors[key] = err
+        else:
+            validated[key] = coerced
+
+    if errors:
+        return JSONResponse(status_code=422, content={"errors": errors})
+
+    for key, coerced in validated.items():
+        db_value = str(coerced)
+        await upsert_config(key, db_value)
+        cfg.set(key, coerced)
+
+    if "SCRAPINGBOT_ACCOUNTS" in validated:
+        try:
+            from orchestrator import scrapingbot_client
+            scrapingbot_client.reset_pool()
+        except Exception as e:
+            log.warning("Failed to reset ScrapingBot pool: %s", e)
 
     return {"status": "ok", "updated": list(validated.keys())}
 

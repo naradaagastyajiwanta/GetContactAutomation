@@ -35,6 +35,16 @@ export async function updateConfig(
   return data;
 }
 
+export async function updateInstagramConfig(
+  settings: Record<string, string | number | boolean>,
+): Promise<{ status: string; updated: string[] }> {
+  const { data } = await apiClient.patch<{ status: string; updated: string[] }>(
+    "/config/instagram",
+    { settings },
+  );
+  return data;
+}
+
 export async function resetConfig(
   key: string,
 ): Promise<{ status: string; key: string; value: string | number | boolean }> {

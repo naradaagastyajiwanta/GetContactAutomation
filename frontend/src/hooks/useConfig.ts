@@ -1,6 +1,12 @@
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import toast from "react-hot-toast";
-import { getConfig, updateConfig, resetConfig, getModels } from "../api/config";
+import {
+  getConfig,
+  updateConfig,
+  updateInstagramConfig,
+  resetConfig,
+  getModels,
+} from "../api/config";
 import { queryKeys } from "../lib/queryKeys";
 
 export function useConfig() {
@@ -14,6 +20,26 @@ export function useUpdateConfig() {
   const queryClient = useQueryClient();
   return useMutation({
     mutationFn: updateConfig,
+    onSuccess: (data) => {
+      toast.success(`Updated ${data.updated.length} setting(s)`);
+      queryClient.invalidateQueries({ queryKey: queryKeys.config });
+    },
+    onError: (error: any) => {
+      const errors = error?.response?.data?.errors;
+      if (errors) {
+        const msgs = Object.values(errors).join(", ");
+        toast.error(`Validation failed: ${msgs}`);
+      } else {
+        toast.error("Failed to update config");
+      }
+    },
+  });
+}
+
+export function useUpdateInstagramConfig() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: updateInstagramConfig,
     onSuccess: (data) => {
       toast.success(`Updated ${data.updated.length} setting(s)`);
       queryClient.invalidateQueries({ queryKey: queryKeys.config });

@@ -412,7 +412,7 @@ export default function App() {
                       <Route
                         path="settings"
                         element={
-                          <PermissionGuard permission="settings.manage">
+                          <PermissionGuard permission="settings.instagram">
                             <ErrorBoundary>
                               <SettingsPage />
                             </ErrorBoundary>

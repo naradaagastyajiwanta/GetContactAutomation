@@ -11,11 +11,13 @@ import {
   Bot,
   ExternalLink,
 } from "lucide-react";
+import { useQuery } from "@tanstack/react-query";
 import { Card, CardHeader, CardTitle } from "../ui/Card";
 import { Button } from "../ui/Button";
 import { cn } from "../../lib/utils";
-import { useConfig, useUpdateConfig } from "../../hooks/useConfig";
+import { useUpdateInstagramConfig } from "../../hooks/useConfig";
 import { useHealth } from "../../hooks/useHealth";
+import { apiClient } from "../../api/client";
 import toast from "react-hot-toast";
 
 type SBAccount = { username: string; api_key: string };
@@ -146,26 +148,30 @@ function AddAccountForm({
 // ── Main component ────────────────────────────────────────────────────────────
 
 export function ScrapingBotAccountsManager() {
-  const { data: configData } = useConfig();
+  const { data: sbConfigData } = useQuery({
+    queryKey: ["config", "SCRAPINGBOT_ACCOUNTS"],
+    queryFn: () =>
+      apiClient
+        .get<{ key: string; value: string }>("/config/SCRAPINGBOT_ACCOUNTS")
+        .then((r) => r.data),
+  });
   const { data: health } = useHealth();
-  const updateConfig = useUpdateConfig();
+  const updateConfig = useUpdateInstagramConfig();
 
   const [showAddForm, setShowAddForm] = useState(false);
   const [deleteIdx, setDeleteIdx] = useState<number | null>(null);
 
   // Parse accounts from config
   const accounts = useMemo<SBAccount[]>(() => {
-    const setting = configData?.settings?.find(
-      (s) => s.key === "SCRAPINGBOT_ACCOUNTS",
-    );
-    if (!setting?.value || setting.value === "") return [];
+    const raw = sbConfigData?.value;
+    if (!raw || raw === "") return [];
     try {
-      const parsed = JSON.parse(setting.value as string);
+      const parsed = JSON.parse(raw);
       return Array.isArray(parsed) ? parsed : [];
     } catch {
       return [];
     }
-  }, [configData]);
+  }, [sbConfigData]);
 
   // Pool runtime status from health endpoint
   const poolAccounts: SBPoolAccount[] = useMemo(() => {

@@ -1,34 +1,57 @@
-import { useQuery } from '@tanstack/react-query'
-import { History, RefreshCw, ShieldCheck, ShieldX } from 'lucide-react'
-import { getAuthAuditLogs } from '../../api/auth'
-import { queryKeys } from '../../lib/queryKeys'
-import { Badge } from '../ui/Badge'
-import { Button } from '../ui/Button'
-import { Card, CardContent, CardHeader, CardTitle } from '../ui/Card'
-import { Spinner } from '../ui/Spinner'
-import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '../ui/Table'
+import { useState } from "react";
+import { useQuery } from "@tanstack/react-query";
+import { History, RefreshCw, ShieldCheck, ShieldX } from "lucide-react";
+import { getAuthAuditLogs } from "../../api/auth";
+import { queryKeys } from "../../lib/queryKeys";
+import { Badge } from "../ui/Badge";
+import { Button } from "../ui/Button";
+import { Card, CardContent, CardHeader, CardTitle } from "../ui/Card";
+import { Pagination } from "../ui/Pagination";
+import { Spinner } from "../ui/Spinner";
+import {
+  Table,
+  TableBody,
+  TableCell,
+  TableHead,
+  TableHeader,
+  TableRow,
+} from "../ui/Table";
+
+const PAGE_SIZE = 20;
 
 function actionLabel(action: string): string {
   return action
-    .split('_')
+    .split("_")
     .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
-    .join(' ')
+    .join(" ");
 }
 
 function resultBadgeVariant(success: boolean): string {
   return success
-    ? 'bg-emerald-100 text-emerald-700 dark:bg-emerald-900/40 dark:text-emerald-200'
-    : 'bg-red-100 text-red-700 dark:bg-red-900/40 dark:text-red-200'
+    ? "bg-emerald-100 text-emerald-700 dark:bg-emerald-900/40 dark:text-emerald-200"
+    : "bg-red-100 text-red-700 dark:bg-red-900/40 dark:text-red-200";
 }
 
 export function AuthAuditLogViewer() {
-  const auditQuery = useQuery({
-    queryKey: queryKeys.auth.auditLogs,
-    queryFn: () => getAuthAuditLogs(50, 0),
-  })
+  const [page, setPage] = useState(1);
 
-  const logs = auditQuery.data?.logs ?? []
-  const total = auditQuery.data?.total ?? 0
+  const offset = (page - 1) * PAGE_SIZE;
+
+  const auditQuery = useQuery({
+    queryKey: [...queryKeys.auth.auditLogs, page],
+    queryFn: () => getAuthAuditLogs(PAGE_SIZE, offset),
+  });
+
+  const logs = auditQuery.data?.logs ?? [];
+  const total = auditQuery.data?.total ?? 0;
+  const totalPages = Math.ceil(total / PAGE_SIZE);
+
+  const rangeStart = total === 0 ? 0 : offset + 1;
+  const rangeEnd = Math.min(offset + PAGE_SIZE, total);
+
+  function handlePageChange(newPage: number) {
+    setPage(newPage);
+  }
 
   return (
     <Card>
@@ -40,13 +63,22 @@ export function AuthAuditLogViewer() {
               <CardTitle>Auth Audit Trail</CardTitle>
             </div>
             <p className="mt-1 text-sm text-gray-500 dark:text-gray-400">
-              Recent login and access-management activity for dashboard security review.
+              Recent login and access-management activity for dashboard security
+              review.
             </p>
           </div>
 
           <div className="flex items-center gap-3">
-            <span className="text-sm text-gray-500 dark:text-gray-400">{total} event(s)</span>
-            <Button type="button" variant="outline" size="sm" onClick={() => auditQuery.refetch()} loading={auditQuery.isFetching}>
+            <span className="text-sm text-gray-500 dark:text-gray-400">
+              {total} event(s)
+            </span>
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              onClick={() => auditQuery.refetch()}
+              loading={auditQuery.isFetching}
+            >
               <RefreshCw className="h-4 w-4" />
               Refresh
             </Button>
@@ -61,58 +93,101 @@ export function AuthAuditLogViewer() {
           </div>
         ) : logs.length === 0 ? (
           <div className="rounded-lg border border-dashed border-gray-300 px-6 py-12 text-center dark:border-gray-700">
-            <p className="text-sm font-medium text-gray-900 dark:text-gray-100">No auth audit events yet</p>
-            <p className="mt-2 text-sm text-gray-500 dark:text-gray-400">Events will appear here after login, grant, revoke, bootstrap, and logout actions.</p>
+            <p className="text-sm font-medium text-gray-900 dark:text-gray-100">
+              No auth audit events yet
+            </p>
+            <p className="mt-2 text-sm text-gray-500 dark:text-gray-400">
+              Events will appear here after login, grant, revoke, bootstrap, and
+              logout actions.
+            </p>
           </div>
         ) : (
-          <Table>
-            <TableHeader>
-              <TableRow>
-                <TableHead>Time</TableHead>
-                <TableHead>Action</TableHead>
-                <TableHead>Actor</TableHead>
-                <TableHead>Target</TableHead>
-                <TableHead>Role</TableHead>
-                <TableHead>Result</TableHead>
-                <TableHead>Detail</TableHead>
-              </TableRow>
-            </TableHeader>
-            <TableBody>
-              {logs.map((entry) => (
-                <TableRow key={entry.id}>
-                  <TableCell>
-                    <div>
-                      <p className="font-medium text-gray-900 dark:text-gray-100">{new Date(entry.created_at).toLocaleDateString()}</p>
-                      <p className="text-xs text-gray-500 dark:text-gray-400">{new Date(entry.created_at).toLocaleTimeString()}</p>
-                    </div>
-                  </TableCell>
-                  <TableCell>
-                    <span className="font-medium text-gray-900 dark:text-gray-100">{actionLabel(entry.action)}</span>
-                  </TableCell>
-                  <TableCell>
-                    <span className="text-sm text-gray-600 dark:text-gray-300">{entry.actor_email || 'system'}</span>
-                  </TableCell>
-                  <TableCell>
-                    <span className="text-sm text-gray-600 dark:text-gray-300">{entry.subject_email || '-'}</span>
-                  </TableCell>
-                  <TableCell>
-                    {entry.role_key ? <Badge>{entry.role_key}</Badge> : <span className="text-sm text-gray-400">-</span>}
-                  </TableCell>
-                  <TableCell>
-                    <Badge variant={resultBadgeVariant(entry.success)}>
-                      {entry.success ? <ShieldCheck className="mr-1 h-3.5 w-3.5" /> : <ShieldX className="mr-1 h-3.5 w-3.5" />}
-                      {entry.success ? 'Success' : 'Failed'}
-                    </Badge>
-                  </TableCell>
-                  <TableCell>
-                    <div className="max-w-md text-sm text-gray-600 dark:text-gray-300">{entry.detail || '-'}</div>
-                  </TableCell>
+          <div className="space-y-4">
+            <Table>
+              <TableHeader>
+                <TableRow>
+                  <TableHead>Time</TableHead>
+                  <TableHead>Action</TableHead>
+                  <TableHead>Actor</TableHead>
+                  <TableHead>Target</TableHead>
+                  <TableHead>Role</TableHead>
+                  <TableHead>Result</TableHead>
+                  <TableHead>Detail</TableHead>
                 </TableRow>
-              ))}
-            </TableBody>
-          </Table>
+              </TableHeader>
+              <TableBody>
+                {logs.map((entry) => (
+                  <TableRow key={entry.id}>
+                    <TableCell>
+                      <div>
+                        <p className="font-medium text-gray-900 dark:text-gray-100">
+                          {new Date(entry.created_at).toLocaleDateString(
+                            "id-ID",
+                          )}
+                        </p>
+                        <p className="text-xs text-gray-500 dark:text-gray-400">
+                          {new Date(entry.created_at).toLocaleTimeString(
+                            "id-ID",
+                          )}
+                        </p>
+                      </div>
+                    </TableCell>
+                    <TableCell>
+                      <span className="font-medium text-gray-900 dark:text-gray-100">
+                        {actionLabel(entry.action)}
+                      </span>
+                    </TableCell>
+                    <TableCell>
+                      <span className="text-sm text-gray-600 dark:text-gray-300">
+                        {entry.actor_email || "system"}
+                      </span>
+                    </TableCell>
+                    <TableCell>
+                      <span className="text-sm text-gray-600 dark:text-gray-300">
+                        {entry.subject_email || "-"}
+                      </span>
+                    </TableCell>
+                    <TableCell>
+                      {entry.role_key ? (
+                        <Badge>{entry.role_key}</Badge>
+                      ) : (
+                        <span className="text-sm text-gray-400">-</span>
+                      )}
+                    </TableCell>
+                    <TableCell>
+                      <Badge variant={resultBadgeVariant(entry.success)}>
+                        {entry.success ? (
+                          <ShieldCheck className="mr-1 h-3.5 w-3.5" />
+                        ) : (
+                          <ShieldX className="mr-1 h-3.5 w-3.5" />
+                        )}
+                        {entry.success ? "Success" : "Failed"}
+                      </Badge>
+                    </TableCell>
+                    <TableCell>
+                      <div className="max-w-md text-sm text-gray-600 dark:text-gray-300">
+                        {entry.detail || "-"}
+                      </div>
+                    </TableCell>
+                  </TableRow>
+                ))}
+              </TableBody>
+            </Table>
+
+            {/* Pagination footer */}
+            <div className="flex items-center justify-between pt-1">
+              <p className="text-xs text-gray-500 dark:text-gray-400">
+                Menampilkan {rangeStart}–{rangeEnd} dari {total} event
+              </p>
+              <Pagination
+                currentPage={page}
+                totalPages={totalPages}
+                onPageChange={handlePageChange}
+              />
+            </div>
+          </div>
         )}
       </CardContent>
     </Card>
-  )
+  );
 }

@@ -328,7 +328,7 @@ export function Sidebar() {
 
       {/* Settings */}
       <div className="border-t border-gray-100 px-3 py-4 dark:border-gray-800/80">
-        {hasPermission("settings.manage") && (
+        {hasPermission("settings.instagram") && (
           <Link
             data-tour="nav-settings"
             to="/settings"

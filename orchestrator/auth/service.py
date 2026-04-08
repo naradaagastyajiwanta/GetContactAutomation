@@ -53,6 +53,7 @@ ROLE_DEFINITIONS: dict[str, dict[str, Any]] = {
             "crm.view",
             "crm.manage",
             "logs.view",
+            "settings.instagram",
         ],
     },
     "viewer": {

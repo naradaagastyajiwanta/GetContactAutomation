@@ -6,25 +6,25 @@ export const SETTINGS_TOUR_STEPS: PageTourStep[] = [
     popover: {
       title: "⚙️ Navigasi Settings",
       description:
-        "Navigasi ke section yang berbeda: IG Config, WhatsApp, API Keys, System Health, dan konfigurasi lainnya.",
+        "Empat tab utama: Control (status bot & health), Instagram (akun IG & ScrapingBot), Config (API keys, model AI, semua pengaturan), dan Access (role & audit log).",
     },
     permission: "settings.manage",
   },
   {
     element: '[data-tour="settings-control"]',
     popover: {
-      title: "🎛️ Konfigurasi Utama",
+      title: "🎛️ Control & Health",
       description:
-        "Atur parameter sistem: rate limits, AI model, DMS integration, dan behavior agen.",
+        "Pause/resume bot, aktifkan fitur (chatbot, audiensi, multi-agent research), dan pantau status koneksi API, WhatsApp, serta sesi Instagram.",
     },
     permission: "settings.manage",
   },
   {
     element: '[data-tour="settings-config"]',
     popover: {
-      title: "🔑 API & Integrasi",
+      title: "🔑 Config & Export",
       description:
-        "Kelola API keys untuk OpenAI, Serper, Apify, dan integrasi eksternal lainnya.",
+        "Kelola semua pengaturan sistem: API keys (OpenAI, Serper, Apify), rate limits, AI model, DMS integration, dan behavior agen. Export data juga tersedia di sini.",
     },
     permission: "settings.manage",
   },
