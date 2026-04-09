@@ -3,14 +3,14 @@
 # =============================================================
 # Push to `main` → SSH to VPS → git pull → docker compose build → up
 #
-# Required GitLab CI/CD Variables (Settings → CI/CD → Variables):
+# Required GitLab CI/CD Variables:
 #   VPS_HOST       - VPS IP address
 #   VPS_USER       - SSH username (e.g. root)
 #   VPS_PASSWORD   - SSH password
 #
 # Optional:
 #   DEPLOY_DIR        - Remote path (default: /var/www/get_contact_jiwan)
-#   DEPLOY_TOKEN_USER - GitLab deploy token user (for git clone on VPS)
+#   DEPLOY_TOKEN_USER - GitLab deploy token user
 #   DEPLOY_TOKEN_PASS - GitLab deploy token password
 # =============================================================
 
@@ -23,29 +23,11 @@ variables:
 
 workflow:
   rules:
-    # Run on push to main
     - if: $CI_COMMIT_BRANCH == "main"
-    # Allow manual trigger from any branch
     - if: $CI_PIPELINE_SOURCE == "manual"
 
-# Helper: SSH command with password
-# Usage: ssh_cmd "command here"
-ssh_cmd() {
-  sshpass -p "$VPS_PASSWORD" ssh -o StrictHostKeyChecking=no "$VPS_USER@$VPS_HOST" "$1"
-}
-
-# Helper: SCP file to VPS
-scp_to_vps() {
-  sshpass -p "$VPS_PASSWORD" scp -o StrictHostKeyChecking=no "$1" "$VPS_USER@$VPS_HOST:$2"
-}
-
-# Helper: Run remote bash script
-ssh_bash() {
-  sshpass -p "$VPS_PASSWORD" ssh -o StrictHostKeyChecking=no "$VPS_USER@$VPS_HOST" bash -s
-}
-
 # ---------------------------------------------------------------
-# Stage 1: Deploy — SSH to VPS → git pull → build → up
+# Stage 1: Deploy
 # ---------------------------------------------------------------
 deploy:
   stage: deploy
@@ -55,91 +37,54 @@ deploy:
     - mkdir -p ~/.ssh && chmod 700 ~/.ssh
     - ssh-keyscan -H "$VPS_HOST" >> ~/.ssh/known_hosts 2>/dev/null || true
     - chmod 644 ~/.ssh/known_hosts
-
   script:
     - |
       if [ -z "$VPS_PASSWORD" ]; then
-        echo "ERROR: VPS_PASSWORD is not set. Add it in GitLab CI/CD Variables."
+        echo "ERROR: VPS_PASSWORD is not set."
         exit 1
       fi
-
       echo "============================================="
       echo "  Deploying to $VPS_USER@$VPS_HOST"
       echo "  Commit → $CI_COMMIT_SHORT_SHA"
       echo "============================================="
-
-    # ---------------------------------------------------------
-    # Step 1: Sync code to VPS via git
-    # ---------------------------------------------------------
     - |
       echo "[deploy] Step 1: Syncing code..."
-
       if [ -n "$DEPLOY_TOKEN_USER" ] && [ -n "$DEPLOY_TOKEN_PASS" ]; then
         REPO_URL="https://${DEPLOY_TOKEN_USER}:${DEPLOY_TOKEN_PASS}@${CI_SERVER_HOST}/${CI_PROJECT_PATH}.git"
       else
         REPO_URL="${CI_REPOSITORY_URL}"
       fi
-
       sshpass -p "$VPS_PASSWORD" ssh -o StrictHostKeyChecking=no "$VPS_USER@$VPS_HOST" bash -s -- "$DEPLOY_DIR" "$REPO_URL" "$CI_COMMIT_SHA" << 'REMOTE_SYNC'
-        DEPLOY_DIR="$1"
-        REPO_URL="$2"
-        COMMIT_SHA="$3"
+        DEPLOY_DIR="$1"; REPO_URL="$2"; COMMIT_SHA="$3"
         mkdir -p "$DEPLOY_DIR"
-
         if [ -d "$DEPLOY_DIR/.git" ]; then
-          cd "$DEPLOY_DIR"
-          git fetch origin main --depth=5
-          git reset --hard "$COMMIT_SHA"
-          echo "  ✓ Code updated to $COMMIT_SHA"
+          cd "$DEPLOY_DIR" && git fetch origin main --depth=5 && git reset --hard "$COMMIT_SHA" && echo "  ✓ Code updated"
         else
-          git clone --depth=5 --branch main "$REPO_URL" "$DEPLOY_DIR"
-          echo "  ✓ Repository cloned"
+          git clone --depth=5 --branch main "$REPO_URL" "$DEPLOY_DIR" && echo "  ✓ Repo cloned"
         fi
-
-        # Ensure data directories exist
         mkdir -p data data/audiensi_docs data/templates data/ig_sessions data/pw_sessions
-        mkdir -p whatsapp-service/auth_store whatsapp-service/auth_store_backup \
-               whatsapp-service/auth_store_device_1 whatsapp-service/auth_store_device_2 \
-               whatsapp-service/auth_store_device_3 whatsapp-service/auth_store_device_4 \
-               whatsapp-service/auth_store_device_5 whatsapp-service/data
-
-        if [ ! -f ".env.production" ]; then
-          echo "  ⚠ WARNING: .env.production not found!"
-        else
-          echo "  ✓ .env.production present"
-        fi
+        mkdir -p whatsapp-service/auth_store whatsapp-service/auth_store_backup whatsapp-service/auth_store_device_1 whatsapp-service/auth_store_device_2 whatsapp-service/auth_store_device_3 whatsapp-service/auth_store_device_4 whatsapp-service/auth_store_device_5 whatsapp-service/data
+        if [ -f ".env.production" ]; then echo "  ✓ .env.production present"; else echo "  ⚠ WARNING: .env.production not found!"; fi
       REMOTE_SYNC
-
-    # ---------------------------------------------------------
-    # Step 2: Build & restart containers on VPS
-    # ---------------------------------------------------------
     - |
       echo ""
       echo "[deploy] Step 2: Building & restarting containers..."
-
       sshpass -p "$VPS_PASSWORD" ssh -o StrictHostKeyChecking=no "$VPS_USER@$VPS_HOST" bash -s -- "$DEPLOY_DIR" << 'REMOTE_BUILD'
-        DEPLOY_DIR="$1"
-        cd "$DEPLOY_DIR"
-
-        echo "  → Building images (this may take a few minutes)..."
+        DEPLOY_DIR="$1"; cd "$DEPLOY_DIR"
+        echo "  → Building images..."
         docker compose -f docker-compose.prod.yml build --pull
-
         echo "  → Starting containers..."
         docker compose -f docker-compose.prod.yml up -d --remove-orphans
-
-        echo "  → Cleaning unused Docker resources..."
         docker system prune -f --filter "until=72h" 2>/dev/null || true
-
-        echo "  ✓ Build & restart complete"
+        echo "  ✓ Done"
         docker compose -f docker-compose.prod.yml ps
       REMOTE_BUILD
-
   environment:
     name: production
     url: https://get-contact-automation.airabot.id
 
 # ---------------------------------------------------------------
-# Stage 2: Verify — health check
+# Stage 2: Verify
 # ---------------------------------------------------------------
 verify:
   stage: verify
@@ -148,43 +93,25 @@ verify:
     - apk add --no-cache openssh-client curl sshpass
     - mkdir -p ~/.ssh && chmod 700 ~/.ssh
     - ssh-keyscan -H "$VPS_HOST" >> ~/.ssh/known_hosts 2>/dev/null || true
-
   script:
-    - |
-      if [ -z "$VPS_PASSWORD" ]; then
-        echo "ERROR: VPS_PASSWORD is not set."
-        exit 1
-      fi
-
-      echo "============================================="
-      echo "  Post-deploy verification"
-      echo "============================================="
-      - sleep 20
-
-    # Container status
+    - echo "============================================="
+    - echo "  Post-deploy verification"
+    - echo "============================================="
+    - sleep 20
     - |
       echo "[verify] Container status:"
       sshpass -p "$VPS_PASSWORD" ssh -o StrictHostKeyChecking=no "$VPS_USER@$VPS_HOST" \
         "cd $DEPLOY_DIR && docker compose -f docker-compose.prod.yml ps --format 'table {{.Name}}\t{{.Status}}'"
-
-    # Stopped containers → fail
     - |
       echo ""
       UNHEALTHY=$(sshpass -p "$VPS_PASSWORD" ssh -o StrictHostKeyChecking=no "$VPS_USER@$VPS_HOST" \
-        "cd $DEPLOY_DIR && docker compose -f docker-compose.prod.yml ps --status exited --format '{{.Name}}' 2>/dev/null" \
-        || echo "")
+        "cd $DEPLOY_DIR && docker compose -f docker-compose.prod.yml ps --status exited --format '{{.Name}}' 2>/dev/null" || echo "")
       if [ -n "$UNHEALTHY" ]; then
-        echo "  ✗ Stopped containers: $UNHEALTHY"
-        for SVC in $UNHEALTHY; do
-          sshpass -p "$VPS_PASSWORD" ssh -o StrictHostKeyChecking=no "$VPS_USER@$VPS_HOST" \
-            "cd $DEPLOY_DIR && docker compose -f docker-compose.prod.yml logs --tail=30 $SVC"
-        done
+        echo "  ✗ Stopped: $UNHEALTHY"
         exit 1
       else
         echo "  ✓ All containers running"
       fi
-
-    # Orchestrator health
     - |
       echo ""
       echo "[verify] Orchestrator health..."
@@ -197,43 +124,27 @@ verify:
         HEALTH=$(sshpass -p "$VPS_PASSWORD" ssh -o StrictHostKeyChecking=no "$VPS_USER@$VPS_HOST" \
           "curl -sf http://localhost:8000/health 2>/dev/null" || echo "FAIL")
         if echo "$HEALTH" | grep -q "status"; then
-          echo "  ✓ Orchestrator OK (retry): $HEALTH"
+          echo "  ✓ Orchestrator OK (retry)"
         else
           echo "  ✗ Orchestrator FAILED"
-          sshpass -p "$VPS_PASSWORD" ssh -o StrictHostKeyChecking=no "$VPS_USER@$VPS_HOST" \
-            "cd $DEPLOY_DIR && docker compose -f docker-compose.prod.yml logs --tail=30 orchestrator"
           exit 1
         fi
       fi
-
-    # Frontend
     - |
       echo ""
       HTTP_CODE=$(sshpass -p "$VPS_PASSWORD" ssh -o StrictHostKeyChecking=no "$VPS_USER@$VPS_HOST" \
         "curl -so /dev/null -w '%{http_code}' http://localhost:3200/ 2>/dev/null" || echo "000")
-      if [ "$HTTP_CODE" = "200" ]; then
-        echo "  ✓ Frontend OK (HTTP $HTTP_CODE)"
-      else
-        echo "  ⚠ Frontend HTTP $HTTP_CODE"
-      fi
-
-    # WhatsApp
+      if [ "$HTTP_CODE" = "200" ]; then echo "  ✓ Frontend OK (HTTP $HTTP_CODE)"; else echo "  ⚠ Frontend HTTP $HTTP_CODE"; fi
     - |
       echo ""
       WA=$(sshpass -p "$VPS_PASSWORD" ssh -o StrictHostKeyChecking=no "$VPS_USER@$VPS_HOST" \
         "curl -sf http://localhost:3100/status 2>/dev/null" || echo "")
-      if echo "$WA" | grep -qE "status|connected"; then
-        echo "  ✓ WhatsApp OK"
-      else
-        echo "  ⚠ WhatsApp may need QR scan"
-      fi
-
+      if echo "$WA" | grep -qE "status|connected"; then echo "  ✓ WhatsApp OK"; else echo "  ⚠ WhatsApp may need QR scan"; fi
     - echo ""
     - echo "============================================="
     - echo "  ✅ Deploy complete"
     - echo "  🌐 https://get-contact-automation.airabot.id"
     - echo "============================================="
-
   environment:
     name: production
     url: https://get-contact-automation.airabot.id
