@@ -212,7 +212,7 @@ Go to **GitLab → Settings → CI/CD → Variables**:
 
 | Variable | Value | Type | Notes |
 |---|---|---|---|
-| `SSH_PRIVATE_KEY` | Content of `gitlab_deploy_key` (private) | File | Private key for SSH |
+| `SSH_PRIVATE_KEY` | Upload file `gitlab_deploy_key` (the private key file itself) | **File** ⚠️ | **MUST be File type, not Variable** |
 | `VPS_HOST` | External IP of your GCP VM | Variable | e.g. `34.XX.XX.XX` |
 | `VPS_USER` | `ubuntu` (or your SSH user) | Variable | |
 | `SSH_KNOWN_HOSTS` | Output of `ssh-keyscan VM_IP` | Variable | For strict host key verification |
@@ -220,7 +220,16 @@ Go to **GitLab → Settings → CI/CD → Variables**:
 | `DEPLOY_TOKEN_USER` | GitLab deploy token user | Variable | Optional: for private repos |
 | `DEPLOY_TOKEN_PASS` | GitLab deploy token password | Variable | Optional: for private repos |
 
-> **Note:** Tidak perlu Docker Hub credentials. Images di-build langsung di VPS.
+> ⚠️ **CRITICAL:** `SSH_PRIVATE_KEY` **must** be set as **File** type. If you set it as **Variable** type, the pipeline will fail with `chmod: : No such file or directory`.
+
+### How to set SSH_PRIVATE_KEY correctly:
+
+1. Go to **GitLab → Settings → CI/CD → Variables**
+2. Click **Add variable**
+3. Key: `SSH_PRIVATE_KEY`
+4. **Type:** select `File` (not `Variable`) ← THIS IS THE MOST COMMON MISTAKE
+5. Value: click **Upload file** and select your `gitlab_deploy_key` private key file
+6. Save
 
 ### How to get `SSH_KNOWN_HOSTS`:
 

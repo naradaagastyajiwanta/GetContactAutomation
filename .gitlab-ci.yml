@@ -37,8 +37,17 @@ deploy:
   before_script:
     - apk add --no-cache openssh-client git bash
     - eval $(ssh-agent -s)
-    - chmod 600 "$SSH_PRIVATE_KEY"
-    - ssh-add "$SSH_PRIVATE_KEY"
+    # SSH_PRIVATE_KEY must be set as "File" type in GitLab CI variables
+    # (GitLab will create a temp file and pass the path here)
+    - |
+      if [ -f "$SSH_PRIVATE_KEY" ]; then
+        chmod 600 "$SSH_PRIVATE_KEY"
+        ssh-add "$SSH_PRIVATE_KEY"
+      else
+        echo "ERROR: SSH_PRIVATE_KEY is not a file. Set it as 'File' type in GitLab CI Settings."
+        echo "GitLab → Settings → CI/CD → Variables → SSH_PRIVATE_KEY → Type: File"
+        exit 1
+      fi
     - mkdir -p ~/.ssh && chmod 700 ~/.ssh
     - |
       if [ -n "$SSH_KNOWN_HOSTS" ]; then
@@ -133,8 +142,14 @@ verify:
   before_script:
     - apk add --no-cache openssh-client curl
     - eval $(ssh-agent -s)
-    - chmod 600 "$SSH_PRIVATE_KEY"
-    - ssh-add "$SSH_PRIVATE_KEY"
+    - |
+      if [ -f "$SSH_PRIVATE_KEY" ]; then
+        chmod 600 "$SSH_PRIVATE_KEY"
+        ssh-add "$SSH_PRIVATE_KEY"
+      else
+        echo "ERROR: SSH_PRIVATE_KEY is not a file. Set it as 'File' type in GitLab CI Settings."
+        exit 1
+      fi
     - mkdir -p ~/.ssh
     - |
       if [ -n "$SSH_KNOWN_HOSTS" ]; then
