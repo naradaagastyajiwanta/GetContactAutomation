@@ -193,8 +193,8 @@ cd /var/www/get_contact_jiwan
 git clone https://gitlab.com/YOUR_USERNAME/getcontact-ai.git .
 git checkout main
 
-# Pull Docker images (pre-built from Docker Hub)
-docker compose -f docker-compose.prod.yml pull
+# Build images on VPS
+docker compose -f docker-compose.prod.yml build --pull
 
 # Start services
 docker compose -f docker-compose.prod.yml up -d
@@ -212,15 +212,15 @@ Go to **GitLab → Settings → CI/CD → Variables**:
 
 | Variable | Value | Type | Notes |
 |---|---|---|---|
-| `SSH_PRIVATE_KEY` | Content of `gitlab_deploy_key` (private) | File | Without `-----BEGIN OPENSSH PRIVATE KEY-----` header |
+| `SSH_PRIVATE_KEY` | Content of `gitlab_deploy_key` (private) | File | Private key for SSH |
 | `VPS_HOST` | External IP of your GCP VM | Variable | e.g. `34.XX.XX.XX` |
 | `VPS_USER` | `ubuntu` (or your SSH user) | Variable | |
 | `SSH_KNOWN_HOSTS` | Output of `ssh-keyscan VM_IP` | Variable | For strict host key verification |
-| `DOCKERHUB_USER` | `naradaagastya` | Variable | Docker Hub username |
-| `DOCKERHUB_TOKEN` | Your Docker Hub PAT | Variable | Create at hub.docker.com → Account Settings → Security |
 | `DEPLOY_DIR` | `/var/www/get_contact_jiwan` | Variable | Override default |
 | `DEPLOY_TOKEN_USER` | GitLab deploy token user | Variable | Optional: for private repos |
 | `DEPLOY_TOKEN_PASS` | GitLab deploy token password | Variable | Optional: for private repos |
+
+> **Note:** Tidak perlu Docker Hub credentials. Images di-build langsung di VPS.
 
 ### How to get `SSH_KNOWN_HOSTS`:
 
@@ -258,7 +258,7 @@ For this project, **Docker-in-Docker (DinD) is already configured in `.gitlab-ci
 
 1. Push any change to `main` branch
 2. Go to **GitLab → CI/CD → Pipelines**
-3. Watch the pipeline run: `build → deploy → verify`
+3. Watch the pipeline run: `deploy → verify`
 4. If verify stage passes → deployment successful
 
 ---
