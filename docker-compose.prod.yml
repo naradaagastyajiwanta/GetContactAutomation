@@ -127,9 +127,24 @@ services:
       dockerfile: Dockerfile.frontend
     container_name: gc-frontend
     restart: unless-stopped
-    ports:
-      - "3010:3010"
+    expose:
+      - "3010"
     depends_on:
+      - orchestrator
+    networks:
+      - gc-network
+
+  nginx:
+    image: nginx:alpine
+    container_name: gc-nginx
+    restart: unless-stopped
+    ports:
+      - "3010:80"
+    volumes:
+      - ./nginx/nginx.conf:/etc/nginx/nginx.conf:ro
+      - ./nginx/conf.d:/etc/nginx/conf.d:ro
+    depends_on:
+      - frontend
       - orchestrator
     networks:
       - gc-network
