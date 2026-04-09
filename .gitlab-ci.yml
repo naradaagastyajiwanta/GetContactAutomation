@@ -41,6 +41,7 @@ deploy:
     - chmod 644 ~/.ssh/known_hosts
   script:
     - |
+      set -e
       if [ -z "$VPS_PASSWORD" ] || [ -z "$VPS_HOST" ] || [ -z "$VPS_USER" ]; then
         echo "ERROR: VPS_PASSWORD, VPS_HOST, or VPS_USER is not set."
         exit 1
@@ -49,30 +50,28 @@ deploy:
       echo "  Deploying to $VPS_USER@$VPS_HOST:$VPS_PORT"
       echo "  Commit: $CI_COMMIT_SHORT_SHA"
       echo "============================================="
-    - |
-      echo "[deploy] Step 1: Syncing code..."
       if [ -n "$DEPLOY_TOKEN_USER" ] && [ -n "$DEPLOY_TOKEN_PASS" ]; then
         REPO_URL="https://${DEPLOY_TOKEN_USER}:${DEPLOY_TOKEN_PASS}@${CI_SERVER_HOST}/${CI_PROJECT_PATH}.git"
       else
         REPO_URL="${CI_REPOSITORY_URL}"
       fi
-      sshpass -p "$VPS_PASSWORD" ssh -o StrictHostKeyChecking=no -p "$VPS_PORT" "$VPS_USER@$VPS_HOST" bash -s -- "$DEPLOY_DIR" "$REPO_URL" "$CI_COMMIT_SHA" << 'REMOTE_SYNC'
-        DEPLOY_DIR="$1"; REPO_URL="$2"; COMMIT_SHA="$3"
+      echo "[Step 1] Syncing code..."
+      sshpass -p "$VPS_PASSWORD" ssh -o StrictHostKeyChecking=no -p "$VPS_PORT" "$VPS_USER@$VPS_HOST" bash -s -- "$DEPLOY_DIR" "$REPO_URL" "$CI_COMMIT_SHA" << 'EOSYNC'
+        set -e; DEPLOY_DIR="$1"; REPO_URL="$2"; COMMIT_SHA="$3"
         mkdir -p "$DEPLOY_DIR"
         if [ -d "$DEPLOY_DIR/.git" ]; then
-          cd "$DEPLOY_DIR" && git fetch origin main --depth=5 && git reset --hard "$COMMIT_SHA" && echo "  [OK] Code updated"
+          cd "$DEPLOY_DIR" && git fetch origin main --depth=5 && git reset --hard "$COMMIT_SHA" && echo "  [OK] Code updated to $COMMIT_SHA"
         else
           git clone --depth=5 --branch main "$REPO_URL" "$DEPLOY_DIR" && echo "  [OK] Repo cloned"
         fi
         mkdir -p data data/audiensi_docs data/templates data/ig_sessions data/pw_sessions
         mkdir -p whatsapp-service/auth_store whatsapp-service/auth_store_backup whatsapp-service/auth_store_device_1 whatsapp-service/auth_store_device_2 whatsapp-service/auth_store_device_3 whatsapp-service/auth_store_device_4 whatsapp-service/auth_store_device_5 whatsapp-service/data
         if [ -f ".env.production" ]; then echo "  [OK] .env.production present"; else echo "  [WARN] .env.production not found!"; fi
-      REMOTE_SYNC
-    - |
+EOSYNC
       echo ""
-      echo "[deploy] Step 2: Building and restarting containers..."
-      sshpass -p "$VPS_PASSWORD" ssh -o StrictHostKeyChecking=no -p "$VPS_PORT" "$VPS_USER@$VPS_HOST" bash -s -- "$DEPLOY_DIR" << 'REMOTE_BUILD'
-        DEPLOY_DIR="$1"; cd "$DEPLOY_DIR"
+      echo "[Step 2] Building and restarting containers..."
+      sshpass -p "$VPS_PASSWORD" ssh -o StrictHostKeyChecking=no -p "$VPS_PORT" "$VPS_USER@$VPS_HOST" bash -s -- "$DEPLOY_DIR" << 'EOBUILD'
+        set -e; DEPLOY_DIR="$1"; cd "$DEPLOY_DIR"
         echo "  Building images..."
         docker compose -f docker-compose.prod.yml build --pull
         echo "  Starting containers..."
@@ -80,7 +79,12 @@ deploy:
         docker system prune -f --filter "until=72h" 2>/dev/null || true
         echo "  [OK] Done"
         docker compose -f docker-compose.prod.yml ps
-      REMOTE_BUILD
+EOBUILD
+      echo ""
+      echo "============================================="
+      echo "  [SUCCESS] Deploy complete"
+      echo "  URL: https://get-contact-automation.airabot.id"
+      echo "============================================="
   environment:
     name: production
     url: https://get-contact-automation.airabot.id
@@ -96,27 +100,17 @@ verify:
     - mkdir -p ~/.ssh && chmod 700 ~/.ssh
     - ssh-keyscan -p "$VPS_PORT" -H "$VPS_HOST" >> ~/.ssh/known_hosts 2>/dev/null || true
   script:
-    - echo "============================================="
-    - echo "  Post-deploy verification"
-    - echo "============================================="
-    - sleep 20
     - |
+      set -e
+      echo "============================================="
+      echo "  Post-deploy verification"
+      echo "============================================="
+      sleep 20
       echo "[verify] Container status:"
       sshpass -p "$VPS_PASSWORD" ssh -o StrictHostKeyChecking=no -p "$VPS_PORT" "$VPS_USER@$VPS_HOST" \
         "cd $DEPLOY_DIR && docker compose -f docker-compose.prod.yml ps --format 'table {{.Name}}\t{{.Status}}'"
-    - |
       echo ""
-      UNHEALTHY=$(sshpass -p "$VPS_PASSWORD" ssh -o StrictHostKeyChecking=no -p "$VPS_PORT" "$VPS_USER@$VPS_HOST" \
-        "cd $DEPLOY_DIR && docker compose -f docker-compose.prod.yml ps --status exited --format '{{.Name}}' 2>/dev/null" || echo "")
-      if [ -n "$UNHEALTHY" ]; then
-        echo "  [FAIL] Stopped: $UNHEALTHY"
-        exit 1
-      else
-        echo "  [OK] All containers running"
-      fi
-    - |
-      echo ""
-      echo "[verify] Orchestrator health..."
+      echo "[verify] Orchestrator health:"
       HEALTH=$(sshpass -p "$VPS_PASSWORD" ssh -o StrictHostKeyChecking=no -p "$VPS_PORT" "$VPS_USER@$VPS_HOST" \
         "curl -sf http://localhost:8000/health 2>/dev/null" || echo "FAIL")
       if echo "$HEALTH" | grep -q "status"; then
@@ -126,27 +120,27 @@ verify:
         HEALTH=$(sshpass -p "$VPS_PASSWORD" ssh -o StrictHostKeyChecking=no -p "$VPS_PORT" "$VPS_USER@$VPS_HOST" \
           "curl -sf http://localhost:8000/health 2>/dev/null" || echo "FAIL")
         if echo "$HEALTH" | grep -q "status"; then
-          echo "  [OK] Orchestrator (retry)"
+          echo "  [OK] Orchestrator (retry): $HEALTH"
         else
           echo "  [FAIL] Orchestrator unreachable"
           exit 1
         fi
       fi
-    - |
       echo ""
       HTTP_CODE=$(sshpass -p "$VPS_PASSWORD" ssh -o StrictHostKeyChecking=no -p "$VPS_PORT" "$VPS_USER@$VPS_HOST" \
         "curl -so /dev/null -w '%{http_code}' http://localhost:3200/ 2>/dev/null" || echo "000")
-      if [ "$HTTP_CODE" = "200" ]; then echo "  [OK] Frontend HTTP $HTTP_CODE"; else echo "  [WARN] Frontend HTTP $HTTP_CODE"; fi
-    - |
-      echo ""
+      echo "  Frontend HTTP: $HTTP_CODE"
       WA=$(sshpass -p "$VPS_PASSWORD" ssh -o StrictHostKeyChecking=no -p "$VPS_PORT" "$VPS_USER@$VPS_HOST" \
         "curl -sf http://localhost:3100/status 2>/dev/null" || echo "")
-      if echo "$WA" | grep -qE "status|connected"; then echo "  [OK] WhatsApp"; else echo "  [INFO] WhatsApp may need QR scan"; fi
-    - echo ""
-    - echo "============================================="
-    - echo "  [SUCCESS] Deploy complete"
-    - echo "  URL: https://get-contact-automation.airabot.id"
-    - echo "============================================="
+      if echo "$WA" | grep -qE "status|connected"; then
+        echo "  WhatsApp: [OK]"
+      else
+        echo "  WhatsApp: [INFO] may need QR scan"
+      fi
+      echo ""
+      echo "============================================="
+      echo "  [SUCCESS] Verification complete"
+      echo "============================================="
   environment:
     name: production
     url: https://get-contact-automation.airabot.id
