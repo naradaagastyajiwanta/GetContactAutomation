@@ -28,20 +28,12 @@ workflow:
     - if: $CI_COMMIT_BRANCH == "main"
     - if: $CI_PIPELINE_SOURCE == "manual"
 
-# SSH target string (reused everywhere)
-# Format: user@host -p PORT
-before_script:
-  - &before_setup |
-    apk add --no-cache openssh-client git bash sshpass
-    mkdir -p ~/.ssh && chmod 700 ~/.ssh
-    SSH_TARGET="${VPS_USER}@${VPS_HOST}"
-    echo "Deploying to $SSH_TARGET port $VPS_PORT"
-
 # ---------------------------------------------------------------
 # Stage 1: Deploy
 # ---------------------------------------------------------------
 deploy:
   stage: deploy
+  image: alpine:3.19
   before_script:
     - apk add --no-cache openssh-client git bash sshpass
     - mkdir -p ~/.ssh && chmod 700 ~/.ssh
@@ -49,17 +41,13 @@ deploy:
     - chmod 644 ~/.ssh/known_hosts
   script:
     - |
-      if [ -z "$VPS_PASSWORD" ]; then
-        echo "ERROR: VPS_PASSWORD is not set in GitLab CI/CD Variables."
-        exit 1
-      fi
-      if [ -z "$VPS_HOST" ] || [ -z "$VPS_USER" ]; then
-        echo "ERROR: VPS_HOST or VPS_USER is not set."
+      if [ -z "$VPS_PASSWORD" ] || [ -z "$VPS_HOST" ] || [ -z "$VPS_USER" ]; then
+        echo "ERROR: VPS_PASSWORD, VPS_HOST, or VPS_USER is not set."
         exit 1
       fi
       echo "============================================="
       echo "  Deploying to $VPS_USER@$VPS_HOST:$VPS_PORT"
-      echo "  Commit → $CI_COMMIT_SHORT_SHA"
+      echo "  Commit: $CI_COMMIT_SHORT_SHA"
       echo "============================================="
     - |
       echo "[deploy] Step 1: Syncing code..."
@@ -72,25 +60,25 @@ deploy:
         DEPLOY_DIR="$1"; REPO_URL="$2"; COMMIT_SHA="$3"
         mkdir -p "$DEPLOY_DIR"
         if [ -d "$DEPLOY_DIR/.git" ]; then
-          cd "$DEPLOY_DIR" && git fetch origin main --depth=5 && git reset --hard "$COMMIT_SHA" && echo "  ✓ Code updated"
+          cd "$DEPLOY_DIR" && git fetch origin main --depth=5 && git reset --hard "$COMMIT_SHA" && echo "  [OK] Code updated"
         else
-          git clone --depth=5 --branch main "$REPO_URL" "$DEPLOY_DIR" && echo "  ✓ Repo cloned"
+          git clone --depth=5 --branch main "$REPO_URL" "$DEPLOY_DIR" && echo "  [OK] Repo cloned"
         fi
         mkdir -p data data/audiensi_docs data/templates data/ig_sessions data/pw_sessions
         mkdir -p whatsapp-service/auth_store whatsapp-service/auth_store_backup whatsapp-service/auth_store_device_1 whatsapp-service/auth_store_device_2 whatsapp-service/auth_store_device_3 whatsapp-service/auth_store_device_4 whatsapp-service/auth_store_device_5 whatsapp-service/data
-        if [ -f ".env.production" ]; then echo "  ✓ .env.production present"; else echo "  ⚠ WARNING: .env.production not found!"; fi
+        if [ -f ".env.production" ]; then echo "  [OK] .env.production present"; else echo "  [WARN] .env.production not found!"; fi
       REMOTE_SYNC
     - |
       echo ""
-      echo "[deploy] Step 2: Building & restarting containers..."
+      echo "[deploy] Step 2: Building and restarting containers..."
       sshpass -p "$VPS_PASSWORD" ssh -o StrictHostKeyChecking=no -p "$VPS_PORT" "$VPS_USER@$VPS_HOST" bash -s -- "$DEPLOY_DIR" << 'REMOTE_BUILD'
         DEPLOY_DIR="$1"; cd "$DEPLOY_DIR"
-        echo "  → Building images..."
+        echo "  Building images..."
         docker compose -f docker-compose.prod.yml build --pull
-        echo "  → Starting containers..."
+        echo "  Starting containers..."
         docker compose -f docker-compose.prod.yml up -d --remove-orphans
         docker system prune -f --filter "until=72h" 2>/dev/null || true
-        echo "  ✓ Done"
+        echo "  [OK] Done"
         docker compose -f docker-compose.prod.yml ps
       REMOTE_BUILD
   environment:
@@ -102,6 +90,7 @@ deploy:
 # ---------------------------------------------------------------
 verify:
   stage: verify
+  image: alpine:3.19
   before_script:
     - apk add --no-cache openssh-client curl sshpass
     - mkdir -p ~/.ssh && chmod 700 ~/.ssh
@@ -120,10 +109,10 @@ verify:
       UNHEALTHY=$(sshpass -p "$VPS_PASSWORD" ssh -o StrictHostKeyChecking=no -p "$VPS_PORT" "$VPS_USER@$VPS_HOST" \
         "cd $DEPLOY_DIR && docker compose -f docker-compose.prod.yml ps --status exited --format '{{.Name}}' 2>/dev/null" || echo "")
       if [ -n "$UNHEALTHY" ]; then
-        echo "  ✗ Stopped: $UNHEALTHY"
+        echo "  [FAIL] Stopped: $UNHEALTHY"
         exit 1
       else
-        echo "  ✓ All containers running"
+        echo "  [OK] All containers running"
       fi
     - |
       echo ""
@@ -131,15 +120,15 @@ verify:
       HEALTH=$(sshpass -p "$VPS_PASSWORD" ssh -o StrictHostKeyChecking=no -p "$VPS_PORT" "$VPS_USER@$VPS_HOST" \
         "curl -sf http://localhost:8000/health 2>/dev/null" || echo "FAIL")
       if echo "$HEALTH" | grep -q "status"; then
-        echo "  ✓ Orchestrator OK: $HEALTH"
+        echo "  [OK] Orchestrator: $HEALTH"
       else
         sleep 10
         HEALTH=$(sshpass -p "$VPS_PASSWORD" ssh -o StrictHostKeyChecking=no -p "$VPS_PORT" "$VPS_USER@$VPS_HOST" \
           "curl -sf http://localhost:8000/health 2>/dev/null" || echo "FAIL")
         if echo "$HEALTH" | grep -q "status"; then
-          echo "  ✓ Orchestrator OK (retry)"
+          echo "  [OK] Orchestrator (retry)"
         else
-          echo "  ✗ Orchestrator FAILED"
+          echo "  [FAIL] Orchestrator unreachable"
           exit 1
         fi
       fi
@@ -147,16 +136,16 @@ verify:
       echo ""
       HTTP_CODE=$(sshpass -p "$VPS_PASSWORD" ssh -o StrictHostKeyChecking=no -p "$VPS_PORT" "$VPS_USER@$VPS_HOST" \
         "curl -so /dev/null -w '%{http_code}' http://localhost:3200/ 2>/dev/null" || echo "000")
-      if [ "$HTTP_CODE" = "200" ]; then echo "  ✓ Frontend OK (HTTP $HTTP_CODE)"; else echo "  ⚠ Frontend HTTP $HTTP_CODE"; fi
+      if [ "$HTTP_CODE" = "200" ]; then echo "  [OK] Frontend HTTP $HTTP_CODE"; else echo "  [WARN] Frontend HTTP $HTTP_CODE"; fi
     - |
       echo ""
       WA=$(sshpass -p "$VPS_PASSWORD" ssh -o StrictHostKeyChecking=no -p "$VPS_PORT" "$VPS_USER@$VPS_HOST" \
         "curl -sf http://localhost:3100/status 2>/dev/null" || echo "")
-      if echo "$WA" | grep -qE "status|connected"; then echo "  ✓ WhatsApp OK"; else echo "  ⚠ WhatsApp may need QR scan"; fi
+      if echo "$WA" | grep -qE "status|connected"; then echo "  [OK] WhatsApp"; else echo "  [INFO] WhatsApp may need QR scan"; fi
     - echo ""
     - echo "============================================="
-    - echo "  ✅ Deploy complete"
-    - echo "  🌐 https://get-contact-automation.airabot.id"
+    - echo "  [SUCCESS] Deploy complete"
+    - echo "  URL: https://get-contact-automation.airabot.id"
     - echo "============================================="
   environment:
     name: production
