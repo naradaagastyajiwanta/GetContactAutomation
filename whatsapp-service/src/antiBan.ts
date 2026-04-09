@@ -296,7 +296,9 @@ export class AntiBanManager {
     deviceId: string,
     recipient: string,
     content: string,
+    options?: { force?: boolean },
   ): AntiBanDecision {
+    const force = options?.force ?? false;
     const now = Date.now();
     const state = this.getDeviceState(deviceId);
     this.pruneState(state, now);
@@ -307,39 +309,44 @@ export class AntiBanManager {
     const contentHash = hashContent(content);
     const recent = this.getRecentSendStats(state, now, contentHash);
 
-    if (state.nextAllowedAt && state.nextAllowedAt > now) {
-      return {
-        allowed: false,
-        delayMs: 0,
-        reason: "Device is cooling down before the next send window",
-        resumeAfterMs: state.nextAllowedAt - now,
-        health,
-        warmUpDay: warmUp.day,
-      };
-    }
+    // Cooldown, manual pause, and health checks can be overridden by force flag.
+    // Hard rate limits (warm-up daily cap, per-day/hour/minute, identical message,
+    // and timelock-463) are always enforced regardless of force.
+    if (!force) {
+      if (state.nextAllowedAt && state.nextAllowedAt > now) {
+        return {
+          allowed: false,
+          delayMs: 0,
+          reason: "Device is cooling down before the next send window",
+          resumeAfterMs: state.nextAllowedAt - now,
+          health,
+          warmUpDay: warmUp.day,
+        };
+      }
 
-    if (state.pausedManually) {
-      return {
-        allowed: false,
-        delayMs: 0,
-        reason: "Sending paused manually for this device",
-        health,
-        warmUpDay: warmUp.day,
-      };
-    }
+      if (state.pausedManually) {
+        return {
+          allowed: false,
+          delayMs: 0,
+          reason: "Sending paused manually for this device",
+          health,
+          warmUpDay: warmUp.day,
+        };
+      }
 
-    if (health.paused) {
-      const until = now + this.config.health.cooldownMs;
-      this.deferUntil(state, until);
-      this.saveState();
-      return {
-        allowed: false,
-        delayMs: 0,
-        reason: `Health risk ${health.risk}: ${health.recommendation}`,
-        resumeAfterMs: until - now,
-        health,
-        warmUpDay: warmUp.day,
-      };
+      if (health.paused) {
+        const until = now + this.config.health.cooldownMs;
+        this.deferUntil(state, until);
+        this.saveState();
+        return {
+          allowed: false,
+          delayMs: 0,
+          reason: `Health risk ${health.risk}: ${health.recommendation}`,
+          resumeAfterMs: until - now,
+          health,
+          warmUpDay: warmUp.day,
+        };
+      }
     }
 
     if (

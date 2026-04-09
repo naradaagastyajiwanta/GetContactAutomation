@@ -1915,6 +1915,15 @@ async def init_db() -> None:
         )
         await db.commit()
 
+        # Migration: add antiban_override to blast_campaigns (force resume override)
+        try:
+            await db.execute(
+                "ALTER TABLE blast_campaigns ADD COLUMN antiban_override INTEGER DEFAULT 0"
+            )
+            await db.commit()
+        except Exception:
+            pass  # Column already exists
+
     log.info("Database initialised at %s", DATABASE_PATH)
 
 

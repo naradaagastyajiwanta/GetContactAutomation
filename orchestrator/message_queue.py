@@ -216,14 +216,22 @@ class MessageQueue:
         phone: str,
         message: str,
         device_id: str = "device_1",
+        force_antiban: bool = False,
     ) -> SendAttemptResult:
-        """Send a WA message immediately and return detailed anti-ban aware status."""
-        payload = {
+        """Send a WA message immediately and return detailed anti-ban aware status.
+
+        force_antiban=True skips health/cooldown/manual-pause checks in the WA
+        service. Hard rate limits (per-minute, per-hour, per-day, warm-up daily
+        cap, timelock-463) are still enforced.
+        """
+        payload: dict = {
             "to": phone,
             "message": message,
             "device_id": device_id,
             "_type": "text",
         }
+        if force_antiban:
+            payload["force_send"] = True
         async with httpx.AsyncClient(timeout=30) as client:
             return await self._send_single(client, payload)
 

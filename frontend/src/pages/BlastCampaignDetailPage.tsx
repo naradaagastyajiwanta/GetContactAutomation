@@ -33,6 +33,7 @@ import {
   Smartphone,
   Timer,
   Zap,
+  ShieldAlert,
 } from "lucide-react";
 import { cn } from "../lib/utils";
 import {
@@ -48,6 +49,7 @@ import {
   usePauseCampaign,
   useCancelCampaign,
   useDeleteCampaign,
+  useForceResumeCampaign,
 } from "../hooks/useBlast";
 import { useMyDevices, useWhatsAppDevices } from "../hooks/useWhatsApp";
 import type {
@@ -862,6 +864,9 @@ export default function BlastCampaignDetailPage() {
   const pauseMutation = usePauseCampaign();
   const cancelMutation = useCancelCampaign();
   const deleteMutation = useDeleteCampaign();
+  const forceResumeMutation = useForceResumeCampaign();
+
+  const [showForceResumeModal, setShowForceResumeModal] = useState(false);
 
   // Local form state
   const [templateDraft, setTemplateDraft] = useState<string | null>(null);
@@ -1324,6 +1329,22 @@ export default function BlastCampaignDetailPage() {
                   {new Date(campaign.auto_resume_at).toLocaleString()}
                 </p>
               )}
+              {/* Force Resume — only shown when paused by anti-ban */}
+              {canManageBlast &&
+                campaign.paused_reason &&
+                /blocked|antiban|anti.ban|risk|timelock|health/i.test(
+                  campaign.paused_reason,
+                ) && (
+                  <div className="pt-1">
+                    <button
+                      onClick={() => setShowForceResumeModal(true)}
+                      className="inline-flex items-center gap-1.5 rounded-lg border border-red-400 dark:border-red-600 bg-red-50 dark:bg-red-900/20 px-2.5 py-1 text-xs font-semibold text-red-700 dark:text-red-400 hover:bg-red-100 dark:hover:bg-red-900/40 transition-colors"
+                    >
+                      <ShieldAlert className="w-3.5 h-3.5" />
+                      Lanjutkan Paksa (Override Anti-Ban)
+                    </button>
+                  </div>
+                )}
             </div>
           )}
           <div className="h-2.5 bg-gray-100 dark:bg-gray-700 rounded-full overflow-hidden flex">
@@ -2327,6 +2348,85 @@ export default function BlastCampaignDetailPage() {
           campaignId={campaignId}
           onClose={() => setShowContactModal(false)}
         />
+      )}
+
+      {/* Force Resume Warning Modal */}
+      {showForceResumeModal && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm p-4">
+          <div className="w-full max-w-md rounded-2xl bg-white dark:bg-gray-900 shadow-2xl border border-red-200 dark:border-red-800">
+            {/* Header */}
+            <div className="flex items-center gap-3 px-5 pt-5 pb-4 border-b border-red-100 dark:border-red-900">
+              <div className="flex-shrink-0 p-2 rounded-xl bg-red-100 dark:bg-red-900/40">
+                <ShieldAlert className="w-5 h-5 text-red-600 dark:text-red-400" />
+              </div>
+              <div>
+                <h3 className="text-base font-bold text-red-700 dark:text-red-400">
+                  Override Anti-Ban Protection
+                </h3>
+                <p className="text-xs text-gray-500 dark:text-gray-400 mt-0.5">
+                  Tindakan berisiko tinggi
+                </p>
+              </div>
+            </div>
+
+            {/* Body */}
+            <div className="px-5 py-4 space-y-3 text-sm text-gray-700 dark:text-gray-300">
+              <p>
+                Sistem anti-ban mendeteksi{" "}
+                <span className="font-semibold text-red-600 dark:text-red-400">
+                  risiko tinggi
+                </span>{" "}
+                pada device ini dan menghentikan blast untuk melindungi akun
+                WhatsApp kamu.
+              </p>
+
+              {campaign?.paused_reason && (
+                <div className="rounded-lg bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-800 px-3 py-2 text-xs text-red-700 dark:text-red-300 font-mono">
+                  {campaign.paused_reason}
+                </div>
+              )}
+
+              <p>
+                Dengan melanjutkan, blast akan berjalan dan mengabaikan
+                peringatan anti-ban. Hard rate limit (per-menit, per-jam,
+                per-hari, warm-up) tetap berlaku.
+              </p>
+
+              <div className="rounded-lg bg-yellow-50 dark:bg-yellow-900/20 border border-yellow-300 dark:border-yellow-700 px-3 py-2.5 text-xs font-semibold text-yellow-800 dark:text-yellow-300">
+                Akun WhatsApp pada device ini berisiko{" "}
+                <span className="text-red-600 dark:text-red-400">
+                  di-ban permanen
+                </span>{" "}
+                oleh WhatsApp. Seluruh risiko ditanggung oleh pengguna.
+              </div>
+            </div>
+
+            {/* Actions */}
+            <div className="flex justify-end gap-2 px-5 pb-5">
+              <button
+                onClick={() => setShowForceResumeModal(false)}
+                className="rounded-xl px-4 py-2 text-sm font-medium text-gray-600 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-800 transition-colors"
+              >
+                Batal
+              </button>
+              <button
+                onClick={() => {
+                  setShowForceResumeModal(false);
+                  forceResumeMutation.mutate(campaignId);
+                }}
+                disabled={forceResumeMutation.isPending}
+                className="inline-flex items-center gap-2 rounded-xl bg-red-600 hover:bg-red-700 px-4 py-2 text-sm font-semibold text-white transition-colors disabled:opacity-50"
+              >
+                {forceResumeMutation.isPending ? (
+                  <Loader2 className="w-4 h-4 animate-spin" />
+                ) : (
+                  <ShieldAlert className="w-4 h-4" />
+                )}
+                Ya, Lanjutkan — Saya Tanggung Risikonya
+              </button>
+            </div>
+          </div>
+        </div>
       )}
 
       <div className="sticky bottom-4 z-20">

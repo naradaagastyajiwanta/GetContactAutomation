@@ -912,6 +912,59 @@ async def pause_campaign(campaign_id: int) -> dict:
     return {"success": True, "campaign_id": campaign_id, "status": "paused"}
 
 
+async def force_resume_campaign(
+    campaign_id: int,
+    started_by_dms_user_id: Optional[int] = None,
+    started_by_email: Optional[str] = None,
+    started_by_name: Optional[str] = None,
+) -> dict:
+    """Resume a paused campaign with anti-ban override enabled.
+
+    The caller has explicitly acknowledged the ban risk. The campaign will run
+    with force_send=True so health/cooldown/manual-pause checks are bypassed.
+    Hard rate limits (per-minute, per-hour, per-day, warm-up daily cap,
+    timelock-463) are still enforced by the WA service.
+    """
+    campaign = await get_campaign(campaign_id)
+    if not campaign:
+        return {"success": False, "error": "Campaign not found"}
+    if campaign["status"] != "paused":
+        return {"success": False, "error": f"Campaign is not paused (status: {campaign['status']})"}
+    if campaign["total_recipients"] == 0:
+        return {"success": False, "error": "No recipients in campaign"}
+
+    await render_all_messages(campaign_id)
+    _clear_resume_task(campaign_id)
+
+    async with get_db() as db:
+        now = datetime.now(timezone.utc).isoformat()
+        await db.execute(
+            """UPDATE blast_campaigns
+               SET status = 'sending',
+                   antiban_override = 1,
+                   paused_at = NULL,
+                   auto_resume_at = NULL,
+                   paused_reason = NULL,
+                   started_by_dms_user_id = ?,
+                   started_by_email = ?,
+                   started_by_name = ?
+               WHERE id = ?""",
+            (started_by_dms_user_id, started_by_email, started_by_name, campaign_id),
+        )
+        await db.commit()
+
+    task = asyncio.create_task(_blast_worker(campaign_id))
+    _blast_tasks[campaign_id] = task
+
+    log.warning(
+        "[Blast] Campaign %d force-resumed with anti-ban override by %s — ban risk accepted.",
+        campaign_id,
+        started_by_email or "unknown",
+    )
+
+    return {"success": True, "campaign_id": campaign_id, "status": "sending", "antiban_override": True}
+
+
 async def cancel_campaign(campaign_id: int) -> dict:
     """Cancel a campaign (mark remaining as skipped)."""
     campaign = await get_campaign(campaign_id)
@@ -1020,12 +1073,15 @@ async def _blast_worker(campaign_id: int) -> None:
                 campaign["template_message"], recipient
             )
 
+            antiban_override = bool(current.get("antiban_override", 0))
+
             try:
                 # Send directly (not via queue) so we get an actual success/failure result.
                 result = await message_queue.send_now_detailed(
                     recipient["phone_number"],
                     message,
                     device_id=device_id,
+                    force_antiban=antiban_override,
                 )
 
                 if result.success:
@@ -1059,44 +1115,69 @@ async def _blast_worker(campaign_id: int) -> None:
                 elif result.blocked:
                     retry_after_ms = result.retry_after_ms or 0
                     paused_reason = _format_antiban_pause_reason(result)
-                    auto_resume_at = None
-                    if current.get("auto_resume_enabled") and retry_after_ms > 0:
-                        auto_resume_at = (
-                            datetime.now(timezone.utc) + timedelta(milliseconds=retry_after_ms)
-                        ).isoformat()
 
-                    log.warning(
-                        "[Blast] Anti-ban blocked campaign %d on %s for %sms: %s",
-                        campaign_id,
-                        recipient["phone_number"],
-                        retry_after_ms,
-                        paused_reason,
-                    )
-
-                    async with get_db() as db:
-                        now = datetime.now(timezone.utc).isoformat()
-                        await db.execute(
-                            """UPDATE blast_campaigns
-                               SET status = 'paused', paused_at = ?, auto_resume_at = ?, paused_reason = ?
-                               WHERE id = ? AND status = 'sending'""",
-                            (now, auto_resume_at, paused_reason, campaign_id),
+                    if antiban_override:
+                        # User chose to override anti-ban — log warning but keep going.
+                        # Wait for the retry window (capped at 30s) then continue.
+                        wait_s = min(retry_after_ms / 1000.0, 30.0) if retry_after_ms > 0 else 5.0
+                        log.warning(
+                            "[Blast] Anti-ban override active for campaign %d — "
+                            "blocked on %s (%s), waiting %.1fs then continuing. "
+                            "Risk accepted by user.",
+                            campaign_id,
+                            recipient["phone_number"],
+                            paused_reason,
+                            wait_s,
                         )
-                        await db.commit()
-
-                    if auto_resume_at:
-                        _schedule_auto_resume_task(campaign_id, _parse_iso_datetime(auto_resume_at) or datetime.now(timezone.utc))
+                        await ws_manager.broadcast_type(
+                            "blast_antiban_override_warning",
+                            campaign_id=campaign_id,
+                            reason=paused_reason,
+                            retry_after_ms=retry_after_ms,
+                            phone=recipient["phone_number"],
+                        )
+                        await asyncio.sleep(wait_s)
+                        # Don't advance recipient — retry same recipient after wait
+                        continue
                     else:
-                        _clear_resume_task(campaign_id)
+                        auto_resume_at = None
+                        if current.get("auto_resume_enabled") and retry_after_ms > 0:
+                            auto_resume_at = (
+                                datetime.now(timezone.utc) + timedelta(milliseconds=retry_after_ms)
+                            ).isoformat()
 
-                    await ws_manager.broadcast_type(
-                        "blast_paused",
-                        campaign_id=campaign_id,
-                        reason=paused_reason,
-                        retry_after_ms=retry_after_ms,
-                        auto_resume_at=auto_resume_at,
-                        phone=recipient["phone_number"],
-                    )
-                    break
+                        log.warning(
+                            "[Blast] Anti-ban blocked campaign %d on %s for %sms: %s",
+                            campaign_id,
+                            recipient["phone_number"],
+                            retry_after_ms,
+                            paused_reason,
+                        )
+
+                        async with get_db() as db:
+                            now = datetime.now(timezone.utc).isoformat()
+                            await db.execute(
+                                """UPDATE blast_campaigns
+                                   SET status = 'paused', paused_at = ?, auto_resume_at = ?, paused_reason = ?
+                                   WHERE id = ? AND status = 'sending'""",
+                                (now, auto_resume_at, paused_reason, campaign_id),
+                            )
+                            await db.commit()
+
+                        if auto_resume_at:
+                            _schedule_auto_resume_task(campaign_id, _parse_iso_datetime(auto_resume_at) or datetime.now(timezone.utc))
+                        else:
+                            _clear_resume_task(campaign_id)
+
+                        await ws_manager.broadcast_type(
+                            "blast_paused",
+                            campaign_id=campaign_id,
+                            reason=paused_reason,
+                            retry_after_ms=retry_after_ms,
+                            auto_resume_at=auto_resume_at,
+                            phone=recipient["phone_number"],
+                        )
+                        break
                 else:
                     # WA service returned failure — mark as failed
                     log.warning(

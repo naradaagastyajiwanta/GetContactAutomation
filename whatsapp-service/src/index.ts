@@ -1310,6 +1310,7 @@ app.post(
       queue = false,
       messageId,
       device_id = "device_1",
+      force_send = false,
     } = req.body as {
       to?: string;
       message?: string;
@@ -1318,6 +1319,7 @@ app.post(
       queue?: boolean;
       messageId?: string;
       device_id?: string;
+      force_send?: boolean;
     };
 
     if (!to || !message) {
@@ -1359,6 +1361,7 @@ app.post(
       message,
       replyToMsgKey,
       allMsgKeys,
+      forceAntiBan: force_send,
     };
 
     const result = await performProtectedTextSend(device_id, payload);

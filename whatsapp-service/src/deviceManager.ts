@@ -95,6 +95,8 @@ export interface MessagePayload {
   message: string;
   replyToMsgKey?: { remoteJid: string; id: string; fromMe: boolean };
   allMsgKeys?: { remoteJid: string; id: string; fromMe: boolean }[];
+  /** Skip health/cooldown/manual-pause checks. Hard rate limits still apply. */
+  forceAntiBan?: boolean;
 }
 
 // Document message payload
@@ -104,6 +106,8 @@ export interface DocumentPayload {
   fileName: string;
   mimetype: string;
   caption?: string;
+  /** Skip health/cooldown/manual-pause checks. Hard rate limits still apply. */
+  forceAntiBan?: boolean;
 }
 
 // Result of sending a message
@@ -1023,10 +1027,16 @@ export class DeviceManager {
           deviceId,
           jid,
           payload.message,
+          { force: payload.forceAntiBan },
         );
         if (!decision.allowed) {
           this.logger.warn(
-            { deviceId, to: payload.to, reason: decision.reason },
+            {
+              deviceId,
+              to: payload.to,
+              reason: decision.reason,
+              forced: payload.forceAntiBan,
+            },
             "Anti-ban blocked text send",
           );
           return this._buildSendResult(deviceId, {
@@ -1136,10 +1146,16 @@ export class DeviceManager {
           deviceId,
           jid,
           previewText,
+          { force: payload.forceAntiBan },
         );
         if (!decision.allowed) {
           this.logger.warn(
-            { deviceId, to: payload.to, reason: decision.reason },
+            {
+              deviceId,
+              to: payload.to,
+              reason: decision.reason,
+              forced: payload.forceAntiBan,
+            },
             "Anti-ban blocked document send",
           );
           return this._buildSendResult(deviceId, {

@@ -5507,6 +5507,29 @@ async def blast_cancel_campaign(campaign_id: int, request: Request):
     return result
 
 
+@app.post("/blast/campaigns/{campaign_id}/force-resume")
+async def blast_force_resume_campaign(campaign_id: int, request: Request):
+    """Resume a paused campaign with anti-ban protection overridden.
+
+    The caller explicitly accepts the risk of WhatsApp banning the sending
+    device. Health checks, cooldown windows, and manual-pause flags are
+    bypassed. Hard rate limits (per-minute, per-hour, per-day, warm-up daily
+    cap, timelock-463) remain enforced by the WA service.
+    """
+    await _require_blast_campaign_access(campaign_id)
+    current_user = await get_request_user(request)
+
+    result = await blast_service.force_resume_campaign(
+        campaign_id,
+        started_by_dms_user_id=current_user.get("dms_user_id"),
+        started_by_email=current_user.get("email"),
+        started_by_name=_campaign_actor_name(current_user),
+    )
+    if not result.get("success"):
+        return JSONResponse(result, status_code=400)
+    return result
+
+
 # ---------------------------------------------------------------------------
 # Email Blast Endpoints
 # ---------------------------------------------------------------------------
