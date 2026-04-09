@@ -4,9 +4,9 @@
 # Push to `main` → SSH to VPS → git pull → docker compose build → up
 #
 # Required GitLab CI/CD Variables (Settings → CI/CD → Variables):
-#   SSH_PRIVATE_KEY   - Private SSH key for VPS (type: File OR Variable as base64)
-#   VPS_HOST          - VPS IP (e.g. 103.253.145.84)
-#   VPS_USER          - SSH user (e.g. root atau ubuntu)
+#   VPS_HOST       - VPS IP address
+#   VPS_USER       - SSH username (e.g. root)
+#   VPS_PASSWORD   - SSH password
 #
 # Optional:
 #   DEPLOY_DIR        - Remote path (default: /var/www/get_contact_jiwan)
@@ -28,6 +28,22 @@ workflow:
     # Allow manual trigger from any branch
     - if: $CI_PIPELINE_SOURCE == "manual"
 
+# Helper: SSH command with password
+# Usage: ssh_cmd "command here"
+ssh_cmd() {
+  sshpass -p "$VPS_PASSWORD" ssh -o StrictHostKeyChecking=no "$VPS_USER@$VPS_HOST" "$1"
+}
+
+# Helper: SCP file to VPS
+scp_to_vps() {
+  sshpass -p "$VPS_PASSWORD" scp -o StrictHostKeyChecking=no "$1" "$VPS_USER@$VPS_HOST:$2"
+}
+
+# Helper: Run remote bash script
+ssh_bash() {
+  sshpass -p "$VPS_PASSWORD" ssh -o StrictHostKeyChecking=no "$VPS_USER@$VPS_HOST" bash -s
+}
+
 # ---------------------------------------------------------------
 # Stage 1: Deploy — SSH to VPS → git pull → build → up
 # ---------------------------------------------------------------
@@ -35,36 +51,22 @@ deploy:
   stage: deploy
   image: alpine:3.19
   before_script:
-    - apk add --no-cache openssh-client git bash coreutils
-    - eval $(ssh-agent -s)
+    - apk add --no-cache openssh-client git bash sshpass
     - mkdir -p ~/.ssh && chmod 700 ~/.ssh
-    - |
-      if [ -f "$SSH_PRIVATE_KEY" ]; then
-        # Type: File — GitLab passes path directly
-        chmod 600 "$SSH_PRIVATE_KEY"
-        ssh-add "$SSH_PRIVATE_KEY"
-      elif [ -n "$SSH_PRIVATE_KEY" ]; then
-        # Type: Variable — treat value as base64-encoded key
-        echo "$SSH_PRIVATE_KEY" | base64 -d > ~/.ssh/gitlab_deploy_key
-        chmod 600 ~/.ssh/gitlab_deploy_key
-        ssh-add ~/.ssh/gitlab_deploy_key
-      else
-        echo "ERROR: SSH_PRIVATE_KEY is empty."
-        exit 1
-      fi
-    - |
-      if [ -n "$SSH_KNOWN_HOSTS" ]; then
-        echo "$SSH_KNOWN_HOSTS" >> ~/.ssh/known_hosts
-      else
-        ssh-keyscan -H "$VPS_HOST" >> ~/.ssh/known_hosts 2>/dev/null
-      fi
-      chmod 644 ~/.ssh/known_hosts
+    - ssh-keyscan -H "$VPS_HOST" >> ~/.ssh/known_hosts 2>/dev/null || true
+    - chmod 644 ~/.ssh/known_hosts
 
   script:
-    - echo "============================================="
-    - echo "  Deploying to $VPS_USER@$VPS_HOST"
-    - echo "  Commit → $CI_COMMIT_SHORT_SHA"
-    - echo "============================================="
+    - |
+      if [ -z "$VPS_PASSWORD" ]; then
+        echo "ERROR: VPS_PASSWORD is not set. Add it in GitLab CI/CD Variables."
+        exit 1
+      fi
+
+      echo "============================================="
+      echo "  Deploying to $VPS_USER@$VPS_HOST"
+      echo "  Commit → $CI_COMMIT_SHORT_SHA"
+      echo "============================================="
 
     # ---------------------------------------------------------
     # Step 1: Sync code to VPS via git
@@ -78,7 +80,7 @@ deploy:
         REPO_URL="${CI_REPOSITORY_URL}"
       fi
 
-      ssh "$VPS_USER@$VPS_HOST" bash -s -- "$DEPLOY_DIR" "$REPO_URL" "$CI_COMMIT_SHA" << 'REMOTE_SYNC'
+      sshpass -p "$VPS_PASSWORD" ssh -o StrictHostKeyChecking=no "$VPS_USER@$VPS_HOST" bash -s -- "$DEPLOY_DIR" "$REPO_URL" "$CI_COMMIT_SHA" << 'REMOTE_SYNC'
         DEPLOY_DIR="$1"
         REPO_URL="$2"
         COMMIT_SHA="$3"
@@ -115,7 +117,7 @@ deploy:
       echo ""
       echo "[deploy] Step 2: Building & restarting containers..."
 
-      ssh "$VPS_USER@$VPS_HOST" bash -s -- "$DEPLOY_DIR" << 'REMOTE_BUILD'
+      sshpass -p "$VPS_PASSWORD" ssh -o StrictHostKeyChecking=no "$VPS_USER@$VPS_HOST" bash -s -- "$DEPLOY_DIR" << 'REMOTE_BUILD'
         DEPLOY_DIR="$1"
         cd "$DEPLOY_DIR"
 
@@ -143,50 +145,39 @@ verify:
   stage: verify
   image: alpine:3.19
   before_script:
-    - apk add --no-cache openssh-client curl coreutils
-    - eval $(ssh-agent -s)
-    - mkdir -p ~/.ssh
-    - |
-      if [ -f "$SSH_PRIVATE_KEY" ]; then
-        chmod 600 "$SSH_PRIVATE_KEY"
-        ssh-add "$SSH_PRIVATE_KEY"
-      elif [ -n "$SSH_PRIVATE_KEY" ]; then
-        echo "$SSH_PRIVATE_KEY" | base64 -d > ~/.ssh/gitlab_deploy_key
-        chmod 600 ~/.ssh/gitlab_deploy_key
-        ssh-add ~/.ssh/gitlab_deploy_key
-      else
-        echo "ERROR: SSH_PRIVATE_KEY is empty."
-        exit 1
-      fi
-    - |
-      if [ -n "$SSH_KNOWN_HOSTS" ]; then
-        echo "$SSH_KNOWN_HOSTS" >> ~/.ssh/known_hosts
-      else
-        ssh-keyscan -H "$VPS_HOST" >> ~/.ssh/known_hosts 2>/dev/null
-      fi
+    - apk add --no-cache openssh-client curl sshpass
+    - mkdir -p ~/.ssh && chmod 700 ~/.ssh
+    - ssh-keyscan -H "$VPS_HOST" >> ~/.ssh/known_hosts 2>/dev/null || true
 
   script:
-    - echo "============================================="
-    - echo "  Post-deploy verification"
-    - echo "============================================="
-    - sleep 20
+    - |
+      if [ -z "$VPS_PASSWORD" ]; then
+        echo "ERROR: VPS_PASSWORD is not set."
+        exit 1
+      fi
+
+      echo "============================================="
+      echo "  Post-deploy verification"
+      echo "============================================="
+      - sleep 20
 
     # Container status
     - |
       echo "[verify] Container status:"
-      ssh "$VPS_USER@$VPS_HOST" \
+      sshpass -p "$VPS_PASSWORD" ssh -o StrictHostKeyChecking=no "$VPS_USER@$VPS_HOST" \
         "cd $DEPLOY_DIR && docker compose -f docker-compose.prod.yml ps --format 'table {{.Name}}\t{{.Status}}'"
 
     # Stopped containers → fail
     - |
       echo ""
-      UNHEALTHY=$(ssh "$VPS_USER@$VPS_HOST" \
+      UNHEALTHY=$(sshpass -p "$VPS_PASSWORD" ssh -o StrictHostKeyChecking=no "$VPS_USER@$VPS_HOST" \
         "cd $DEPLOY_DIR && docker compose -f docker-compose.prod.yml ps --status exited --format '{{.Name}}' 2>/dev/null" \
         || echo "")
       if [ -n "$UNHEALTHY" ]; then
         echo "  ✗ Stopped containers: $UNHEALTHY"
         for SVC in $UNHEALTHY; do
-          ssh "$VPS_USER@$VPS_HOST" "cd $DEPLOY_DIR && docker compose -f docker-compose.prod.yml logs --tail=30 $SVC"
+          sshpass -p "$VPS_PASSWORD" ssh -o StrictHostKeyChecking=no "$VPS_USER@$VPS_HOST" \
+            "cd $DEPLOY_DIR && docker compose -f docker-compose.prod.yml logs --tail=30 $SVC"
         done
         exit 1
       else
@@ -197,19 +188,19 @@ verify:
     - |
       echo ""
       echo "[verify] Orchestrator health..."
-      HEALTH=$(ssh "$VPS_USER@$VPS_HOST" \
+      HEALTH=$(sshpass -p "$VPS_PASSWORD" ssh -o StrictHostKeyChecking=no "$VPS_USER@$VPS_HOST" \
         "curl -sf http://localhost:8000/health 2>/dev/null" || echo "FAIL")
       if echo "$HEALTH" | grep -q "status"; then
         echo "  ✓ Orchestrator OK: $HEALTH"
       else
         sleep 10
-        HEALTH=$(ssh "$VPS_USER@$VPS_HOST" \
+        HEALTH=$(sshpass -p "$VPS_PASSWORD" ssh -o StrictHostKeyChecking=no "$VPS_USER@$VPS_HOST" \
           "curl -sf http://localhost:8000/health 2>/dev/null" || echo "FAIL")
         if echo "$HEALTH" | grep -q "status"; then
           echo "  ✓ Orchestrator OK (retry): $HEALTH"
         else
           echo "  ✗ Orchestrator FAILED"
-          ssh "$VPS_USER@$VPS_HOST" \
+          sshpass -p "$VPS_PASSWORD" ssh -o StrictHostKeyChecking=no "$VPS_USER@$VPS_HOST" \
             "cd $DEPLOY_DIR && docker compose -f docker-compose.prod.yml logs --tail=30 orchestrator"
           exit 1
         fi
@@ -218,7 +209,7 @@ verify:
     # Frontend
     - |
       echo ""
-      HTTP_CODE=$(ssh "$VPS_USER@$VPS_HOST" \
+      HTTP_CODE=$(sshpass -p "$VPS_PASSWORD" ssh -o StrictHostKeyChecking=no "$VPS_USER@$VPS_HOST" \
         "curl -so /dev/null -w '%{http_code}' http://localhost:3200/ 2>/dev/null" || echo "000")
       if [ "$HTTP_CODE" = "200" ]; then
         echo "  ✓ Frontend OK (HTTP $HTTP_CODE)"
@@ -229,7 +220,7 @@ verify:
     # WhatsApp
     - |
       echo ""
-      WA=$(ssh "$VPS_USER@$VPS_HOST" \
+      WA=$(sshpass -p "$VPS_PASSWORD" ssh -o StrictHostKeyChecking=no "$VPS_USER@$VPS_HOST" \
         "curl -sf http://localhost:3100/status 2>/dev/null" || echo "")
       if echo "$WA" | grep -qE "status|connected"; then
         echo "  ✓ WhatsApp OK"
