@@ -117,7 +117,7 @@ services:
       warp:
         condition: service_started
       warp2:
-        condition: service_healthy
+        condition: service_started
     networks:
       - gc-network
 

@@ -64,8 +64,15 @@ verify:
     - |
       set -e
       echo "Verification..."
-      sleep 20
+      sleep 30
       sshpass -p "$VPS_PASSWORD" ssh -o StrictHostKeyChecking=no -p "$VPS_PORT" "$VPS_USER@$VPS_HOST" "cd /var/www/get_contact_jiwan && docker compose -f docker-compose.prod.yml ps"
-      sshpass -p "$VPS_PASSWORD" ssh -o StrictHostKeyChecking=no -p "$VPS_PORT" "$VPS_USER@$VPS_HOST" "curl -sf http://localhost:8010/health"
-      sshpass -p "$VPS_PASSWORD" ssh -o StrictHostKeyChecking=no -p "$VPS_PORT" "$VPS_USER@$VPS_HOST" "curl -so /dev/null -w HTTP http://localhost:3010/"
+      echo "--- Orchestrator health ---"
+      for i in 1 2 3; do
+        sshpass -p "$VPS_PASSWORD" ssh -o StrictHostKeyChecking=no -p "$VPS_PORT" "$VPS_USER@$VPS_HOST" "curl -sf http://localhost:8010/health" && break
+        echo "Attempt $i failed, retrying in 10s..."
+        sleep 10
+      done
+      echo "--- Frontend ---"
+      sshpass -p "$VPS_PASSWORD" ssh -o StrictHostKeyChecking=no -p "$VPS_PORT" "$VPS_USER@$VPS_HOST" "curl -so /dev/null -w 'HTTP %{http_code}' http://localhost:3010/"
+      echo ""
       echo "OK"
