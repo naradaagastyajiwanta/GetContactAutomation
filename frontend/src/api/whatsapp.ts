@@ -34,8 +34,16 @@ export async function getWaStatus(): Promise<WaStatusResponse> {
   return data;
 }
 
-export async function sendTestMessage(to: string, message: string) {
-  const { data } = await apiClient.post("/wa/send-test", { to, message });
+export async function sendTestMessage(
+  to: string,
+  message: string,
+  device_id = "device_1",
+) {
+  const { data } = await apiClient.post("/wa/send-test", {
+    to,
+    message,
+    device_id,
+  });
   return data as { success: boolean; messageId?: string; error?: string };
 }
 

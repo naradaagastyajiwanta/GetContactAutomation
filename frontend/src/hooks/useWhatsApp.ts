@@ -40,8 +40,15 @@ export function useWaStatus() {
 
 export function useSendTestMessage() {
   return useMutation({
-    mutationFn: ({ to, message }: { to: string; message: string }) =>
-      sendTestMessage(to, message),
+    mutationFn: ({
+      to,
+      message,
+      device_id,
+    }: {
+      to: string;
+      message: string;
+      device_id?: string;
+    }) => sendTestMessage(to, message, device_id),
     onSuccess: (data) => {
       if (data.success) {
         toast.success("Test message sent!");

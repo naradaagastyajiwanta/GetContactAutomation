@@ -1940,6 +1940,7 @@ class TestConversationPayload(BaseModel):
     phone: str
     university_name: str = "Universitas Test"
     force: bool = False
+    device_id: str = "device_1"
 
 
 @app.post("/conversations/test")
@@ -2009,7 +2010,7 @@ async def start_test_conversation(payload: TestConversationPayload):
     conv_id = await create_conversation(None, phone, is_test=True)
 
     # Enqueue via message queue
-    await message_queue.enqueue_send(phone, message)
+    await message_queue.enqueue_send(phone, message, device_id=payload.device_id)
 
     # Update state and record message
     await update_conversation_state(
@@ -2436,6 +2437,7 @@ async def trigger_reflection(background_tasks: BackgroundTasks):
 class TestMessagePayload(BaseModel):
     to: str
     message: str
+    device_id: str = "device_1"
 
 
 @app.get("/wa/qr")
@@ -2473,7 +2475,7 @@ async def wa_send_test(payload: TestMessagePayload):
         async with httpx.AsyncClient(timeout=30) as client:
             resp = await client.post(
                 f"{WA_SERVICE_URL}/send",
-                json={"to": payload.to, "message": payload.message},
+                json={"to": payload.to, "message": payload.message, "device_id": payload.device_id},
             )
             return resp.json()
     except Exception as e:

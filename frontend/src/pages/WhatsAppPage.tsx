@@ -18,6 +18,8 @@ import {
   useSendTestMessage,
   useWaLogout,
   useWaRestart,
+  useWhatsAppDevices,
+  useMyDevices,
 } from "../hooks/useWhatsApp";
 import { useStartTestConversation } from "../hooks/useConversations";
 import { Button } from "../components/ui/Button";
@@ -69,24 +71,30 @@ function TabButton({
 export default function WhatsAppPage() {
   const { hasPermission } = useAuth();
   const { data: statusData } = useWaStatus();
+  const canManageWhatsApp = hasPermission("whatsapp.manage");
+  const isAdmin = hasPermission("*");
+
   const sendTest = useSendTestMessage();
   const logout = useWaLogout();
   const restart = useWaRestart();
   const startTestConv = useStartTestConversation();
   const navigate = useNavigate();
 
+  const { data: allDevicesData } = useWhatsAppDevices(isAdmin);
+  const { data: myDevicesData } = useMyDevices();
+
   const [activeTab, setActiveTab] = useState<TabId>("devices");
   const [testPhone, setTestPhone] = useState("");
   const [testMessage, setTestMessage] = useState("");
+  const [testDevice, setTestDevice] = useState("device_1");
   const [testConvPhone, setTestConvPhone] = useState("");
   const [testConvUniName, setTestConvUniName] = useState("");
+  const [testConvDevice, setTestConvDevice] = useState("device_1");
   const [testConvConflict, setTestConvConflict] = useState<{
     id: number;
     state: string;
   } | null>(null);
   const [showLogoutConfirm, setShowLogoutConfirm] = useState(false);
-  const canManageWhatsApp = hasPermission("whatsapp.manage");
-  const isAdmin = hasPermission("*");
   usePageTour("whatsapp", WHATSAPP_TOUR_STEPS);
 
   useEffect(() => {
@@ -98,6 +106,20 @@ export default function WhatsAppPage() {
       setActiveTab("devices");
     }
   }, [activeTab, canManageWhatsApp]);
+
+  // Build device options for the Quick Test selector
+  type DeviceOption = { value: string; label: string; connected: boolean };
+  const deviceOptions: DeviceOption[] = isAdmin
+    ? ((allDevicesData as any)?.devices ?? []).map((d: any) => ({
+        value: d.id as string,
+        label: `${d.name ?? d.id}${d.phoneNumber ? ` · ${d.phoneNumber}` : ""}`,
+        connected: d.connectionState === "connected",
+      }))
+    : ((myDevicesData as any)?.devices ?? []).map((d: any) => ({
+        value: d.device_id as string,
+        label: `${d.label || d.device_id}${d.device?.phoneNumber ? ` · ${d.device.phoneNumber}` : ""}`,
+        connected: d.device?.connectionState === "connected",
+      }));
 
   // Get connected devices count from status
   const connectedCount =
@@ -113,7 +135,11 @@ export default function WhatsAppPage() {
   const handleSendTest = () => {
     if (!testPhone.trim() || !testMessage.trim()) return;
     sendTest.mutate(
-      { to: testPhone.trim(), message: testMessage.trim() },
+      {
+        to: testPhone.trim(),
+        message: testMessage.trim(),
+        device_id: testDevice,
+      },
       {
         onSuccess: () => {
           setTestPhone("");
@@ -131,6 +157,7 @@ export default function WhatsAppPage() {
         phone: testConvPhone.trim(),
         universityName: testConvUniName.trim() || undefined,
         force,
+        deviceId: testConvDevice,
       },
       {
         onSuccess: (data) => {
@@ -303,6 +330,27 @@ export default function WhatsAppPage() {
                 <div className="space-y-3">
                   <div>
                     <label className="mb-1.5 block text-xs font-semibold text-gray-600 dark:text-gray-400 uppercase tracking-wider">
+                      Device
+                    </label>
+                    <select
+                      value={testDevice}
+                      onChange={(e) => setTestDevice(e.target.value)}
+                      disabled={connectedCount === 0}
+                      className="w-full rounded-lg border border-gray-300 dark:border-gray-600 px-3 py-2 text-sm focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500 dark:bg-gray-900 dark:text-gray-100 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+                    >
+                      {deviceOptions.length === 0 && (
+                        <option value="device_1">device_1</option>
+                      )}
+                      {deviceOptions.map((opt) => (
+                        <option key={opt.value} value={opt.value}>
+                          {opt.label}
+                          {!opt.connected ? " (offline)" : ""}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+                  <div>
+                    <label className="mb-1.5 block text-xs font-semibold text-gray-600 dark:text-gray-400 uppercase tracking-wider">
                       Phone Number
                     </label>
                     <input
@@ -361,6 +409,27 @@ export default function WhatsAppPage() {
                 </div>
 
                 <div className="space-y-3">
+                  <div>
+                    <label className="mb-1.5 block text-xs font-semibold text-gray-600 dark:text-gray-400 uppercase tracking-wider">
+                      Device
+                    </label>
+                    <select
+                      value={testConvDevice}
+                      onChange={(e) => setTestConvDevice(e.target.value)}
+                      disabled={connectedCount === 0}
+                      className="w-full rounded-lg border border-gray-300 dark:border-gray-600 px-3 py-2 text-sm focus:border-purple-500 focus:outline-none focus:ring-1 focus:ring-purple-500 dark:bg-gray-900 dark:text-gray-100 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+                    >
+                      {deviceOptions.length === 0 && (
+                        <option value="device_1">device_1</option>
+                      )}
+                      {deviceOptions.map((opt) => (
+                        <option key={opt.value} value={opt.value}>
+                          {opt.label}
+                          {!opt.connected ? " (offline)" : ""}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
                   <div>
                     <label className="mb-1.5 block text-xs font-semibold text-gray-600 dark:text-gray-400 uppercase tracking-wider">
                       Your Phone Number

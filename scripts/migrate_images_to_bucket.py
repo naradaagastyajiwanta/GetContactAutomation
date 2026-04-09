@@ -61,18 +61,19 @@ async def migrate(dry_run: bool = False, batch_size: int = 100, db_path: str | N
 
         migrated = 0
         failed = 0
-        offset = 0
 
         while True:
+            # Always OFFSET 0 — committed rows are excluded from WHERE clause,
+            # so the result set shrinks naturally after each batch.
             cur = await db.execute(
                 """
                 SELECT id, post_url, university_id, image_data
                 FROM ig_posts
                 WHERE image_data IS NOT NULL AND image_bucket_url IS NULL
                 ORDER BY id
-                LIMIT ? OFFSET ?
+                LIMIT ?
                 """,
-                (batch_size, offset),
+                (batch_size,),
             )
             rows = await cur.fetchall()
             if not rows:
@@ -112,7 +113,6 @@ async def migrate(dry_run: bool = False, batch_size: int = 100, db_path: str | N
                     print(f"  [FAIL] id={post_id} — bucket upload failed")
 
             await db.commit()
-            offset += batch_size
 
         if not dry_run:
             print(f"\nDone: {migrated} migrated, {failed} failed")
