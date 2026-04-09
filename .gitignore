@@ -84,6 +84,7 @@ whatsapp-service/data/antiban-state.json
 .claude/
 .claude.bak/
 !.claude/README.md
+.claude/settings.local.json
 
 # =============================================================================
 # IDE
@@ -155,7 +156,7 @@ whatsapp-service/data/
 # Instaloader / Scrape Cache
 # =============================================================================
 .instaloader/
-
+.gitlab-ci.yml
 # =============================================================================
 # Google Sheets / External API Credentials
 # =============================================================================
@@ -201,3 +202,15 @@ data/audiensi_docs/
 /*_logs.txt
 /*.html
 /*.db
+.env.*
+.claude/settings.local.json
+.claude/hooks/hook-log.txt
+.claude/telegram/daemon.pid
+.claude/telegram/injector.pid
+.claude/telegram/daemon.log
+.claude/telegram/injector.log
+.claude/telegram/channel-mode.env
+docs/hook-analytics.md
+docs/token-reports/
+gitlab_deploy_key
+gitlab_deploy_key.pub
