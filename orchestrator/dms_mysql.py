@@ -1047,18 +1047,60 @@ async def resolve_dms_univ_id(university_name: str) -> int | None:
     return int(result["id_univ"]) if result else None
 
 
+def _detect_tipe_instansi(name: str) -> int:
+    """
+    Detect institution type ID from university name prefix.
+    Maps to tipe_instansi_lsp.id_tipe_instansi:
+      1=UNIVERSITAS, 2=INSTITUT, 3=SEKOLAH TINGGI, 4=POLITEKNIK,
+      5=AKADEMI, 6=SEKOLAH, 12=LAINNYA (default)
+    """
+    n = name.upper().strip()
+    if n.startswith("UNIVERSITAS"):
+        return 1
+    if n.startswith("INSTITUT"):
+        return 2
+    if n.startswith("POLITEKNIK"):
+        return 4
+    if any(n.startswith(p) for p in (
+        "SEKOLAH TINGGI", "STMIK", "STIE", "STKIP", "STIKES",
+        "STIT", "STIKES", "STB", "STBA", "STPN", "STPP", "STSI",
+        "STIESIA", "STIPAS", "STIAMI",
+    )):
+        return 3
+    if any(n.startswith(p) for p in ("AKADEMI", "AMIK", "AKOM")):
+        return 5
+    if n.startswith("SEKOLAH"):
+        return 6
+    return 12  # LAINNYA
+
+
 async def create_dms_university(name: str) -> int:
     """
-    Insert a new university into the DMS universitas table with just the name.
-    Returns the new id_univ.
+    Insert a new university into the DMS universitas table.
+    Also inserts into universitas_lsp with tipe_id_instansi detected from name.
+    Returns the new id_univ from universitas (canonical ID stored in SQLite).
     """
+    tipe_id = _detect_tipe_instansi(name)
+
     async with get_dms_cursor() as cursor:
+        # Insert into main universitas table
         await cursor.execute(
             "INSERT INTO universitas (universitas) VALUES (%s)",
             (name,),
         )
-        # autocommit=True on pool — no explicit commit needed
-        return cursor.lastrowid
+        univ_id = cursor.lastrowid
+
+    # Also insert into universitas_lsp with tipe_id_instansi
+    try:
+        async with get_dms_cursor() as cursor:
+            await cursor.execute(
+                "INSERT INTO universitas_lsp (universitas, tipe_id_instansi) VALUES (%s, %s)",
+                (name, tipe_id),
+            )
+    except Exception as exc:
+        log.warning("[DMS] Could not insert into universitas_lsp for '%s': %s", name, exc)
+
+    return univ_id
 
 
 async def get_kontak_auto_for_universities(dms_univ_ids: list[int]) -> list[dict]:
