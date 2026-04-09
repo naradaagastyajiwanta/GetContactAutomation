@@ -1009,13 +1009,13 @@ async def get_schedules_needing_reminder(
 async def find_dms_university_by_name(name: str) -> dict | None:
     """
     Try to find a matching university in DMS by fuzzy name match.
-    Used to map GetContact's local university records to DMS IDs.
+    Searches universitas_lsp (primary) only.
     """
     async with get_dms_cursor() as cursor:
-        # Try exact match first
+        # Exact match
         await cursor.execute("""
             SELECT id_univ, universitas, alamat
-            FROM universitas
+            FROM universitas_lsp
             WHERE universitas = %s
             LIMIT 1
         """, (name,))
@@ -1023,10 +1023,10 @@ async def find_dms_university_by_name(name: str) -> dict | None:
         if row:
             return _serialize_row(row)
 
-        # Try LIKE match
+        # LIKE match
         await cursor.execute("""
             SELECT id_univ, universitas, alamat
-            FROM universitas
+            FROM universitas_lsp
             WHERE universitas LIKE %s
             ORDER BY universitas
             LIMIT 5
@@ -1076,31 +1076,16 @@ def _detect_tipe_instansi(name: str) -> int:
 
 async def create_dms_university(name: str) -> int:
     """
-    Insert a new university into the DMS universitas table.
-    Also inserts into universitas_lsp with tipe_id_instansi detected from name.
-    Returns the new id_univ from universitas (canonical ID stored in SQLite).
+    Insert a new university into universitas_lsp with tipe_id_instansi detected from name.
+    Returns the new id_univ.
     """
     tipe_id = _detect_tipe_instansi(name)
-
     async with get_dms_cursor() as cursor:
-        # Insert into main universitas table
         await cursor.execute(
-            "INSERT INTO universitas (universitas) VALUES (%s)",
-            (name,),
+            "INSERT INTO universitas_lsp (universitas, tipe_id_instansi) VALUES (%s, %s)",
+            (name, tipe_id),
         )
-        univ_id = cursor.lastrowid
-
-    # Also insert into universitas_lsp with tipe_id_instansi
-    try:
-        async with get_dms_cursor() as cursor:
-            await cursor.execute(
-                "INSERT INTO universitas_lsp (universitas, tipe_id_instansi) VALUES (%s, %s)",
-                (name, tipe_id),
-            )
-    except Exception as exc:
-        log.warning("[DMS] Could not insert into universitas_lsp for '%s': %s", name, exc)
-
-    return univ_id
+        return cursor.lastrowid
 
 
 async def get_kontak_auto_for_universities(dms_univ_ids: list[int]) -> list[dict]:
