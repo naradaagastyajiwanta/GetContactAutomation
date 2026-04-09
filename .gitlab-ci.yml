@@ -27,17 +27,33 @@ deploy:
         exit 1
       fi
       echo "Deploying to $VPS_USER@$VPS_HOST:$VPS_PORT / $CI_COMMIT_SHORT_SHA"
-      echo "--- Step 1: Sync code ---"
+      echo "--- Step 1: Setup permissions ---"
       if [ -n "$DEPLOY_TOKEN_USER" ] && [ -n "$DEPLOY_TOKEN_PASS" ]; then
         REPO_URL="https://${DEPLOY_TOKEN_USER}:${DEPLOY_TOKEN_PASS}@${CI_SERVER_HOST}/${CI_PROJECT_PATH}.git"
       else
         REPO_URL="${CI_REPOSITORY_URL}"
       fi
-      sshpass -p "$VPS_PASSWORD" ssh -o StrictHostKeyChecking=no -p "$VPS_PORT" "$VPS_USER@$VPS_HOST" \
-        "mkdir -p $DEPLOY_DIR && cd $DEPLOY_DIR && if [ -d .git ]; then git fetch origin main --depth=5 && git reset --hard $CI_COMMIT_SHA && echo OK; else git clone --depth=5 --branch main $REPO_URL . && echo OK; fi && mkdir -p data data/audiensi_docs data/templates data/ig_sessions data/pw_sessions && mkdir -p whatsapp-service/auth_store whatsapp-service/auth_store_backup whatsapp-service/auth_store_device_1 whatsapp-service/auth_store_device_2 whatsapp-service/auth_store_device_3 whatsapp-service/auth_store_device_4 whatsapp-service/auth_store_device_5 whatsapp-service/data && ls .env.production && echo .env.production exists || echo .env.production missing"
+      sshpass -p "$VPS_PASSWORD" ssh -o StrictHostKeyChecking=no -p "$VPS_PORT" "$VPS_USER@$VPS_HOST" bash -c "\
+        mkdir -p $DEPLOY_DIR && cd $DEPLOY_DIR && \
+        if [ -d .git ]; then \
+          git fetch origin main --depth=5 && git reset --hard $CI_COMMIT_SHA && echo OK; \
+        else \
+          git clone --depth=5 --branch main $REPO_URL . && echo OK; \
+        fi && \
+        git config --global --add safe.directory $DEPLOY_DIR && \
+        chown -R $VPS_USER:$VPS_USER $DEPLOY_DIR && \
+        mkdir -p data data/audiensi_docs data/templates data/ig_sessions data/pw_sessions && \
+        mkdir -p whatsapp-service/auth_store whatsapp-service/auth_store_backup whatsapp-service/auth_store_device_1 whatsapp-service/auth_store_device_2 whatsapp-service/auth_store_device_3 whatsapp-service/auth_store_device_4 whatsapp-service/auth_store_device_5 whatsapp-service/data && \
+        usermod -aG docker $VPS_USER 2>/dev/null || true && \
+        ls .env.production && echo .env.production exists || { echo creating .env.production; cp .env.example .env.production; }"
       echo "--- Step 2: Build & Up ---"
-      sshpass -p "$VPS_PASSWORD" ssh -o StrictHostKeyChecking=no -p "$VPS_PORT" "$VPS_USER@$VPS_HOST" \
-        "cd $DEPLOY_DIR && docker compose -f docker-compose.prod.yml build --pull && docker compose -f docker-compose.prod.yml up -d --remove-orphans && docker system prune -f --filter until=72h 2>/dev/null || true && docker compose -f docker-compose.prod.yml ps"
+      sshpass -p "$VPS_PASSWORD" ssh -o StrictHostKeyChecking=no -p "$VPS_PORT" "$VPS_USER@$VPS_HOST" bash -c "\
+        cd $DEPLOY_DIR && \
+        sudo chown -R $VPS_USER:$VPS_USER data whatsapp-service 2>/dev/null || true && \
+        docker compose -f docker-compose.prod.yml build --pull && \
+        docker compose -f docker-compose.prod.yml up -d --remove-orphans && \
+        docker system prune -f --filter until=72h 2>/dev/null || true && \
+        docker compose -f docker-compose.prod.yml ps"
       echo "--- Done ---"
 
 verify:
