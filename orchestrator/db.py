@@ -1,3 +1,4 @@
+import asyncio
 import json
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
@@ -29,6 +30,7 @@ CREATE TABLE IF NOT EXISTS universities (
     student_count INTEGER DEFAULT NULL,
     status TEXT DEFAULT 'pending',
     enabled BOOLEAN DEFAULT 1,
+    dms_univ_id INTEGER,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
@@ -1894,6 +1896,18 @@ async def init_db() -> None:
             "UPDATE pipeline_logs SET status='failed', summary='Stale: cleaned up after restart' WHERE status='running'"
         )
         await db.commit()
+
+        # Migration: add dms_univ_id to universities (MySQL dmsedu bridge)
+        try:
+            await db.execute("ALTER TABLE universities ADD COLUMN dms_univ_id INTEGER")
+            await db.commit()
+        except Exception:
+            pass  # Column already exists
+        await db.executescript(
+            "CREATE INDEX IF NOT EXISTS idx_universities_dms_univ_id ON universities(dms_univ_id);"
+        )
+        await db.commit()
+
     log.info("Database initialised at %s", DATABASE_PATH)
 
 
@@ -2337,6 +2351,40 @@ async def touch_university_updated(uni_id: int) -> None:
         await db.commit()
 
 
+async def update_university_dms_id(university_id: int, dms_univ_id: int) -> None:
+    """Store the MySQL dmsedu id_univ mapping for a SQLite university row."""
+    async with get_db() as db:
+        await db.execute(
+            "UPDATE universities SET dms_univ_id = ? WHERE id = ?",
+            (dms_univ_id, university_id),
+        )
+        await db.commit()
+
+
+async def _sync_contact_to_dms_bg(
+    dms_univ_id: int,
+    universitas: str,
+    no_hp: str,
+    pic: str,
+    source_url: str,
+) -> None:
+    """Fire-and-forget background DMS sync for a newly discovered contact."""
+    try:
+        from orchestrator.dms_mysql import sync_contact_to_dms  # lazy import to avoid circular
+        await sync_contact_to_dms(
+            id_univ=dms_univ_id,
+            universitas=universitas,
+            pic=pic or "Unknown",
+            jabatan="Unknown",
+            no_hp=no_hp,
+            source_type="ig_scraping",
+            source_origin="GetContact AI – IG Phone Extraction",
+            source_url=source_url,
+        )
+    except Exception as e:
+        log.warning("DMS kontak_auto sync failed for %s: %s", no_hp, e)
+
+
 async def bulk_toggle_universities_enabled(uni_ids: list[int], enabled: bool) -> int:
     """Set enabled flag for multiple universities. Returns number updated."""
     if not uni_ids:
@@ -2540,7 +2588,7 @@ async def add_ig_contact(
     contact_name: str | None = None,
     has_person_name: bool = True,
 ) -> int | None:
-    """Add a contact and update university's updated_at timestamp."""
+    """Add a contact to SQLite and dual-write to MySQL kontak_auto when dms_univ_id is set."""
     async with get_db() as db:
         cursor = await db.execute(
             """
@@ -2551,9 +2599,21 @@ async def add_ig_contact(
             (university_id, phone_number, contact_name, source_post_url, source_image_url, has_person_name),
         )
         await db.commit()
-        # Touch university updated_at when a new contact is added
         if cursor.rowcount > 0:
             await touch_university_updated(university_id)
+            # --- Dual-write: sync new contact to MySQL kontak_auto ---
+            u_cursor = await db.execute(
+                "SELECT name, dms_univ_id FROM universities WHERE id = ?", (university_id,)
+            )
+            u_row = await u_cursor.fetchone()
+            if u_row and u_row["dms_univ_id"]:
+                asyncio.create_task(_sync_contact_to_dms_bg(
+                    dms_univ_id=u_row["dms_univ_id"],
+                    universitas=u_row["name"],
+                    no_hp=phone_number,
+                    pic=contact_name or "",
+                    source_url=source_post_url or "",
+                ))
         return cursor.lastrowid if cursor.rowcount > 0 else None
 
 

@@ -420,32 +420,75 @@ async def add_recipients_from_universities(
 ) -> dict:
     """Add ALL contacts from the given universities to a campaign.
 
-    Fetches ig_contacts for each university, skips duplicates.
+    Prefers MySQL kontak_auto when dms_univ_id is set; falls back to SQLite ig_contacts.
     """
+    from orchestrator.dms_mysql import get_kontak_auto_for_universities
+
     added = 0
     skipped = 0
+    all_contacts: list[dict] = []
 
     async with get_db() as db:
         placeholders = ",".join("?" for _ in university_ids)
-        cursor = await db.execute(
-            f"""SELECT c.id, c.phone_number, c.contact_name, c.university_id,
-                       u.name as university_name
-                FROM ig_contacts c
-                LEFT JOIN universities u ON u.id = c.university_id
-                WHERE c.university_id IN ({placeholders})
-                ORDER BY u.name, c.contact_name""",
+
+        # Split universities into MySQL-mapped vs SQLite-only
+        u_cursor = await db.execute(
+            f"SELECT id, name, dms_univ_id FROM universities WHERE id IN ({placeholders})",
             university_ids,
         )
-        rows = await cursor.fetchall()
+        universities = await u_cursor.fetchall()
 
-        for row in rows:
+        dms_mapped = [(u["id"], u["name"], u["dms_univ_id"]) for u in universities if u["dms_univ_id"]]
+        sqlite_only_ids = [u["id"] for u in universities if not u["dms_univ_id"]]
+
+        # --- MySQL-backed contacts ---
+        if dms_mapped:
+            dms_univ_id_map = {dms_id: (uid, uname) for uid, uname, dms_id in dms_mapped}
+            try:
+                mysql_contacts = await get_kontak_auto_for_universities(list(dms_univ_id_map.keys()))
+                for c in mysql_contacts:
+                    uid, uname = dms_univ_id_map.get(int(c["id_univ"]), (None, c.get("universitas", "")))
+                    all_contacts.append({
+                        "contact_id": None,
+                        "university_id": uid,
+                        "phone_number": c["no_hp"],
+                        "contact_name": c.get("pic") or "",
+                        "university_name": uname,
+                    })
+            except Exception as e:
+                log.warning("blast: MySQL kontak_auto fetch failed, falling back to SQLite: %s", e)
+                sqlite_only_ids.extend(uid for uid, _, _ in dms_mapped)
+
+        # --- SQLite fallback ---
+        if sqlite_only_ids:
+            fb_placeholders = ",".join("?" for _ in sqlite_only_ids)
+            fb_cursor = await db.execute(
+                f"""SELECT c.id, c.phone_number, c.contact_name, c.university_id,
+                           u.name as university_name
+                    FROM ig_contacts c
+                    LEFT JOIN universities u ON u.id = c.university_id
+                    WHERE c.university_id IN ({fb_placeholders})
+                    ORDER BY u.name, c.contact_name""",
+                sqlite_only_ids,
+            )
+            for row in await fb_cursor.fetchall():
+                all_contacts.append({
+                    "contact_id": row["id"],
+                    "university_id": row["university_id"],
+                    "phone_number": row["phone_number"],
+                    "contact_name": row["contact_name"],
+                    "university_name": row["university_name"],
+                })
+
+        # Insert all contacts into blast_recipients
+        for c in all_contacts:
             try:
                 await db.execute(
                     """INSERT INTO blast_recipients
                        (campaign_id, contact_id, university_id, phone_number, contact_name, university_name)
                        VALUES (?, ?, ?, ?, ?, ?)""",
-                    (campaign_id, row["id"], row["university_id"],
-                     row["phone_number"], row["contact_name"], row["university_name"]),
+                    (campaign_id, c["contact_id"], c["university_id"],
+                     c["phone_number"], c["contact_name"], c["university_name"]),
                 )
                 added += 1
             except Exception:

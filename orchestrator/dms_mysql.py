@@ -834,33 +834,29 @@ async def sync_contact_to_dms(
     source_type: str = "getcontact_ai",
     source_origin: str = "GetContact AI Agent",
     context_snippet: str = "",
+    source_url: str = "",
 ) -> int | None:
     """
-    Sync a discovered contact back to the DMS kontak_auto table.
+    Sync a discovered contact to MySQL kontak_auto.
 
-    Returns the inserted row ID, or None if it already exists.
+    Uses INSERT IGNORE so the operation is atomic — safe for concurrent
+    callers (migration + real-time dual-write) racing on the same contact.
+
+    Returns the new row ID if inserted, or None if it already existed.
     """
     async with get_dms_cursor() as cursor:
-        # Check if contact already exists for this university + phone
         await cursor.execute("""
-            SELECT id FROM kontak_auto
-            WHERE id_univ = %s AND no_hp = %s
-        """, (id_univ, no_hp))
-        existing = await cursor.fetchone()
-        if existing:
-            return None  # Already exists
-
-        await cursor.execute("""
-            INSERT INTO kontak_auto
+            INSERT IGNORE INTO kontak_auto
                 (id_univ, universitas, instagram_username, pic, jabatan,
                  no_hp, no_hp_e164, source_type, source_origin,
-                 context_snippet, is_default, created_at, updated_at)
-            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, 0, NOW(), NOW())
+                 context_snippet, source_url, is_default, created_at, updated_at)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, 0, NOW(), NOW())
         """, (
             id_univ, universitas, instagram_username, pic, jabatan,
-            no_hp, no_hp_e164, source_type, source_origin, context_snippet,
+            no_hp, no_hp_e164, source_type, source_origin, context_snippet, source_url,
         ))
-        return cursor.lastrowid
+        # rowcount=1 → inserted; rowcount=0 → duplicate, silently ignored
+        return cursor.lastrowid if cursor.rowcount > 0 else None
 
 
 async def bulk_sync_contacts_to_dms(contacts: list[dict]) -> dict:
@@ -1040,6 +1036,50 @@ async def find_dms_university_by_name(name: str) -> dict | None:
             return _serialize_row(rows[0])
 
         return None
+
+
+async def resolve_dms_univ_id(university_name: str) -> int | None:
+    """
+    Resolve a university name to its MySQL id_univ.
+    Returns id_univ or None if not found in DMS.
+    """
+    result = await find_dms_university_by_name(university_name)
+    return int(result["id_univ"]) if result else None
+
+
+async def create_dms_university(name: str) -> int:
+    """
+    Insert a new university into the DMS universitas table with just the name.
+    Returns the new id_univ.
+    """
+    async with get_dms_cursor() as cursor:
+        await cursor.execute(
+            "INSERT INTO universitas (universitas) VALUES (%s)",
+            (name,),
+        )
+        # autocommit=True on pool — no explicit commit needed
+        return cursor.lastrowid
+
+
+async def get_kontak_auto_for_universities(dms_univ_ids: list[int]) -> list[dict]:
+    """
+    Get all kontak_auto contacts for a list of MySQL id_univ values.
+    Used by blast service to fetch contacts from MySQL instead of SQLite ig_contacts.
+    """
+    if not dms_univ_ids:
+        return []
+    async with get_dms_cursor() as cursor:
+        placeholders = ",".join("%s" for _ in dms_univ_ids)
+        await cursor.execute(
+            f"""SELECT id, id_univ, universitas, pic, no_hp, no_hp_e164,
+                       jabatan, instagram_username, source_url
+                FROM kontak_auto
+                WHERE id_univ IN ({placeholders})
+                ORDER BY id_univ, id""",
+            dms_univ_ids,
+        )
+        rows = await cursor.fetchall()
+        return [_serialize_row(r) for r in rows]
 
 
 # ---------------------------------------------------------------------------

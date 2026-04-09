@@ -185,6 +185,12 @@ const NAV_SECTIONS: NavSection[] = [
         icon: Terminal,
         permission: "settings.manage",
       },
+      {
+        to: "/db-migration",
+        label: "DB Migration",
+        icon: Database,
+        permission: "settings.manage",
+      },
     ],
   },
 ];

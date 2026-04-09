@@ -9,9 +9,10 @@ from typing import Any
 
 from dotenv import load_dotenv
 
-# Load .env first, then .env.production to override
+# Load .env first (local dev), then .env.production as fallback only.
+# Docker production injects env vars directly, so load_dotenv is a no-op there.
 load_dotenv()
-load_dotenv(".env.production", override=True)
+load_dotenv(".env.production", override=False)
 
 # Base paths
 BASE_DIR = Path(__file__).resolve().parent.parent

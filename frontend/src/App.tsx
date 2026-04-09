@@ -46,6 +46,11 @@ const MarketingClientDetailPage = lazy(
 );
 const MarketingClientPage = lazy(() => import("./pages/MarketingClientPage"));
 const MarketingClientsPage = lazy(() => import("./pages/MarketingClientsPage"));
+const DbMigrationPage = lazy(() =>
+  import("./pages/DbMigrationPage").then((m) => ({
+    default: m.DbMigrationPage,
+  })),
+);
 const LoginPage = lazy(() => import("./pages/LoginPage"));
 
 const queryClient = new QueryClient({
@@ -415,6 +420,16 @@ export default function App() {
                           <PermissionGuard permission="settings.instagram">
                             <ErrorBoundary>
                               <SettingsPage />
+                            </ErrorBoundary>
+                          </PermissionGuard>
+                        }
+                      />
+                      <Route
+                        path="db-migration"
+                        element={
+                          <PermissionGuard permission="settings.manage">
+                            <ErrorBoundary>
+                              <DbMigrationPage />
                             </ErrorBoundary>
                           </PermissionGuard>
                         }

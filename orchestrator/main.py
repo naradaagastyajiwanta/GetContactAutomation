@@ -455,6 +455,15 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+
+@app.exception_handler(httpx.ConnectError)
+async def wa_connect_error_handler(request: Request, exc: httpx.ConnectError):
+    """Return 503 instead of crashing when the WhatsApp service is unreachable."""
+    return JSONResponse(
+        status_code=503,
+        content={"detail": "WhatsApp service tidak berjalan. Pastikan service berjalan di port 3100."},
+    )
+
 _PUBLIC_AUTH_PATHS = {
     "/auth/bootstrap-status",
     "/auth/login",
@@ -4736,6 +4745,223 @@ async def dms_research_result_by_schedule(schedule_id: int):
         return {"status": "ok", "data": result}
     except Exception as e:
         return {"status": "error", "message": str(e)}
+
+
+# ---------------------------------------------------------------------------
+# DB Migration — SQLite ig_contacts → MySQL kontak_auto
+# ---------------------------------------------------------------------------
+
+# In-memory state for last migration run result
+_migration_state: dict = {
+    "job_status": "idle",  # idle | running | done | error
+    "dry_run": False,
+    "create_missing": False,
+    "started_at": None,
+    "finished_at": None,
+    "matched": 0,
+    "unmatched": 0,
+    "unmatched_names": [],
+    "created": 0,
+    "contacts_synced": 0,
+    "contacts_skipped": 0,
+    "contacts_errors": 0,
+}
+
+
+@app.get("/migration/dms/status")
+async def migration_dms_status():
+    """Return current migration status: SQLite counts, MySQL counts, and last job result."""
+    try:
+        from orchestrator.db import get_db
+        from orchestrator.dms_mysql import get_dms_cursor
+        from orchestrator.config import cfg
+
+        async with get_db() as db:
+            cur = await db.execute("SELECT COUNT(*) FROM universities")
+            total_universities = (await cur.fetchone())[0]
+
+            cur = await db.execute("SELECT COUNT(*) FROM universities WHERE dms_univ_id IS NOT NULL")
+            matched_universities = (await cur.fetchone())[0]
+
+            cur = await db.execute("SELECT COUNT(*) FROM ig_contacts")
+            total_ig_contacts = (await cur.fetchone())[0]
+
+        total_kontak_auto = 0
+        dms_status = "unknown"
+        try:
+            async with get_dms_cursor() as cursor:
+                await cursor.execute("SELECT COUNT(*) AS n FROM kontak_auto WHERE source_type = 'ig_scraping'")
+                row = await cursor.fetchone()
+                total_kontak_auto = row["n"] if row else 0
+                dms_status = "connected"
+        except Exception as e:
+            dms_status = f"error: {e}"
+
+        return {
+            "dms_host": cfg.get("DMS_MYSQL_HOST", ""),
+            "dms_database": cfg.get("DMS_MYSQL_DATABASE", ""),
+            "dms_status": dms_status,
+            "total_universities": total_universities,
+            "matched_universities": matched_universities,
+            "unmatched_universities": total_universities - matched_universities,
+            "total_ig_contacts": total_ig_contacts,
+            "total_kontak_auto_from_ai": total_kontak_auto,
+            "last_job": dict(_migration_state),
+        }
+    except Exception as e:
+        return JSONResponse(status_code=500, content={"detail": str(e)})
+
+
+@app.post("/migration/dms/run")
+async def migration_dms_run(background_tasks: BackgroundTasks, dry_run: bool = False, create_missing: bool = False):
+    """Run migration: SQLite ig_contacts → MySQL kontak_auto."""
+    from orchestrator.config import cfg
+
+    if _migration_state["job_status"] == "running":
+        return JSONResponse(status_code=409, content={"detail": "Migration already running"})
+
+    async def _run_migration(dry_run: bool, create_missing: bool):
+        import aiosqlite
+        from datetime import datetime as dt
+        from orchestrator.config import DATABASE_PATH, log
+        from orchestrator.dms_mysql import init_dms_pool, find_dms_university_by_name, create_dms_university, sync_contact_to_dms
+
+        _migration_state.update({
+            "job_status": "running", "dry_run": dry_run, "create_missing": create_missing,
+            "started_at": dt.now().isoformat(), "finished_at": None,
+            "matched": 0, "unmatched": 0, "unmatched_names": [],
+            "created": 0, "contacts_synced": 0, "contacts_skipped": 0, "contacts_errors": 0,
+        })
+
+        def _flush_progress(synced, skipped, errors, matched, created, unmatched):
+            """Write current counters to _migration_state for live polling."""
+            _migration_state.update({
+                "matched": matched,
+                "unmatched": len(unmatched),
+                "unmatched_names": unmatched[:50],
+                "created": created,
+                "contacts_synced": synced,
+                "contacts_skipped": skipped,
+                "contacts_errors": errors,
+            })
+
+        # Initialize before try so except block can safely reference them
+        synced = skipped = errors = matched = created = 0
+        unmatched: list[str] = []
+
+        try:
+            await init_dms_pool()
+
+            async with aiosqlite.connect(DATABASE_PATH) as db:
+                db.row_factory = aiosqlite.Row
+                cur = await db.execute("SELECT id, name, dms_univ_id FROM universities ORDER BY name")
+                universities = await cur.fetchall()
+
+                for univ in universities:
+                    univ_id, univ_name, dms_univ_id = univ["id"], univ["name"], univ["dms_univ_id"]
+
+                    if not dms_univ_id:
+                        found = await find_dms_university_by_name(univ_name)
+                        if found:
+                            dms_univ_id = int(found["id_univ"])
+                            if not dry_run:
+                                await db.execute(
+                                    "UPDATE universities SET dms_univ_id = ? WHERE id = ?",
+                                    (dms_univ_id, univ_id),
+                                )
+                                await db.commit()
+                            matched += 1
+                        elif create_missing:
+                            if not dry_run:
+                                try:
+                                    dms_univ_id = await create_dms_university(univ_name)
+                                    await db.execute(
+                                        "UPDATE universities SET dms_univ_id = ? WHERE id = ?",
+                                        (dms_univ_id, univ_id),
+                                    )
+                                    await db.commit()
+                                    created += 1
+                                    matched += 1
+                                except Exception as e:
+                                    log.warning("Migration: failed to create university %s: %s", univ_name, e)
+                                    unmatched.append(univ_name)
+                                    continue
+                            else:
+                                # Dry run: count as "would be created"
+                                created += 1
+                                matched += 1
+                        else:
+                            unmatched.append(univ_name)
+                            continue
+                    else:
+                        matched += 1
+
+                    c_cur = await db.execute(
+                        "SELECT phone_number, contact_name, source_post_url FROM ig_contacts WHERE university_id = ?",
+                        (univ_id,),
+                    )
+                    for contact in await c_cur.fetchall():
+                        if dry_run:
+                            synced += 1
+                            continue
+                        try:
+                            result = await sync_contact_to_dms(
+                                id_univ=dms_univ_id,
+                                universitas=univ_name,
+                                pic=contact["contact_name"] or "Unknown",
+                                jabatan="Unknown",
+                                no_hp=contact["phone_number"],
+                                source_type="ig_scraping",
+                                source_origin="GetContact AI – Migration",
+                                source_url=contact["source_post_url"] or "",
+                            )
+                            if result:
+                                synced += 1
+                            else:
+                                skipped += 1
+                        except Exception as e:
+                            log.warning("Migration: sync error %s: %s", contact["phone_number"], e)
+                            errors += 1
+
+                    # Flush live progress every university
+                    _flush_progress(synced, skipped, errors, matched, created, unmatched)
+
+            _migration_state.update({
+                "job_status": "done",
+                "finished_at": dt.now().isoformat(),
+                "matched": matched,
+                "unmatched": len(unmatched),
+                "unmatched_names": unmatched[:50],
+                "created": created,
+                "contacts_synced": synced,
+                "contacts_skipped": skipped,
+                "contacts_errors": errors,
+            })
+            log.info(
+                "Migration done (dry_run=%s create_missing=%s): matched=%d created=%d unmatched=%d synced=%d skipped=%d errors=%d",
+                dry_run, create_missing, matched, created, len(unmatched), synced, skipped, errors,
+            )
+        except Exception as e:
+            _migration_state.update({
+                "job_status": "error",
+                "finished_at": dt.now().isoformat(),
+                "matched": matched,
+                "unmatched": len(unmatched),
+                "unmatched_names": unmatched[:50],
+                "created": created,
+                "contacts_synced": synced,
+                "contacts_skipped": skipped,
+                "contacts_errors": errors,
+            })
+            log.error("Migration failed: %s", e)
+
+    background_tasks.add_task(_run_migration, dry_run, create_missing)
+    return {
+        "status": "started",
+        "dry_run": dry_run,
+        "target_db": cfg.get("DMS_MYSQL_DATABASE", ""),
+        "target_host": cfg.get("DMS_MYSQL_HOST", ""),
+    }
 
 
 # ---------------------------------------------------------------------------
