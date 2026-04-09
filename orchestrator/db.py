@@ -1905,15 +1905,18 @@ async def init_db() -> None:
         await db.commit()
 
         # Migration: add dms_univ_id to universities (MySQL dmsedu bridge)
-        try:
+        _cur = await db.execute("PRAGMA table_info(universities)")
+        _univ_cols = {row[1] for row in await _cur.fetchall()}
+        if "dms_univ_id" not in _univ_cols:
             await db.execute("ALTER TABLE universities ADD COLUMN dms_univ_id INTEGER")
             await db.commit()
+        try:
+            await db.execute(
+                "CREATE INDEX IF NOT EXISTS idx_universities_dms_univ_id ON universities(dms_univ_id)"
+            )
+            await db.commit()
         except Exception:
-            pass  # Column already exists
-        await db.executescript(
-            "CREATE INDEX IF NOT EXISTS idx_universities_dms_univ_id ON universities(dms_univ_id);"
-        )
-        await db.commit()
+            pass
 
         # Migration: add antiban_override to blast_campaigns (force resume override)
         try:
