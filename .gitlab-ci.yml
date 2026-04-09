@@ -364,9 +364,6 @@ rollback:
         echo "  ✅ Rollback complete"
         echo "============================================="
       REMOTE_ROLLBACK
-  environment:
-    name: production
-    action: rollback
   rules:
     - if: $CI_PIPELINE_SOURCE == "manual"
   when: manual
