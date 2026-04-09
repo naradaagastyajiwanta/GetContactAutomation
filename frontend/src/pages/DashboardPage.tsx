@@ -458,6 +458,36 @@ const MOTIVATIONAL_MESSAGES = [
     `🏆 ${name}, kamu lebih kuat dari tantangan apapun hari ini.`,
   (name: string) =>
     `🌈 Jangan lupa istirahat juga ya, ${name}. Kamu sudah bekerja keras!`,
+  (name: string) =>
+    `🎉 Selamat pagi, ${name}! Satu langkah hari ini, satu pencapaian besok.`,
+  (name: string) =>
+    `⚡ ${name}, energimu hari ini bisa mengubah banyak hal — mulai sekarang!`,
+  (name: string) =>
+    `🌿 Hai ${name}, tarik napas dalam-dalam. Kamu pasti bisa mengatasi ini.`,
+  (name: string) =>
+    `🎵 ${name}, ritme kerja yang konsisten lebih kuat dari sprint sesaat.`,
+  (name: string) =>
+    `🦁 Tunjukkan kepada dunia siapa ${name} hari ini — kamu luar biasa!`,
+  (name: string) =>
+    `🌙 Mau seberapa sibuk pun hari ini, ${name} pasti bisa melewatinya.`,
+  (name: string) =>
+    `🎨 Kreativitasmu hari ini bisa jadi terobosan besar, ${name}!`,
+  (name: string) =>
+    `🤝 ${name}, setiap koneksi yang kamu bangun hari ini adalah investasi masa depan.`,
+  (name: string) =>
+    `🌊 Ayo ${name}, hadapi setiap tantangan seperti ombak — dengan penuh percaya diri!`,
+  (name: string) =>
+    `☕ Sebelum mulai, tarik napas dulu ${name}. Hari ini punya banyak potensi.`,
+  (name: string) =>
+    `🔑 ${name}, kunci kesuksesan hari ini ada di tanganmu sendiri!`,
+  (name: string) =>
+    `🌺 Hai ${name}, bahkan progress kecil hari ini tetap progress. Terus maju!`,
+  (name: string) =>
+    `🛡️ ${name}, kamu sudah membuktikan dirimu berkali-kali. Hari ini pun bisa!`,
+  (name: string) =>
+    `🎖️ Kerja keras ${name} tidak luput dari perhatian — terus jaga konsistensinya!`,
+  (name: string) =>
+    `🌸 ${name}, jangan lupa apresiasi diri sendiri. Kamu sudah berjuang sejauh ini!`,
 ];
 
 // ─── Motivational Card ───────────────────────────────────────────────────────
