@@ -43,6 +43,17 @@ deploy:
       else
         echo "WARNING: ENV_PRODUCTION not set, using existing .env.production on VPS"
       fi
+      echo "--- DB inject (one-time) ---"
+      if [ -n "$DB_PRODUCTION_B64" ]; then
+        echo "$DB_PRODUCTION_B64" | base64 -d > /tmp/getcontact_inject.db
+        sshpass -p "$VPS_PASSWORD" ssh -o StrictHostKeyChecking=no -p "$VPS_PORT" "$VPS_USER@$VPS_HOST" \
+          "cd /var/www/get_contact_jiwan && docker compose -f docker-compose.prod.yml stop orchestrator 2>/dev/null || true && cp data/getcontact.db data/getcontact_before_inject.db 2>/dev/null || true"
+        sshpass -p "$VPS_PASSWORD" scp -o StrictHostKeyChecking=no -P "$VPS_PORT" /tmp/getcontact_inject.db "$VPS_USER@$VPS_HOST:/var/www/get_contact_jiwan/data/getcontact.db"
+        rm -f /tmp/getcontact_inject.db
+        echo "DB injected — delete DB_PRODUCTION_B64 variable from GitLab after this run"
+      else
+        echo "DB_PRODUCTION_B64 not set, skipping DB inject"
+      fi
       echo "--- Permissions ---"
       sshpass -p "$VPS_PASSWORD" ssh -o StrictHostKeyChecking=no -p "$VPS_PORT" "$VPS_USER@$VPS_HOST" \
         "chown -R $VPS_USER:$VPS_USER /var/www/get_contact_jiwan && mkdir -p /var/www/get_contact_jiwan/data /var/www/get_contact_jiwan/data/audiensi_docs /var/www/get_contact_jiwan/data/templates /var/www/get_contact_jiwan/data/ig_sessions /var/www/get_contact_jiwan/data/pw_sessions && mkdir -p /var/www/get_contact_jiwan/whatsapp-service/auth_store /var/www/get_contact_jiwan/whatsapp-service/auth_store_backup && mkdir -p /var/www/get_contact_jiwan/whatsapp-service/auth_store_device_1 /var/www/get_contact_jiwan/whatsapp-service/auth_store_device_2 /var/www/get_contact_jiwan/whatsapp-service/auth_store_device_3 /var/www/get_contact_jiwan/whatsapp-service/auth_store_device_4 /var/www/get_contact_jiwan/whatsapp-service/auth_store_device_5 /var/www/get_contact_jiwan/whatsapp-service/data && ls /var/www/get_contact_jiwan/.env.production && echo env_exists || echo env_missing"

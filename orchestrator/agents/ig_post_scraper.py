@@ -190,18 +190,32 @@ async def _save_posts(
 ) -> int:
     """Save posts to DB, return count of newly inserted rows.
 
-    Downloads and caches image bytes at scrape time so Agent3 doesn't need
-    to re-download CDN URLs that may expire before processing.
+    Downloads image at scrape time and stores it in S3-compatible bucket
+    (if configured) or falls back to base64 in DB to avoid CDN URL expiry.
     """
-    from orchestrator.instagram import _download_image_as_base64
+    from orchestrator.instagram import _download_image_as_bytes
+    from orchestrator import bucket
 
     saved = 0
     for post in posts:
         image_url = post.get("image_url")
         image_data: str | None = None
+        image_bucket_url: str | None = None
+
         if image_url:
             try:
-                image_data = await _download_image_as_base64(image_url)
+                result = await _download_image_as_bytes(image_url)
+                if result:
+                    img_bytes, content_type = result
+                    if bucket.is_configured():
+                        # Upload to bucket — permanent URL, no DB bloat
+                        image_bucket_url = await bucket.upload_image(
+                            post["post_url"], university_id, img_bytes, content_type
+                        )
+                    if not image_bucket_url:
+                        # Bucket not configured or upload failed — cache as base64
+                        import base64 as _b64
+                        image_data = _b64.b64encode(img_bytes).decode("utf-8")
             except Exception:
                 pass  # Cache failure is non-fatal; Agent3 will fall back to URL
 
@@ -214,6 +228,7 @@ async def _save_posts(
             source_ig_handle=source_ig_handle,
             source_ig_type=source_ig_type,
             image_data=image_data,
+            image_bucket_url=image_bucket_url,
         )
         if result is not None:
             saved += 1

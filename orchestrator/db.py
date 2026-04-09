@@ -1586,6 +1586,13 @@ async def init_db() -> None:
         except Exception:
             pass  # Column already exists
 
+        # Migration: add image_bucket_url column for S3-compatible bucket storage
+        try:
+            await db.execute("ALTER TABLE ig_posts ADD COLUMN image_bucket_url TEXT")
+            await db.commit()
+        except Exception:
+            pass  # Column already exists
+
         # Migration: add login_status column to ig_accounts
         try:
             await db.execute(
@@ -2752,30 +2759,33 @@ async def add_ig_post(
     source_ig_handle: str | None = None,
     source_ig_type: str | None = None,
     image_data: str | None = None,
+    image_bucket_url: str | None = None,
 ) -> int | None:
     """Insert a scraped post row (INSERT OR IGNORE for dedup).
 
     Args:
         university_id: Parent university ID
         post_url: URL of the Instagram post
-        image_url: URL of the post image
+        image_url: CDN URL of the post image (may expire)
         caption: Post caption text
         post_timestamp: When the post was made
-        source_ig_handle: Which IG account this came from (e.g., 'bem.umj', 'univ_official')
-        source_ig_type: Type of IG account ('main' for official, or 'bem', 'humas', 'pmb', etc.)
-        image_data: Base64-encoded image bytes (cached at scrape time to avoid CDN URL expiry)
+        source_ig_handle: Which IG account this came from
+        source_ig_type: Type of IG account ('main', 'bem', 'humas', etc.)
+        image_data: Base64-encoded image bytes (legacy fallback — prefer bucket)
+        image_bucket_url: Permanent URL in S3-compatible bucket (preferred over image_data)
     """
     async with get_db() as db:
         cursor = await db.execute(
             """
             INSERT OR IGNORE INTO ig_posts
-                (university_id, post_url, image_url, caption, post_timestamp, source_ig_handle, source_ig_type, image_data)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                (university_id, post_url, image_url, caption, post_timestamp,
+                 source_ig_handle, source_ig_type, image_data, image_bucket_url)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
-            (university_id, post_url, image_url, caption, post_timestamp, source_ig_handle, source_ig_type, image_data),
+            (university_id, post_url, image_url, caption, post_timestamp,
+             source_ig_handle, source_ig_type, image_data, image_bucket_url),
         )
         await db.commit()
-        # Touch university updated_at when a new post is added
         if cursor.rowcount > 0:
             await touch_university_updated(university_id)
         return cursor.lastrowid if cursor.rowcount > 0 else None

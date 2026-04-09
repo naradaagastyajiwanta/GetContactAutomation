@@ -34,3 +34,5 @@ ddgs>=7.0.0
 playwright>=1.49.0
 playwright-stealth>=1.0.6
 instaloader>=4.10
+boto3>=1.35.0
+google-cloud-storage>=2.18.0

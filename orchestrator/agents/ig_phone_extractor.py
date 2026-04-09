@@ -88,12 +88,13 @@ async def run_phone_extraction_batch(limit: int = 50) -> dict:
 
             if image_url:
                 # Image post: extract from both image and caption via GPT.
-                # Prefer cached image_data (downloaded at scrape time) to avoid
-                # CDN URL expiry. Falls back to re-downloading if cache is absent.
-                image_data = post.get("image_data")
+                # Priority: bucket URL > cached base64 > re-download from CDN URL
+                image_data = post.get("image_data")  # legacy base64 cache
+                image_bucket_url = post.get("image_bucket_url")  # permanent bucket URL
+                effective_url = image_bucket_url or image_url
                 try:
                     contacts = await extract_phone_from_image(
-                        image_url, caption, image_b64=image_data or None
+                        effective_url, caption, image_b64=image_data or None
                     )
                 except Exception as e:
                     log.warning(

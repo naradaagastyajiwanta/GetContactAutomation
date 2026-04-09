@@ -2258,8 +2258,8 @@ _IG_CDN_HEADERS = {
 }
 
 
-async def _download_image_as_base64(url: str) -> str | None:
-    """Download image and return as base64 string.
+async def _download_image_as_bytes(url: str) -> tuple[bytes, str] | None:
+    """Download image and return (bytes, content_type) or None on failure.
 
     Instagram CDN URLs (scontent.cdninstagram.com) are signed and tied to the
     scraping session's IP — 403s from these URLs are expected and non-fixable
@@ -2277,13 +2277,13 @@ async def _download_image_as_base64(url: str) -> str | None:
         try:
             resp = await client.get(url)
             resp.raise_for_status()
-            return base64.b64encode(resp.content).decode("utf-8")
+            content_type = resp.headers.get("content-type", "image/jpeg").split(";")[0].strip()
+            return resp.content, content_type
         except asyncio.CancelledError:
             log.warning("Image download cancelled (shutdown/pause): %s...", url[:80])
             return None
         except httpx.HTTPStatusError as e:
             if e.response.status_code == 403 and is_ig_cdn:
-                # Expected: ScrapingBot CDN URLs are IP-restricted to their servers
                 log.debug("IG CDN image inaccessible (403) — URL tied to scraper session: %s...", url[:80])
             else:
                 log.error("Failed to download image %s...: %s", url[:80], e)
@@ -2293,6 +2293,15 @@ async def _download_image_as_base64(url: str) -> str | None:
             if "cannot schedule new futures" not in error_msg and "interpreter shutdown" not in error_msg:
                 log.error("Failed to download image %s...: %s", url[:80], e)
             return None
+
+
+async def _download_image_as_base64(url: str) -> str | None:
+    """Download image and return as base64 string."""
+    result = await _download_image_as_bytes(url)
+    if result is None:
+        return None
+    data, _ = result
+    return base64.b64encode(data).decode("utf-8")
 
 
 _VISION_PROMPT_SYSTEM = (
