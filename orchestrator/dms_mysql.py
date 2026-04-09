@@ -1009,31 +1009,33 @@ async def get_schedules_needing_reminder(
 async def find_dms_university_by_name(name: str) -> dict | None:
     """
     Try to find a matching university in DMS by fuzzy name match.
-    Searches universitas_lsp (primary) only.
+    Searches universitas_lsp first, then falls back to universitas.
+    New universities are always created in universitas_lsp (see create_dms_university).
     """
     async with get_dms_cursor() as cursor:
-        # Exact match
-        await cursor.execute("""
-            SELECT id_univ, universitas, alamat
-            FROM universitas_lsp
-            WHERE universitas = %s
-            LIMIT 1
-        """, (name,))
-        row = await cursor.fetchone()
-        if row:
-            return _serialize_row(row)
+        for table in ("universitas_lsp", "universitas"):
+            # Exact match
+            await cursor.execute(f"""
+                SELECT id_univ, universitas, alamat
+                FROM {table}
+                WHERE universitas = %s
+                LIMIT 1
+            """, (name,))
+            row = await cursor.fetchone()
+            if row:
+                return _serialize_row(row)
 
-        # LIKE match
-        await cursor.execute("""
-            SELECT id_univ, universitas, alamat
-            FROM universitas_lsp
-            WHERE universitas LIKE %s
-            ORDER BY universitas
-            LIMIT 5
-        """, (f"%{name}%",))
-        rows = await cursor.fetchall()
-        if rows:
-            return _serialize_row(rows[0])
+            # LIKE match
+            await cursor.execute(f"""
+                SELECT id_univ, universitas, alamat
+                FROM {table}
+                WHERE universitas LIKE %s
+                ORDER BY universitas
+                LIMIT 5
+            """, (f"%{name}%",))
+            rows = await cursor.fetchall()
+            if rows:
+                return _serialize_row(rows[0])
 
         return None
 
