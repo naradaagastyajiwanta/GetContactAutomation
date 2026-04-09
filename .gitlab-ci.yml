@@ -5,7 +5,6 @@ stages:
   - verify
 
 variables:
-  DEPLOY_DIR: "/var/www/get_contact_jiwan"
   VPS_PORT: "22"
 
 workflow:
@@ -32,37 +31,21 @@ deploy:
       else
         REPO_URL="${CI_REPOSITORY_URL}"
       fi
-      DIR="/var/www/get_contact_jiwan"
-      sshpass -p "$VPS_PASSWORD" ssh -o StrictHostKeyChecking=no -p "$VPS_PORT" "$VPS_USER@$VPS_HOST" "
-        set -e
-        mkdir -p $DIR
-        cd $DIR
-        if [ -d .git ]; then
-          git fetch origin main --depth=5
-          git reset --hard $CI_COMMIT_SHA
-          echo 'git pull OK'
-        else
-          git clone --depth=5 --branch main $REPO_URL .
-          echo 'git clone OK'
-        fi
-        git config --global --add safe.directory $DIR
-        chown -R $VPS_USER:$VPS_USER $DIR
-        mkdir -p data data/audiensi_docs data/templates data/ig_sessions data/pw_sessions
-        mkdir -p whatsapp-service/auth_store whatsapp-service/auth_store_backup whatsapp-service/auth_store_device_1 whatsapp-service/auth_store_device_2 whatsapp-service/auth_store_device_3 whatsapp-service/auth_store_device_4 whatsapp-service/auth_store_device_5 whatsapp-service/data
-        if [ ! -f .env.production ]; then
-          if [ -f .env.example ]; then cp .env.example .env.production; echo 'created .env.production'; else echo '.env.production still missing'; fi
-        else
-          echo '.env.production OK'
-        fi
-      "
-      sshpass -p "$VPS_PASSWORD" ssh -o StrictHostKeyChecking=no -p "$VPS_PORT" "$VPS_USER@$VPS_HOST" "
-        set -e
-        cd $DIR
-        docker compose -f docker-compose.prod.yml build --pull
-        docker compose -f docker-compose.prod.yml up -d --remove-orphans
-        docker system prune -f --filter until=72h 2>/dev/null || true
-        docker compose -f docker-compose.prod.yml ps
-      "
+      echo "--- Clone/fetch ---"
+      sshpass -p "$VPS_PASSWORD" ssh -o StrictHostKeyChecking=no -p "$VPS_PORT" "$VPS_USER@$VPS_HOST" \
+        "mkdir -p /var/www/get_contact_jiwan && cd /var/www/get_contact_jiwan && if [ -d .git ]; then git -c safe.directory=/var/www/get_contact_jiwan fetch origin main --depth=5 && git -c safe.directory=/var/www/get_contact_jiwan reset --hard $CI_COMMIT_SHA && echo OK; else git -c safe.directory=/var/www/get_contact_jiwan clone --depth=5 --branch main $REPO_URL . && echo OK; fi"
+      echo "--- Permissions ---"
+      sshpass -p "$VPS_PASSWORD" ssh -o StrictHostKeyChecking=no -p "$VPS_PORT" "$VPS_USER@$VPS_HOST" \
+        "chown -R $VPS_USER:$VPS_USER /var/www/get_contact_jiwan && mkdir -p /var/www/get_contact_jiwan/data /var/www/get_contact_jiwan/data/audiensi_docs /var/www/get_contact_jiwan/data/templates /var/www/get_contact_jiwan/data/ig_sessions /var/www/get_contact_jiwan/data/pw_sessions && mkdir -p /var/www/get_contact_jiwan/whatsapp-service/auth_store /var/www/get_contact_jiwan/whatsapp-service/auth_store_backup && mkdir -p /var/www/get_contact_jiwan/whatsapp-service/auth_store_device_1 /var/www/get_contact_jiwan/whatsapp-service/auth_store_device_2 /var/www/get_contact_jiwan/whatsapp-service/auth_store_device_3 /var/www/get_contact_jiwan/whatsapp-service/auth_store_device_4 /var/www/get_contact_jiwan/whatsapp-service/auth_store_device_5 /var/www/get_contact_jiwan/whatsapp-service/data && ls /var/www/get_contact_jiwan/.env.production && echo env_exists || echo env_missing"
+      echo "--- Build ---"
+      sshpass -p "$VPS_PASSWORD" ssh -o StrictHostKeyChecking=no -p "$VPS_PORT" "$VPS_USER@$VPS_HOST" \
+        "cd /var/www/get_contact_jiwan && docker compose -f docker-compose.prod.yml build --pull"
+      echo "--- Up ---"
+      sshpass -p "$VPS_PASSWORD" ssh -o StrictHostKeyChecking=no -p "$VPS_PORT" "$VPS_USER@$VPS_HOST" \
+        "cd /var/www/get_contact_jiwan && docker compose -f docker-compose.prod.yml up -d --remove-orphans && docker system prune -f --filter until=72h 2>/dev/null || true"
+      echo "--- Status ---"
+      sshpass -p "$VPS_PASSWORD" ssh -o StrictHostKeyChecking=no -p "$VPS_PORT" "$VPS_USER@$VPS_HOST" \
+        "cd /var/www/get_contact_jiwan && docker compose -f docker-compose.prod.yml ps"
       echo "Done"
 
 verify:
@@ -76,8 +59,7 @@ verify:
       set -e
       echo "Verification..."
       sleep 20
-      DIR="/var/www/get_contact_jiwan"
-      sshpass -p "$VPS_PASSWORD" ssh -o StrictHostKeyChecking=no -p "$VPS_PORT" "$VPS_USER@$VPS_HOST" "cd $DIR && docker compose -f docker-compose.prod.yml ps"
+      sshpass -p "$VPS_PASSWORD" ssh -o StrictHostKeyChecking=no -p "$VPS_PORT" "$VPS_USER@$VPS_HOST" "cd /var/www/get_contact_jiwan && docker compose -f docker-compose.prod.yml ps"
       sshpass -p "$VPS_PASSWORD" ssh -o StrictHostKeyChecking=no -p "$VPS_PORT" "$VPS_USER@$VPS_HOST" "curl -sf http://localhost:8000/health"
-      sshpass -p "$VPS_PASSWORD" ssh -o StrictHostKeyChecking=no -p "$VPS_PORT" "$VPS_USER@$VPS_HOST" "curl -so /dev/null -w 'HTTP %{http_code}' http://localhost:3200/"
-      echo "Verification OK"
+      sshpass -p "$VPS_PASSWORD" ssh -o StrictHostKeyChecking=no -p "$VPS_PORT" "$VPS_USER@$VPS_HOST" "curl -so /dev/null -w HTTP http://localhost:3200/"
+      echo "OK"
