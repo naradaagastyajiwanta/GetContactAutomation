@@ -37,15 +37,12 @@ deploy:
       echo "--- Permissions ---"
       sshpass -p "$VPS_PASSWORD" ssh -o StrictHostKeyChecking=no -p "$VPS_PORT" "$VPS_USER@$VPS_HOST" \
         "chown -R $VPS_USER:$VPS_USER /var/www/get_contact_jiwan && mkdir -p /var/www/get_contact_jiwan/data /var/www/get_contact_jiwan/data/audiensi_docs /var/www/get_contact_jiwan/data/templates /var/www/get_contact_jiwan/data/ig_sessions /var/www/get_contact_jiwan/data/pw_sessions && mkdir -p /var/www/get_contact_jiwan/whatsapp-service/auth_store /var/www/get_contact_jiwan/whatsapp-service/auth_store_backup && mkdir -p /var/www/get_contact_jiwan/whatsapp-service/auth_store_device_1 /var/www/get_contact_jiwan/whatsapp-service/auth_store_device_2 /var/www/get_contact_jiwan/whatsapp-service/auth_store_device_3 /var/www/get_contact_jiwan/whatsapp-service/auth_store_device_4 /var/www/get_contact_jiwan/whatsapp-service/auth_store_device_5 /var/www/get_contact_jiwan/whatsapp-service/data && ls /var/www/get_contact_jiwan/.env.production && echo env_exists || echo env_missing"
-      echo "--- Build ---"
+      echo "--- Build & Up ---"
       sshpass -p "$VPS_PASSWORD" ssh -o StrictHostKeyChecking=no -p "$VPS_PORT" "$VPS_USER@$VPS_HOST" \
-        "cd /var/www/get_contact_jiwan && docker compose -f docker-compose.prod.yml build --pull"
-      echo "--- Up ---"
-      sshpass -p "$VPS_PASSWORD" ssh -o StrictHostKeyChecking=no -p "$VPS_PORT" "$VPS_USER@$VPS_HOST" \
-        "cd /var/www/get_contact_jiwan && docker compose -f docker-compose.prod.yml up -d --remove-orphans && docker system prune -f --filter until=72h 2>/dev/null || true"
+        "cd /var/www/get_contact_jiwan && docker compose -f docker-compose.prod.yml build && docker compose -f docker-compose.prod.yml up -d --remove-orphans && docker system prune -f --filter until=72h 2>/dev/null || true"
       echo "--- Status ---"
       sshpass -p "$VPS_PASSWORD" ssh -o StrictHostKeyChecking=no -p "$VPS_PORT" "$VPS_USER@$VPS_HOST" \
-        "cd $DEPLOY_DIR && docker compose -f docker-compose.prod.yml build && docker compose -f docker-compose.prod.yml up -d --remove-orphans && docker system prune -f --filter until=72h 2>/dev/null || true && docker compose -f docker-compose.prod.yml ps"
+        "cd /var/www/get_contact_jiwan && docker compose -f docker-compose.prod.yml ps"
       echo "--- Done ---"
 
 verify:
@@ -60,6 +57,6 @@ verify:
       echo "Verification..."
       sleep 20
       sshpass -p "$VPS_PASSWORD" ssh -o StrictHostKeyChecking=no -p "$VPS_PORT" "$VPS_USER@$VPS_HOST" "cd /var/www/get_contact_jiwan && docker compose -f docker-compose.prod.yml ps"
-      sshpass -p "$VPS_PASSWORD" ssh -o StrictHostKeyChecking=no -p "$VPS_PORT" "$VPS_USER@$VPS_HOST" "curl -sf http://localhost:8000/health"
-      sshpass -p "$VPS_PASSWORD" ssh -o StrictHostKeyChecking=no -p "$VPS_PORT" "$VPS_USER@$VPS_HOST" "curl -so /dev/null -w HTTP http://localhost:3200/"
+      sshpass -p "$VPS_PASSWORD" ssh -o StrictHostKeyChecking=no -p "$VPS_PORT" "$VPS_USER@$VPS_HOST" "curl -sf http://localhost:8010/health"
+      sshpass -p "$VPS_PASSWORD" ssh -o StrictHostKeyChecking=no -p "$VPS_PORT" "$VPS_USER@$VPS_HOST" "curl -so /dev/null -w HTTP http://localhost:3010/"
       echo "OK"
