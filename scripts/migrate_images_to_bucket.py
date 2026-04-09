@@ -2,7 +2,7 @@
 One-time migration: move existing ig_posts.image_data (base64) to S3 bucket.
 
 Usage (run inside orchestrator container or with correct env):
-    python scripts/migrate_images_to_bucket.py [--dry-run] [--batch-size 100]
+    python scripts/migrate_images_to_bucket.py [--dry-run] [--batch-size 100] [--db-path PATH]
 
 What it does:
     1. Reads posts with image_data set but image_bucket_url empty
@@ -15,24 +15,34 @@ from __future__ import annotations
 import argparse
 import asyncio
 import base64
+import os
 import sys
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).parent.parent))
+# Load .env.production before any orchestrator imports so env vars are available
+_ROOT = Path(__file__).parent.parent
+sys.path.insert(0, str(_ROOT))
+
+try:
+    from dotenv import load_dotenv
+    load_dotenv(_ROOT / ".env.production", override=True)
+except Exception:
+    pass
 
 import aiosqlite
-from orchestrator.config import cfg, log
+from orchestrator.config import log
 from orchestrator import bucket
 
 
-async def migrate(dry_run: bool = False, batch_size: int = 100) -> None:
+async def migrate(dry_run: bool = False, batch_size: int = 100, db_path: str | None = None) -> None:
     if not bucket.is_configured():
         print("ERROR: Bucket not configured. Set BUCKET_* env vars first.")
         sys.exit(1)
 
-    db_path = str(cfg.get("DATABASE_PATH", "data/getcontact.db"))
+    if not db_path:
+        db_path = os.getenv("DATABASE_PATH", "data/getcontact.db")
     print(f"DB: {db_path}")
-    print(f"Bucket public URL: {cfg.get('BUCKET_PUBLIC_URL')}")
+    print(f"Bucket: {bucket._bucket_name()} / {bucket._public_url()}")
     print(f"Dry run: {dry_run}\n")
 
     async with aiosqlite.connect(db_path) as db:
@@ -83,7 +93,7 @@ async def migrate(dry_run: bool = False, batch_size: int = 100) -> None:
 
                 if dry_run:
                     key = bucket.make_key(post_url, university_id)
-                    print(f"  [DRY] id={post_id} → {key}")
+                    print(f"  [DRY] id={post_id} -> {key}")
                     migrated += 1
                     continue
 
@@ -117,5 +127,6 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--dry-run", action="store_true")
     parser.add_argument("--batch-size", type=int, default=100)
+    parser.add_argument("--db-path", default=None, help="Override database path")
     args = parser.parse_args()
-    asyncio.run(migrate(dry_run=args.dry_run, batch_size=args.batch_size))
+    asyncio.run(migrate(dry_run=args.dry_run, batch_size=args.batch_size, db_path=args.db_path))

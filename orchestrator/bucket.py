@@ -25,33 +25,34 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import json
+import os
 
-from orchestrator.config import cfg, log
+from orchestrator.config import log
 
 
 def _provider() -> str:
-    return str(cfg.get("BUCKET_PROVIDER") or "s3").lower()
+    return str(os.getenv("BUCKET_PROVIDER") or "s3").lower()
 
 
 def _bucket_name() -> str:
-    return str(cfg.get("BUCKET_NAME") or "")
+    return str(os.getenv("BUCKET_NAME") or "")
 
 
 def _public_url() -> str:
-    return str(cfg.get("BUCKET_PUBLIC_URL") or "").rstrip("/")
+    return str(os.getenv("BUCKET_PUBLIC_URL") or "").rstrip("/")
 
 
 def is_configured() -> bool:
     if not _bucket_name() or not _public_url():
         return False
     if _provider() == "gcs":
-        return bool(cfg.get("GCS_SERVICE_ACCOUNT_JSON"))
+        return bool(os.getenv("GCS_SERVICE_ACCOUNT_JSON"))
     # S3
-    return bool(cfg.get("BUCKET_ENDPOINT_URL") and cfg.get("BUCKET_ACCESS_KEY") and cfg.get("BUCKET_SECRET_KEY"))
+    return bool(os.getenv("BUCKET_ENDPOINT_URL") and os.getenv("BUCKET_ACCESS_KEY") and os.getenv("BUCKET_SECRET_KEY"))
 
 
 def _folder_prefix() -> str:
-    folder = str(cfg.get("BUCKET_FOLDER") or "").strip("/")
+    folder = str(os.getenv("BUCKET_FOLDER") or "").strip("/")
     return f"{folder}/" if folder else ""
 
 
@@ -66,7 +67,7 @@ def _upload_gcs_sync(key: str, data: bytes, content_type: str) -> str | None:
     from google.oauth2 import service_account
 
     try:
-        sa_json = str(cfg.get("GCS_SERVICE_ACCOUNT_JSON") or "")
+        sa_json = str(os.getenv("GCS_SERVICE_ACCOUNT_JSON") or "")
         sa_info = json.loads(sa_json)
         credentials = service_account.Credentials.from_service_account_info(sa_info)
         client = gcs.Client(project=sa_info.get("project_id"), credentials=credentials)
@@ -86,10 +87,10 @@ def _upload_s3_sync(key: str, data: bytes, content_type: str) -> str | None:
     try:
         s3 = boto3.client(
             "s3",
-            endpoint_url=str(cfg.get("BUCKET_ENDPOINT_URL") or ""),
-            aws_access_key_id=str(cfg.get("BUCKET_ACCESS_KEY") or ""),
-            aws_secret_access_key=str(cfg.get("BUCKET_SECRET_KEY") or ""),
-            region_name=str(cfg.get("BUCKET_REGION") or "auto"),
+            endpoint_url=str(os.getenv("BUCKET_ENDPOINT_URL") or ""),
+            aws_access_key_id=str(os.getenv("BUCKET_ACCESS_KEY") or ""),
+            aws_secret_access_key=str(os.getenv("BUCKET_SECRET_KEY") or ""),
+            region_name=str(os.getenv("BUCKET_REGION") or "auto"),
         )
         s3.put_object(Bucket=_bucket_name(), Key=key, Body=data, ContentType=content_type)
         return f"{_public_url()}/{key}"
