@@ -22,14 +22,17 @@ stages:
   - verify
 
 variables:
-  DEPLOY_DIR: "/opt/getcontact-ai-agent"
+  DEPLOY_DIR: "/var/www/get_contact_jiwan"
   IMAGE_ORCHESTRATOR: naradaagastya/gc-orchestrator
   IMAGE_FRONTEND: naradaagastya/gc-frontend
   IMAGE_WHATSAPP: naradaagastya/gc-whatsapp
 
 workflow:
   rules:
+    # Run on push to main
     - if: $CI_COMMIT_BRANCH == "main"
+    # Allow manual trigger from any branch for testing
+    - if: $CI_PIPELINE_SOURCE == "manual"
 
 # ---------------------------------------------------------------
 # Stage 1: Build Docker images & push to Docker Hub
@@ -191,7 +194,7 @@ deploy_production:
 
   environment:
     name: production
-    url: https://getcontact.najworks.me
+    url: https://get-contact-automation.airabot.id
 
 # ---------------------------------------------------------------
 # Stage 3: Health check
@@ -307,4 +310,65 @@ verify_deployment:
 
   environment:
     name: production
-    url: https://getcontact.najworks.me
+    url: https://get-contact-automation.airabot.id
+
+# ---------------------------------------------------------------
+# Job: Rollback to previous image tag
+# Usage: GitLab → CI/CD → Pipelines → Run Pipeline → set ROLLBACK_TAG
+# ---------------------------------------------------------------
+rollback:
+  stage: deploy
+  image: alpine:3.19
+  before_script:
+    - apk add --no-cache openssh-client
+    - eval $(ssh-agent -s)
+    - chmod 600 "$SSH_PRIVATE_KEY"
+    - ssh-add "$SSH_PRIVATE_KEY"
+    - mkdir -p ~/.ssh && chmod 700 ~/.ssh
+    - |
+      if [ -n "$SSH_KNOWN_HOSTS" ]; then
+        echo "$SSH_KNOWN_HOSTS" >> ~/.ssh/known_hosts
+      else
+        ssh-keyscan -H "$VPS_HOST" >> ~/.ssh/known_hosts 2>/dev/null
+      fi
+    - chmod 644 ~/.ssh/known_hosts
+  script:
+    - |
+      if [ -z "$ROLLBACK_TAG" ]; then
+        echo "ERROR: Set ROLLBACK_TAG variable (e.g. abc1234)"
+        exit 1
+      fi
+      echo "============================================="
+      echo "  Rolling back to: $ROLLBACK_TAG"
+      echo "============================================="
+      ssh "$VPS_USER@$VPS_HOST" bash -s -- "$DEPLOY_DIR" "$ROLLBACK_TAG" "$IMAGE_ORCHESTRATOR" "$IMAGE_FRONTEND" "$IMAGE_WHATSAPP" << 'REMOTE_ROLLBACK'
+        DEPLOY_DIR="$1"
+        ROLLBACK_TAG="$2"
+        IMG_ORCH="$3"
+        IMG_FRONT="$4"
+        IMG_WA="$5"
+        cd "$DEPLOY_DIR"
+
+        for pair in "$IMG_ORCH:orchestrator" "$IMG_FRONT:frontend" "$IMG_WA:whatsapp"; do
+          IMG="${pair%%:*}"
+          SVC="${pair##*:}"
+          docker pull ${IMG}:${ROLLBACK_TAG}
+          docker tag ${IMG}:${ROLLBACK_TAG} ${IMG}:latest
+          docker compose -f docker-compose.prod.yml up -d $SVC
+          echo "  ✓ $SVC → $ROLLBACK_TAG"
+        done
+
+        sleep 10
+        docker compose -f docker-compose.prod.yml ps
+        echo "============================================="
+        echo "  ✅ Rollback complete"
+        echo "============================================="
+      REMOTE_ROLLBACK
+  environment:
+    name: production
+    action: rollback
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "manual"
+  when: manual
+  tags:
+    - docker
