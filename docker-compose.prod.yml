@@ -1,16 +1,18 @@
 # docker-compose.prod.yml
 # ----------------------------------------------------------
 # Production compose file for VPS.
-# Uses pre-built images from Docker Hub — NO local build.
+# Builds images directly from source on the VPS — no Docker Hub.
 #
 # Usage on VPS:
-#   docker compose -f docker-compose.prod.yml pull
+#   docker compose -f docker-compose.prod.yml build
 #   docker compose -f docker-compose.prod.yml up -d
 # ----------------------------------------------------------
 
 services:
   whatsapp:
-    image: naradaagastya/gc-whatsapp:latest
+    build:
+      context: .
+      dockerfile: Dockerfile.whatsapp
     container_name: gc-whatsapp
     restart: unless-stopped
     ports:
@@ -36,7 +38,9 @@ services:
       start_period: 20s
 
   orchestrator:
-    image: naradaagastya/gc-orchestrator:latest
+    build:
+      context: .
+      dockerfile: Dockerfile.orchestrator
     container_name: gc-orchestrator
     restart: unless-stopped
     ports:
@@ -56,7 +60,9 @@ services:
       - gc-network
 
   frontend:
-    image: naradaagastya/gc-frontend:latest
+    build:
+      context: .
+      dockerfile: Dockerfile.frontend
     container_name: gc-frontend
     restart: unless-stopped
     ports:
