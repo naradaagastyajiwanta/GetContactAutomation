@@ -5,6 +5,9 @@ openai>=1.66.0
 phonenumbers==8.13.52
 certifi>=2024.0
 httpx==0.28.1
+# aiohttp: required by orchestrator/llm/codex_login_server.py for the
+# temporary OAuth callback server on localhost:1455 during Codex login.
+aiohttp>=3.9.0
 beautifulsoup4>=4.12
 python-dotenv==1.0.1
 gspread==6.1.4
