@@ -160,8 +160,18 @@ deploy:
       # substitutes ${SENTRY_RELEASE:-} in docker-compose.prod.yml → the
       # orchestrator container picks it up at startup and every error
       # captured by Sentry is tagged with this commit SHA.
+      #
+      # nginx restart at the end: when `docker compose up -d` recreates
+      # orchestrator / frontend, those containers get new IPs on the
+      # bridge network. nginx caches upstream DNS resolution at startup
+      # (stock OSS nginx, no Plus) so it keeps routing to the old IPs
+      # until reloaded, producing a 502 Bad Gateway storm. The nginx
+      # config now uses Docker's embedded resolver (127.0.0.11) for
+      # runtime re-resolution, but we still force a restart here so
+      # the FIRST request after deploy hits a warm cache instead of
+      # waiting for the `valid=10s` TTL to refresh.
       sshpass -p "$VPS_PASSWORD" ssh -o StrictHostKeyChecking=no -p "$VPS_PORT" "$VPS_USER@$VPS_HOST" \
-        "cd /var/www/get_contact_jiwan && SENTRY_RELEASE=$CI_COMMIT_SHORT_SHA docker compose -f docker-compose.prod.yml build && SENTRY_RELEASE=$CI_COMMIT_SHORT_SHA docker compose -f docker-compose.prod.yml up -d --remove-orphans && docker system prune -f --filter until=72h 2>/dev/null || true"
+        "cd /var/www/get_contact_jiwan && SENTRY_RELEASE=$CI_COMMIT_SHORT_SHA docker compose -f docker-compose.prod.yml build && SENTRY_RELEASE=$CI_COMMIT_SHORT_SHA docker compose -f docker-compose.prod.yml up -d --remove-orphans && docker compose -f docker-compose.prod.yml restart nginx && docker system prune -f --filter until=72h 2>/dev/null || true"
       echo "--- Status ---"
       sshpass -p "$VPS_PASSWORD" ssh -o StrictHostKeyChecking=no -p "$VPS_PORT" "$VPS_USER@$VPS_HOST" \
         "cd /var/www/get_contact_jiwan && docker compose -f docker-compose.prod.yml ps"
