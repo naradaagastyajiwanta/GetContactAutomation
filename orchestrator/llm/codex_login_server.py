@@ -50,8 +50,20 @@ CALLBACK_PATH = "/auth/callback"
 # many seconds, the future resolves with None and the server stops.
 DEFAULT_LOGIN_TIMEOUT_SECONDS = 300
 
+# Sentinel marker for superseded sessions. When a new ``begin_login``
+# call cancels an in-flight session, the old future resolves with this
+# marker so the caller can distinguish "user started a fresh login" from
+# "timed out" or "user cancelled". The FE silently discards superseded
+# results instead of showing an error toast.
+SUPERSEDED_MARKER = {"superseded": True}
+
 # Module-level state — only one in-flight login at a time
 _active_session: "Optional[LoginSession]" = None
+
+# Lock that serializes begin_login calls — prevents race when two clicks
+# arrive within the same event loop tick (both try to read _active_session
+# before either writes it).
+_begin_login_lock = asyncio.Lock()
 
 
 @dataclass
@@ -198,6 +210,16 @@ async def begin_login(
 ) -> AuthorizationFlow:
     """Spawn the local callback server and return the authorize URL.
 
+    **Idempotent behaviour** — if a previous login is still in flight
+    (e.g. the user closed the browser tab without completing OAuth and
+    clicked "Login" again), this function silently cancels the stale
+    session before starting a fresh one. The stale session's waiter
+    (if any) is resolved with :data:`SUPERSEDED_MARKER` so the FE can
+    distinguish "superseded by new attempt" from "timed out".
+
+    This removes the old ``RuntimeError("already in progress")`` which
+    forced users to click Cancel manually before retrying.
+
     The caller (FastAPI handler) returns the URL to the FE; the FE
     opens it in a new tab; the user logs in; the OAuth provider
     redirects back to ``http://localhost:1455/auth/callback``; this
@@ -207,62 +229,81 @@ async def begin_login(
     """
     global _active_session
 
-    if _active_session is not None:
-        # If the previous session has already resolved, clean it up first.
-        if _active_session.future.done():
-            await _shutdown_session(_active_session)
-            _active_session = None
-        else:
-            raise RuntimeError(
-                "A Codex OAuth login is already in progress. "
-                "Call cancel_login() first to start a new flow."
+    async with _begin_login_lock:
+        # Atomically detach the previous session (if any) and shut it
+        # down BEFORE creating the new one. Setting _active_session to
+        # None first ensures concurrent begin_login calls — should they
+        # ever bypass the lock — don't race on the same stale reference.
+        previous = _active_session
+        _active_session = None
+
+        if previous is not None:
+            was_done = previous.future.done()
+            log.info(
+                "[codex-login] superseding previous login session "
+                "(was_done=%s) — starting fresh flow",
+                was_done,
             )
+            # Mark the old waiter as superseded so FE can silently discard
+            if not was_done:
+                try:
+                    previous.future.set_result(SUPERSEDED_MARKER)
+                except asyncio.InvalidStateError:
+                    pass
+            try:
+                await _shutdown_session(previous)
+            except Exception as e:
+                log.warning(
+                    "[codex-login] error shutting down previous session: %s", e
+                )
 
-    flow = build_authorization_flow()
+        flow = build_authorization_flow()
 
-    app = web.Application()
-    app.router.add_get(CALLBACK_PATH, _handle_callback)
-    runner = web.AppRunner(app, access_log=None)
-    await runner.setup()
-    site = web.TCPSite(runner, host=CALLBACK_HOST, port=CALLBACK_PORT)
-    try:
-        await site.start()
-    except OSError as e:
-        await runner.cleanup()
-        raise RuntimeError(
-            f"Could not bind to {CALLBACK_HOST}:{CALLBACK_PORT} for OAuth callback. "
-            f"Use the manual paste fallback instead. Error: {e}"
-        ) from e
-
-    loop = asyncio.get_running_loop()
-    future: asyncio.Future = loop.create_future()
-
-    async def _timeout_watchdog():
+        app = web.Application()
+        app.router.add_get(CALLBACK_PATH, _handle_callback)
+        runner = web.AppRunner(app, access_log=None)
+        await runner.setup()
+        site = web.TCPSite(runner, host=CALLBACK_HOST, port=CALLBACK_PORT)
         try:
-            await asyncio.sleep(timeout_seconds)
-            if not future.done():
-                future.set_result(None)
-                log.warning("[codex-login] login timed out after %ds", timeout_seconds)
-        except asyncio.CancelledError:
-            pass
+            await site.start()
+        except OSError as e:
+            await runner.cleanup()
+            raise RuntimeError(
+                f"Could not bind to {CALLBACK_HOST}:{CALLBACK_PORT} for OAuth callback. "
+                f"Use the manual paste fallback instead. Error: {e}"
+            ) from e
 
-    timeout_task = loop.create_task(_timeout_watchdog())
+        loop = asyncio.get_running_loop()
+        future: asyncio.Future = loop.create_future()
 
-    _active_session = LoginSession(
-        pkce=flow.pkce,
-        state=flow.state,
-        authorize_url=flow.url,
-        future=future,
-        runner=runner,
-        site=site,
-        timeout_task=timeout_task,
-    )
+        async def _timeout_watchdog():
+            try:
+                await asyncio.sleep(timeout_seconds)
+                if not future.done():
+                    future.set_result(None)
+                    log.warning(
+                        "[codex-login] login timed out after %ds", timeout_seconds
+                    )
+            except asyncio.CancelledError:
+                pass
 
-    log.info(
-        "[codex-login] callback server listening on %s:%d, awaiting OAuth redirect",
-        CALLBACK_HOST, CALLBACK_PORT,
-    )
-    return flow
+        timeout_task = loop.create_task(_timeout_watchdog())
+
+        _active_session = LoginSession(
+            pkce=flow.pkce,
+            state=flow.state,
+            authorize_url=flow.url,
+            future=future,
+            runner=runner,
+            site=site,
+            timeout_task=timeout_task,
+        )
+
+        log.info(
+            "[codex-login] callback server listening on %s:%d, awaiting OAuth redirect",
+            CALLBACK_HOST, CALLBACK_PORT,
+        )
+        return flow
 
 
 async def wait_for_login_result(timeout: float | None = None) -> dict | None:

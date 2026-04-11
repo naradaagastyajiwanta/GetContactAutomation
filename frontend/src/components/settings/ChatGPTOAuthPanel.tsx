@@ -108,6 +108,11 @@ export function ChatGPTOAuthPanel() {
     }, 6000);
   };
 
+  // Monotonic counter for login attempts — used to silently discard
+  // stale results when the user starts a fresh login before the
+  // previous one has resolved (e.g. closed browser tab mid-OAuth).
+  const loginAttemptRef = useRef(0);
+
   useEffect(() => {
     return () => {
       if (successTimerRef.current !== null) {
@@ -137,15 +142,50 @@ export function ChatGPTOAuthPanel() {
   }, []);
 
   const handleLogin = async () => {
+    // Bump the attempt counter and capture our own ID. Any previous
+    // handleLogin invocation that is still awaiting a long-poll will
+    // notice (on resume) that its ID no longer matches the latest and
+    // silently discard its result — no flicker error toasts when the
+    // user retries after closing a stale browser tab.
+    const myAttempt = ++loginAttemptRef.current;
+    const isStale = () => loginAttemptRef.current !== myAttempt;
+
     setError(null);
     setSuccess(null);
     setLoginInProgress(true);
     try {
+      // Proactively tell the backend to tear down any leftover in-flight
+      // session from a previous click. The backend's begin_login() also
+      // auto-supersedes stale sessions, so this is belt-and-suspenders —
+      // if the first call here fails (no active session), that's fine.
+      try {
+        await cancelCodexLogin();
+      } catch {
+        /* no active flow — nothing to cancel */
+      }
+
+      if (isStale()) return;
+
       const start = await startCodexLogin();
+      if (isStale()) return;
+
       // Open the authorize URL in a new tab so the user can complete OAuth
       window.open(start.authorize_url, "_blank", "noopener,noreferrer");
+
       // Long-poll the orchestrator until the callback fires
       const result = await waitForCodexLogin(300);
+
+      // A newer handleLogin call started and already superseded this one
+      if (isStale()) return;
+
+      // Server-side supersede marker: another /auth/codex/start call
+      // replaced this session (e.g. user clicked Login twice). Silently
+      // discard — the newer attempt handler will take over.
+      if (result.status === "superseded") {
+        console.log("[codex-login] superseded by newer attempt, discarding");
+        return;
+      }
+
       await refresh();
       const accountSnippet = result.account_id
         ? ` (account: ${result.account_id.slice(0, 8)}…)`
@@ -155,6 +195,10 @@ export function ChatGPTOAuthPanel() {
       );
       console.log("Codex login complete:", result);
     } catch (e: unknown) {
+      // If a newer attempt has already taken over, silently drop this
+      // error — the user already moved on.
+      if (isStale()) return;
+
       const message =
         (e as { response?: { data?: { detail?: string } } })?.response?.data
           ?.detail ?? (e instanceof Error ? e.message : "Login failed");
@@ -166,7 +210,11 @@ export function ChatGPTOAuthPanel() {
         /* ignore */
       }
     } finally {
-      setLoginInProgress(false);
+      // Only clear the spinner if we are the latest attempt. Otherwise
+      // a newer attempt is still running and should keep the spinner on.
+      if (!isStale()) {
+        setLoginInProgress(false);
+      }
     }
   };
 

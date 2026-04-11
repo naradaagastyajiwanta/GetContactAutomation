@@ -5143,6 +5143,17 @@ async def codex_oauth_wait(timeout_seconds: int = 300):
             detail="Login timed out or was cancelled.",
         )
 
+    # Session was superseded by a newer /auth/codex/start call (e.g. user
+    # closed the browser tab and clicked Login again). Return a 200 with
+    # a distinguishable status so the FE can silently discard this
+    # response without showing an error toast. Do NOT call cancel_login()
+    # here — the newer session is active and must not be torn down.
+    if result.get("superseded"):
+        return {
+            "status": "superseded",
+            "message": "A newer login attempt replaced this one.",
+        }
+
     if "error" in result:
         await codex_login_server.cancel_login()
         raise HTTPException(

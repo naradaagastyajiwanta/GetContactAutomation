@@ -43,11 +43,30 @@ export interface StartLoginResponse {
   callback_port: number;
 }
 
+/**
+ * Successful login/refresh result from the orchestrator.
+ * Shared shape between /auth/codex/manual, /auth/codex/refresh, and
+ * the happy path of /auth/codex/wait.
+ */
 export interface LoginResultResponse {
-  status: "logged_in";
+  status: "logged_in" | "refreshed";
   account_id?: string | null;
   expires_at: number;
 }
+
+/**
+ * Result from the /auth/codex/wait long-poll endpoint. Either the
+ * normal success payload OR a ``superseded`` marker when the backend
+ * detected that a newer /auth/codex/start call replaced this flow
+ * (e.g. user closed the browser mid-OAuth and clicked Login again).
+ * The FE should silently discard superseded results — no error, no toast.
+ */
+export type LoginWaitResponse =
+  | LoginResultResponse
+  | {
+      status: "superseded";
+      message: string;
+    };
 
 export async function getCodexStatus(): Promise<CodexOAuthStatusResponse> {
   const { data } = await apiClient.get<CodexOAuthStatusResponse>(
@@ -78,8 +97,8 @@ export async function startCodexLogin(): Promise<StartLoginResponse> {
  */
 export async function waitForCodexLogin(
   timeoutSeconds: number = 300,
-): Promise<LoginResultResponse> {
-  const { data } = await apiClient.post<LoginResultResponse>(
+): Promise<LoginWaitResponse> {
+  const { data } = await apiClient.post<LoginWaitResponse>(
     "/auth/codex/wait",
     null,
     {
