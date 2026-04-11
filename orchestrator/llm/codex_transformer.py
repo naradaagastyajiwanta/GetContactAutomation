@@ -125,10 +125,17 @@ def _build_reasoning_block(
 
 
 def _build_text_block(existing: dict | None) -> dict:
+    """Build the ``text`` block, preserving any caller-provided fields.
+
+    The chat→responses translator emits ``text.format`` when the caller
+    used ``response_format={"type": "json_object"}`` for chat completions.
+    We must preserve that field — overwriting it would silently drop
+    JSON mode for the Codex backend, which has bitten us before.
+    """
     existing = existing or {}
-    return {
-        "verbosity": existing.get("verbosity") or "medium",
-    }
+    merged: dict = dict(existing)  # start from caller fields, never lose them
+    merged["verbosity"] = existing.get("verbosity") or "medium"
+    return merged
 
 
 # --- main transform -----------------------------------------------------

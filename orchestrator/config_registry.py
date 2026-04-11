@@ -352,6 +352,17 @@ CONFIG_DEFINITIONS: list[ConfigDef] = [
         ),
         min_value=60, max_value=7200,
     ),
+    # --- Email Blast Inbox Watcher ---
+    ConfigDef(
+        key="EMAIL_BLAST_INBOX_WATCH_ENABLED",
+        type=ConfigType.BOOL, default=True, group=ConfigGroup.GENERAL,
+        label="IMAP Inbox Watcher Enabled",
+        description=(
+            "Periodically poll IMAP for new email replies (default: every 30s). "
+            "Set to false to silence polling temporarily — useful when the upstream "
+            "mail server is unreachable and the warning logs are spamming."
+        ),
+    ),
     # --- Message Queue ---
     ConfigDef(
         key="MAX_AI_CONCURRENT",

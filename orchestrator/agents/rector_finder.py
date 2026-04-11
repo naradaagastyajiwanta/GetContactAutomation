@@ -13,7 +13,7 @@ import re
 
 import httpx
 
-from orchestrator.config import is_paused, log, cfg
+from orchestrator.config import is_paused, log, cfg, chat_kwargs
 from orchestrator.llm import gateway
 from orchestrator import duckduckgo_client
 from orchestrator.db import get_university_by_id, update_university_rector_name
@@ -355,8 +355,7 @@ async def _gpt_extract_from_text(text: str, uni_name: str) -> str | None:
         resp = await gateway.chat_completions_create(
             model=cfg.AGENT_MODEL,
             messages=[{"role": "user", "content": "\n".join(prompt_parts)}],
-            max_tokens=100,
-            temperature=0.1,
+            **chat_kwargs(cfg.AGENT_MODEL, temperature=0.1, max_tokens=100),
         )
         answer = resp.choices[0].message.content.strip()
 

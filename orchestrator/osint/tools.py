@@ -556,7 +556,7 @@ async def gpt_extract_structured(
     """
     try:
         from orchestrator.llm import gateway
-        from orchestrator.config import cfg
+        from orchestrator.config import cfg, chat_kwargs
         # Default to AGENT_MODEL (gpt-5.4) so the call works under both
         # the real OpenAI API and the Codex backend (which rejects
         # legacy gpt-4o-mini). Caller can still override via the kwarg.
@@ -576,7 +576,7 @@ async def gpt_extract_structured(
                     "content": f"{instruction}\n\n---\nTEXT:\n{text[:12000]}",
                 },
             ],
-            temperature=0.1,
+            **chat_kwargs(resolved_model, temperature=0.1),
             response_format={"type": "json_object"},
         )
         content = response.choices[0].message.content

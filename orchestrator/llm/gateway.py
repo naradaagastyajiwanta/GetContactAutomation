@@ -28,6 +28,7 @@ Resilience features:
 """
 from __future__ import annotations
 
+import asyncio
 import time
 from typing import Any
 
@@ -202,6 +203,47 @@ def _trip_cooldown(retry_after_seconds: int | None = None) -> None:
         "[llm-gateway] Codex rate-limited (429), cooldown armed for %ds",
         cooldown,
     )
+    _broadcast_rate_limit_notification(cooldown)
+
+
+def _broadcast_rate_limit_notification(cooldown_seconds: int) -> None:
+    """Push a WebSocket notification so the FE can show a toast / banner.
+
+    Fire-and-forget — never blocks or raises into the gateway path. The
+    FE listens for ``codex_rate_limited`` events on its WebSocket and
+    surfaces them as a notification with the cooldown duration so the
+    user knows traffic has temporarily fallen back to the real OpenAI
+    API key.
+    """
+    try:
+        from orchestrator.websocket import manager as ws_manager
+    except Exception:
+        return
+
+    payload = {
+        "type": "codex_rate_limited",
+        "cooldown_seconds": int(cooldown_seconds),
+        "fallback_active": bool(cfg.get("CHATGPT_OAUTH_FALLBACK_TO_API", True)),
+        "message": (
+            f"ChatGPT subscription rate limit reached. "
+            f"Falling back to OpenAI API for the next {cooldown_seconds // 60} minutes."
+        ),
+    }
+
+    try:
+        loop = asyncio.get_running_loop()
+    except RuntimeError:
+        # No running loop — gateway must always be called from async,
+        # but defend in case _trip_cooldown is invoked in a sync context.
+        return
+
+    async def _send():
+        try:
+            await ws_manager.broadcast(payload)
+        except Exception as e:
+            log.debug("[llm-gateway] failed to broadcast rate-limit notification: %s", e)
+
+    loop.create_task(_send())
 
 
 async def _call_real_chat(kwargs: dict) -> Any:

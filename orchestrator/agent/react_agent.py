@@ -488,8 +488,7 @@ class ReactAgent:
                 lambda: gateway.chat_completions_create(
                     model=cfg.AGENT_MODEL,
                     messages=[{"role": "user", "content": planning_prompt}],
-                    max_tokens=120,
-                    temperature=0.3,
+                    **chat_kwargs(cfg.AGENT_MODEL, temperature=0.3, max_tokens=120),
                 ),
                 label="planning",
             )

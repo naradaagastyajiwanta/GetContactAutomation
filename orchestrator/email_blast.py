@@ -2791,14 +2791,36 @@ async def refresh_inbox_cache_now() -> bool:
 
 
 async def watch_inbox_replies_forever() -> None:
-    """Periodically poll IMAP so new replies can be pushed over WebSocket."""
+    """Periodically poll IMAP so new replies can be pushed over WebSocket.
+
+    Honors the runtime flag ``EMAIL_BLAST_INBOX_WATCH_ENABLED`` (default
+    True). When false, the loop sleeps and re-checks every minute so the
+    operator can flip the flag back on without restarting the orchestrator
+    — useful when the upstream mail server (e.g. mail.asosiasi.ai) is down
+    and IMAP polling is just spamming warnings.
+    """
     startup_delay = max(0, int(cfg.get("EMAIL_BLAST_INBOX_WATCH_STARTUP_DELAY_SECONDS", 15)))
     poll_interval = max(10, int(cfg.get("EMAIL_BLAST_INBOX_WATCH_INTERVAL_SECONDS", 30)))
 
     if startup_delay:
         await asyncio.sleep(startup_delay)
 
+    disabled_announced = False
     while True:
+        if not bool(cfg.get("EMAIL_BLAST_INBOX_WATCH_ENABLED", True)):
+            if not disabled_announced:
+                log.info(
+                    "[InboxWatch] Disabled via EMAIL_BLAST_INBOX_WATCH_ENABLED=false; "
+                    "sleeping (will re-check flag every 60s)"
+                )
+                disabled_announced = True
+            await asyncio.sleep(60)
+            continue
+
+        if disabled_announced:
+            log.info("[InboxWatch] Re-enabled via flag; resuming polling")
+            disabled_announced = False
+
         try:
             await refresh_inbox_cache_now()
         except asyncio.CancelledError:
