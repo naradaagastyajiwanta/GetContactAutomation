@@ -31,12 +31,14 @@ from urllib.parse import urlparse
 import httpx
 from openai import AsyncOpenAI
 
+from orchestrator.llm import gateway
 from orchestrator.config import (
     IG_MAX_POSTS_PER_PROFILE,
     CONTACT_KEYWORDS,
     IG_BIO_KEYWORDS,
     VISION_MODEL,
     PHONE_PATTERNS,
+    chat_kwargs,
     log,
     cfg,
 )
@@ -391,8 +393,11 @@ def _check_ig_response(resp: httpx.Response) -> bool:
 
 
 # Lazy-initialized clients
-_openai_client: AsyncOpenAI | None = None
-_openai_client_key: str = ""
+# NOTE: OpenAI client comes from orchestrator.llm.client_factory.
+# When cfg.CHATGPT_OAUTH_ENABLED is true, vision calls go through the
+# chatgpt-proxy sidecar (ChatGPT Plus subscription). Otherwise they hit
+# api.openai.com directly. instagram.py already has Gemini vision as a
+# secondary fallback for when OpenAI vision is unavailable.
 _gemini_vision_client = None
 _gemini_vision_key: str = ""
 
@@ -402,13 +407,52 @@ _gemini_vision_quota_retry_after: float = 0.0
 _VISION_QUOTA_RETRY_MINUTES = 10
 
 
-def _get_openai() -> AsyncOpenAI:
-    global _openai_client, _openai_client_key
-    current_key = cfg.OPENAI_API_KEY
-    if _openai_client is None or current_key != _openai_client_key:
-        _openai_client = AsyncOpenAI(api_key=current_key)
-        _openai_client_key = current_key
-    return _openai_client
+class _GatewayChatCompletionsShim:
+    """Adapts the orchestrator gateway to look like ``client.chat.completions``.
+
+    instagram.py's six vision call sites all use the pattern::
+
+        client = _get_openai()
+        response = await client.chat.completions.create(...)
+
+    Instead of touching every call site to switch to
+    ``gateway.chat_completions_create(...)``, this shim exposes a
+    ``.chat.completions.create`` method that forwards to the gateway.
+    The gateway will route through the in-process Codex OAuth client
+    when ``CHATGPT_OAUTH_ENABLED`` is true (translating image_url
+    content blocks to ``input_image`` for the Responses API), or fall
+    back to the real OpenAI API otherwise.
+
+    instagram.py's existing retry / quota / Gemini-fallback logic is
+    preserved because it operates on the response object the gateway
+    returns, which has the same surface as the openai SDK's
+    ``ChatCompletion``.
+    """
+
+    def __init__(self):
+        self.chat = self._Chat()
+
+    class _Chat:
+        def __init__(self):
+            self.completions = _GatewayChatCompletionsShim._Completions()
+
+    class _Completions:
+        async def create(self, **kwargs):
+            return await gateway.chat_completions_create(**kwargs)
+
+
+_gateway_shim = _GatewayChatCompletionsShim()
+
+
+def _get_openai() -> "_GatewayChatCompletionsShim":
+    """Return a shim that routes ``.chat.completions.create`` through the gateway.
+
+    Returning a shim instead of an ``AsyncOpenAI`` instance lets the
+    six existing call sites in this file remain unchanged while still
+    benefiting from in-process Codex OAuth routing + automatic
+    fallback. See ``_GatewayChatCompletionsShim`` for details.
+    """
+    return _gateway_shim
 
 
 def _get_gemini_vision():
@@ -2198,7 +2242,7 @@ async def extract_named_contacts_from_text(
     client = _get_openai()
     try:
         response = await client.chat.completions.create(
-            model="gpt-4o-mini",
+            model=VISION_MODEL,
             messages=[
                 {
                     "role": "system",
@@ -2218,8 +2262,7 @@ async def extract_named_contacts_from_text(
                     "content": f"Ekstrak semua nomor telepon dari teks ini:\n\n{text}",
                 },
             ],
-            max_tokens=300,
-            temperature=0,
+            **chat_kwargs(VISION_MODEL, temperature=0, max_tokens=300),
         )
     except Exception as e:
         log.error(f"GPT text extraction error: {e}")
@@ -2354,8 +2397,7 @@ async def _openai_vision_extract(
                     ],
                 },
             ],
-            max_tokens=500,
-            temperature=0,
+            **chat_kwargs(VISION_MODEL, temperature=0, max_tokens=500),
         )
     except asyncio.CancelledError:
         log.warning("OpenAI Vision extraction cancelled (shutdown/pause)")
@@ -3436,13 +3478,12 @@ Return a JSON array (same order as input):
 
     try:
         response = await client.chat.completions.create(
-            model="gpt-4o-mini",
+            model=VISION_MODEL,
             messages=[
                 {"role": "system", "content": system_prompt},
                 {"role": "user", "content": user_prompt},
             ],
-            temperature=0,
-            max_tokens=800,
+            **chat_kwargs(VISION_MODEL, temperature=0, max_tokens=800),
             response_format={"type": "json_object"},
         )
         raw = response.choices[0].message.content or ""
@@ -3519,7 +3560,7 @@ async def llm_verify_ig_handle(handle: str, bio: str, full_name: str, university
 
     try:
         response = await client.chat.completions.create(
-            model="gpt-4o-mini",
+            model=VISION_MODEL,
             messages=[
                 {
                     "role": "system",
@@ -3532,8 +3573,7 @@ async def llm_verify_ig_handle(handle: str, bio: str, full_name: str, university
                 },
                 {"role": "user", "content": user_prompt},
             ],
-            temperature=0,
-            max_tokens=120,
+            **chat_kwargs(VISION_MODEL, temperature=0, max_tokens=120),
             response_format={"type": "json_object"},
         )
         raw = response.choices[0].message.content or ""
@@ -3642,7 +3682,7 @@ async def llm_verify_company_ig_handle(
 
     try:
         response = await client.chat.completions.create(
-            model="gpt-4o-mini",
+            model=VISION_MODEL,
             messages=[
                 {
                     "role": "system",
@@ -3656,8 +3696,7 @@ async def llm_verify_company_ig_handle(
                 },
                 {"role": "user", "content": user_prompt},
             ],
-            temperature=0,
-            max_tokens=120,
+            **chat_kwargs(VISION_MODEL, temperature=0, max_tokens=120),
             response_format={"type": "json_object"},
         )
         raw = response.choices[0].message.content or ""

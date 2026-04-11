@@ -76,6 +76,7 @@ async def run_phone_extraction_batch(limit: int = 50) -> dict:
             }
         return saved_names_by_uni[uni_id]
 
+    skipped_for_retry = 0
     for post in posts:
         # Check pause again inside loop to allow graceful interruption
         if is_paused():
@@ -85,6 +86,10 @@ async def run_phone_extraction_batch(limit: int = 50) -> dict:
             contacts: list[PhoneContact] = []
             caption = post.get("caption") or ""
             image_url = post.get("image_url")
+
+            # Track whether the *primary* extraction call failed. If it
+            # did, we leave the post unmarked so the next batch can retry.
+            extraction_failed = False
 
             if image_url:
                 # Image post: extract from both image and caption via GPT.
@@ -97,13 +102,31 @@ async def run_phone_extraction_batch(limit: int = 50) -> dict:
                         effective_url, caption, image_b64=image_data or None
                     )
                 except Exception as e:
+                    extraction_failed = True
                     log.warning(
-                        "[Agent3] Vision extraction failed for post %d: %s",
+                        "[Agent3] Vision extraction failed for post %d: %s "
+                        "— will retry on next batch (post NOT marked extracted)",
                         post["id"], e,
                     )
             else:
                 # No image (e.g. bio): extract named contacts from text only
-                contacts = await extract_named_contacts_from_text(caption)
+                try:
+                    contacts = await extract_named_contacts_from_text(caption)
+                except Exception as e:
+                    extraction_failed = True
+                    log.warning(
+                        "[Agent3] Text extraction failed for post %d: %s "
+                        "— will retry on next batch (post NOT marked extracted)",
+                        post["id"], e,
+                    )
+
+            # If the primary extraction failed, skip this post entirely:
+            # don't save contacts, don't mark extracted, don't sleep.
+            # Move on to the next post — the failed one stays in the
+            # unextracted queue and the next batch will pick it up again.
+            if extraction_failed:
+                skipped_for_retry += 1
+                continue
 
             uni_id = post["university_id"]
             saved_names = await _get_saved_names(uni_id)
@@ -168,10 +191,15 @@ async def run_phone_extraction_batch(limit: int = 50) -> dict:
             log.error("[Agent3] Error processing post %d: %s", post["id"], e)
 
     log.info(
-        "[Agent3] Batch complete: processed %d posts, %d new named contacts",
-        processed, total_phones,
+        "[Agent3] Batch complete: processed %d posts, %d new named contacts, %d left for retry",
+        processed, total_phones, skipped_for_retry,
     )
-    return {"processed": processed, "phones_found": total_phones, "details": details}
+    return {
+        "processed": processed,
+        "phones_found": total_phones,
+        "skipped_for_retry": skipped_for_retry,
+        "details": details,
+    }
 
 
 async def run_phone_extraction_for_universities(university_ids: list[int]) -> dict:
@@ -199,19 +227,38 @@ async def run_phone_extraction_for_universities(university_ids: list[int]) -> di
             }
         return saved_names_by_uni[uni_id]
 
+    skipped_for_retry = 0
     for post in posts:
         try:
             contacts: list[PhoneContact] = []
             caption = post.get("caption") or ""
             image_url = post.get("image_url")
 
+            extraction_failed = False
             if image_url:
                 try:
                     contacts = await extract_phone_from_image(image_url, caption)
                 except Exception as e:
-                    log.warning("[Agent3] Vision extraction failed for post %d: %s", post["id"], e)
+                    extraction_failed = True
+                    log.warning(
+                        "[Agent3] Vision extraction failed for post %d: %s "
+                        "— will retry on next batch (post NOT marked extracted)",
+                        post["id"], e,
+                    )
             else:
-                contacts = await extract_named_contacts_from_text(caption)
+                try:
+                    contacts = await extract_named_contacts_from_text(caption)
+                except Exception as e:
+                    extraction_failed = True
+                    log.warning(
+                        "[Agent3] Text extraction failed for post %d: %s "
+                        "— will retry on next batch (post NOT marked extracted)",
+                        post["id"], e,
+                    )
+
+            if extraction_failed:
+                skipped_for_retry += 1
+                continue
 
             uni_id = post["university_id"]
             saved_names = await _get_saved_names(uni_id)
@@ -255,5 +302,13 @@ async def run_phone_extraction_for_universities(university_ids: list[int]) -> di
         except Exception as e:
             log.error("[Agent3] Error processing post %d: %s", post["id"], e)
 
-    log.info("[Agent3] Targeted batch complete: processed %d posts, %d new contacts", processed, total_phones)
-    return {"processed": processed, "phones_found": total_phones, "details": details}
+    log.info(
+        "[Agent3] Targeted batch complete: processed %d posts, %d new contacts, %d left for retry",
+        processed, total_phones, skipped_for_retry,
+    )
+    return {
+        "processed": processed,
+        "phones_found": total_phones,
+        "skipped_for_retry": skipped_for_retry,
+        "details": details,
+    }

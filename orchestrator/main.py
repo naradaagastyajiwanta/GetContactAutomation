@@ -2858,13 +2858,41 @@ _GEMINI_EXCLUDE = {"image", "audio", "tts", "native-audio", "embedding", "roboti
 
 
 async def _list_openai_models() -> list[str]:
+    """Return chat-capable OpenAI model IDs.
+
+    When ``CHATGPT_OAUTH_ENABLED`` is true, query the chatgpt-proxy's
+    ``/v1/models`` endpoint (account-aware — returns the models the
+    logged-in ChatGPT subscription has access to, e.g. gpt-5.4).
+    Otherwise query the real OpenAI API with ``OPENAI_API_KEY``.
+    """
     from openai import AsyncOpenAI
+
+    if cfg.CHATGPT_OAUTH_ENABLED:
+        base_url = str(cfg.get("CHATGPT_PROXY_BASE_URL", "") or "")
+        if base_url:
+            try:
+                proxy = AsyncOpenAI(api_key="dummy", base_url=base_url)
+                response = await proxy.models.list()
+                models: list[str] = []
+                for m in response.data:
+                    mid = m.id
+                    if mid.startswith("ft:"):
+                        continue
+                    if any(excl in mid for excl in _CHAT_MODEL_EXCLUDE):
+                        continue
+                    models.append(mid)
+                models.sort()
+                return models
+            except Exception as e:
+                log.warning("chatgpt-proxy /v1/models query failed: %s", e)
+                # fall through to real API
+
     api_key = cfg.OPENAI_API_KEY
     if not api_key:
         return []
     client = AsyncOpenAI(api_key=api_key)
     response = await client.models.list()
-    models: list[str] = []
+    models = []
     for m in response.data:
         mid = m.id
         if not (mid.startswith("gpt-") or mid.startswith("o1") or mid.startswith("o3") or mid.startswith("o4")):
@@ -2926,8 +2954,9 @@ async def list_models(provider: str = "openai"):
     if provider == "gemini":
         models = gemini_models
     elif provider == "all":
-        # Gemini first (preferred for orchestrator), then OpenAI
-        models = gemini_models + openai_models
+        # OpenAI first (primary backend — via ChatGPT OAuth proxy when enabled,
+        # real API otherwise), then Gemini as a supplementary option.
+        models = openai_models + gemini_models
     else:
         models = openai_models
 
@@ -5022,6 +5051,232 @@ async def health():
             "scrapingbot": scrapingbot_client.get_status(),
         },
     }
+
+
+@app.get("/health/llm-metrics")
+async def llm_metrics():
+    """Return LLM gateway routing metrics (proxy vs fallback vs direct).
+
+    Useful for monitoring how much of the LLM traffic is being served by
+    the ChatGPT OAuth proxy vs falling back to the real OpenAI API.
+    """
+    from orchestrator.llm import gateway
+    return gateway.get_metrics()
+
+
+@app.get("/health/codex-oauth")
+async def codex_oauth_status():
+    """Return the current Codex OAuth login state.
+
+    Replaces the legacy ``/health/chatgpt-proxy`` (which pinged a
+    Docker sidecar). The in-process Python flow has no sidecar — we
+    just report whether tokens exist and when they expire.
+    """
+    from orchestrator.llm import codex_token_store
+
+    if not cfg.CHATGPT_OAUTH_ENABLED:
+        return {
+            "status": "disabled",
+            "message": "CHATGPT_OAUTH_ENABLED is false",
+        }
+
+    snapshot = codex_token_store.get_status()
+    if not snapshot.get("logged_in"):
+        return {
+            "status": "logged_out",
+            "message": (
+                "No Codex OAuth credentials. Use /auth/codex/start to login, "
+                "or /auth/codex/import-external to mirror ~/.codex/auth.json."
+            ),
+        }
+    return {"status": "logged_in", **snapshot}
+
+
+@app.post("/auth/codex/start")
+async def codex_oauth_start():
+    """Begin a Codex OAuth login flow.
+
+    Spawns a local callback server on http://localhost:1455, returns
+    the authorize URL for the FE to open in a new tab. The FE should
+    poll ``GET /auth/codex/poll`` (or wait via the dedicated endpoint
+    below) to know when login completes.
+    """
+    from orchestrator.llm import codex_login_server
+
+    try:
+        flow = await codex_login_server.begin_login()
+    except RuntimeError as e:
+        raise HTTPException(status_code=409, detail=str(e))
+    return {
+        "authorize_url": flow.url,
+        "state": flow.state,
+        "callback_host": codex_login_server.CALLBACK_HOST,
+        "callback_port": codex_login_server.CALLBACK_PORT,
+    }
+
+
+@app.post("/auth/codex/wait")
+async def codex_oauth_wait(timeout_seconds: int = 300):
+    """Block until the in-flight login resolves, then exchange the code.
+
+    Returns the final logged-in status. The FE should call this after
+    ``/auth/codex/start`` and treat the request as long-polling.
+    """
+    from orchestrator.llm import (
+        codex_login_server,
+        codex_oauth as oauth_mod,
+        codex_token_store,
+    )
+
+    pkce = codex_login_server.get_active_pkce()
+    if pkce is None:
+        raise HTTPException(
+            status_code=400,
+            detail="No login in progress. Call /auth/codex/start first.",
+        )
+
+    result = await codex_login_server.wait_for_login_result(timeout=float(timeout_seconds))
+    if result is None:
+        await codex_login_server.cancel_login()
+        raise HTTPException(
+            status_code=408,
+            detail="Login timed out or was cancelled.",
+        )
+
+    if "error" in result:
+        await codex_login_server.cancel_login()
+        raise HTTPException(
+            status_code=400,
+            detail=f"OAuth provider rejected the request: {result['error']}",
+        )
+
+    code = result.get("code")
+    if not code:
+        await codex_login_server.cancel_login()
+        raise HTTPException(status_code=400, detail="Callback returned no authorization code")
+
+    try:
+        tokens = await oauth_mod.exchange_authorization_code(
+            code=code,
+            verifier=pkce.verifier,
+        )
+    except oauth_mod.CodexOAuthError as e:
+        await codex_login_server.cancel_login()
+        raise HTTPException(status_code=502, detail=f"Token exchange failed: {e}")
+
+    await codex_token_store.save_tokens(tokens)
+    await codex_login_server.finalize_login()
+    return {
+        "status": "logged_in",
+        "account_id": tokens.account_id,
+        "expires_at": tokens.expires_at,
+    }
+
+
+@app.post("/auth/codex/manual")
+async def codex_oauth_manual(payload: dict):
+    """Headless fallback: caller pastes the redirect URL or auth code.
+
+    Body: ``{"input": "http://localhost:1455/auth/callback?code=...&state=..."}``
+    or just ``{"input": "AUTHORIZATION_CODE"}``. The handler must have
+    been preceded by ``/auth/codex/start`` so the PKCE verifier is in
+    memory.
+    """
+    from orchestrator.llm import (
+        codex_login_server,
+        codex_oauth as oauth_mod,
+        codex_token_store,
+    )
+
+    raw = (payload or {}).get("input") or ""
+    parsed = oauth_mod.parse_authorization_input(raw)
+    code = parsed.get("code")
+    if not code:
+        raise HTTPException(status_code=400, detail="Could not parse authorization code")
+
+    pkce = codex_login_server.get_active_pkce()
+    if pkce is None:
+        raise HTTPException(
+            status_code=400,
+            detail="No login in progress. Call /auth/codex/start first.",
+        )
+
+    try:
+        tokens = await oauth_mod.exchange_authorization_code(
+            code=code,
+            verifier=pkce.verifier,
+        )
+    except oauth_mod.CodexOAuthError as e:
+        await codex_login_server.cancel_login()
+        raise HTTPException(status_code=502, detail=f"Token exchange failed: {e}")
+
+    await codex_token_store.save_tokens(tokens)
+    await codex_login_server.finalize_login()
+    return {
+        "status": "logged_in",
+        "account_id": tokens.account_id,
+        "expires_at": tokens.expires_at,
+    }
+
+
+@app.post("/auth/codex/cancel")
+async def codex_oauth_cancel():
+    """Cancel an in-flight login flow (tear down the callback server)."""
+    from orchestrator.llm import codex_login_server
+
+    await codex_login_server.cancel_login()
+    return {"ok": True}
+
+
+@app.post("/auth/codex/logout")
+async def codex_oauth_logout():
+    """Drop stored Codex OAuth credentials."""
+    from orchestrator.llm import codex_token_store, codex_client
+
+    await codex_token_store.clear_tokens()
+    await codex_client.reset_codex_client()
+    return {"ok": True}
+
+
+@app.post("/auth/codex/refresh")
+async def codex_oauth_refresh():
+    """Force a token refresh now (instead of waiting for next API call)."""
+    from orchestrator.llm import codex_token_store
+
+    codex_token_store.reset_cache()
+    tokens = await codex_token_store.load_tokens()
+    if tokens is None:
+        raise HTTPException(
+            status_code=400,
+            detail="No refreshable credentials. Login required.",
+        )
+    return {
+        "status": "refreshed",
+        "account_id": tokens.account_id,
+        "expires_at": tokens.expires_at,
+    }
+
+
+@app.post("/auth/codex/import-external")
+async def codex_oauth_import_external():
+    """Mirror ``~/.codex/auth.json`` from the official Codex CLI.
+
+    Useful for users who already ran ``codex login`` on this host —
+    no need to repeat the OAuth flow inside our orchestrator.
+    """
+    from orchestrator.llm import codex_token_store
+
+    imported = await codex_token_store.import_external_codex_auth()
+    if not imported:
+        raise HTTPException(
+            status_code=404,
+            detail=(
+                "Could not import ~/.codex/auth.json — file not found "
+                "or missing access/refresh tokens. Run `codex login` first "
+                "or use /auth/codex/start for an in-process flow."
+            ),
+        )
+    return {"ok": True}
 
 
 @app.get("/instagram/session-status")

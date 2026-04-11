@@ -9,9 +9,10 @@ from __future__ import annotations
 import asyncio
 import json
 
-from openai import AsyncOpenAI, APIStatusError, APITimeoutError, APIConnectionError
+from openai import APIStatusError, APITimeoutError, APIConnectionError
 
 from orchestrator.config import log, cfg, responses_kwargs, chat_kwargs
+from orchestrator.llm import gateway
 from orchestrator.agent.schemas import AgentAction, AgentContext, AgentResult, ReactLoopResult
 from orchestrator.agent.prompts import build_conversation_input_items
 from orchestrator.audiensi.prompts import (
@@ -25,17 +26,16 @@ from orchestrator.audiensi.tools import (
 )
 from orchestrator import db
 
-_openai_client: AsyncOpenAI | None = None
-_openai_client_key: str = ""
 
+def _persist_response_id() -> bool:
+    """Only persist last_response_id when the real API path is in use.
 
-def _get_openai() -> AsyncOpenAI:
-    global _openai_client, _openai_client_key
-    current_key = cfg.OPENAI_API_KEY
-    if _openai_client is None or current_key != _openai_client_key:
-        _openai_client = AsyncOpenAI(api_key=current_key)
-        _openai_client_key = current_key
-    return _openai_client
+    The chatgpt-proxy sidecar is stateless — any response.id it returns
+    is invalid on the real API (and vice versa), so persisting it causes
+    errors on the next call if the routing flips. When OAuth is enabled
+    we simply don't chain sessions.
+    """
+    return not bool(cfg.CHATGPT_OAUTH_ENABLED)
 
 
 def _get_cached_tokens(response) -> int:
@@ -247,8 +247,6 @@ class AudiensiReactAgent:
         contact_name: str | None = None,
     ) -> str:
         """Generate the first audiensi outreach message."""
-        client = _get_openai()
-
         prompt_parts = [
             AUDIENSI_SYSTEM_PROMPT,
             f"\nKONTEKS:\nUniversitas: {university_name}",
@@ -268,7 +266,7 @@ class AudiensiReactAgent:
             prompt_parts.append("\nBASIS PENGETAHUAN:\n" + "\n".join(kb_lines))
 
         system_content = "\n".join(prompt_parts)
-        response = await client.responses.create(
+        response = await gateway.responses_create(
             model=cfg.AGENT_MODEL,
             instructions=system_content,
             input=(
@@ -307,8 +305,6 @@ class AudiensiReactAgent:
         self, audiensi: dict, attempt: int
     ) -> str:
         """Generate a follow-up message for audiensi."""
-        client = _get_openai()
-
         history = json.loads(audiensi.get("message_history") or "[]")
         uni = (
             await db.get_university_by_id(audiensi["university_id"])
@@ -330,7 +326,10 @@ class AudiensiReactAgent:
             prompt_parts.append("\nBASIS PENGETAHUAN:\n" + "\n".join(kb_lines))
 
         system_content = "\n".join(prompt_parts)
-        previous_response_id = audiensi.get("last_response_id")
+        # Only use session chaining on the real API path — the proxy is stateless.
+        previous_response_id = (
+            audiensi.get("last_response_id") if _persist_response_id() else None
+        )
 
         followup_instruction = (
             f"Buat pesan follow-up ke-{attempt} untuk audiensi. "
@@ -339,9 +338,9 @@ class AudiensiReactAgent:
         )
 
         if previous_response_id:
-            # Chain with existing session
+            # Chain with existing session (real API only)
             try:
-                response = await client.responses.create(
+                response = await gateway.responses_create(
                     model=cfg.AGENT_MODEL,
                     instructions=system_content,
                     input=followup_instruction,
@@ -367,7 +366,7 @@ class AudiensiReactAgent:
                 input_items.append({"role": role, "content": msg.get("content", "")})
             input_items.append({"role": "user", "content": followup_instruction})
 
-            response = await client.responses.create(
+            response = await gateway.responses_create(
                 model=cfg.AGENT_MODEL,
                 instructions=system_content,
                 input=input_items,
@@ -377,9 +376,10 @@ class AudiensiReactAgent:
 
         response_text = response.output_text
 
-        # Save response_id for future chaining
+        # Save response_id for future chaining — real API path only.
+        # Proxy-generated response IDs are invalid for the real API.
         aud_id = audiensi.get("id")
-        if aud_id and response.id:
+        if aud_id and response.id and _persist_response_id():
             await db.update_last_response_id("audiensi_conversations", aud_id, response.id)
 
         # Log API call
@@ -415,7 +415,9 @@ class AudiensiReactAgent:
         previous_response_id: str | None = None,
     ) -> ReactLoopResult:
         """Core ReAct loop using the Responses API — mirrors ReactAgent pattern."""
-        client = _get_openai()
+        # Ignore session chaining when proxy is in use — it's stateless.
+        if not _persist_response_id():
+            previous_response_id = None
         tool_calls_made: list[str] = []
         terminal_reached = False
         iterations = 0
@@ -444,7 +446,7 @@ class AudiensiReactAgent:
             kwargs["previous_response_id"] = previous_response_id
 
         response = await _api_call_with_retry(
-            lambda: client.responses.create(**kwargs),
+            lambda: gateway.responses_create(**kwargs),
             label="AudiensiReactAgent initial",
         )
         _track_usage(response)
@@ -501,7 +503,7 @@ class AudiensiReactAgent:
 
             _nk = next_kwargs  # capture for lambda
             response = await _api_call_with_retry(
-                lambda: client.responses.create(**_nk),
+                lambda: gateway.responses_create(**_nk),
                 label="AudiensiReactAgent loop",
             )
             _track_usage(response)
@@ -543,7 +545,7 @@ class AudiensiReactAgent:
                 })
             try:
                 chat_resp = await _api_call_with_retry(
-                    lambda: client.chat.completions.create(
+                    lambda: gateway.chat_completions_create(
                         model=cfg.AGENT_MODEL,
                         messages=messages,
                         **chat_kwargs(cfg.AGENT_MODEL, max_tokens=cfg.AGENT_MAX_TOKENS),

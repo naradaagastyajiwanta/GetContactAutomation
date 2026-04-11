@@ -6,9 +6,8 @@ import json
 from datetime import datetime, timezone, timedelta
 from enum import Enum
 
-from openai import AsyncOpenAI
-
 from orchestrator.config import log, cfg, chat_kwargs
+from orchestrator.llm import gateway
 from orchestrator.websocket import manager as ws_manager
 from orchestrator.db import (
     validate_phone,
@@ -19,18 +18,6 @@ from orchestrator.db import (
     update_university_status,
     update_secretariat_phone,
 )
-
-_openai_client: AsyncOpenAI | None = None
-_openai_client_key: str = ""
-
-
-def _get_openai() -> AsyncOpenAI:
-    global _openai_client, _openai_client_key
-    current_key = cfg.OPENAI_API_KEY
-    if _openai_client is None or current_key != _openai_client_key:
-        _openai_client = AsyncOpenAI(api_key=current_key)
-        _openai_client_key = current_key
-    return _openai_client
 
 
 WIB = timezone(timedelta(hours=7))
@@ -142,8 +129,6 @@ class ConversationManager:
         push_name: str = "", uni_name: str = "",
     ) -> dict:
         """Analyze incoming reply and decide next action."""
-        client = _get_openai()
-
         context_parts = []
         if push_name:
             context_parts.append(f"Kamu sedang berbicara dengan {push_name}")
@@ -178,7 +163,7 @@ class ConversationManager:
             "content": f"Balasan terbaru dari narahubung:\n\n{latest_reply}\n\nAnalisis balasan ini.",
         })
 
-        resp = await client.chat.completions.create(
+        resp = await gateway.chat_completions_create(
             model=cfg.AGENT_MODEL,
             messages=messages,
             **chat_kwargs(cfg.AGENT_MODEL, temperature=0.1, max_tokens=300),
@@ -229,8 +214,6 @@ class ConversationManager:
         if attempt_number <= 1:
             return FOLLOWUP_MESSAGE_TEMPLATE
 
-        client = _get_openai()
-
         messages = [{"role": "system", "content": SYSTEM_PROMPT_FOLLOWUP}]
 
         for msg in conversation_history[-4:]:
@@ -244,7 +227,7 @@ class ConversationManager:
             "content": f"Buat pesan follow-up ke-{attempt_number}. Lebih singkat dan sopan.",
         })
 
-        resp = await client.chat.completions.create(
+        resp = await gateway.chat_completions_create(
             model=cfg.AGENT_MODEL,
             messages=messages,
             **chat_kwargs(cfg.AGENT_MODEL, temperature=0.7, max_tokens=200),

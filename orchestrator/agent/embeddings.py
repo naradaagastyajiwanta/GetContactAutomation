@@ -16,24 +16,14 @@ import struct
 from functools import partial
 from typing import Sequence
 
-from openai import AsyncOpenAI
-
 from orchestrator.config import cfg, log
+from orchestrator.llm import gateway
 
 _EMBEDDING_MODEL = "text-embedding-3-small"
 _EMBEDDING_DIM = 1536  # dimensions for text-embedding-3-small
 
-_openai_client: AsyncOpenAI | None = None
-_openai_client_key: str = ""
-
-
-def _get_openai() -> AsyncOpenAI:
-    global _openai_client, _openai_client_key
-    current_key = cfg.OPENAI_API_KEY
-    if _openai_client is None or current_key != _openai_client_key:
-        _openai_client = AsyncOpenAI(api_key=current_key)
-        _openai_client_key = current_key
-    return _openai_client
+# NOTE: embeddings always go to the real OpenAI API via gateway.embeddings_create
+# — the chatgpt-proxy sidecar does not expose /v1/embeddings.
 
 
 # ---------------------------------------------------------------------------
@@ -54,9 +44,8 @@ async def get_embedding(text: str) -> list[float]:
     if len(text) > 30_000:
         text = text[:30_000]
 
-    client = _get_openai()
     try:
-        response = await client.embeddings.create(
+        response = await gateway.embeddings_create(
             model=_EMBEDDING_MODEL,
             input=text,
         )

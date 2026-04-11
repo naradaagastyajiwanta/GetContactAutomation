@@ -9,9 +9,8 @@ from __future__ import annotations
 import json
 from datetime import datetime, timezone
 
-from openai import AsyncOpenAI
-
 from orchestrator.config import MAX_LESSONS_IN_PROMPT, log, cfg, chat_kwargs
+from orchestrator.llm import gateway
 from orchestrator.db import (
     get_conversation_by_id,
     get_university_by_id,
@@ -31,18 +30,6 @@ from orchestrator.agent.prompts import ANALYSIS_SYSTEM_PROMPT, REFLECTION_SYSTEM
 
 _TERMINAL_STATES = {"GOT_NUMBER", "REFUSED", "ABANDONED"}
 _AUDIENSI_TERMINAL_STATES = {"ZOOM_SENT", "REFUSED", "ABANDONED"}
-
-_openai_client: AsyncOpenAI | None = None
-_openai_client_key: str = ""
-
-
-def _get_openai() -> AsyncOpenAI:
-    global _openai_client, _openai_client_key
-    current_key = cfg.OPENAI_API_KEY
-    if _openai_client is None or current_key != _openai_client_key:
-        _openai_client = AsyncOpenAI(api_key=current_key)
-        _openai_client_key = current_key
-    return _openai_client
 
 
 def _parse_json_response(text: str) -> dict | None:
@@ -124,9 +111,8 @@ class LearningSystem:
             f"Percakapan:\n{conv_text}"
         )
 
-        client = _get_openai()
         try:
-            resp = await client.chat.completions.create(
+            resp = await gateway.chat_completions_create(
                 model=cfg.AGENT_MODEL,
                 messages=[
                     {"role": "system", "content": ANALYSIS_SYSTEM_PROMPT},
@@ -248,9 +234,8 @@ class LearningSystem:
             f"Percakapan:\n{conv_text}"
         )
 
-        client = _get_openai()
         try:
-            resp = await client.chat.completions.create(
+            resp = await gateway.chat_completions_create(
                 model=cfg.AGENT_MODEL,
                 messages=[
                     {"role": "system", "content": ANALYSIS_SYSTEM_PROMPT},
@@ -421,9 +406,8 @@ class LearningSystem:
             f"PELAJARAN YANG SUDAH ADA:\n{lessons_text}"
         )
 
-        client = _get_openai()
         try:
-            resp = await client.chat.completions.create(
+            resp = await gateway.chat_completions_create(
                 model=cfg.AGENT_MODEL,
                 messages=[
                     {"role": "system", "content": REFLECTION_SYSTEM_PROMPT},

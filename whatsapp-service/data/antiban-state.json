@@ -19,14 +19,9 @@
       ],
       "sendEvents": [],
       "failedEvents": [],
-      "disconnectEvents": [
-        {
-          "at": 1775636685944,
-          "reason": "515"
-        }
-      ],
+      "disconnectEvents": [],
       "warmUp": {
-        "startedAt": 1775639497145,
+        "startedAt": 1775870855254,
         "dailyCounts": {}
       },
       "timelock": {
@@ -117,16 +112,7 @@
       ],
       "sendEvents": [],
       "failedEvents": [],
-      "disconnectEvents": [
-        {
-          "at": 1775627938434,
-          "reason": "428"
-        },
-        {
-          "at": 1775639371852,
-          "reason": "428"
-        }
-      ],
+      "disconnectEvents": [],
       "warmUp": {
         "startedAt": 1775552477265,
         "dailyCounts": {}
