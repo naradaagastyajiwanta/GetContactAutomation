@@ -10,14 +10,16 @@ GetContact AI Agent is a multi-service application that automates WhatsApp and e
 
 Three independent services communicate via HTTP/webhooks:
 
-1. **Orchestrator** (`orchestrator/`, Python FastAPI, port 8000) — Core business logic: pipeline agents, conversation state machine, scheduling, database, marketing, OSINT, CRM, audiensi, email blast
-2. **WhatsApp Service** (`whatsapp-service/`, Node.js/TypeScript, port 3100) — Baileys-based WhatsApp bridge managing up to 5 concurrent devices with anti-ban behavior
-3. **Frontend** (`frontend/`, React + Vite, port 5173) — Dashboard covering all features: pipeline, blast, marketing, CRM, audiensi, email, DMS, settings
+1. **Orchestrator** (`orchestrator/`, Python FastAPI, port 8000) — Core business logic: pipeline agents, conversation state machine, scheduling, database, marketing, OSINT, CRM, audiensi, email blast. Also hosts the **in-process Codex OAuth client** that talks directly to `chatgpt.com/backend-api/codex` when ChatGPT subscription mode is enabled (no sidecar).
+2. **WhatsApp Service** (`whatsapp-service/`, Node.js/TypeScript, internal port 3100) — Baileys-based WhatsApp bridge managing up to 5 concurrent devices with anti-ban behavior
+3. **Frontend** (`frontend/`, React + Vite, dev port 5173) — Dashboard covering all features: pipeline, blast, marketing, CRM, audiensi, email, DMS, settings (including ChatGPT OAuth login UI)
 
 **Primary data flow:**
-PDDIKTI university scraping → Agent 1 (find IG handles) → Agent 2 (scrape IG posts) → Agent 3 (extract phones via GPT-4o vision OCR) → WhatsApp outreach via conversation state machine → Follow-ups
+PDDIKTI university scraping → Agent 1 (find IG handles) → Agent 2 (scrape IG posts) → Agent 3 (extract phones via GPT-4o vision OCR, images cached to S3/GCS via `bucket.py`) → WhatsApp outreach via conversation state machine → Follow-ups
 
-**Proxy/networking:** Two Cloudflare WARP containers provide IP rotation and DPI bypass for scraping. Config is in `docker-compose.yml`.
+**Proxy/networking:** Two Cloudflare WARP containers (SOCKS5 ports 1080/1081) provide IP rotation and DPI bypass for scraping. A **Pinchtab** headless browser service (port 9867) handles browser automation tasks. Config is in `docker-compose.yml`.
+
+**Docker port mapping (differs from dev):** In Docker, frontend runs on host port 3010, WhatsApp service on host port 3110 (internal 3100). The Codex OAuth callback server temporarily binds to `localhost:1455` only during interactive login flows.
 
 **Real-time updates:** `websocket.py` broadcasts events to the frontend via WebSocket.
 
@@ -52,18 +54,25 @@ docker-compose -f docker-compose.prod.yml up -d  # Production
 
 ### Utility Scripts
 ```bash
-python scripts/setup_db.py             # Initialize SQLite database
-python scripts/collect_universities.py  # Scrape universities from PDDIKTI
-python scripts/export_results.py        # Export collected data
-python scripts/migrate_marketing.py     # Run marketing module DB migration
+python scripts/setup_db.py                    # Initialize SQLite database
+python scripts/setup_gcs_bucket.py            # Initialize GCS/S3 bucket for IG image cache
+python scripts/collect_universities.py        # Scrape universities from PDDIKTI
+python scripts/export_results.py              # Export collected data
+python scripts/migrate_marketing.py           # Run marketing module DB migration
+python scripts/migrate_ig_contacts_to_dms.py  # Sync IG contacts SQLite → DMS MySQL
+python scripts/migrate_images_to_bucket.py    # Move stored images to S3/GCS
 ```
 
 ### Manual Test Scripts
-Tests are manual scripts (no pytest/jest framework). Run them directly:
+Python tests are manual scripts (no pytest framework). WhatsApp service has a Jest suite.
 ```bash
+# Python
 python scripts/qa_full_pipeline.py      # End-to-end pipeline test
 python scripts/test_auth_permissions.py # Auth & RBAC tests
 python scripts/stress_test_blast.py     # Blast load test
+
+# WhatsApp Service (Jest)
+cd whatsapp-service && npm test         # Run all tests (errorHandling, memoryCleanup, messageQueue, rateLimiter, typeSafety)
 ```
 
 ## Key Orchestrator Modules
@@ -81,7 +90,24 @@ python scripts/stress_test_blast.py     # Blast load test
 - `dms_mysql.py` — Two-way sync with external DMS MySQL database (audiensi schedules, Zoom links, contact sync)
 - `websocket.py` — WebSocket manager for real-time frontend updates
 - `proxy_pool.py` — Proxy management for WARP containers
+- `bucket.py` — S3/GCS-compatible object storage for IG post image caching (supports GCS, Cloudflare R2, AWS S3)
+- `audiensi_research.py` — Audiensi research table management (separate from core audiensi pipeline)
 - `auth/service.py` — Role-based access control with DMS integration and SQLite fallback
+
+### LLM Access Layer (`orchestrator/llm/`)
+Central dispatch for all OpenAI SDK calls. When `CHATGPT_OAUTH_ENABLED=true`, chat/responses/vision calls route through an **in-process Codex OAuth client** (Python port of openclaw/pi-ai) that talks directly to `chatgpt.com/backend-api/codex`. Falls back automatically to `api.openai.com` via `OPENAI_API_KEY` on rate-limit/auth/connection errors.
+
+- `client_factory.py` — Lazy singletons: `get_real_client()` (AsyncOpenAI for `api.openai.com`) and `get_codex()` (Python `CodexClient`).
+- `gateway.py` — High-level `chat_completions_create` / `responses_create` / `embeddings_create` wrappers. Routing, 15-min cooldown after 429, metrics at `/health/llm-metrics`. Embeddings always go direct (Codex backend doesn't expose `/v1/embeddings`).
+- `codex_oauth.py` — PKCE flow, token exchange/refresh, JWT decode. Same OAuth client_id as the official Codex CLI; openclaw-style scopes (`model.request`, `api.responses.write`).
+- `codex_token_store.py` — File-locked persistence at `data/codex_auth/auth.json`, transparent token refresh, optional import from `~/.codex/auth.json`.
+- `codex_login_server.py` — Temporary aiohttp server bound to `localhost:1455` only during interactive login.
+- `codex_client.py` — `CodexClient` HTTP client with header injection (Bearer, chatgpt-account-id, OpenAI-Beta, originator) and SSE response collection.
+- `codex_chat_translator.py` — Bidirectional Chat Completions ↔ Responses translation (lets existing `gateway.chat_completions_create()` callers work transparently against the Responses-only Codex backend).
+- `codex_transformer.py` / `codex_sse.py` — Body normalization (force `store=false`, strip `previous_response_id`) and SSE event parsing.
+- Call-sites that previously held their own `_get_openai()` singleton now import from `orchestrator.llm.gateway`. Files that track `last_response_id` (react_agent.py, audiensi/react_agent.py, mkt_orchestrator.py) guard persistence with a `_persist_response_id()` check — Codex-generated IDs are invalid for the real API and must not be cached when OAuth is on.
+
+**Login flow:** Settings → ChatGPT tab → click "Login with ChatGPT" (opens browser to OpenAI) OR "Manual paste" for headless OR "Import ~/.codex/auth.json" for hosts with the official Codex CLI. See `docs/chatgpt-oauth-setup.md`.
 
 ### Instagram Scraping
 - `instagram.py` — IG scraping and phone number extraction
@@ -92,6 +118,8 @@ python scripts/stress_test_blast.py     # Blast load test
 - `agents/ig_handle_finder.py` — Agent 1: website → IG Web → Serper Google search
 - `agents/ig_post_scraper.py` — Agent 2: scrape recent IG posts
 - `agents/ig_phone_extractor.py` — Agent 3: GPT-4o vision OCR on post images
+- `agents/bem_finder.py` — Discovers BEM (student executive board) contacts for universities
+- `agents/rector_finder.py` — Researches and enriches rector data for universities
 
 ### Marketing (`orchestrator/marketing/`)
 Multi-agent system for discovering and reaching marketing contacts.
@@ -118,6 +146,7 @@ Profile compilation and knowledge graph for contacts.
 - `profile_compiler.py` — Aggregates OSINT data into structured profiles
 - `social_post_analyzer.py` — Analyzes social media posts for insights
 - `state.py` — CRM operation state management
+- `campus_context.py`, `family_info.py` — Enrichment layers for campus environment and personal background data
 
 ### Audiensi (`orchestrator/audiensi/`)
 Automates scheduling formal university meetings (audiensi).
@@ -178,16 +207,25 @@ Guided spotlight tour built with **Driver.js**. Two layers:
 - `antiBan.ts` — Anti-ban logic: human-like typing indicators, read receipts, random delays
 - `messageQueue.ts` — Scheduled message delivery queue
 - `rateLimiter.ts` — Per-device rate limiting
+- `healthAndMetrics.ts`, `metrics.ts` — Health check endpoints and Prometheus-style metrics
 
 Auth stores are persisted in `whatsapp-service/auth_store_u<id>/` — do not delete these; they contain active session credentials.
 
+Tests live in `whatsapp-service/tests/` and cover: error handling, memory cleanup, message queue, rate limiter, and type safety.
+
 ## Environment
 
-Copy `.env.example` to `.env`. Required: `OPENAI_API_KEY`, `SERPER_API_KEY`. Optional: `IG_USERNAME`/`IG_PASSWORD`, `APIFY_API_KEY`, `DMS_MYSQL_*` (for DMS sync), `SMTP_*` (for email blast), `GEMINI_API_KEY`. All timezone-sensitive logic uses WIB (UTC+7).
+Copy `.env.example` to `.env` (or `.env.production.example` for Docker/production). Required: `OPENAI_API_KEY` (still required for embeddings and as fallback when ChatGPT OAuth is enabled), `SERPER_API_KEY`. Optional: `IG_SESSION_ID`, `APIFY_API_KEY`, `SCRAPINGBOT_*`, `DMS_MYSQL_*` (for DMS sync), `SMTP_*`/`IMAP_*` (for email blast), `GEMINI_API_KEY`. Object storage: set `STORAGE_BACKEND` to `gcs`, `s3`, or `r2` plus the corresponding credentials. All timezone-sensitive logic uses WIB (UTC+7).
+
+**ChatGPT OAuth mode:** when `CHATGPT_OAUTH_ENABLED=true`, chat/responses/vision calls route through an **in-process Python Codex OAuth client** that talks directly to `chatgpt.com/backend-api/codex` using a ChatGPT Plus/Pro subscription. No sidecar container. Login via the FE Settings → ChatGPT tab (browser callback OR manual paste OR import existing `~/.codex/auth.json`). Full guide in `docs/chatgpt-oauth-setup.md`. `OPENAI_API_KEY` is still required for embeddings (Codex backend doesn't expose `/v1/embeddings`) and as the automatic fallback on rate-limit / auth-error.
+
+## CI/CD
+
+GitLab CI/CD pipeline defined in `.gitlab-ci.yml`. Deploys to GCP. Production Docker config is in `docker-compose.prod.yml`.
 
 ## Tech Stack
 
-- **Python:** FastAPI, aiosqlite, openai (GPT-4o vision, GPT-4o-mini chat, GPT-4.5 orchestrator), google-generativeai (Gemini), apscheduler, httpx, playwright, phonenumbers, pddiktipy
+- **Python:** FastAPI, aiosqlite, openai SDK (default model `gpt-5.4`), in-process Codex OAuth client (`orchestrator/llm/codex_*.py` — Python port of openclaw / pi-ai), google-generativeai (Gemini, Google Search grounding for audiensi research and gap-fill), apscheduler, httpx, playwright, phonenumbers, pddiktipy, aiohttp (used only for the temporary OAuth callback server)
 - **WhatsApp Service:** @whiskeysockets/baileys, Express, TypeScript strict mode, pino logger
 - **Frontend:** React 18, React Router 6, TanStack React Query 5, Tailwind CSS 3, Lucide icons, axios
-- **Infrastructure:** Docker Compose, Nginx reverse proxy, Cloudflare WARP (×2) for proxy rotation, PostgreSQL (production), Redis
+- **Infrastructure:** Docker Compose (3 services + 2 WARP proxies + pinchtab), Nginx reverse proxy, Cloudflare WARP (×2) for proxy rotation, ChatGPT Plus subscription access via in-process Python OAuth (no sidecar), PostgreSQL (production), Redis

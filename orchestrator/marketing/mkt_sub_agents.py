@@ -18,6 +18,7 @@ from typing import Any, Callable
 from openai import AsyncOpenAI, APIStatusError, APITimeoutError, APIConnectionError
 
 from orchestrator.config import log, cfg, responses_kwargs
+from orchestrator.llm import gateway
 from .errors import QuotaExhaustedException
 from orchestrator.osint.tools import (
     web_search,
@@ -38,20 +39,11 @@ from orchestrator.mcp_browser_client import get_mcp_browser, MCPBrowserClient, M
 
 
 # ---------------------------------------------------------------------------
-# OpenAI client singleton for sub-agents
+# OpenAI calls for sub-agents go through orchestrator.llm.gateway.
+# The previous `_get_sub_agent_openai()` singleton is replaced by
+# `gateway.responses_create(...)` which routes to the chatgpt-proxy
+# sidecar when `CHATGPT_OAUTH_ENABLED` is true.
 # ---------------------------------------------------------------------------
-
-_sub_agent_client: AsyncOpenAI | None = None
-_sub_agent_client_key: str = ""
-
-
-def _get_sub_agent_openai() -> AsyncOpenAI:
-    global _sub_agent_client, _sub_agent_client_key
-    current_key = cfg.OPENAI_API_KEY
-    if _sub_agent_client is None or current_key != _sub_agent_client_key:
-        _sub_agent_client = AsyncOpenAI(api_key=current_key)
-        _sub_agent_client_key = current_key
-    return _sub_agent_client
 
 
 # ---------------------------------------------------------------------------
@@ -219,8 +211,7 @@ async def _run_sub_agent_llm_loop(
             model_override=model,
         )
 
-    # --- OpenAI Responses API path ---
-    client = _get_sub_agent_openai()
+    # --- OpenAI Responses API path (via gateway) ---
     total_tokens = 0
 
     _init_kwargs = dict(
@@ -232,7 +223,7 @@ async def _run_sub_agent_llm_loop(
         **responses_kwargs(model, temperature=0.2, max_output_tokens=1500),
     )
     response = await _openai_call_with_retry(
-        lambda: client.responses.create(**_init_kwargs),
+        lambda: gateway.responses_create(**_init_kwargs),
         label="SubAgent/OpenAI initial",
     )
     if response.usage:
@@ -279,16 +270,18 @@ async def _run_sub_agent_llm_loop(
         next_kwargs: dict = {
             "model": model,
             "input": outputs,
-            "previous_response_id": response.id,
             "store": True,
             **responses_kwargs(model, temperature=0.2, max_output_tokens=1500),
         }
+        # Session chaining only on real API path (gateway strips it on proxy)
+        if not bool(cfg.CHATGPT_OAUTH_ENABLED):
+            next_kwargs["previous_response_id"] = response.id
         if not terminal_args:
             next_kwargs["tools"] = tool_schemas
 
         _nk = next_kwargs
         response = await _openai_call_with_retry(
-            lambda: client.responses.create(**_nk),
+            lambda: gateway.responses_create(**_nk),
             label="SubAgent/OpenAI loop",
         )
         if response.usage:

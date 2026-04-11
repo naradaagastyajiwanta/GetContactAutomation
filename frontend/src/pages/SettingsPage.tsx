@@ -7,6 +7,7 @@ import {
   Cookie,
   Bot,
   Zap,
+  KeyRound,
 } from "lucide-react";
 import { cn } from "../lib/utils";
 import { useAuth } from "../context/AuthContext";
@@ -21,8 +22,9 @@ import { IGSessionUploader } from "../components/settings/IGSessionUploader";
 import { ScrapingBotAccountsManager } from "../components/settings/ScrapingBotAccountsManager";
 import { AuthAccessManager } from "../components/settings/AuthAccessManager";
 import { AuthAuditLogViewer } from "../components/settings/AuthAuditLogViewer";
+import { ChatGPTOAuthPanel } from "../components/settings/ChatGPTOAuthPanel";
 
-type TabId = "control" | "instagram" | "config" | "access";
+type TabId = "control" | "instagram" | "config" | "chatgpt" | "access";
 type IgTabId = "accounts" | "sessions" | "scrapingbot";
 
 function TabButton({
@@ -118,6 +120,14 @@ export default function SettingsPage() {
             isActive={activeTab === "config"}
             onClick={() => setActiveTab("config")}
             dataTour="settings-config"
+          />
+        )}
+        {canManageSettings && (
+          <TabButton
+            icon={KeyRound}
+            label="ChatGPT"
+            isActive={activeTab === "chatgpt"}
+            onClick={() => setActiveTab("chatgpt")}
           />
         )}
         {isAdmin && (
@@ -233,6 +243,13 @@ export default function SettingsPage() {
               </p>
               <ExportSection />
             </div>
+          </div>
+        )}
+
+        {/* ChatGPT OAuth tab */}
+        {activeTab === "chatgpt" && canManageSettings && (
+          <div className="p-6">
+            <ChatGPTOAuthPanel />
           </div>
         )}
 

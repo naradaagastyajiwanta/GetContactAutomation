@@ -10,6 +10,7 @@ export interface Notification {
     | "quota_exhausted"
     | "marketing_quota_exhausted"
     | "openai_quota_exhausted"
+    | "codex_rate_limited"
     | "conversation_changed"
     | "university_updated";
   title: string;

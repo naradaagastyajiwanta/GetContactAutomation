@@ -22,7 +22,10 @@ DATA_DIR.mkdir(exist_ok=True)
 # Database
 DATABASE_PATH = os.getenv("DATABASE_PATH", str(DATA_DIR / "getcontact.db"))
 
-VISION_MODEL = "gpt-4o-mini"
+# Vision OCR model. Default gpt-5.4 because it's accepted by both the
+# real OpenAI API and the Codex backend (when CHATGPT_OAUTH_ENABLED=true).
+# Override via env var VISION_MODEL if you want a different default.
+VISION_MODEL = os.getenv("VISION_MODEL", "gpt-5.4")
 
 # WhatsApp Service
 WA_SERVICE_URL = os.getenv("WA_SERVICE_URL", "http://localhost:3100")

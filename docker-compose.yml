@@ -104,6 +104,11 @@ services:
     networks:
       - gc-network
 
+  # NOTE: ChatGPT OAuth (Codex subscription access) runs IN-PROCESS in
+  # the orchestrator — see orchestrator/llm/codex_*.py. No sidecar
+  # container needed. The OAuth callback server binds to localhost:1455
+  # only when actively logging in. Tokens persist at data/codex_auth/.
+
   # ---------------------------------------------------------------
   # Orchestrator (Python FastAPI)
   # ---------------------------------------------------------------

@@ -547,7 +547,7 @@ def extract_phones_from_text(text: str) -> list[str]:
 async def gpt_extract_structured(
     text: str,
     instruction: str,
-    model: str = "gpt-4o-mini",
+    model: str | None = None,
 ) -> dict | None:
     """
     Use OpenAI to extract structured data from unstructured text.
@@ -555,10 +555,14 @@ async def gpt_extract_structured(
     instruction should describe the desired JSON output schema.
     """
     try:
-        from openai import AsyncOpenAI
-        client = AsyncOpenAI()
-        response = await client.chat.completions.create(
-            model=model,
+        from orchestrator.llm import gateway
+        from orchestrator.config import cfg, chat_kwargs
+        # Default to AGENT_MODEL (gpt-5.4) so the call works under both
+        # the real OpenAI API and the Codex backend (which rejects
+        # legacy gpt-4o-mini). Caller can still override via the kwarg.
+        resolved_model = model or cfg.AGENT_MODEL
+        response = await gateway.chat_completions_create(
+            model=resolved_model,
             messages=[
                 {
                     "role": "system",
@@ -572,7 +576,7 @@ async def gpt_extract_structured(
                     "content": f"{instruction}\n\n---\nTEXT:\n{text[:12000]}",
                 },
             ],
-            temperature=0.1,
+            **chat_kwargs(resolved_model, temperature=0.1),
             response_format={"type": "json_object"},
         )
         content = response.choices[0].message.content

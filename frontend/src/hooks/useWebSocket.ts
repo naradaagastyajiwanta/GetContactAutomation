@@ -132,6 +132,12 @@ type WSEvent =
       type: "openai_quota_exhausted";
       service: string;
       message: string;
+    }
+  | {
+      type: "codex_rate_limited";
+      cooldown_seconds: number;
+      fallback_active: boolean;
+      message: string;
     };
 
 // Singleton WebSocket across all hook instances
@@ -563,6 +569,17 @@ function handleEventNotifications(
           "API credit OpenAI habis. Hubungi developer untuk isi ulang kredit.",
       });
       break;
+    case "codex_rate_limited": {
+      const minutes = Math.max(1, Math.round(data.cooldown_seconds / 60));
+      add({
+        type: "codex_rate_limited",
+        title: "ChatGPT Subscription Rate Limit",
+        body: data.fallback_active
+          ? `Limit ChatGPT Plus tercapai. Otomatis fallback ke OpenAI API selama ${minutes} menit.`
+          : `Limit ChatGPT Plus tercapai. Cooldown ${minutes} menit. Aktifkan fallback agar pipeline tetap jalan.`,
+      });
+      break;
+    }
     case "blast_completed": {
       const failed = data.failed || [];
       const failedCount = failed.length;
@@ -819,6 +836,25 @@ function handleEventQuery(
         { duration: 10000, icon: "⚠️" },
       );
       break;
+    case "codex_rate_limited": {
+      const minutes = Math.max(1, Math.round(data.cooldown_seconds / 60));
+      const body = data.fallback_active
+        ? `ChatGPT subscription rate limit. Fallback ke OpenAI API ~${minutes}m.`
+        : `ChatGPT subscription rate limit. Cooldown ${minutes}m (fallback OFF).`;
+      toast(body, {
+        duration: 8000,
+        icon: "⏳",
+        style: {
+          background: "#fef3c7",
+          color: "#92400e",
+          border: "1px solid #fcd34d",
+        },
+      });
+      // Refresh metrics card on the ChatGPT settings panel
+      qc.invalidateQueries({ queryKey: ["llm-metrics"] });
+      qc.invalidateQueries({ queryKey: ["codex-status"] });
+      break;
+    }
   }
 }
 

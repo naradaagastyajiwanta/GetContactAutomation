@@ -12,24 +12,11 @@ Results are saved to universities.rector_name.
 import re
 
 import httpx
-from openai import AsyncOpenAI
 
-from orchestrator.config import is_paused, log, cfg
+from orchestrator.config import is_paused, log, cfg, chat_kwargs
+from orchestrator.llm import gateway
 from orchestrator import duckduckgo_client
 from orchestrator.db import get_university_by_id, update_university_rector_name
-
-
-_openai_client: AsyncOpenAI | None = None
-_openai_client_key: str = ""
-
-
-def _get_openai() -> AsyncOpenAI:
-    global _openai_client, _openai_client_key
-    current_key = cfg.OPENAI_API_KEY
-    if _openai_client is None or current_key != _openai_client_key:
-        _openai_client = AsyncOpenAI(api_key=current_key)
-        _openai_client_key = current_key
-    return _openai_client
 
 
 async def find_rector_name(university_id: int) -> str | None:
@@ -345,11 +332,11 @@ async def _gpt_extract(uni_name: str) -> str | None:
 
 async def _gpt_extract_from_text(text: str, uni_name: str) -> str | None:
     """Use GPT to extract rector name from provided text."""
-    api_key = cfg.OPENAI_API_KEY
-    if not api_key:
+    # If OAuth is off and no API key is configured, skip the LLM call.
+    # When OAuth is on, the gateway handles the proxy path and only needs
+    # OPENAI_API_KEY for the fallback path, so we proceed optimistically.
+    if not cfg.CHATGPT_OAUTH_ENABLED and not cfg.OPENAI_API_KEY:
         return None
-
-    client = _get_openai()
 
     prompt_parts = [
         f"Siapa nama lengkap Rektor {uni_name} saat ini (2024-2025)?",
@@ -365,11 +352,10 @@ async def _gpt_extract_from_text(text: str, uni_name: str) -> str | None:
     )
 
     try:
-        resp = await client.chat.completions.create(
-            model="gpt-4o-mini",
+        resp = await gateway.chat_completions_create(
+            model=cfg.AGENT_MODEL,
             messages=[{"role": "user", "content": "\n".join(prompt_parts)}],
-            max_tokens=100,
-            temperature=0.1,
+            **chat_kwargs(cfg.AGENT_MODEL, temperature=0.1, max_tokens=100),
         )
         answer = resp.choices[0].message.content.strip()
 

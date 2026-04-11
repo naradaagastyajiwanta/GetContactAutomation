@@ -1032,6 +1032,20 @@ def setup_scheduler():
             misfire_grace_time=600,
         )
 
+    # Codex OAuth health monitor — checks token validity every 15 minutes
+    # when OAuth is enabled. The token store auto-refreshes on every
+    # gateway call, so this is a sanity check + nudge for refresh +
+    # WebSocket state change emitter.
+    scheduler.add_job(
+        _check_codex_oauth_health,
+        "interval",
+        minutes=15,
+        id="codex_oauth_health",
+        replace_existing=True,
+        max_instances=1,
+        misfire_grace_time=120,
+    )
+
     scheduler.start()
     log.info(
         "Scheduler started: outreach every 30min, followups every hour, "
@@ -1041,4 +1055,47 @@ def setup_scheduler():
         + (", audiensi followups + rector finder" if cfg.AUDIENSI_ENABLED else "")
         + (", DMS sync" if cfg.get("DMS_SYNC_ENABLED", False) else "")
         + (f", audiensi research @{research_hour}:00 WIB + safety check every 4h" if cfg.get("DMS_RESEARCH_ENABLED", False) else "")
+        + ", codex-oauth health every 15min"
     )
+
+
+# --- Codex OAuth health monitor job ------------------------------------------
+
+_codex_oauth_last_state: str | None = None
+
+
+async def _check_codex_oauth_health() -> None:
+    """Touch the in-process Codex token store, log state transitions.
+
+    Calls ``codex_token_store.load_tokens()`` which auto-refreshes if
+    the access token is close to expiry. Emits a WebSocket event on
+    logged_out→logged_in or vice versa so the FE can update its
+    indicator without polling.
+    """
+    global _codex_oauth_last_state
+    if not cfg.CHATGPT_OAUTH_ENABLED:
+        return
+
+    new_state: str
+    try:
+        from orchestrator.llm import codex_token_store
+        tokens = await codex_token_store.load_tokens()
+        new_state = "logged_in" if tokens is not None else "logged_out"
+    except Exception as e:
+        log.debug("codex-oauth health probe failed: %s", e)
+        new_state = "error"
+
+    if new_state != _codex_oauth_last_state:
+        log.info(
+            "codex-oauth state: %s -> %s",
+            _codex_oauth_last_state or "unknown", new_state,
+        )
+        try:
+            from orchestrator.websocket import manager as ws_manager
+            await ws_manager.broadcast({
+                "event": "codex_oauth_state",
+                "state": new_state,
+            })
+        except Exception:
+            pass
+        _codex_oauth_last_state = new_state

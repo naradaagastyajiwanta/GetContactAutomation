@@ -181,9 +181,12 @@ CONFIG_DEFINITIONS: list[ConfigDef] = [
     ),
     ConfigDef(
         key="MCP_DEVTOOLS_MODEL",
-        type=ConfigType.STRING, default="gpt-4o", group=ConfigGroup.PLAYWRIGHT,
+        type=ConfigType.STRING, default="gpt-5.4", group=ConfigGroup.PLAYWRIGHT,
         label="CDP Agent Model",
-        description="OpenAI model untuk Chrome DevTools sub-agent. Default gpt-4o (butuh vision + reasoning).",
+        description=(
+            "OpenAI model untuk Chrome DevTools sub-agent. Needs vision + reasoning; "
+            "default gpt-5.4 works via ChatGPT OAuth proxy or real API."
+        ),
         env_only=False,
     ),
     ConfigDef(
@@ -242,9 +245,14 @@ CONFIG_DEFINITIONS: list[ConfigDef] = [
     ),
     ConfigDef(
         key="AGENT_MODEL",
-        type=ConfigType.STRING, default="gpt-4o-mini", group=ConfigGroup.AI_AGENT,
+        type=ConfigType.STRING, default="gpt-5.4", group=ConfigGroup.AI_AGENT,
         label="Agent Model",
-        description="OpenAI model used by the ReAct agent.",
+        description=(
+            "OpenAI model used by the ReAct agent. When CHATGPT_OAUTH_ENABLED "
+            "is true, this must be a model exposed by the chatgpt-proxy "
+            "sidecar (e.g. gpt-5.4, gpt-5.3-codex)."
+        ),
+        model_picker="openai",
     ),
     ConfigDef(
         key="AGENT_TEMPERATURE",
@@ -271,7 +279,7 @@ CONFIG_DEFINITIONS: list[ConfigDef] = [
         key="AGENT_PLANNING_ENABLED",
         type=ConfigType.BOOL, default=True, group=ConfigGroup.AI_AGENT,
         label="Agent Planning Enabled",
-        description="Pre-compute a strategy plan before the ReAct loop (uses gpt-4o-mini).",
+        description="Pre-compute a strategy plan before the ReAct loop (uses cfg.AGENT_MODEL).",
     ),
     ConfigDef(
         key="MARKETING_GEMINI_ENABLED",
@@ -281,16 +289,16 @@ CONFIG_DEFINITIONS: list[ConfigDef] = [
     ),
     ConfigDef(
         key="MARKETING_ORCHESTRATOR_MODEL",
-        type=ConfigType.STRING, default="gemini-3.1-pro-preview", group=ConfigGroup.AI_AGENT,
+        type=ConfigType.STRING, default="gpt-5.4", group=ConfigGroup.AI_AGENT,
         label="Marketing Orchestrator Model",
-        description="Model for the marketing discovery orchestrator agent. Prefix 'gemini-' uses Gemini API (recommended), 'gpt-' uses OpenAI Responses API.",
+        description="Model for the marketing discovery orchestrator agent. Prefix 'gpt-' uses OpenAI Responses API (default), 'gemini-' routes to Gemini API as fallback.",
         model_picker="all",
     ),
     ConfigDef(
         key="MARKETING_SUB_AGENT_MODEL",
-        type=ConfigType.STRING, default="gemini-2.5-pro-preview", group=ConfigGroup.AI_AGENT,
+        type=ConfigType.STRING, default="gpt-5.4", group=ConfigGroup.AI_AGENT,
         label="Marketing Sub-Agent Model",
-        description="Model for marketing sub-agents (web search, instagram, etc.). Prefix 'gemini-' uses Gemini API, 'gpt-' uses OpenAI Responses API.",
+        description="Model for marketing sub-agents (web search, instagram, etc.). Prefix 'gpt-' uses OpenAI Responses API (default), 'gemini-' routes to Gemini API as fallback.",
         model_picker="all",
     ),
     ConfigDef(
@@ -299,6 +307,61 @@ CONFIG_DEFINITIONS: list[ConfigDef] = [
         label="Marketing Agent Max Tool Iterations",
         description="Max ReAct loop iterations for the marketing orchestrator agent before forcing termination.",
         min_value=1, max_value=50,
+    ),
+    # --- ChatGPT OAuth (in-process Codex subscription access) ---
+    # No sidecar — see orchestrator/llm/codex_*.py for the Python flow.
+    ConfigDef(
+        key="CHATGPT_OAUTH_ENABLED",
+        type=ConfigType.BOOL, default=False, group=ConfigGroup.AI_AGENT,
+        label="ChatGPT OAuth Enabled",
+        description=(
+            "Route OpenAI chat/responses/vision calls through an in-process "
+            "Codex OAuth client (uses a ChatGPT Plus/Pro subscription). "
+            "Embeddings always use OPENAI_API_KEY. Login via /auth/codex/start "
+            "or import an existing ~/.codex/auth.json via /auth/codex/import-external."
+        ),
+    ),
+    ConfigDef(
+        key="CHATGPT_OAUTH_ORIGINATOR",
+        type=ConfigType.STRING, default="codex_cli_rs", group=ConfigGroup.AI_AGENT,
+        label="ChatGPT OAuth Originator",
+        description=(
+            "Identifier sent on every Codex backend request as the 'originator' "
+            "header. Defaults to 'codex_cli_rs' (matches the official Codex CLI). "
+            "openclaw uses 'openclaw'. Custom values may be flagged by OpenAI."
+        ),
+    ),
+    ConfigDef(
+        key="CHATGPT_OAUTH_FALLBACK_TO_API",
+        type=ConfigType.BOOL, default=True, group=ConfigGroup.AI_AGENT,
+        label="ChatGPT OAuth Fallback to API",
+        description=(
+            "When the Codex backend returns 429/401 or is unreachable, "
+            "automatically fall back to the real OpenAI API using OPENAI_API_KEY. "
+            "Strongly recommended to keep on."
+        ),
+    ),
+    ConfigDef(
+        key="CHATGPT_OAUTH_RATE_LIMIT_COOLDOWN_SECONDS",
+        type=ConfigType.INT, default=900, group=ConfigGroup.AI_AGENT,
+        label="ChatGPT OAuth Rate Limit Cooldown (s)",
+        description=(
+            "After receiving a 429 from the Codex backend, skip Codex for this "
+            "many seconds and route all calls through the real API. "
+            "Default: 900 (15 minutes)."
+        ),
+        min_value=60, max_value=7200,
+    ),
+    # --- Email Blast Inbox Watcher ---
+    ConfigDef(
+        key="EMAIL_BLAST_INBOX_WATCH_ENABLED",
+        type=ConfigType.BOOL, default=True, group=ConfigGroup.GENERAL,
+        label="IMAP Inbox Watcher Enabled",
+        description=(
+            "Periodically poll IMAP for new email replies (default: every 30s). "
+            "Set to false to silence polling temporarily — useful when the upstream "
+            "mail server is unreachable and the warning logs are spamming."
+        ),
     ),
     # --- Message Queue ---
     ConfigDef(

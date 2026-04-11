@@ -2,10 +2,10 @@
 Marketing Discovery Orchestrator Agent.
 
 Supports two backends:
-  - Gemini (default): google.genai with function calling — no OpenAI quota needed
-  - OpenAI Responses API: fallback when MARKETING_ORCHESTRATOR_MODEL starts with "gpt-"
+  - OpenAI Responses API (default): used when MARKETING_ORCHESTRATOR_MODEL starts with "gpt-"
+  - Gemini (fallback): google.genai with function calling, used when model starts with "gemini-"
 
-Model: cfg.MARKETING_ORCHESTRATOR_MODEL (default: gemini-3.1-pro-preview)
+Model: cfg.MARKETING_ORCHESTRATOR_MODEL (default: gpt-5.4)
 Tools: 9 tools including spawn_* for 4 sub-agents, memory, record_contact, mark_done
 
 The orchestrator's context stays clean because spawn_* tools return
@@ -23,6 +23,7 @@ from typing import Any
 from openai import AsyncOpenAI, APIStatusError, APITimeoutError, APIConnectionError
 
 from orchestrator.config import log, cfg, responses_kwargs, is_reasoning_model
+from orchestrator.llm import gateway
 from orchestrator import db
 from .errors import QuotaExhaustedException
 from . import groups as mkt
@@ -41,28 +42,17 @@ from .mkt_prompts import build_orchestrator_prompt
 
 
 # ---------------------------------------------------------------------------
-# OpenAI client (used when model starts with "gpt-")
+# OpenAI calls go through orchestrator.llm.gateway for automatic routing
+# between the chatgpt-proxy (ChatGPT Plus OAuth) and the real API.
 # ---------------------------------------------------------------------------
-
-_openai_client: AsyncOpenAI | None = None
-_openai_client_key: str = ""
 
 _RETRIABLE_STATUS_CODES = {429, 500, 503}
 _MAX_RETRIES = 3
 
-import httpx as _httpx  # noqa: E402
 
-
-def _get_openai() -> AsyncOpenAI:
-    global _openai_client, _openai_client_key
-    current_key = cfg.OPENAI_API_KEY
-    if _openai_client is None or current_key != _openai_client_key:
-        _openai_client = AsyncOpenAI(
-            api_key=current_key,
-            timeout=_httpx.Timeout(connect=10.0, read=120.0, write=10.0, pool=10.0),
-        )
-        _openai_client_key = current_key
-    return _openai_client
+def _persist_response_id() -> bool:
+    """Session chaining only works on the real API path."""
+    return not bool(cfg.CHATGPT_OAUTH_ENABLED)
 
 
 async def _api_call_with_retry(coro_factory, label: str = "API call"):
@@ -473,7 +463,7 @@ def _get_tool_schemas() -> list[dict]:
 
 class MarketingOrchestratorAgent:
     """
-    High-level orchestrator using a capable model (default: gpt-4.5-preview).
+    High-level orchestrator using a capable reasoning model (default: gpt-5.4).
     Spawns sub-agents, synthesizes results, learns from outcomes.
 
     Context window stays clean because spawn_* tools return only
@@ -533,12 +523,14 @@ class MarketingOrchestratorAgent:
             )
         }]
 
-        # Load previous_response_id for session chaining (fetched directly from DB)
+        # Load previous_response_id for session chaining (fetched directly from DB).
+        # Only valid on the real API path — the chatgpt-proxy backend is stateless.
         previous_response_id: str | None = None
-        try:
-            previous_response_id = await _get_run_last_response_id(run_id)
-        except Exception:
-            pass
+        if _persist_response_id():
+            try:
+                previous_response_id = await _get_run_last_response_id(run_id)
+            except Exception:
+                pass
 
         model_name = cfg.MARKETING_ORCHESTRATOR_MODEL.lower()
         use_gemini = model_name.startswith("gemini")
@@ -614,7 +606,9 @@ class MarketingOrchestratorAgent:
         previous_response_id: str | None = None,
     ) -> dict:
         """ReAct loop — same pattern as react_agent.py._run_react_loop()."""
-        client = _get_openai()
+        # Session chaining only on real API path (proxy is stateless)
+        if not _persist_response_id():
+            previous_response_id = None
         model = cfg.MARKETING_ORCHESTRATOR_MODEL
         max_iterations = cfg.MARKETING_AGENT_MAX_TOOL_ITERATIONS
         total_tokens = 0
@@ -636,7 +630,7 @@ class MarketingOrchestratorAgent:
             kwargs["previous_response_id"] = previous_response_id
 
         response = await _api_call_with_retry(
-            lambda: client.responses.create(**kwargs),
+            lambda: gateway.responses_create(**kwargs),
             label="OrchestratorAgent initial",
         )
         _track_usage(response)
@@ -719,22 +713,24 @@ class MarketingOrchestratorAgent:
             next_kwargs: dict = {
                 "model": model,
                 "input": function_outputs,
-                "previous_response_id": response.id,
                 "store": True,
                 **responses_kwargs(model, temperature=0.1, max_output_tokens=2048),
             }
+            if _persist_response_id():
+                next_kwargs["previous_response_id"] = response.id
             if not terminal_reached:
                 next_kwargs["tools"] = _get_tool_schemas()
 
-            # Save response_id for session chaining
-            try:
-                await db.update_marketing_run_response_id(context.run_id, response.id)
-            except Exception:
-                pass
+            # Save response_id for session chaining (real API path only)
+            if _persist_response_id():
+                try:
+                    await db.update_marketing_run_response_id(context.run_id, response.id)
+                except Exception:
+                    pass
 
             _nk = next_kwargs
             response = await _api_call_with_retry(
-                lambda: client.responses.create(**_nk),
+                lambda: gateway.responses_create(**_nk),
                 label="OrchestratorAgent loop",
             )
             _track_usage(response)

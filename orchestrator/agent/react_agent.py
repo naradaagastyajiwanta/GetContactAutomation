@@ -9,9 +9,10 @@ from __future__ import annotations
 import asyncio
 import json
 
-from openai import AsyncOpenAI, APIStatusError, APITimeoutError, APIConnectionError
+from openai import APIStatusError, APITimeoutError, APIConnectionError
 
 from orchestrator.config import log, cfg, responses_kwargs, chat_kwargs, is_reasoning_model
+from orchestrator.llm import gateway
 from orchestrator.agent.schemas import AgentAction, AgentContext, AgentResult, ReactLoopResult
 from orchestrator.agent.prompts import (
     AGENT_BASE_SYSTEM_PROMPT,
@@ -21,21 +22,17 @@ from orchestrator.agent.prompts import (
 from orchestrator.agent.tools import TOOL_SCHEMAS, TOOL_IMPLEMENTATIONS, TERMINAL_TOOLS
 from orchestrator import db
 
-# ---------------------------------------------------------------------------
-# Lazy OpenAI client (matches existing pattern in conversation.py)
-# ---------------------------------------------------------------------------
 
-_openai_client: AsyncOpenAI | None = None
-_openai_client_key: str = ""
+def _persist_response_id() -> bool:
+    """Only persist last_response_id when the real API path is in use.
 
-
-def _get_openai() -> AsyncOpenAI:
-    global _openai_client, _openai_client_key
-    current_key = cfg.OPENAI_API_KEY
-    if _openai_client is None or current_key != _openai_client_key:
-        _openai_client = AsyncOpenAI(api_key=current_key)
-        _openai_client_key = current_key
-    return _openai_client
+    The chatgpt-proxy sidecar is stateless — session chaining via
+    ``previous_response_id`` is unavailable there, and any response.id
+    it returns is invalid on the real API. When OAuth is on we just
+    send full message history every turn (which is what the proxy
+    already does internally).
+    """
+    return not bool(cfg.CHATGPT_OAUTH_ENABLED)
 
 
 _RETRIABLE_STATUS_CODES = {429, 500, 503}
@@ -148,8 +145,11 @@ class ReactAgent:
                 contact_memories=contact_memories,
             )
 
-            # Load previous_response_id for session chaining
-            previous_response_id = conv.get("last_response_id")
+            # Load previous_response_id for session chaining — only valid
+            # on the real API path. Proxy is stateless.
+            previous_response_id = (
+                conv.get("last_response_id") if _persist_response_id() else None
+            )
 
             # Build input items — only new message if session exists
             if previous_response_id:
@@ -183,8 +183,10 @@ class ReactAgent:
             response_text = result.response_text
             tool_calls_made = result.tool_calls_made
 
-            # Save response_id for next turn
-            if result.last_response_id:
+            # Save response_id for next turn (real API path only — the
+            # chatgpt-proxy backend is stateless and IDs it returns are
+            # invalid outside its own scope)
+            if result.last_response_id and _persist_response_id():
                 await db.update_last_response_id("conversations", conv_id, result.last_response_id)
 
             # 8b. Log API call (non-blocking)
@@ -258,8 +260,6 @@ class ReactAgent:
         self, university_name: str, province: str | None = None
     ) -> str:
         """Generate the first outreach message using Responses API with lessons context."""
-        client = _get_openai()
-
         lessons = await db.get_lessons_by_situation("initial_contact", province=province)
 
         prompt_parts = [
@@ -296,7 +296,7 @@ class ReactAgent:
             prompt_parts.append("\nBASIS PENGETAHUAN:\n" + "\n".join(kb_lines))
 
         system_content = "\n".join(prompt_parts)
-        response = await client.responses.create(
+        response = await gateway.responses_create(
             model=cfg.AGENT_MODEL,
             instructions=system_content,
             input="Buat pesan WhatsApp pertama untuk mengundang pihak kampus. HANYA output pesan WA-nya, tanpa penjelasan.",
@@ -331,8 +331,6 @@ class ReactAgent:
         self, conversation: dict, attempt: int
     ) -> str:
         """Generate a follow-up message with lessons context."""
-        client = _get_openai()
-
         history = json.loads(conversation.get("message_history") or "[]")
         uni = (
             await db.get_university_by_id(conversation["university_id"])
@@ -373,7 +371,10 @@ class ReactAgent:
             prompt_parts.append("\nBASIS PENGETAHUAN:\n" + "\n".join(kb_lines))
 
         system_content = "\n".join(prompt_parts)
-        previous_response_id = conversation.get("last_response_id")
+        # Session chaining only works on real API path.
+        previous_response_id = (
+            conversation.get("last_response_id") if _persist_response_id() else None
+        )
 
         followup_instruction = (
             f"Buat pesan follow-up ke-{attempt}. "
@@ -384,7 +385,7 @@ class ReactAgent:
         if previous_response_id:
             # Chain with existing session — only send new instruction
             try:
-                response = await client.responses.create(
+                response = await gateway.responses_create(
                     model=cfg.AGENT_MODEL,
                     instructions=system_content,
                     input=followup_instruction,
@@ -410,7 +411,7 @@ class ReactAgent:
                 input_items.append({"role": role, "content": msg.get("content", "")})
             input_items.append({"role": "user", "content": followup_instruction})
 
-            response = await client.responses.create(
+            response = await gateway.responses_create(
                 model=cfg.AGENT_MODEL,
                 instructions=system_content,
                 input=input_items,
@@ -420,9 +421,9 @@ class ReactAgent:
 
         response_text = response.output_text
 
-        # Save response_id for future chaining
+        # Save response_id for future chaining (real API path only)
         conv_id = conversation.get("id")
-        if conv_id and response.id:
+        if conv_id and response.id and _persist_response_id():
             await db.update_last_response_id("conversations", conv_id, response.id)
 
         # Log API call
@@ -464,7 +465,6 @@ class ReactAgent:
         if not cfg.AGENT_PLANNING_ENABLED:
             return None
         try:
-            client = _get_openai()
             # Build a compact conversation summary (last 4 messages)
             recent = history[-4:]
             hist_text = "\n".join(
@@ -485,11 +485,10 @@ class ReactAgent:
                 "HANYA output rencana aksinya, tanpa label atau penjelasan."
             )
             resp = await _api_call_with_retry(
-                lambda: client.chat.completions.create(
-                    model="gpt-4o-mini",
+                lambda: gateway.chat_completions_create(
+                    model=cfg.AGENT_MODEL,
                     messages=[{"role": "user", "content": planning_prompt}],
-                    max_tokens=120,
-                    temperature=0.3,
+                    **chat_kwargs(cfg.AGENT_MODEL, temperature=0.3, max_tokens=120),
                 ),
                 label="planning",
             )
@@ -512,7 +511,9 @@ class ReactAgent:
         Returns a ReactLoopResult with response text, tool calls, token usage,
         and last_response_id for session chaining.
         """
-        client = _get_openai()
+        # Strip session chaining when proxy is in use — stateless backend.
+        if not _persist_response_id():
+            previous_response_id = None
         tool_calls_made: list[str] = []
         terminal_reached = False
         iterations = 0
@@ -541,7 +542,7 @@ class ReactAgent:
             kwargs["previous_response_id"] = previous_response_id
 
         response = await _api_call_with_retry(
-            lambda: client.responses.create(**kwargs),
+            lambda: gateway.responses_create(**kwargs),
             label="ReactAgent initial",
         )
         _track_usage(response)
@@ -588,21 +589,23 @@ class ReactAgent:
                 if name in TERMINAL_TOOLS:
                     terminal_reached = True
 
-            # Feed results back with previous_response_id chaining
+            # Feed results back with previous_response_id chaining on
+            # the real API path; proxy strips it automatically (stateless).
             next_kwargs: dict = {
                 "model": cfg.AGENT_MODEL,
                 "input": function_outputs,
-                "previous_response_id": response.id,
                 "store": True,
                 **responses_kwargs(cfg.AGENT_MODEL, temperature=cfg.AGENT_TEMPERATURE, max_output_tokens=cfg.AGENT_MAX_TOKENS),
             }
+            if _persist_response_id():
+                next_kwargs["previous_response_id"] = response.id
             # Remove tools after terminal to force text-only closing response
             if not terminal_reached and tools:
                 next_kwargs["tools"] = tools
 
             _nk = next_kwargs  # capture for lambda
             response = await _api_call_with_retry(
-                lambda: client.responses.create(**_nk),
+                lambda: gateway.responses_create(**_nk),
                 label="ReactAgent loop",
             )
             _track_usage(response)
@@ -647,7 +650,7 @@ class ReactAgent:
                 })
             try:
                 chat_resp = await _api_call_with_retry(
-                    lambda: client.chat.completions.create(
+                    lambda: gateway.chat_completions_create(
                         model=cfg.AGENT_MODEL,
                         messages=messages,
                         **chat_kwargs(cfg.AGENT_MODEL, max_tokens=cfg.AGENT_MAX_TOKENS),
