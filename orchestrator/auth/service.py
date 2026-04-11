@@ -279,7 +279,25 @@ async def create_session_for_user(
     if dms_user.get("_auth_local_fallback"):
         role_keys = dms_user.get("_role_keys", [])
     else:
-        role_keys = await get_auth_role_keys_for_user(int(dms_user["dms_user_id"]))
+        # Defensive: if the upstream MySQL handler returned a dict without
+        # dms_user_id, treat it as pool corruption and fail with 503 instead
+        # of crashing with KeyError -> 500. The stale-pool fix in
+        # dms_mysql.get_dms_cursor should prevent us from ever hitting this,
+        # but the guard stays as a belt-and-suspenders so a bad row never
+        # again turns a login into an unhandled exception.
+        user_id_raw = dms_user.get("dms_user_id")
+        if user_id_raw is None:
+            from orchestrator.config import log as _log
+            _log.error(
+                "[auth] create_session_for_user called with dms_user missing "
+                "dms_user_id (suspected stale DMS MySQL connection); keys=%s",
+                list(dms_user.keys()),
+            )
+            raise HTTPException(
+                status_code=503,
+                detail="Login service unavailable — please try again",
+            )
+        role_keys = await get_auth_role_keys_for_user(int(user_id_raw))
     if not role_keys and dms_user.get("_auth_default_password_used"):
         default_role_key = _default_role_key()
         await upsert_auth_user_role(

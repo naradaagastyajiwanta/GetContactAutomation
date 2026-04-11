@@ -58,7 +58,12 @@ async def init_dms_pool() -> aiomysql.Pool | None:
             minsize=1,
             maxsize=5,
             connect_timeout=10,
-            pool_recycle=3600,
+            # Recycle connections every 5 minutes. GCP NAT drops idle TCP
+            # connections around the 10-minute mark, after which the aiomysql
+            # pool happily hands out "dead" sockets whose queries silently
+            # return garbage (this caused the KeyError: 'dms_user_id' login
+            # 500 we saw in prod). 5min is well under any NAT timeout.
+            pool_recycle=300,
         )
         log.info("DMS MySQL: pool created (%s:%s/%s)",
                  host, cfg.get("DMS_MYSQL_PORT", 3306), cfg.get("DMS_MYSQL_DATABASE", ""))
@@ -81,11 +86,25 @@ async def close_dms_pool() -> None:
 
 @asynccontextmanager
 async def get_dms_cursor():
-    """Async context manager providing a DictCursor from the pool."""
+    """Async context manager providing a DictCursor from the pool.
+
+    Performs ``conn.ping(reconnect=True)`` before yielding so dead TCP
+    sockets (NAT drop, MySQL server restart) are detected and replaced
+    before the caller runs a query. Without this guard, the pool hands
+    out zombie connections whose first query silently returns partial
+    garbage — the root cause of the intermittent login 500 we saw in
+    prod (``KeyError: 'dms_user_id'``).
+    """
     pool = _pool or await init_dms_pool()
     if pool is None:
         raise RuntimeError("DMS MySQL pool not available — check DMS_MYSQL_HOST config")
     async with pool.acquire() as conn:
+        try:
+            await conn.ping(reconnect=True)
+        except Exception as ping_err:
+            # If ping fails the conn is unusable; log and let the query
+            # raise its own error — better than yielding a broken cursor.
+            log.warning("[dms-mysql] ping failed, connection likely dead: %s", ping_err)
         async with conn.cursor(aiomysql.DictCursor) as cursor:
             yield cursor
 
@@ -320,7 +339,17 @@ async def _get_lsp_schedule_by_id(schedule_id: int) -> dict | None:
 
 
 async def get_active_karyawan_by_email(email: str) -> dict[str, Any] | None:
-    """Return an active karyawan record eligible for dashboard login."""
+    """Return an active karyawan record eligible for dashboard login.
+
+    Returns ``None`` in three distinct cases:
+
+    * Email is empty / missing
+    * No active karyawan row matches
+    * The row came back but is missing the ``dms_user_id`` alias — this
+      is a symptom of a corrupted pool connection (see ``get_dms_cursor``
+      docstring). Treat it as "user not found" so the caller returns a
+      clean 401 instead of a 500, and log the anomaly so we can spot it.
+    """
     normalized = (email or "").strip().lower()
     if not normalized:
         return None
@@ -344,7 +373,16 @@ async def get_active_karyawan_by_email(email: str) -> dict[str, Any] | None:
             (normalized,),
         )
         row = await cursor.fetchone()
-        return _serialize_row(row) if row else None
+        if not row:
+            return None
+        if "dms_user_id" not in row or row.get("dms_user_id") is None:
+            log.error(
+                "[dms-mysql] get_active_karyawan_by_email: row missing dms_user_id "
+                "(pool corruption suspected); email=%s keys=%s",
+                normalized, list(row.keys()),
+            )
+            return None
+        return _serialize_row(row)
 
 
 async def get_today_audiensi_schedules() -> list[dict]:
@@ -1134,29 +1172,7 @@ async def check_dms_connection() -> dict:
         }
 
 
-async def get_active_karyawan_by_email(email: str) -> dict[str, Any] | None:
-    """Return an active karyawan record eligible for dashboard login."""
-    normalized = (email or "").strip().lower()
-    if not normalized:
-        return None
-
-    async with get_dms_cursor() as cursor:
-        await cursor.execute(
-            """
-            SELECT
-                id_karywan AS dms_user_id,
-                user_name,
-                user_email,
-                user_password,
-                user_level,
-                statuskerja,
-                last_login
-            FROM karyawan
-            WHERE LOWER(TRIM(user_email)) = %s
-              AND statuskerja = 1
-            LIMIT 1
-            """,
-            (normalized,),
-        )
-        row = await cursor.fetchone()
-        return _serialize_row(row) if row else None
+# NOTE: get_active_karyawan_by_email is defined earlier in this file
+# (near the top of the READ section). The stub that used to live here
+# was an accidental duplicate — removed so there is a single source of
+# truth that enforces the dms_user_id sanity check.
