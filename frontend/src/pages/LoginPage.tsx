@@ -1,78 +1,131 @@
-import { useMemo, useState } from 'react'
-import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { Navigate, useLocation, useNavigate } from 'react-router-dom'
-import axios from 'axios'
-import { Database, GitBranch, Megaphone } from 'lucide-react'
-import { Button } from '../components/ui/Button'
-import { Card } from '../components/ui/Card'
-import { getBootstrapStatus, login, setupInitialAdmin } from '../api/auth'
-import { queryKeys } from '../lib/queryKeys'
-import { useAuth } from '../context/AuthContext'
+import { useMemo, useState } from "react";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { Navigate, useLocation, useNavigate } from "react-router-dom";
+import axios from "axios";
+import { Database, GitBranch, Megaphone } from "lucide-react";
+import { Button } from "../components/ui/Button";
+import { Card } from "../components/ui/Card";
+import { getBootstrapStatus, login, setupInitialAdmin } from "../api/auth";
+import type { LoginResponse } from "../api/auth";
+import { queryKeys } from "../lib/queryKeys";
+import {
+  clearLastPath,
+  isOnboardingDone,
+  resolveReturnTo,
+  type ReturnLocation,
+} from "../lib/returnPath";
+import { useAuth } from "../context/AuthContext";
 
-const BOOTSTRAP_COMPLETED_MESSAGE = 'Auth bootstrap has already been completed'
+const BOOTSTRAP_COMPLETED_MESSAGE = "Auth bootstrap has already been completed";
 
 function getErrorMessage(error: unknown): string {
   if (axios.isAxiosError(error)) {
-    return error.response?.data?.detail || error.message
+    return error.response?.data?.detail || error.message;
   }
-  if (error instanceof Error) return error.message
-  return 'Unknown error'
+  if (error instanceof Error) return error.message;
+  return "Unknown error";
 }
 
 export default function LoginPage() {
-  const navigate = useNavigate()
-  const location = useLocation()
-  const queryClient = useQueryClient()
-  const { isAuthenticated, isLoading } = useAuth()
-  const [email, setEmail] = useState('')
-  const [password, setPassword] = useState('')
-  const [bootstrapOverride, setBootstrapOverride] = useState<boolean | null>(null)
+  const navigate = useNavigate();
+  const location = useLocation();
+  const queryClient = useQueryClient();
+  const { isAuthenticated, isLoading, user } = useAuth();
+  const [email, setEmail] = useState("");
+  const [password, setPassword] = useState("");
+  const [bootstrapOverride, setBootstrapOverride] = useState<boolean | null>(
+    null,
+  );
 
   const bootstrapQuery = useQuery({
     queryKey: queryKeys.auth.bootstrap,
     queryFn: getBootstrapStatus,
     retry: false,
-  })
+  });
 
-  const bootstrapRequired = bootstrapOverride ?? bootstrapQuery.data?.required ?? false
+  const bootstrapRequired =
+    bootstrapOverride ?? bootstrapQuery.data?.required ?? false;
+  // Where to send the user after a successful login. Priority:
+  //   1. `location.state.from` — set by ProtectedRoute when the user was
+  //      intercepted trying to reach a deep-linked page (covers both
+  //      first-visit deeplinks and session expiry mid-page).
+  //   2. sessionStorage "last path before logout" — set by TopBar so a
+  //      logout → re-login round-trip in the same tab lands on the same
+  //      page the user was looking at (Q1b).
+  //   3. `/`.
+  //
+  // First-time users (onboarding not yet complete) override this and
+  // always land on `/` so the onboarding modal opens over the dashboard
+  // instead of over a random deep-linked page (Q3b). That decision is
+  // made at `onSuccess` time below, not here, because the user object
+  // isn't available until login resolves.
+  //
+  // `resolveReturnTo` sanitizes the path and blocks open-redirect tricks
+  // (protocol-relative, absolute URLs, `/login` self-loop).
   const redirectTo = useMemo(() => {
-    const state = location.state as { from?: { pathname?: string } } | null
-    return state?.from?.pathname || '/'
-  }, [location.state])
+    const state = location.state as { from?: ReturnLocation } | null;
+    return resolveReturnTo(state?.from);
+  }, [location.state]);
 
   const authMutation = useMutation({
     mutationFn: async () => {
-      const liveBootstrapStatus = await getBootstrapStatus()
-      setBootstrapOverride(liveBootstrapStatus.required)
+      const liveBootstrapStatus = await getBootstrapStatus();
+      setBootstrapOverride(liveBootstrapStatus.required);
 
       if (liveBootstrapStatus.required) {
         try {
-          return await setupInitialAdmin({ email, password, role_key: 'admin' })
+          return await setupInitialAdmin({
+            email,
+            password,
+            role_key: "admin",
+          });
         } catch (error) {
           if (axios.isAxiosError(error) && error.response?.status === 409) {
-            const detail = error.response?.data?.detail
+            const detail = error.response?.data?.detail;
             if (detail === BOOTSTRAP_COMPLETED_MESSAGE) {
-              setBootstrapOverride(false)
-              await queryClient.invalidateQueries({ queryKey: queryKeys.auth.bootstrap })
-              return login({ email, password })
+              setBootstrapOverride(false);
+              await queryClient.invalidateQueries({
+                queryKey: queryKeys.auth.bootstrap,
+              });
+              return login({ email, password });
             }
           }
-          throw error
+          throw error;
         }
       }
 
-      return login({ email, password })
+      return login({ email, password });
     },
-    onSuccess: async () => {
-      setBootstrapOverride(false)
-      await queryClient.invalidateQueries({ queryKey: queryKeys.auth.bootstrap })
-      await queryClient.invalidateQueries({ queryKey: queryKeys.auth.me })
-      navigate(redirectTo, { replace: true })
-    },
-  })
+    onSuccess: async (data: LoginResponse) => {
+      setBootstrapOverride(false);
+      await queryClient.invalidateQueries({
+        queryKey: queryKeys.auth.bootstrap,
+      });
+      await queryClient.invalidateQueries({ queryKey: queryKeys.auth.me });
 
+      // Login succeeded — consume the stored last-path so a different
+      // user signing in on the same tab later doesn't inherit it.
+      clearLastPath();
+
+      // Q3b: first-time users must land on `/` so the onboarding wizard
+      // opens over the dashboard. Only send them to `redirectTo` once
+      // they've completed onboarding at least once. The wizard's
+      // storage key is keyed by DMS user id; `data.user` has it.
+      const userId = data?.user?.dms_user_id ?? null;
+      const target = isOnboardingDone(userId) ? redirectTo : "/";
+
+      navigate(target, { replace: true });
+    },
+  });
+
+  // If the user is already logged in and somehow landed on `/login`
+  // (manual URL, stale tab), bounce them back to where they were
+  // trying to go — same priority as onSuccess: respect `from` /
+  // stored last-path unless onboarding isn't done, in which case the
+  // wizard belongs over the dashboard (Q3b).
   if (!isLoading && isAuthenticated) {
-    return <Navigate to="/" replace />
+    const target = isOnboardingDone(user?.dms_user_id) ? redirectTo : "/";
+    return <Navigate to={target} replace />;
   }
 
   return (
@@ -95,26 +148,33 @@ export default function LoginPage() {
               Satu dashboard untuk operasional DMS Marketing
             </h1>
             <p className="login-reveal login-delay-3 mt-5 max-w-2xl text-base leading-7 text-slate-300 md:text-lg">
-              DMS Marketing dipakai untuk memantau pipeline kampus, mengelola percakapan dan audiensi,
-              menjalankan blast WhatsApp atau email, serta melihat profiling PIC dalam satu workspace.
+              DMS Marketing dipakai untuk memantau pipeline kampus, mengelola
+              percakapan dan audiensi, menjalankan blast WhatsApp atau email,
+              serta melihat profiling PIC dalam satu workspace.
             </p>
 
             <div className="mt-8 grid gap-4 md:grid-cols-2">
               <div className="login-reveal login-delay-4">
                 <div className="login-float-card rounded-2xl border border-white/10 bg-white/5 p-5 backdrop-blur transition-transform duration-500 hover:-translate-y-1 hover:bg-white/10">
                   <GitBranch className="mb-3 h-5 w-5 text-emerald-300" />
-                  <p className="text-sm font-medium text-white">Pantau pipeline dan outreach</p>
+                  <p className="text-sm font-medium text-white">
+                    Pantau pipeline dan outreach
+                  </p>
                   <p className="mt-2 text-sm leading-6 text-slate-300">
-                    Akses data universitas, group target, conversation, audiensi, dan progress pipeline dari satu tempat.
+                    Akses data universitas, group target, conversation,
+                    audiensi, dan progress pipeline dari satu tempat.
                   </p>
                 </div>
               </div>
               <div className="login-reveal login-delay-5">
                 <div className="login-float-card login-float-card-b rounded-2xl border border-white/10 bg-white/5 p-5 backdrop-blur transition-transform duration-500 hover:-translate-y-1 hover:bg-white/10">
                   <Megaphone className="mb-3 h-5 w-5 text-sky-300" />
-                  <p className="text-sm font-medium text-white">Kelola blast dan insight</p>
+                  <p className="text-sm font-medium text-white">
+                    Kelola blast dan insight
+                  </p>
                   <p className="mt-2 text-sm leading-6 text-slate-300">
-                    Jalankan WhatsApp, WA Blast, Email Blast, Knowledge Base, sampai PIC Profiling sesuai role yang Anda miliki.
+                    Jalankan WhatsApp, WA Blast, Email Blast, Knowledge Base,
+                    sampai PIC Profiling sesuai role yang Anda miliki.
                   </p>
                 </div>
               </div>
@@ -126,27 +186,31 @@ export default function LoginPage() {
             <div className="login-panel-float relative z-10">
               <div className="mb-6">
                 <p className="text-sm font-medium uppercase tracking-[0.18em] text-indigo-600 dark:text-indigo-300">
-                  {bootstrapRequired ? 'Setup Awal' : 'Masuk Dashboard'}
+                  {bootstrapRequired ? "Setup Awal" : "Masuk Dashboard"}
                 </p>
                 <h2 className="mt-2 text-2xl font-semibold">
-                  {bootstrapRequired ? 'Aktifkan admin pertama' : 'Selamat datang kembali'}
+                  {bootstrapRequired
+                    ? "Aktifkan admin pertama"
+                    : "Selamat datang kembali"}
                 </h2>
                 <p className="mt-2 text-sm leading-6 text-slate-500 dark:text-slate-400">
                   {bootstrapRequired
-                    ? 'Belum ada akun dashboard yang aktif. Masuk dengan akun DMS yang valid untuk mengambil akses admin pertama.'
-                    : 'Masuk dengan akun DMS aktif untuk membuka dashboard dan fitur yang sesuai dengan peran Anda.'}
+                    ? "Belum ada akun dashboard yang aktif. Masuk dengan akun DMS yang valid untuk mengambil akses admin pertama."
+                    : "Masuk dengan akun DMS aktif untuk membuka dashboard dan fitur yang sesuai dengan peran Anda."}
                 </p>
               </div>
 
               <form
                 className="space-y-5"
                 onSubmit={(event) => {
-                  event.preventDefault()
-                  authMutation.mutate()
+                  event.preventDefault();
+                  authMutation.mutate();
                 }}
               >
                 <div>
-                  <label className="mb-2 block text-sm font-medium">Email</label>
+                  <label className="mb-2 block text-sm font-medium">
+                    Email
+                  </label>
                   <input
                     type="email"
                     value={email}
@@ -159,7 +223,9 @@ export default function LoginPage() {
                 </div>
 
                 <div>
-                  <label className="mb-2 block text-sm font-medium">Password</label>
+                  <label className="mb-2 block text-sm font-medium">
+                    Password
+                  </label>
                   <input
                     type="password"
                     value={password}
@@ -177,14 +243,19 @@ export default function LoginPage() {
                   </div>
                 )}
 
-                <Button type="submit" className="w-full justify-center" size="lg" loading={authMutation.isPending || bootstrapQuery.isLoading}>
-                  {bootstrapRequired ? 'Aktifkan Akses Admin' : 'Masuk'}
+                <Button
+                  type="submit"
+                  className="w-full justify-center"
+                  size="lg"
+                  loading={authMutation.isPending || bootstrapQuery.isLoading}
+                >
+                  {bootstrapRequired ? "Aktifkan Akses Admin" : "Masuk"}
                 </Button>
 
                 <p className="text-center text-xs leading-5 text-slate-500 dark:text-slate-400">
                   {bootstrapRequired
-                    ? 'Akun valid pertama akan langsung menjadi admin aplikasi ini.'
-                    : 'Jika akun Anda belum punya akses, hubungi admin dashboard untuk aktivasi peran.'}
+                    ? "Akun valid pertama akan langsung menjadi admin aplikasi ini."
+                    : "Jika akun Anda belum punya akses, hubungi admin dashboard untuk aktivasi peran."}
                 </p>
               </form>
             </div>
@@ -365,5 +436,5 @@ export default function LoginPage() {
         }
       `}</style>
     </div>
-  )
+  );
 }
