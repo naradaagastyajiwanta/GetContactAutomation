@@ -8,6 +8,9 @@ httpx==0.28.1
 # aiohttp: required by orchestrator/llm/codex_login_server.py for the
 # temporary OAuth callback server on localhost:1455 during Codex login.
 aiohttp>=3.9.0
+# Sentry error tracking — env-var driven (SENTRY_DSN). Safe to have
+# installed even when disabled (init_sentry() is a no-op with empty DSN).
+sentry-sdk[fastapi,httpx]>=2.18.0
 beautifulsoup4>=4.12
 python-dotenv==1.0.1
 gspread==6.1.4

@@ -332,7 +332,15 @@ async def _periodic_smtp_health_check() -> None:
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # Startup
+    # Startup — observability FIRST so subsequent errors are captured
+    try:
+        from orchestrator.observability import init_sentry
+        if init_sentry():
+            log.info("Sentry error tracking enabled")
+    except Exception as _obs_err:
+        # Never let observability init break the app
+        log.warning("Sentry init failed (non-critical): %s", _obs_err)
+
     await init_db()
     await cfg.init_from_db()
     await _sync_managed_smtp_accounts_from_storage()
@@ -5090,6 +5098,72 @@ async def codex_oauth_status():
             ),
         }
     return {"status": "logged_in", **snapshot}
+
+
+@app.get("/health/sentry-status")
+async def sentry_status():
+    """Report whether Sentry is initialized + current environment/release.
+
+    Cheap introspection endpoint — does NOT send any event to Sentry.
+    Used by monitoring to verify the observability layer is active.
+    """
+    import os
+    dsn_set = bool(os.getenv("SENTRY_DSN", "").strip())
+    try:
+        import sentry_sdk  # type: ignore
+    except ImportError:
+        return {
+            "enabled": False,
+            "reason": "sentry-sdk not installed in this image",
+            "dsn_configured": dsn_set,
+        }
+
+    client = sentry_sdk.Hub.current.client if dsn_set else None
+    if client is None:
+        return {
+            "enabled": False,
+            "reason": "SENTRY_DSN not set or init_sentry() not called",
+            "dsn_configured": dsn_set,
+        }
+    options = client.options
+    return {
+        "enabled": True,
+        "dsn_configured": dsn_set,
+        "environment": options.get("environment"),
+        "release": options.get("release"),
+        "traces_sample_rate": options.get("traces_sample_rate"),
+        "send_default_pii": options.get("send_default_pii"),
+    }
+
+
+@app.get("/health/sentry-debug")
+async def sentry_debug():
+    """Trigger a deliberate exception so we can verify Sentry capture.
+
+    **Guarded** — only responds when ``SENTRY_DEBUG_ENABLED=true`` in the
+    environment. This prevents stray calls from production users filling
+    up our error quota with intentional errors.
+
+    Usage (local):
+      SENTRY_DEBUG_ENABLED=true uvicorn orchestrator.main:app --port 8000
+      curl http://localhost:8000/health/sentry-debug
+      # Then check https://<org>.sentry.io/issues/ within ~30 seconds
+
+    The raised ZeroDivisionError is captured by FastApiIntegration and
+    forwarded to Sentry. Response to the client is HTTP 500.
+    """
+    import os
+    if os.getenv("SENTRY_DEBUG_ENABLED", "").strip().lower() not in ("1", "true", "yes"):
+        raise HTTPException(
+            status_code=404,
+            detail=(
+                "Sentry debug endpoint disabled. Set SENTRY_DEBUG_ENABLED=true "
+                "in the environment to enable (dev/staging only)."
+            ),
+        )
+    # Intentional exception — Sentry FastApiIntegration will capture it.
+    _ = 1 / 0  # noqa
+    return {"unreachable": True}
 
 
 @app.post("/auth/codex/start")

@@ -19,9 +19,18 @@
       ],
       "sendEvents": [],
       "failedEvents": [],
-      "disconnectEvents": [],
+      "disconnectEvents": [
+        {
+          "at": 1775915435502,
+          "reason": "408"
+        },
+        {
+          "at": 1775915440465,
+          "reason": "408"
+        }
+      ],
       "warmUp": {
-        "startedAt": 1775870855254,
+        "startedAt": 1775915445660,
         "dailyCounts": {}
       },
       "timelock": {
@@ -112,7 +121,16 @@
       ],
       "sendEvents": [],
       "failedEvents": [],
-      "disconnectEvents": [],
+      "disconnectEvents": [
+        {
+          "at": 1775915434961,
+          "reason": "428"
+        },
+        {
+          "at": 1775915440477,
+          "reason": "408"
+        }
+      ],
       "warmUp": {
         "startedAt": 1775552477265,
         "dailyCounts": {}
@@ -133,80 +151,7 @@
       ],
       "sendEvents": [],
       "failedEvents": [],
-      "disconnectEvents": [
-        {
-          "at": 1775627752646,
-          "reason": "428"
-        },
-        {
-          "at": 1775636677642,
-          "reason": "401"
-        },
-        {
-          "at": 1775636838794,
-          "reason": "408"
-        },
-        {
-          "at": 1775637001250,
-          "reason": "408"
-        },
-        {
-          "at": 1775637164153,
-          "reason": "408"
-        },
-        {
-          "at": 1775637328721,
-          "reason": "408"
-        },
-        {
-          "at": 1775637494458,
-          "reason": "408"
-        },
-        {
-          "at": 1775637669079,
-          "reason": "408"
-        },
-        {
-          "at": 1775637850095,
-          "reason": "408"
-        },
-        {
-          "at": 1775638027011,
-          "reason": "408"
-        },
-        {
-          "at": 1775638214763,
-          "reason": "408"
-        },
-        {
-          "at": 1775638401663,
-          "reason": "408"
-        },
-        {
-          "at": 1775638579636,
-          "reason": "408"
-        },
-        {
-          "at": 1775638770775,
-          "reason": "408"
-        },
-        {
-          "at": 1775638949196,
-          "reason": "408"
-        },
-        {
-          "at": 1775639138197,
-          "reason": "408"
-        },
-        {
-          "at": 1775639315970,
-          "reason": "408"
-        },
-        {
-          "at": 1775639498536,
-          "reason": "408"
-        }
-      ],
+      "disconnectEvents": [],
       "warmUp": {
         "startedAt": 1775552631134,
         "dailyCounts": {}

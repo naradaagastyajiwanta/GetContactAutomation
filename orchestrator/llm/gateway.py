@@ -36,6 +36,7 @@ from openai import APIConnectionError, APIStatusError, APITimeoutError
 
 from orchestrator.config import cfg, log
 from orchestrator.llm.client_factory import get_codex, get_real_client
+from orchestrator.observability import capture_exception, metric_count
 from orchestrator.llm.codex_chat_translator import (
     ChatCompletionsResponse,
     chat_request_to_responses,
@@ -92,11 +93,13 @@ async def chat_completions_create(**kwargs: Any) -> Any:
             log.warning("[llm-gateway] Codex rate-limited, falling back to real API")
         except CodexAuthError as e:
             _metrics["codex_auth_errors"] += 1
+            capture_exception(e, component="llm-gateway", kind="codex_auth", api="chat")
             if not cfg.CHATGPT_OAUTH_FALLBACK_TO_API:
                 raise
             log.warning("[llm-gateway] Codex auth error, falling back: %s", e)
         except CodexUpstreamError as e:
             _metrics["codex_errors"] += 1
+            capture_exception(e, component="llm-gateway", kind="codex_upstream", api="chat")
             if not cfg.CHATGPT_OAUTH_FALLBACK_TO_API:
                 raise
             log.warning("[llm-gateway] Codex upstream error, falling back: %s", e)
@@ -131,11 +134,13 @@ async def responses_create(**kwargs: Any) -> Any:
             log.warning("[llm-gateway] Codex rate-limited, falling back to real API")
         except CodexAuthError as e:
             _metrics["codex_auth_errors"] += 1
+            capture_exception(e, component="llm-gateway", kind="codex_auth", api="responses")
             if not cfg.CHATGPT_OAUTH_FALLBACK_TO_API:
                 raise
             log.warning("[llm-gateway] Codex auth error, falling back: %s", e)
         except CodexUpstreamError as e:
             _metrics["codex_errors"] += 1
+            capture_exception(e, component="llm-gateway", kind="codex_upstream", api="responses")
             if not cfg.CHATGPT_OAUTH_FALLBACK_TO_API:
                 raise
             log.warning("[llm-gateway] Codex upstream error, falling back: %s", e)
@@ -203,6 +208,8 @@ def _trip_cooldown(retry_after_seconds: int | None = None) -> None:
         "[llm-gateway] Codex rate-limited (429), cooldown armed for %ds",
         cooldown,
     )
+    # Sentry metric — visible in Sentry Insights dashboard for trend analysis
+    metric_count("llm.codex.rate_limit", 1, cooldown_seconds=cooldown)
     _broadcast_rate_limit_notification(cooldown)
 
 

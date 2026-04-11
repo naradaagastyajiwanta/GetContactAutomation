@@ -223,6 +223,17 @@ Copy `.env.example` to `.env` (or `.env.production.example` for Docker/productio
 
 GitLab CI/CD pipeline defined in `.gitlab-ci.yml`. Deploys to GCP. Production Docker config is in `docker-compose.prod.yml`.
 
+Pipeline stages: `test` → `deploy` → `verify`. The `test` stage runs in parallel:
+- `python_smoke_test` (hard gate) — `scripts/test_llm_factory.py` + `test_llm_gateway.py`
+- `frontend_typecheck` (hard gate) — `npx tsc --noEmit`
+- `whatsapp_test` (soft gate, `allow_failure: true`) — existing Jest suite, 7/29 timer-based tests currently flaky
+
+Deploy only proceeds if hard-gate tests pass.
+
+## Observability
+
+Sentry error tracking for the orchestrator is wired via `orchestrator/observability.py`. Activation is env-var driven (`SENTRY_DSN`) — when unset, `init_sentry()` is a silent no-op. Integrations: FastAPI, httpx, asyncio, logging. PII scrubber redacts tokens/keys/passwords (exact-key match) and auto-masks emails + Indonesian phone numbers in exception/breadcrumb strings. Release tracking via `SENTRY_RELEASE=$CI_COMMIT_SHORT_SHA` injected by GitLab CI during deploy. Explicit `capture_exception()` calls in `orchestrator/llm/gateway.py` for Codex auth/upstream errors. See `docs/observability-setup.md` for full setup guide.
+
 ## Tech Stack
 
 - **Python:** FastAPI, aiosqlite, openai SDK (default model `gpt-5.4`), in-process Codex OAuth client (`orchestrator/llm/codex_*.py` — Python port of openclaw / pi-ai), google-generativeai (Gemini, Google Search grounding for audiensi research and gap-fill), apscheduler, httpx, playwright, phonenumbers, pddiktipy, aiohttp (used only for the temporary OAuth callback server)

@@ -111,6 +111,11 @@ services:
       - SMTP_SOCKS_ENABLED=true
       - SMTP_SOCKS_HOST=warp
       - SMTP_SOCKS_PORT=1080
+      # SENTRY_RELEASE is usually injected by GitLab CI deploy script
+      # ($CI_COMMIT_SHORT_SHA) so errors are tagged with the commit
+      # that introduced them. Falls back to empty if not set — Sentry
+      # then groups errors without release correlation.
+      - SENTRY_RELEASE=${SENTRY_RELEASE:-}
     depends_on:
       whatsapp:
         condition: service_healthy

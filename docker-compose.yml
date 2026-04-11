@@ -138,6 +138,9 @@ services:
       - SMTP_SOCKS_ENABLED=true
       - SMTP_SOCKS_HOST=warp
       - SMTP_SOCKS_PORT=1080
+      # Sentry release tag — injected by GitLab CI deploy script
+      # ($CI_COMMIT_SHORT_SHA). Other SENTRY_* vars come from .env.production.
+      - SENTRY_RELEASE=${SENTRY_RELEASE:-}
     depends_on:
       whatsapp:
         condition: service_healthy
