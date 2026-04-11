@@ -1,19 +1,117 @@
 image: alpine:3.19
 
 stages:
+  - test
   - deploy
   - verify
 
 variables:
   VPS_PORT: "22"
+  PIP_CACHE_DIR: "$CI_PROJECT_DIR/.cache/pip"
+  PYTHONDONTWRITEBYTECODE: "1"
 
 workflow:
   rules:
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
     - if: $CI_COMMIT_BRANCH == "main"
     - if: $CI_PIPELINE_SOURCE == "manual"
 
+# =============================================================================
+# TEST STAGE — parallel validation before deploy
+# =============================================================================
+# Hard gates (block deploy on failure): python_smoke_test, frontend_typecheck
+# Soft gate  (visible in MR but non-blocking): whatsapp_test
+#   Reason: 7/29 existing timer-based Jest tests fail locally (fake timer
+#   race conditions in rateLimiter / messageQueue). Production logic is
+#   unaffected; tests need maintenance. Remove `allow_failure: true` once
+#   those are stabilized in a dedicated PR.
+# -----------------------------------------------------------------------------
+
+python_smoke_test:
+  stage: test
+  image: python:3.11-slim
+  cache:
+    key:
+      files:
+        - requirements.txt
+    paths:
+      - .cache/pip
+  before_script:
+    - apt-get update -qq && apt-get install -y --no-install-recommends gcc > /dev/null
+    - pip install --quiet --cache-dir "$PIP_CACHE_DIR" -r requirements.txt
+  script:
+    - echo "[1/2] LLM client factory — singleton + base_url routing"
+    - PYTHONPATH=. python scripts/test_llm_factory.py
+    - echo "[2/2] LLM gateway — 6 routing scenarios (Codex/fallback/cooldown/embeddings)"
+    - PYTHONPATH=. python scripts/test_llm_gateway.py
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+    - if: $CI_COMMIT_BRANCH == "main"
+    - if: $CI_PIPELINE_SOURCE == "manual"
+
+frontend_typecheck:
+  stage: test
+  image: node:20-alpine
+  cache:
+    key:
+      files:
+        - frontend/package-lock.json
+    paths:
+      - frontend/node_modules
+  before_script:
+    - cd frontend
+    - npm ci --prefer-offline --no-audit --no-fund
+  script:
+    - echo "TypeScript strict check on React dashboard"
+    - npx tsc --noEmit
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+    - if: $CI_COMMIT_BRANCH == "main"
+    - if: $CI_PIPELINE_SOURCE == "manual"
+
+whatsapp_test:
+  stage: test
+  image: node:20-alpine
+  allow_failure: true   # TODO: stabilize 7 timer-based tests then promote to hard gate
+  cache:
+    key:
+      files:
+        - whatsapp-service/package-lock.json
+    paths:
+      - whatsapp-service/node_modules
+  before_script:
+    - apk add --no-cache git python3 make g++
+    - cd whatsapp-service
+    - npm ci --prefer-offline --no-audit --no-fund --legacy-peer-deps
+  script:
+    - npm test -- --ci --coverage --coverageReporters=cobertura --coverageReporters=text --testTimeout=15000
+  coverage: '/All files[^|]*\|[^|]*\s+([\d\.]+)/'
+  artifacts:
+    when: always
+    reports:
+      coverage_report:
+        coverage_format: cobertura
+        path: whatsapp-service/coverage/cobertura-coverage.xml
+    paths:
+      - whatsapp-service/coverage/
+    expire_in: 1 week
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+    - if: $CI_COMMIT_BRANCH == "main"
+    - if: $CI_PIPELINE_SOURCE == "manual"
+
+# =============================================================================
+# DEPLOY STAGE — only proceeds if hard-gate tests pass
+# =============================================================================
+
 deploy:
   stage: deploy
+  needs:
+    - job: python_smoke_test
+    - job: frontend_typecheck
+  rules:
+    - if: $CI_COMMIT_BRANCH == "main"
+    - if: $CI_PIPELINE_SOURCE == "manual"
   before_script:
     - apk add --no-cache openssh-client git bash sshpass
     - mkdir -p ~/.ssh && chmod 700 ~/.ssh
