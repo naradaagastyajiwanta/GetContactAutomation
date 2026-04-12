@@ -849,12 +849,12 @@ def setup_scheduler():
         replace_existing=True,
     )
 
-    # Agent 1: Find IG handles — every 2 hours during active hours
+    # Agent 1: Find IG handles — every hour, 24/7
     # Uses _threaded_ wrapper to run in a separate thread (keeps event loop free)
     scheduler.add_job(
         _threaded_handle_search,
         "cron",
-        hour="8-20/2",
+        hour="*/1",
         minute="0",
         timezone=WIB,
         id="agent_handle_finder",
@@ -863,11 +863,11 @@ def setup_scheduler():
         misfire_grace_time=300,  # Skip if more than 5 min late (avoids fire-on-startup)
     )
 
-    # Agent 2: Scrape posts — every hour, 24 hours a day
+    # Agent 2: Scrape posts — every 2 hours, 24/7
     scheduler.add_job(
         _threaded_post_scrape,
         "cron",
-        hour="*/1",
+        hour="*/2",
         minute="10",
         timezone=WIB,
         id="agent_post_scraper",
@@ -876,11 +876,11 @@ def setup_scheduler():
         misfire_grace_time=300,
     )
 
-    # Agent 3: Extract phones — every hour during active hours
+    # Agent 3: Extract phones — every hour, 24/7
     scheduler.add_job(
         _threaded_phone_extraction,
         "cron",
-        hour="8-21",
+        hour="*/1",
         minute="30",
         timezone=WIB,
         id="agent_phone_extractor",
@@ -889,7 +889,7 @@ def setup_scheduler():
         misfire_grace_time=300,
     )
 
-    # Agent 4: BEM discovery — every hour, 24 hours a day
+    # Agent 4: BEM discovery — every hour, 24/7
     scheduler.add_job(
         _threaded_bem_discovery,
         "cron",
@@ -1049,8 +1049,8 @@ def setup_scheduler():
     scheduler.start()
     log.info(
         "Scheduler started: outreach every 30min, followups every hour, "
-        "handle finder every 2h, post scraper every 3h, phone extractor every 1h, "
-        "BEM discovery every 4h"
+        "handle finder every 1h, post scraper every 2h, phone extractor every 1h, "
+        "BEM discovery every 1h"
         + (", learning reflection 3x daily" if cfg.LEARNING_ENABLED else "")
         + (", audiensi followups + rector finder" if cfg.AUDIENSI_ENABLED else "")
         + (", DMS sync" if cfg.get("DMS_SYNC_ENABLED", False) else "")

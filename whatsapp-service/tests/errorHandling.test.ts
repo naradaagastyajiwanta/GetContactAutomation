@@ -8,14 +8,21 @@
  * - Recovery mechanisms
  */
 
-import { jest, describe, beforeEach, afterEach, it, expect } from '@jest/globals';
+import {
+  jest,
+  describe,
+  beforeEach,
+  afterEach,
+  it,
+  expect,
+} from "@jest/globals";
 
 // Error types
 enum ErrorType {
-  TRANSIENT = 'transient', // Temporary errors that should be retried
-  PERMANENT = 'permanent', // Permanent errors that should not be retried
-  RATE_LIMIT = 'rate_limit', // Rate limiting errors
-  TIMEOUT = 'timeout', // Timeout errors
+  TRANSIENT = "transient", // Temporary errors that should be retried
+  PERMANENT = "permanent", // Permanent errors that should not be retried
+  RATE_LIMIT = "rate_limit", // Rate limiting errors
+  TIMEOUT = "timeout", // Timeout errors
 }
 
 interface RetryConfig {
@@ -35,7 +42,8 @@ interface RetryResult<T> {
 
 // Exponential backoff with jitter calculation
 function calculateBackoff(attempt: number, config: RetryConfig): number {
-  const exponentialDelay = config.baseDelayMs * Math.pow(config.backoffMultiplier, attempt);
+  const exponentialDelay =
+    config.baseDelayMs * Math.pow(config.backoffMultiplier, attempt);
   const cappedDelay = Math.min(exponentialDelay, config.maxDelayMs);
   const jitter = cappedDelay * (0.5 + Math.random() * 0.5); // 50-100% of base
   return Math.round(jitter);
@@ -45,7 +53,7 @@ function calculateBackoff(attempt: number, config: RetryConfig): number {
 async function retryWithBackoff<T>(
   fn: () => Promise<T>,
   config: RetryConfig,
-  isRetryable: (error: Error) => boolean = () => true
+  isRetryable: (error: Error) => boolean = () => true,
 ): Promise<RetryResult<T>> {
   let lastError: Error | undefined;
   let totalDelay = 0;
@@ -83,9 +91,9 @@ async function retryWithBackoff<T>(
 
 // Circuit breaker state
 enum CircuitState {
-  CLOSED = 'closed', // Normal operation
-  OPEN = 'open', // Failing, reject requests
-  HALF_OPEN = 'half_open', // Testing if service recovered
+  CLOSED = "closed", // Normal operation
+  OPEN = "open", // Failing, reject requests
+  HALF_OPEN = "half_open", // Testing if service recovered
 }
 
 interface CircuitBreakerConfig {
@@ -121,7 +129,7 @@ class CircuitBreaker {
         this.stats.state = CircuitState.HALF_OPEN;
         this.halfOpenCalls = 0;
       } else {
-        throw new Error('Circuit breaker is OPEN');
+        throw new Error("Circuit breaker is OPEN");
       }
     }
 
@@ -137,7 +145,9 @@ class CircuitBreaker {
 
   private shouldAttemptReset(): boolean {
     if (!this.stats.lastFailureTime) return false;
-    return Date.now() - this.stats.lastFailureTime >= this.config.recoveryTimeoutMs;
+    return (
+      Date.now() - this.stats.lastFailureTime >= this.config.recoveryTimeoutMs
+    );
   }
 
   private onSuccess(): void {
@@ -161,7 +171,7 @@ class CircuitBreaker {
     }
   }
 
-  private reset(): void {
+  reset(): void {
     this.stats = {
       failures: 0,
       successes: 0,
@@ -173,14 +183,10 @@ class CircuitBreaker {
   getStats(): CircuitBreakerStats {
     return { ...this.stats };
   }
-
-  reset(): void {
-    this.reset();
-  }
 }
 
-describe('Error Handling - Retry Logic', () => {
-  describe('Exponential Backoff Calculation', () => {
+describe("Error Handling - Retry Logic", () => {
+  describe("Exponential Backoff Calculation", () => {
     const defaultConfig: RetryConfig = {
       maxAttempts: 5,
       baseDelayMs: 1000,
@@ -188,14 +194,14 @@ describe('Error Handling - Retry Logic', () => {
       backoffMultiplier: 2,
     };
 
-    it('should calculate backoff correctly for first attempt', () => {
+    it("should calculate backoff correctly for first attempt", () => {
       const delay = calculateBackoff(0, defaultConfig);
       // 1000 * 2^0 = 1000, jittered 50-100% = 500-1000
       expect(delay).toBeGreaterThanOrEqual(500);
       expect(delay).toBeLessThanOrEqual(1000);
     });
 
-    it('should calculate backoff correctly for subsequent attempts', () => {
+    it("should calculate backoff correctly for subsequent attempts", () => {
       const delay1 = calculateBackoff(1, defaultConfig);
       // 1000 * 2^1 = 2000, jittered = 1000-2000
       expect(delay1).toBeGreaterThanOrEqual(1000);
@@ -207,13 +213,15 @@ describe('Error Handling - Retry Logic', () => {
       expect(delay2).toBeLessThanOrEqual(4000);
     });
 
-    it('should cap backoff at max delay', () => {
+    it("should cap backoff at max delay", () => {
       const delay = calculateBackoff(10, defaultConfig);
       expect(delay).toBeLessThanOrEqual(defaultConfig.maxDelayMs);
     });
 
-    it('should add jitter to prevent thundering herd', () => {
-      const delays = Array(100).fill(null).map(() => calculateBackoff(2, defaultConfig));
+    it("should add jitter to prevent thundering herd", () => {
+      const delays = Array(100)
+        .fill(null)
+        .map(() => calculateBackoff(2, defaultConfig));
       const uniqueDelays = new Set(delays);
 
       // With jitter, we should get multiple unique values
@@ -221,7 +229,7 @@ describe('Error Handling - Retry Logic', () => {
     });
   });
 
-  describe('Retry with Backoff', () => {
+  describe("Retry with Backoff", () => {
     beforeEach(() => {
       jest.useFakeTimers();
     });
@@ -230,8 +238,8 @@ describe('Error Handling - Retry Logic', () => {
       jest.useRealTimers();
     });
 
-    it('should succeed on first attempt', async () => {
-      const fn = jest.fn().mockResolvedValue('success');
+    it("should succeed on first attempt", async () => {
+      const fn = jest.fn<() => Promise<string>>().mockResolvedValue("success");
       const config: RetryConfig = {
         maxAttempts: 3,
         baseDelayMs: 100,
@@ -242,18 +250,18 @@ describe('Error Handling - Retry Logic', () => {
       const result = await retryWithBackoff(fn, config);
 
       expect(result.success).toBe(true);
-      expect(result.data).toBe('success');
+      expect(result.data).toBe("success");
       expect(result.attempts).toBe(1);
       expect(result.totalDelayMs).toBe(0);
       expect(fn).toHaveBeenCalledTimes(1);
     });
 
-    it('should retry on failure and eventually succeed', async () => {
+    it("should retry on failure and eventually succeed", async () => {
       const fn = jest
-        .fn()
-        .mockRejectedValueOnce(new Error('fail 1'))
-        .mockRejectedValueOnce(new Error('fail 2'))
-        .mockResolvedValue('success');
+        .fn<() => Promise<string>>()
+        .mockRejectedValueOnce(new Error("fail 1"))
+        .mockRejectedValueOnce(new Error("fail 2"))
+        .mockResolvedValue("success");
 
       const config: RetryConfig = {
         maxAttempts: 5,
@@ -270,13 +278,15 @@ describe('Error Handling - Retry Logic', () => {
       const result = await promise;
 
       expect(result.success).toBe(true);
-      expect(result.data).toBe('success');
+      expect(result.data).toBe("success");
       expect(result.attempts).toBe(3);
       expect(fn).toHaveBeenCalledTimes(3);
     });
 
-    it('should fail after max attempts', async () => {
-      const fn = jest.fn().mockRejectedValue(new Error('always fails'));
+    it("should fail after max attempts", async () => {
+      const fn = jest
+        .fn<() => Promise<string>>()
+        .mockRejectedValue(new Error("always fails"));
       const config: RetryConfig = {
         maxAttempts: 3,
         baseDelayMs: 100,
@@ -296,9 +306,11 @@ describe('Error Handling - Retry Logic', () => {
       expect(fn).toHaveBeenCalledTimes(3);
     });
 
-    it('should respect isRetryable predicate', async () => {
-      const nonRetryableError = new Error('permanent failure');
-      const fn = jest.fn().mockRejectedValue(nonRetryableError);
+    it("should respect isRetryable predicate", async () => {
+      const nonRetryableError = new Error("permanent failure");
+      const fn = jest
+        .fn<() => Promise<string>>()
+        .mockRejectedValue(nonRetryableError);
 
       const config: RetryConfig = {
         maxAttempts: 5,
@@ -307,7 +319,7 @@ describe('Error Handling - Retry Logic', () => {
         backoffMultiplier: 2,
       };
 
-      const isRetryable = (err: Error) => err.message !== 'permanent failure';
+      const isRetryable = (err: Error) => err.message !== "permanent failure";
 
       const result = await retryWithBackoff(fn, config, isRetryable);
 
@@ -316,12 +328,12 @@ describe('Error Handling - Retry Logic', () => {
       expect(fn).toHaveBeenCalledTimes(1);
     });
 
-    it('should accumulate delay correctly', async () => {
+    it("should accumulate delay correctly", async () => {
       const fn = jest
-        .fn()
-        .mockRejectedValueOnce(new Error('fail 1'))
-        .mockRejectedValueOnce(new Error('fail 2'))
-        .mockResolvedValue('success');
+        .fn<() => Promise<string>>()
+        .mockRejectedValueOnce(new Error("fail 1"))
+        .mockRejectedValueOnce(new Error("fail 2"))
+        .mockResolvedValue("success");
 
       const config: RetryConfig = {
         maxAttempts: 5,
@@ -341,33 +353,38 @@ describe('Error Handling - Retry Logic', () => {
     });
   });
 
-  describe('Error Categorization', () => {
-    it('should categorize timeout errors as retryable', () => {
-      const timeoutError = new Error('Request timeout');
-      (timeoutError as any).code = 'ETIMEDOUT';
+  describe("Error Categorization", () => {
+    it("should categorize timeout errors as retryable", () => {
+      const timeoutError = new Error("Request timeout");
+      (timeoutError as any).code = "ETIMEDOUT";
 
       const isRetryable = (err: Error) => {
         const code = (err as any).code;
-        return ['ETIMEDOUT', 'ECONNRESET', 'ECONNREFUSED', 'ENOTFOUND'].includes(code);
+        return [
+          "ETIMEDOUT",
+          "ECONNRESET",
+          "ECONNREFUSED",
+          "ENOTFOUND",
+        ].includes(code);
       };
 
       expect(isRetryable(timeoutError)).toBe(true);
     });
 
-    it('should categorize permanent errors as non-retryable', () => {
-      const authError = new Error('Authentication failed');
-      (authError as any).code = 'EAUTH';
+    it("should categorize permanent errors as non-retryable", () => {
+      const authError = new Error("Authentication failed");
+      (authError as any).code = "EAUTH";
 
       const isRetryable = (err: Error) => {
         const code = (err as any).code;
-        return !['EAUTH', 'EPERM', 'ENOENT'].includes(code);
+        return !["EAUTH", "EPERM", "ENOENT"].includes(code);
       };
 
       expect(isRetryable(authError)).toBe(false);
     });
 
-    it('should handle rate limit errors specifically', () => {
-      const rateLimitError = new Error('Too many requests');
+    it("should handle rate limit errors specifically", () => {
+      const rateLimitError = new Error("Too many requests");
       (rateLimitError as any).statusCode = 429;
 
       const isRateLimit = (err: Error) => (err as any).statusCode === 429;
@@ -377,7 +394,7 @@ describe('Error Handling - Retry Logic', () => {
   });
 });
 
-describe('Error Handling - Circuit Breaker', () => {
+describe("Error Handling - Circuit Breaker", () => {
   let breaker: CircuitBreaker;
   const defaultConfig: CircuitBreakerConfig = {
     failureThreshold: 3,
@@ -394,15 +411,15 @@ describe('Error Handling - Circuit Breaker', () => {
     jest.useRealTimers();
   });
 
-  describe('Basic Circuit Breaker', () => {
-    it('should start in CLOSED state', () => {
+  describe("Basic Circuit Breaker", () => {
+    it("should start in CLOSED state", () => {
       const stats = breaker.getStats();
       expect(stats.state).toBe(CircuitState.CLOSED);
       expect(stats.failures).toBe(0);
     });
 
-    it('should track successful calls', async () => {
-      const fn = jest.fn().mockResolvedValue('success');
+    it("should track successful calls", async () => {
+      const fn = jest.fn<() => Promise<string>>().mockResolvedValue("success");
 
       await breaker.execute(fn);
 
@@ -412,8 +429,10 @@ describe('Error Handling - Circuit Breaker', () => {
       expect(stats.state).toBe(CircuitState.CLOSED);
     });
 
-    it('should track failed calls', async () => {
-      const fn = jest.fn().mockRejectedValue(new Error('failure'));
+    it("should track failed calls", async () => {
+      const fn = jest
+        .fn<() => Promise<string>>()
+        .mockRejectedValue(new Error("failure"));
 
       await expect(breaker.execute(fn)).rejects.toThrow();
 
@@ -423,8 +442,10 @@ describe('Error Handling - Circuit Breaker', () => {
       expect(stats.state).toBe(CircuitState.CLOSED);
     });
 
-    it('should open circuit after threshold failures', async () => {
-      const fn = jest.fn().mockRejectedValue(new Error('failure'));
+    it("should open circuit after threshold failures", async () => {
+      const fn = jest
+        .fn<() => Promise<string>>()
+        .mockRejectedValue(new Error("failure"));
 
       // Fail enough times to open circuit
       for (let i = 0; i < defaultConfig.failureThreshold; i++) {
@@ -436,8 +457,10 @@ describe('Error Handling - Circuit Breaker', () => {
       expect(stats.failures).toBe(defaultConfig.failureThreshold);
     });
 
-    it('should reject calls when circuit is OPEN', async () => {
-      const fn = jest.fn().mockRejectedValue(new Error('failure'));
+    it("should reject calls when circuit is OPEN", async () => {
+      const fn = jest
+        .fn<() => Promise<string>>()
+        .mockRejectedValue(new Error("failure"));
 
       // Open the circuit
       for (let i = 0; i < defaultConfig.failureThreshold; i++) {
@@ -447,16 +470,20 @@ describe('Error Handling - Circuit Breaker', () => {
       }
 
       // Try to execute again
-      await expect(breaker.execute(fn)).rejects.toThrow('Circuit breaker is OPEN');
+      await expect(breaker.execute(fn)).rejects.toThrow(
+        "Circuit breaker is OPEN",
+      );
 
       // Function should not be called
       expect(fn).toHaveBeenCalledTimes(defaultConfig.failureThreshold);
     });
   });
 
-  describe('Circuit Recovery', () => {
-    it('should transition to HALF_OPEN after recovery timeout', async () => {
-      const fn = jest.fn().mockRejectedValue(new Error('failure'));
+  describe("Circuit Recovery", () => {
+    it("should transition to HALF_OPEN after recovery timeout", async () => {
+      const fn = jest
+        .fn<() => Promise<string>>()
+        .mockRejectedValue(new Error("failure"));
 
       // Open the circuit
       for (let i = 0; i < defaultConfig.failureThreshold; i++) {
@@ -471,14 +498,18 @@ describe('Error Handling - Circuit Breaker', () => {
       jest.advanceTimersByTime(defaultConfig.recoveryTimeoutMs + 100);
 
       // Next call should transition to HALF_OPEN
-      const successFn = jest.fn().mockResolvedValue('success');
+      const successFn = jest
+        .fn<() => Promise<string>>()
+        .mockResolvedValue("success");
       await breaker.execute(successFn);
 
       expect(breaker.getStats().state).toBe(CircuitState.HALF_OPEN);
     });
 
-    it('should close circuit after successful HALF_OPEN calls', async () => {
-      const failFn = jest.fn().mockRejectedValue(new Error('failure'));
+    it("should close circuit after successful HALF_OPEN calls", async () => {
+      const failFn = jest
+        .fn<() => Promise<string>>()
+        .mockRejectedValue(new Error("failure"));
 
       // Open the circuit
       for (let i = 0; i < defaultConfig.failureThreshold; i++) {
@@ -491,7 +522,9 @@ describe('Error Handling - Circuit Breaker', () => {
       jest.advanceTimersByTime(defaultConfig.recoveryTimeoutMs + 100);
 
       // Execute successful calls
-      const successFn = jest.fn().mockResolvedValue('success');
+      const successFn = jest
+        .fn<() => Promise<string>>()
+        .mockResolvedValue("success");
       for (let i = 0; i < defaultConfig.halfOpenMaxCalls; i++) {
         await breaker.execute(successFn);
       }
@@ -500,9 +533,13 @@ describe('Error Handling - Circuit Breaker', () => {
       expect(breaker.getStats().failures).toBe(0);
     });
 
-    it('should reopen circuit on failure in HALF_OPEN state', async () => {
-      const failFn = jest.fn().mockRejectedValue(new Error('failure'));
-      const successFn = jest.fn().mockResolvedValue('success');
+    it("should reopen circuit on failure in HALF_OPEN state", async () => {
+      const failFn = jest
+        .fn<() => Promise<string>>()
+        .mockRejectedValue(new Error("failure"));
+      const successFn = jest
+        .fn<() => Promise<string>>()
+        .mockResolvedValue("success");
 
       // Open the circuit
       for (let i = 0; i < defaultConfig.failureThreshold; i++) {
@@ -524,9 +561,11 @@ describe('Error Handling - Circuit Breaker', () => {
     });
   });
 
-  describe('Circuit Breaker Reset', () => {
-    it('should reset to initial state', async () => {
-      const fn = jest.fn().mockRejectedValue(new Error('failure'));
+  describe("Circuit Breaker Reset", () => {
+    it("should reset to initial state", async () => {
+      const fn = jest
+        .fn<() => Promise<string>>()
+        .mockRejectedValue(new Error("failure"));
 
       // Cause some failures
       for (let i = 0; i < 2; i++) {
@@ -547,15 +586,17 @@ describe('Error Handling - Circuit Breaker', () => {
     });
   });
 
-  describe('Edge Cases', () => {
-    it('should handle zero failure threshold', () => {
+  describe("Edge Cases", () => {
+    it("should handle zero failure threshold", () => {
       const zeroBreaker = new CircuitBreaker({
         failureThreshold: 0,
         recoveryTimeoutMs: 1000,
         halfOpenMaxCalls: 1,
       });
 
-      const fn = jest.fn().mockRejectedValue(new Error('failure'));
+      const fn = jest
+        .fn<() => Promise<string>>()
+        .mockRejectedValue(new Error("failure"));
 
       // Should open immediately on first failure
       expect(async () => {
@@ -566,14 +607,16 @@ describe('Error Handling - Circuit Breaker', () => {
       expect(zeroBreaker.getStats().state).toBe(CircuitState.OPEN);
     });
 
-    it('should handle very high failure threshold', async () => {
+    it("should handle very high failure threshold", async () => {
       const highBreaker = new CircuitBreaker({
         failureThreshold: 1000,
         recoveryTimeoutMs: 1000,
         halfOpenMaxCalls: 10,
       });
 
-      const fn = jest.fn().mockRejectedValue(new Error('failure'));
+      const fn = jest
+        .fn<() => Promise<string>>()
+        .mockRejectedValue(new Error("failure"));
 
       // Circuit should stay CLOSED for many failures
       for (let i = 0; i < 100; i++) {
@@ -587,7 +630,7 @@ describe('Error Handling - Circuit Breaker', () => {
   });
 });
 
-describe('Error Handling - Integration', () => {
+describe("Error Handling - Integration", () => {
   beforeEach(() => {
     jest.useFakeTimers();
   });
@@ -596,7 +639,7 @@ describe('Error Handling - Integration', () => {
     jest.useRealTimers();
   });
 
-  it('should combine circuit breaker with retry logic', async () => {
+  it("should combine circuit breaker with retry logic", async () => {
     const breaker = new CircuitBreaker({
       failureThreshold: 5,
       recoveryTimeoutMs: 10000,
@@ -611,12 +654,12 @@ describe('Error Handling - Integration', () => {
     };
 
     let attempts = 0;
-    const fn = jest.fn().mockImplementation(() => {
+    const fn = jest.fn<() => Promise<string>>().mockImplementation(() => {
       attempts++;
       if (attempts < 3) {
-        return Promise.reject(new Error('temporary failure'));
+        return Promise.reject(new Error("temporary failure"));
       }
-      return Promise.resolve('success');
+      return Promise.resolve("success");
     });
 
     // Wrap function with both circuit breaker and retry
@@ -630,14 +673,16 @@ describe('Error Handling - Integration', () => {
     expect(breaker.getStats().state).toBe(CircuitState.CLOSED);
   });
 
-  it('should handle cascading failures correctly', async () => {
+  it("should handle cascading failures correctly", async () => {
     const breaker = new CircuitBreaker({
       failureThreshold: 3,
       recoveryTimeoutMs: 5000,
       halfOpenMaxCalls: 2,
     });
 
-    const fn = jest.fn().mockRejectedValue(new Error('service unavailable'));
+    const fn = jest
+      .fn<() => Promise<string>>()
+      .mockRejectedValue(new Error("service unavailable"));
 
     // Execute until circuit opens
     for (let i = 0; i < 5; i++) {

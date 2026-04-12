@@ -8,12 +8,16 @@
  * - Resource disposal
  */
 
-import { jest, describe, beforeEach, afterEach, it, expect } from '@jest/globals';
-import { proto } from '@whiskeysockets/baileys';
 import {
-  createMockMessage,
-  type PendingMessageEntry,
-} from './utils/mocks';
+  jest,
+  describe,
+  beforeEach,
+  afterEach,
+  it,
+  expect,
+} from "@jest/globals";
+import { proto } from "@whiskeysockets/baileys";
+import { createMockMessage, type PendingMessageEntry } from "./utils/mocks";
 
 // Configuration
 const DEBOUNCE_MS = 5000;
@@ -35,7 +39,7 @@ class PendingMessageManager {
 
   constructor(
     config: PendingMessageConfig,
-    flushCallback: (phone: string) => void
+    flushCallback: (phone: string) => void,
   ) {
     this.pending = new Map();
     this.config = config;
@@ -62,7 +66,7 @@ class PendingMessageManager {
     message: string,
     msgKey: proto.IMessageKey,
     pushName: string,
-    timestamp: number
+    timestamp: number,
   ): void {
     const existing = this.pending.get(phone);
 
@@ -73,13 +77,13 @@ class PendingMessageManager {
       existing.allMsgKeys.push(msgKey);
       existing.timer = setTimeout(
         () => this.flushCallback(phone),
-        this.config.debounceMs
+        this.config.debounceMs,
       );
     } else {
       // Create new entry
       const timer = setTimeout(
         () => this.flushCallback(phone),
-        this.config.debounceMs
+        this.config.debounceMs,
       );
       this.pending.set(phone, {
         messages: [message],
@@ -114,7 +118,7 @@ class PendingMessageManager {
     return this.pending.size;
   }
 
-  private cleanup(): void {
+  private cleanup(): number {
     const now = Date.now();
     const expired: string[] = [];
 
@@ -176,7 +180,7 @@ class PendingMessageManager {
   }
 }
 
-describe('Memory Cleanup - Pending Messages TTL', () => {
+describe("Memory Cleanup - Pending Messages TTL", () => {
   let manager: PendingMessageManager;
   let flushCallback: jest.Mock;
   const config: PendingMessageConfig = {
@@ -197,25 +201,25 @@ describe('Memory Cleanup - Pending Messages TTL', () => {
     jest.useRealTimers();
   });
 
-  describe('Basic TTL Expiration', () => {
-    it('should add pending messages correctly', () => {
-      const msg = createMockMessage({ text: 'Test' });
+  describe("Basic TTL Expiration", () => {
+    it("should add pending messages correctly", () => {
+      const msg = createMockMessage({ text: "Test" });
 
       manager.add(
-        '6281234567890',
-        'Test',
-        msg.key,
-        msg.pushName ?? '',
-        Date.now()
+        "6281234567890",
+        "Test",
+        msg.key!,
+        msg.pushName ?? "",
+        Date.now(),
       );
 
       expect(manager.size()).toBe(1);
-      expect(manager.has('6281234567890')).toBe(true);
+      expect(manager.has("6281234567890")).toBe(true);
     });
 
-    it('should not expire fresh messages', () => {
-      const msg = createMockMessage({ text: 'Fresh' });
-      manager.add('628111', 'Fresh', msg.key, 'User1', Date.now());
+    it("should not expire fresh messages", () => {
+      const msg = createMockMessage({ text: "Fresh" });
+      manager.add("628111", "Fresh", msg.key!, "User1", Date.now());
 
       // Force cleanup immediately
       const expired = manager.forceCleanup();
@@ -224,11 +228,11 @@ describe('Memory Cleanup - Pending Messages TTL', () => {
       expect(manager.size()).toBe(1);
     });
 
-    it('should expire messages older than TTL', () => {
+    it("should expire messages older than TTL", () => {
       const oldTimestamp = Date.now() - TTL_MS - 1000; // Older than TTL
-      const msg = createMockMessage({ text: 'Old' });
+      const msg = createMockMessage({ text: "Old" });
 
-      manager.add('628222', 'Old', msg.key, 'User2', oldTimestamp);
+      manager.add("628222", "Old", msg.key!, "User2", oldTimestamp);
 
       // Force cleanup
       const expired = manager.forceCleanup();
@@ -237,16 +241,28 @@ describe('Memory Cleanup - Pending Messages TTL', () => {
       expect(manager.size()).toBe(0);
     });
 
-    it('should handle mixed ages correctly', () => {
+    it("should handle mixed ages correctly", () => {
       const now = Date.now();
 
       // Add old messages
-      manager.add('628old1', 'Old1', createMockMessage().key, 'Old1', now - TTL_MS - 1000);
-      manager.add('628old2', 'Old2', createMockMessage().key, 'Old2', now - TTL_MS - 500);
+      manager.add(
+        "628old1",
+        "Old1",
+        createMockMessage().key,
+        "Old1",
+        now - TTL_MS - 1000,
+      );
+      manager.add(
+        "628old2",
+        "Old2",
+        createMockMessage().key,
+        "Old2",
+        now - TTL_MS - 500,
+      );
 
       // Add fresh messages
-      manager.add('628new1', 'New1', createMockMessage().key, 'New1', now);
-      manager.add('628new2', 'New2', createMockMessage().key, 'New2', now);
+      manager.add("628new1", "New1", createMockMessage().key, "New1", now);
+      manager.add("628new2", "New2", createMockMessage().key, "New2", now);
 
       expect(manager.size()).toBe(4);
 
@@ -254,15 +270,21 @@ describe('Memory Cleanup - Pending Messages TTL', () => {
 
       expect(expired).toBe(2);
       expect(manager.size()).toBe(2);
-      expect(manager.has('628new1')).toBe(true);
-      expect(manager.has('628new2')).toBe(true);
+      expect(manager.has("628new1")).toBe(true);
+      expect(manager.has("628new2")).toBe(true);
     });
 
-    it('should trigger cleanup on interval', () => {
+    it("should trigger cleanup on interval", () => {
       const now = Date.now();
 
       // Add old message
-      manager.add('628old', 'Old', createMockMessage().key, 'Old', now - TTL_MS - 1000);
+      manager.add(
+        "628old",
+        "Old",
+        createMockMessage().key,
+        "Old",
+        now - TTL_MS - 1000,
+      );
       expect(manager.size()).toBe(1);
 
       // Advance past cleanup interval
@@ -272,14 +294,14 @@ describe('Memory Cleanup - Pending Messages TTL', () => {
     });
   });
 
-  describe('Timer Cleanup', () => {
-    it('should clear timer when removing entry', () => {
-      const clearTimeoutSpy = jest.spyOn(global, 'clearTimeout');
+  describe("Timer Cleanup", () => {
+    it("should clear timer when removing entry", () => {
+      const clearTimeoutSpy = jest.spyOn(global, "clearTimeout");
 
       const msg = createMockMessage();
-      manager.add('628111', 'Test', msg.key, 'User', Date.now());
+      manager.add("628111", "Test", msg.key!, "User", Date.now());
 
-      manager.remove('628111');
+      manager.remove("628111");
 
       expect(clearTimeoutSpy).toHaveBeenCalled();
       expect(manager.size()).toBe(0);
@@ -287,8 +309,8 @@ describe('Memory Cleanup - Pending Messages TTL', () => {
       clearTimeoutSpy.mockRestore();
     });
 
-    it('should clear all timers on dispose', () => {
-      const clearTimeoutSpy = jest.spyOn(global, 'clearTimeout');
+    it("should clear all timers on dispose", () => {
+      const clearTimeoutSpy = jest.spyOn(global, "clearTimeout");
 
       // Add multiple entries
       for (let i = 0; i < 5; i++) {
@@ -297,7 +319,7 @@ describe('Memory Cleanup - Pending Messages TTL', () => {
           `Message ${i}`,
           createMockMessage().key,
           `User${i}`,
-          Date.now()
+          Date.now(),
         );
       }
 
@@ -311,31 +333,31 @@ describe('Memory Cleanup - Pending Messages TTL', () => {
       clearTimeoutSpy.mockRestore();
     });
 
-    it('should clear timer when flushing', () => {
-      const clearTimeoutSpy = jest.spyOn(global, 'clearTimeout');
+    it("should clear timer when flushing", () => {
+      const clearTimeoutSpy = jest.spyOn(global, "clearTimeout");
 
       const msg = createMockMessage();
-      manager.add('628111', 'Test', msg.key, 'User', Date.now());
+      manager.add("628111", "Test", msg.key!, "User", Date.now());
 
       // Advance past debounce time to trigger flush
       jest.advanceTimersByTime(DEBOUNCE_MS + 100);
 
-      expect(flushCallback).toHaveBeenCalledWith('628111');
+      expect(flushCallback).toHaveBeenCalledWith("628111");
       expect(clearTimeoutSpy).toHaveBeenCalled();
 
       clearTimeoutSpy.mockRestore();
     });
 
-    it('should reset timer when appending to existing entry', () => {
-      const clearTimeoutSpy = jest.spyOn(global, 'clearTimeout');
-      const setTimeoutSpy = jest.spyOn(global, 'setTimeout');
+    it("should reset timer when appending to existing entry", () => {
+      const clearTimeoutSpy = jest.spyOn(global, "clearTimeout");
+      const setTimeoutSpy = jest.spyOn(global, "setTimeout");
 
       const msg = createMockMessage();
-      manager.add('628111', 'First', msg.key, 'User', Date.now());
+      manager.add("628111", "First", msg.key!, "User", Date.now());
 
       // Add more messages to same phone
-      manager.add('628111', 'Second', msg.key, 'User', Date.now());
-      manager.add('628111', 'Third', msg.key, 'User', Date.now());
+      manager.add("628111", "Second", msg.key!, "User", Date.now());
+      manager.add("628111", "Third", msg.key!, "User", Date.now());
 
       // Should have cleared timers for updates
       expect(clearTimeoutSpy).toHaveBeenCalled();
@@ -346,8 +368,8 @@ describe('Memory Cleanup - Pending Messages TTL', () => {
     });
   });
 
-  describe('Memory Leak Prevention', () => {
-    it('should not accumulate unbounded entries', () => {
+  describe("Memory Leak Prevention", () => {
+    it("should not accumulate unbounded entries", () => {
       const initialSize = manager.size();
 
       // Add many messages
@@ -357,7 +379,7 @@ describe('Memory Cleanup - Pending Messages TTL', () => {
           `Message ${i}`,
           createMockMessage().key,
           `User${i}`,
-          Date.now()
+          Date.now(),
         );
       }
 
@@ -372,15 +394,15 @@ describe('Memory Cleanup - Pending Messages TTL', () => {
       expect(manager.size()).toBe(0);
     });
 
-    it('should handle rapid addition and removal', () => {
+    it("should handle rapid addition and removal", () => {
       for (let i = 0; i < 1000; i++) {
         const phone = `628${i % 10}`; // Reuse phone numbers
         manager.add(
           phone,
           `Message ${i}`,
           createMockMessage().key,
-          'User',
-          Date.now()
+          "User",
+          Date.now(),
         );
 
         // Remove every other entry
@@ -393,8 +415,8 @@ describe('Memory Cleanup - Pending Messages TTL', () => {
       expect(manager.size()).toBe(5);
     });
 
-    it('should cleanup interval timer on stop', () => {
-      const clearIntervalSpy = jest.spyOn(global, 'clearInterval');
+    it("should cleanup interval timer on stop", () => {
+      const clearIntervalSpy = jest.spyOn(global, "clearInterval");
 
       manager.stop();
 
@@ -403,15 +425,15 @@ describe('Memory Cleanup - Pending Messages TTL', () => {
       clearIntervalSpy.mockRestore();
     });
 
-    it('should handle multiple start/stop cycles', () => {
+    it("should handle multiple start/stop cycles", () => {
       for (let i = 0; i < 10; i++) {
         manager.start();
         manager.add(
           `628${i}`,
           `Message ${i}`,
           createMockMessage().key,
-          'User',
-          Date.now()
+          "User",
+          Date.now(),
         );
         manager.stop();
       }
@@ -424,16 +446,16 @@ describe('Memory Cleanup - Pending Messages TTL', () => {
     });
   });
 
-  describe('Resource Disposal', () => {
-    it('should clean up all resources on dispose', () => {
+  describe("Resource Disposal", () => {
+    it("should clean up all resources on dispose", () => {
       // Add entries
       for (let i = 0; i < 10; i++) {
         manager.add(
           `628${i}`,
           `Message ${i}`,
           createMockMessage().key,
-          'User',
-          Date.now()
+          "User",
+          Date.now(),
         );
       }
 
@@ -444,8 +466,8 @@ describe('Memory Cleanup - Pending Messages TTL', () => {
       expect(manager.size()).toBe(0);
     });
 
-    it('should stop cleanup interval on dispose', () => {
-      const clearIntervalSpy = jest.spyOn(global, 'clearInterval');
+    it("should stop cleanup interval on dispose", () => {
+      const clearIntervalSpy = jest.spyOn(global, "clearInterval");
 
       manager.dispose();
 
@@ -457,26 +479,38 @@ describe('Memory Cleanup - Pending Messages TTL', () => {
       clearIntervalSpy.mockRestore();
     });
 
-    it('should allow reusing after dispose', () => {
-      manager.add('628111', 'Test', createMockMessage().key, 'User', Date.now());
+    it("should allow reusing after dispose", () => {
+      manager.add(
+        "628111",
+        "Test",
+        createMockMessage().key,
+        "User",
+        Date.now(),
+      );
       manager.dispose();
 
       expect(manager.size()).toBe(0);
 
       // Start again
       manager.start();
-      manager.add('628222', 'New', createMockMessage().key, 'User', Date.now());
+      manager.add("628222", "New", createMockMessage().key, "User", Date.now());
 
       expect(manager.size()).toBe(1);
     });
   });
 
-  describe('Statistics and Monitoring', () => {
-    it('should provide accurate stats', () => {
+  describe("Statistics and Monitoring", () => {
+    it("should provide accurate stats", () => {
       const now = Date.now();
 
-      manager.add('628fresh', 'Fresh', createMockMessage().key, 'User', now);
-      manager.add('628old', 'Old', createMockMessage().key, 'User', now - TTL_MS - 1000);
+      manager.add("628fresh", "Fresh", createMockMessage().key, "User", now);
+      manager.add(
+        "628old",
+        "Old",
+        createMockMessage().key,
+        "User",
+        now - TTL_MS - 1000,
+      );
 
       const stats = manager.getStats();
 
@@ -484,41 +518,47 @@ describe('Memory Cleanup - Pending Messages TTL', () => {
       expect(stats.entries).toHaveLength(2);
     });
 
-    it('should include entry age in stats', () => {
+    it("should include entry age in stats", () => {
       const timestamp = Date.now() - 5000;
-      manager.add('628111', 'Test', createMockMessage().key, 'User', timestamp);
+      manager.add("628111", "Test", createMockMessage().key, "User", timestamp);
 
       jest.advanceTimersByTime(1000);
 
       const stats = manager.getStats();
-      const entry = stats.entries.find((e) => e.phone === '628111');
+      const entry = stats.entries.find((e) => e.phone === "628111");
 
       expect(entry?.age).toBeGreaterThan(5000);
       expect(entry?.age).toBeLessThan(7000);
     });
 
-    it('should mark expired entries in stats', () => {
+    it("should mark expired entries in stats", () => {
       const now = Date.now();
 
-      manager.add('628expired', 'Expired', createMockMessage().key, 'User', now - TTL_MS - 1000);
-      manager.add('628valid', 'Valid', createMockMessage().key, 'User', now);
+      manager.add(
+        "628expired",
+        "Expired",
+        createMockMessage().key,
+        "User",
+        now - TTL_MS - 1000,
+      );
+      manager.add("628valid", "Valid", createMockMessage().key, "User", now);
 
       const stats = manager.getStats();
 
-      const expiredEntry = stats.entries.find((e) => e.phone === '628expired');
-      const validEntry = stats.entries.find((e) => e.phone === '628valid');
+      const expiredEntry = stats.entries.find((e) => e.phone === "628expired");
+      const validEntry = stats.entries.find((e) => e.phone === "628valid");
 
       expect(expiredEntry?.isExpired).toBe(true);
       expect(validEntry?.isExpired).toBe(false);
     });
 
-    it('should track message count per entry', () => {
-      const phone = '628111';
+    it("should track message count per entry", () => {
+      const phone = "628111";
       const msg = createMockMessage();
 
-      manager.add(phone, 'Msg1', msg.key, 'User', Date.now());
-      manager.add(phone, 'Msg2', msg.key, 'User', Date.now());
-      manager.add(phone, 'Msg3', msg.key, 'User', Date.now());
+      manager.add(phone, "Msg1", msg.key!, "User", Date.now());
+      manager.add(phone, "Msg2", msg.key!, "User", Date.now());
+      manager.add(phone, "Msg3", msg.key!, "User", Date.now());
 
       const stats = manager.getStats();
       const entry = stats.entries.find((e) => e.phone === phone);
@@ -527,32 +567,41 @@ describe('Memory Cleanup - Pending Messages TTL', () => {
     });
   });
 
-  describe('Edge Cases', () => {
-    it('should handle removing non-existent entry', () => {
-      const result = manager.remove('nonexistent');
+  describe("Edge Cases", () => {
+    it("should handle removing non-existent entry", () => {
+      const result = manager.remove("nonexistent");
       expect(result).toBe(false);
     });
 
-    it('should handle getting non-existent entry', () => {
-      const entry = manager.get('nonexistent');
+    it("should handle getting non-existent entry", () => {
+      const entry = manager.get("nonexistent");
       expect(entry).toBeUndefined();
     });
 
-    it('should handle clearing empty manager', () => {
+    it("should handle clearing empty manager", () => {
       manager.clear();
       expect(manager.size()).toBe(0);
     });
 
-    it('should handle zero TTL', () => {
+    it("should handle zero TTL", () => {
       const zeroTTLConfig: PendingMessageConfig = {
         ...config,
         ttlMs: 0,
       };
 
-      const zeroTTLManager = new PendingMessageManager(zeroTTLConfig, flushCallback);
+      const zeroTTLManager = new PendingMessageManager(
+        zeroTTLConfig,
+        flushCallback,
+      );
       zeroTTLManager.start();
 
-      zeroTTLManager.add('628111', 'Test', createMockMessage().key, 'User', Date.now());
+      zeroTTLManager.add(
+        "628111",
+        "Test",
+        createMockMessage().key,
+        "User",
+        Date.now(),
+      );
 
       // Should expire immediately
       const expired = zeroTTLManager.forceCleanup();
@@ -561,16 +610,25 @@ describe('Memory Cleanup - Pending Messages TTL', () => {
       zeroTTLManager.dispose();
     });
 
-    it('should handle very large TTL', () => {
+    it("should handle very large TTL", () => {
       const largeTTLConfig: PendingMessageConfig = {
         ...config,
         ttlMs: 999999999,
       };
 
-      const largeTTLManager = new PendingMessageManager(largeTTLConfig, flushCallback);
+      const largeTTLManager = new PendingMessageManager(
+        largeTTLConfig,
+        flushCallback,
+      );
       largeTTLManager.start();
 
-      largeTTLManager.add('628111', 'Test', createMockMessage().key, 'User', Date.now());
+      largeTTLManager.add(
+        "628111",
+        "Test",
+        createMockMessage().key,
+        "User",
+        Date.now(),
+      );
 
       // Should not expire even after normal cleanup interval
       jest.advanceTimersByTime(CLEANUP_INTERVAL_MS);
@@ -579,11 +637,17 @@ describe('Memory Cleanup - Pending Messages TTL', () => {
       largeTTLManager.dispose();
     });
 
-    it('should handle entries with exact TTL boundary', () => {
+    it("should handle entries with exact TTL boundary", () => {
       const now = Date.now();
       const boundaryTimestamp = now - TTL_MS;
 
-      manager.add('628boundary', 'Boundary', createMockMessage().key, 'User', boundaryTimestamp);
+      manager.add(
+        "628boundary",
+        "Boundary",
+        createMockMessage().key,
+        "User",
+        boundaryTimestamp,
+      );
 
       // At exactly TTL, should be expired
       const expired = manager.forceCleanup();
@@ -591,17 +655,23 @@ describe('Memory Cleanup - Pending Messages TTL', () => {
     });
   });
 
-  describe('Concurrent Operations', () => {
-    it('should handle concurrent additions to same phone', () => {
-      const phone = '628111';
+  describe("Concurrent Operations", () => {
+    it("should handle concurrent additions to same phone", () => {
+      const phone = "628111";
       const promises: Promise<void>[] = [];
 
       for (let i = 0; i < 100; i++) {
         promises.push(
           new Promise((resolve) => {
-            manager.add(phone, `Msg${i}`, createMockMessage().key, 'User', Date.now());
+            manager.add(
+              phone,
+              `Msg${i}`,
+              createMockMessage().key,
+              "User",
+              Date.now(),
+            );
             resolve();
-          })
+          }),
         );
       }
 
@@ -611,16 +681,22 @@ describe('Memory Cleanup - Pending Messages TTL', () => {
       expect(entry?.messages.length).toBe(100);
     });
 
-    it('should handle concurrent additions to different phones', () => {
+    it("should handle concurrent additions to different phones", () => {
       const promises: Promise<void>[] = [];
 
       for (let i = 0; i < 100; i++) {
         const phone = `628${i}`;
         promises.push(
           new Promise((resolve) => {
-            manager.add(phone, `Msg${i}`, createMockMessage().key, 'User', Date.now());
+            manager.add(
+              phone,
+              `Msg${i}`,
+              createMockMessage().key,
+              "User",
+              Date.now(),
+            );
             resolve();
-          })
+          }),
         );
       }
 
@@ -631,8 +707,8 @@ describe('Memory Cleanup - Pending Messages TTL', () => {
   });
 });
 
-describe('Memory Cleanup - Manual Cleanup', () => {
-  it('should provide manual cleanup control', () => {
+describe("Memory Cleanup - Manual Cleanup", () => {
+  it("should provide manual cleanup control", () => {
     jest.useFakeTimers();
 
     const config: PendingMessageConfig = {
@@ -646,7 +722,13 @@ describe('Memory Cleanup - Manual Cleanup', () => {
 
     // Don't start automatic cleanup
     const now = Date.now();
-    manager.add('628old', 'Old', createMockMessage().key, 'User', now - TTL_MS - 1000);
+    manager.add(
+      "628old",
+      "Old",
+      createMockMessage().key,
+      "User",
+      now - TTL_MS - 1000,
+    );
 
     // Manual cleanup
     const expired = manager.forceCleanup();
@@ -658,7 +740,7 @@ describe('Memory Cleanup - Manual Cleanup', () => {
     jest.useRealTimers();
   });
 
-  it('should allow manual clearing without cleanup', () => {
+  it("should allow manual clearing without cleanup", () => {
     jest.useFakeTimers();
 
     const config: PendingMessageConfig = {
@@ -671,7 +753,13 @@ describe('Memory Cleanup - Manual Cleanup', () => {
     const manager = new PendingMessageManager(config, flushCallback);
 
     for (let i = 0; i < 10; i++) {
-      manager.add(`628${i}`, `Msg${i}`, createMockMessage().key, 'User', Date.now());
+      manager.add(
+        `628${i}`,
+        `Msg${i}`,
+        createMockMessage().key,
+        "User",
+        Date.now(),
+      );
     }
 
     expect(manager.size()).toBe(10);
