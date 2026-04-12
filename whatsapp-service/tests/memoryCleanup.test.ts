@@ -248,21 +248,21 @@ describe("Memory Cleanup - Pending Messages TTL", () => {
       manager.add(
         "628old1",
         "Old1",
-        createMockMessage().key,
+        createMockMessage().key!,
         "Old1",
         now - TTL_MS - 1000,
       );
       manager.add(
         "628old2",
         "Old2",
-        createMockMessage().key,
+        createMockMessage().key!,
         "Old2",
         now - TTL_MS - 500,
       );
 
       // Add fresh messages
-      manager.add("628new1", "New1", createMockMessage().key, "New1", now);
-      manager.add("628new2", "New2", createMockMessage().key, "New2", now);
+      manager.add("628new1", "New1", createMockMessage().key!, "New1", now);
+      manager.add("628new2", "New2", createMockMessage().key!, "New2", now);
 
       expect(manager.size()).toBe(4);
 
@@ -281,7 +281,7 @@ describe("Memory Cleanup - Pending Messages TTL", () => {
       manager.add(
         "628old",
         "Old",
-        createMockMessage().key,
+        createMockMessage().key!,
         "Old",
         now - TTL_MS - 1000,
       );
@@ -317,7 +317,7 @@ describe("Memory Cleanup - Pending Messages TTL", () => {
         manager.add(
           `628${i}`,
           `Message ${i}`,
-          createMockMessage().key,
+          createMockMessage().key!,
           `User${i}`,
           Date.now(),
         );
@@ -377,7 +377,7 @@ describe("Memory Cleanup - Pending Messages TTL", () => {
         manager.add(
           `628${i}`,
           `Message ${i}`,
-          createMockMessage().key,
+          createMockMessage().key!,
           `User${i}`,
           Date.now(),
         );
@@ -400,7 +400,7 @@ describe("Memory Cleanup - Pending Messages TTL", () => {
         manager.add(
           phone,
           `Message ${i}`,
-          createMockMessage().key,
+          createMockMessage().key!,
           "User",
           Date.now(),
         );
@@ -431,7 +431,7 @@ describe("Memory Cleanup - Pending Messages TTL", () => {
         manager.add(
           `628${i}`,
           `Message ${i}`,
-          createMockMessage().key,
+          createMockMessage().key!,
           "User",
           Date.now(),
         );
@@ -453,7 +453,7 @@ describe("Memory Cleanup - Pending Messages TTL", () => {
         manager.add(
           `628${i}`,
           `Message ${i}`,
-          createMockMessage().key,
+          createMockMessage().key!,
           "User",
           Date.now(),
         );
@@ -483,7 +483,7 @@ describe("Memory Cleanup - Pending Messages TTL", () => {
       manager.add(
         "628111",
         "Test",
-        createMockMessage().key,
+        createMockMessage().key!,
         "User",
         Date.now(),
       );
@@ -493,7 +493,13 @@ describe("Memory Cleanup - Pending Messages TTL", () => {
 
       // Start again
       manager.start();
-      manager.add("628222", "New", createMockMessage().key, "User", Date.now());
+      manager.add(
+        "628222",
+        "New",
+        createMockMessage().key!,
+        "User",
+        Date.now(),
+      );
 
       expect(manager.size()).toBe(1);
     });
@@ -503,11 +509,11 @@ describe("Memory Cleanup - Pending Messages TTL", () => {
     it("should provide accurate stats", () => {
       const now = Date.now();
 
-      manager.add("628fresh", "Fresh", createMockMessage().key, "User", now);
+      manager.add("628fresh", "Fresh", createMockMessage().key!, "User", now);
       manager.add(
         "628old",
         "Old",
-        createMockMessage().key,
+        createMockMessage().key!,
         "User",
         now - TTL_MS - 1000,
       );
@@ -520,7 +526,13 @@ describe("Memory Cleanup - Pending Messages TTL", () => {
 
     it("should include entry age in stats", () => {
       const timestamp = Date.now() - 5000;
-      manager.add("628111", "Test", createMockMessage().key, "User", timestamp);
+      manager.add(
+        "628111",
+        "Test",
+        createMockMessage().key!,
+        "User",
+        timestamp,
+      );
 
       jest.advanceTimersByTime(1000);
 
@@ -537,11 +549,11 @@ describe("Memory Cleanup - Pending Messages TTL", () => {
       manager.add(
         "628expired",
         "Expired",
-        createMockMessage().key,
+        createMockMessage().key!,
         "User",
         now - TTL_MS - 1000,
       );
-      manager.add("628valid", "Valid", createMockMessage().key, "User", now);
+      manager.add("628valid", "Valid", createMockMessage().key!, "User", now);
 
       const stats = manager.getStats();
 
@@ -598,7 +610,7 @@ describe("Memory Cleanup - Pending Messages TTL", () => {
       zeroTTLManager.add(
         "628111",
         "Test",
-        createMockMessage().key,
+        createMockMessage().key!,
         "User",
         Date.now(),
       );
@@ -625,7 +637,7 @@ describe("Memory Cleanup - Pending Messages TTL", () => {
       largeTTLManager.add(
         "628111",
         "Test",
-        createMockMessage().key,
+        createMockMessage().key!,
         "User",
         Date.now(),
       );
@@ -644,7 +656,7 @@ describe("Memory Cleanup - Pending Messages TTL", () => {
       manager.add(
         "628boundary",
         "Boundary",
-        createMockMessage().key,
+        createMockMessage().key!,
         "User",
         boundaryTimestamp,
       );
@@ -666,7 +678,7 @@ describe("Memory Cleanup - Pending Messages TTL", () => {
             manager.add(
               phone,
               `Msg${i}`,
-              createMockMessage().key,
+              createMockMessage().key!,
               "User",
               Date.now(),
             );
@@ -691,7 +703,7 @@ describe("Memory Cleanup - Pending Messages TTL", () => {
             manager.add(
               phone,
               `Msg${i}`,
-              createMockMessage().key,
+              createMockMessage().key!,
               "User",
               Date.now(),
             );
@@ -725,7 +737,7 @@ describe("Memory Cleanup - Manual Cleanup", () => {
     manager.add(
       "628old",
       "Old",
-      createMockMessage().key,
+      createMockMessage().key!,
       "User",
       now - TTL_MS - 1000,
     );
@@ -756,7 +768,7 @@ describe("Memory Cleanup - Manual Cleanup", () => {
       manager.add(
         `628${i}`,
         `Msg${i}`,
-        createMockMessage().key,
+        createMockMessage().key!,
         "User",
         Date.now(),
       );

@@ -8,7 +8,14 @@
  * - Concurrent request handling
  */
 
-import { jest, describe, beforeEach, afterEach, it, expect } from '@jest/globals';
+import {
+  jest,
+  describe,
+  beforeEach,
+  afterEach,
+  it,
+  expect,
+} from "@jest/globals";
 
 // Token bucket rate limiter implementation
 interface TokenBucketConfig {
@@ -25,7 +32,12 @@ interface TokenBucketState {
 class TokenBucket {
   private config: TokenBucketConfig;
   private state: TokenBucketState;
-  private waitQueue: Array<{ resolve: (value: boolean) => void; tokens: number }>;
+  private waitQueue: Array<{
+    resolve: (value: boolean) => void;
+    tokens: number;
+  }>;
+
+  private refillTimer: ReturnType<typeof setInterval> | null = null;
 
   constructor(config: TokenBucketConfig) {
     this.config = config;
@@ -34,6 +46,17 @@ class TokenBucket {
       lastRefill: Date.now(),
     };
     this.waitQueue = [];
+    // Periodic refill so queued consume() calls get resolved when
+    // tokens become available (without requiring an external caller
+    // to trigger refill via tryConsume/getAvailableTokens).
+    this.refillTimer = setInterval(() => this.refill(), 200);
+  }
+
+  destroy(): void {
+    if (this.refillTimer) {
+      clearInterval(this.refillTimer);
+      this.refillTimer = null;
+    }
   }
 
   /**
@@ -45,7 +68,10 @@ class TokenBucket {
     const tokensToAdd = Math.floor(elapsed * this.config.refillRate);
 
     if (tokensToAdd > 0) {
-      this.state.tokens = Math.min(this.config.capacity, this.state.tokens + tokensToAdd);
+      this.state.tokens = Math.min(
+        this.config.capacity,
+        this.state.tokens + tokensToAdd,
+      );
       this.state.lastRefill = now;
 
       // Process waiting requests
@@ -141,7 +167,7 @@ class TokenBucket {
   }
 }
 
-describe('Rate Limiter - Token Bucket', () => {
+describe("Rate Limiter - Token Bucket", () => {
   let limiter: TokenBucket;
   const defaultConfig: TokenBucketConfig = {
     capacity: 10,
@@ -155,21 +181,22 @@ describe('Rate Limiter - Token Bucket', () => {
   });
 
   afterEach(() => {
+    limiter.destroy();
     jest.useRealTimers();
   });
 
-  describe('Token Consumption', () => {
-    it('should start with full capacity', () => {
+  describe("Token Consumption", () => {
+    it("should start with full capacity", () => {
       expect(limiter.getAvailableTokens()).toBe(defaultConfig.capacity);
     });
 
-    it('should consume tokens successfully', () => {
+    it("should consume tokens successfully", () => {
       const consumed = limiter.tryConsume(3);
       expect(consumed).toBe(true);
       expect(limiter.getAvailableTokens()).toBe(7);
     });
 
-    it('should reject consumption when insufficient tokens', () => {
+    it("should reject consumption when insufficient tokens", () => {
       const consumed1 = limiter.tryConsume(8);
       expect(consumed1).toBe(true);
       expect(limiter.getAvailableTokens()).toBe(2);
@@ -179,7 +206,7 @@ describe('Rate Limiter - Token Bucket', () => {
       expect(limiter.getAvailableTokens()).toBe(2); // tokens unchanged
     });
 
-    it('should consume exact remaining tokens', () => {
+    it("should consume exact remaining tokens", () => {
       limiter.tryConsume(7);
       expect(limiter.getAvailableTokens()).toBe(3);
 
@@ -188,7 +215,7 @@ describe('Rate Limiter - Token Bucket', () => {
       expect(limiter.getAvailableTokens()).toBe(0);
     });
 
-    it('should handle single token consumption', () => {
+    it("should handle single token consumption", () => {
       for (let i = 0; i < 10; i++) {
         expect(limiter.tryConsume(1)).toBe(true);
       }
@@ -197,8 +224,8 @@ describe('Rate Limiter - Token Bucket', () => {
     });
   });
 
-  describe('Token Refill', () => {
-    it('should refill tokens over time', () => {
+  describe("Token Refill", () => {
+    it("should refill tokens over time", () => {
       limiter.tryConsume(10);
       expect(limiter.getAvailableTokens()).toBe(0);
 
@@ -211,7 +238,7 @@ describe('Rate Limiter - Token Bucket', () => {
       expect(limiter.getAvailableTokens()).toBe(10); // capped at capacity
     });
 
-    it('should not exceed capacity when refilling', () => {
+    it("should not exceed capacity when refilling", () => {
       limiter.tryConsume(5);
       expect(limiter.getAvailableTokens()).toBe(5);
 
@@ -220,7 +247,7 @@ describe('Rate Limiter - Token Bucket', () => {
       expect(limiter.getAvailableTokens()).toBe(10); // capped at capacity
     });
 
-    it('should handle partial refill intervals', () => {
+    it("should handle partial refill intervals", () => {
       limiter.tryConsume(10);
       expect(limiter.getAvailableTokens()).toBe(0);
 
@@ -231,16 +258,15 @@ describe('Rate Limiter - Token Bucket', () => {
       expect(tokens).toBeLessThanOrEqual(3);
     });
 
-    it('should calculate refill based on actual elapsed time', () => {
+    it("should calculate refill based on actual elapsed time", () => {
       limiter.tryConsume(10);
-      jest.advanceTimersByTime(2500); // 2.5 seconds
-      expect(limiter.getAvailableTokens()).toBeGreaterThanOrEqual(12); // 5 * 2.5 = 12.5
-      expect(limiter.getAvailableTokens()).toBeLessThanOrEqual(13);
+      jest.advanceTimersByTime(2500); // 2.5 seconds → 5*2.5=12.5 tokens, capped at capacity=10
+      expect(limiter.getAvailableTokens()).toBe(10);
     });
   });
 
-  describe('Rate Limits', () => {
-    it('should enforce rate limit on burst requests', () => {
+  describe("Rate Limits", () => {
+    it("should enforce rate limit on burst requests", () => {
       const results: boolean[] = [];
       for (let i = 0; i < 15; i++) {
         results.push(limiter.tryConsume(1));
@@ -254,7 +280,7 @@ describe('Rate Limiter - Token Bucket', () => {
       expect(failCount).toBe(5);
     });
 
-    it('should allow sustained rate within refill rate', () => {
+    it("should allow sustained rate within refill rate", () => {
       const successes: boolean[] = [];
 
       // Consume 5 tokens initially
@@ -272,7 +298,7 @@ describe('Rate Limiter - Token Bucket', () => {
       expect(successes[1]).toBe(true);
     });
 
-    it('should throttle when rate exceeded', () => {
+    it("should throttle when rate exceeded", () => {
       // Use all tokens
       limiter.tryConsume(10);
 
@@ -285,8 +311,8 @@ describe('Rate Limiter - Token Bucket', () => {
     });
   });
 
-  describe('Token Reset', () => {
-    it('should reset to full capacity', () => {
+  describe("Token Reset", () => {
+    it("should reset to full capacity", () => {
       limiter.tryConsume(8);
       expect(limiter.getAvailableTokens()).toBe(2);
 
@@ -294,7 +320,7 @@ describe('Rate Limiter - Token Bucket', () => {
       expect(limiter.getAvailableTokens()).toBe(10);
     });
 
-    it('should clear wait queue on reset', () => {
+    it("should clear wait queue on reset", () => {
       // Drain tokens
       limiter.tryConsume(10);
 
@@ -314,7 +340,7 @@ describe('Rate Limiter - Token Bucket', () => {
       jest.advanceTimersByTime(10000);
     });
 
-    it('should reset last refill timestamp', () => {
+    it("should reset last refill timestamp", () => {
       jest.advanceTimersByTime(5000);
       limiter.tryConsume(5);
 
@@ -327,8 +353,8 @@ describe('Rate Limiter - Token Bucket', () => {
     });
   });
 
-  describe('Async Consumption', () => {
-    it('should wait for tokens when insufficient', async () => {
+  describe("Async Consumption", () => {
+    it("should wait for tokens when insufficient", async () => {
       // Drain tokens
       limiter.tryConsume(10);
 
@@ -348,17 +374,22 @@ describe('Rate Limiter - Token Bucket', () => {
       expect(consumed).toBe(true);
     });
 
-    it('should timeout if tokens not available in time', async () => {
+    it("should timeout if tokens not available in time", async () => {
       limiter.tryConsume(10);
 
-      const result = await limiter.consume(5, 1000);
-      jest.advanceTimersByTime(1001);
+      const promise = limiter.consume(5, 500);
 
+      // Advance past timeout — the consume timeout fires and resolves false.
+      // refillRate=5/s but 500ms only adds Math.floor(0.5*5)=2 tokens, not
+      // enough for the requested 5, so the timeout wins.
+      jest.advanceTimersByTime(600);
+
+      const result = await promise;
       expect(result).toBe(false);
     });
 
-    it('should handle multiple queued requests', async () => {
-      limiter.tryConsume(10);
+    it("should handle multiple queued requests", async () => {
+      limiter.tryConsume(10); // 0 tokens left
 
       const results: boolean[] = [];
       const promises = [
@@ -369,18 +400,18 @@ describe('Rate Limiter - Token Bucket', () => {
 
       expect(limiter.getQueueLength()).toBe(3);
 
-      // Refill enough for first request
-      jest.advanceTimersByTime(700);
+      // Need 10 total tokens. At 5/sec, need 2+ seconds for full refill.
+      jest.advanceTimersByTime(2200);
 
       await Promise.all(promises);
 
       expect(results[0]).toBe(true);
-      expect(results[1]).toBe(true); // Might also succeed depending on timing
+      expect(results[1]).toBe(true);
       expect(results[2]).toBe(true);
     });
 
-    it('should process queue in FIFO order', async () => {
-      limiter.tryConsume(10);
+    it("should process queue in FIFO order", async () => {
+      limiter.tryConsume(10); // 0 tokens left
 
       const order: number[] = [];
       const promises = [
@@ -389,8 +420,8 @@ describe('Rate Limiter - Token Bucket', () => {
         limiter.consume(2).then(() => order.push(3)),
       ];
 
-      // Refill gradually
-      jest.advanceTimersByTime(1500);
+      // Need 11 total tokens. At 5/sec, need ~2.5s. Give enough time.
+      jest.advanceTimersByTime(3000);
 
       await Promise.all(promises);
 
@@ -398,9 +429,11 @@ describe('Rate Limiter - Token Bucket', () => {
     });
   });
 
-  describe('Concurrent Request Handling', () => {
-    it('should handle simultaneous requests correctly', async () => {
-      const requests = Array(20).fill(null).map(() => limiter.consume(1));
+  describe("Concurrent Request Handling", () => {
+    it("should handle simultaneous requests correctly", async () => {
+      const requests = Array(20)
+        .fill(null)
+        .map(() => limiter.consume(1));
 
       jest.advanceTimersByTime(5000);
 
@@ -412,7 +445,7 @@ describe('Rate Limiter - Token Bucket', () => {
       expect(successCount).toBe(20);
     });
 
-    it('should maintain token count consistency under concurrency', async () => {
+    it("should maintain token count consistency under concurrency", async () => {
       const initialTokens = limiter.getAvailableTokens();
 
       // Launch many concurrent consumptions
@@ -431,26 +464,26 @@ describe('Rate Limiter - Token Bucket', () => {
     });
   });
 
-  describe('Edge Cases', () => {
-    it('should handle zero token consumption', () => {
+  describe("Edge Cases", () => {
+    it("should handle zero token consumption", () => {
       const result = limiter.tryConsume(0);
       expect(result).toBe(true);
       expect(limiter.getAvailableTokens()).toBe(10);
     });
 
-    it('should handle negative token consumption gracefully', () => {
+    it("should handle negative token consumption gracefully", () => {
       const result = limiter.tryConsume(-1);
       // Implementation should handle this (either reject or treat as consume all)
-      expect(typeof result).toBe('boolean');
+      expect(typeof result).toBe("boolean");
     });
 
-    it('should handle consumption larger than capacity', () => {
+    it("should handle consumption larger than capacity", () => {
       const result = limiter.tryConsume(100);
       expect(result).toBe(false);
       expect(limiter.getAvailableTokens()).toBe(10);
     });
 
-    it('should handle very rapid successive consumptions', () => {
+    it("should handle very rapid successive consumptions", () => {
       let successes = 0;
       for (let i = 0; i < 1000; i++) {
         if (limiter.tryConsume(1)) {
@@ -461,7 +494,7 @@ describe('Rate Limiter - Token Bucket', () => {
       expect(successes).toBe(10); // Only initial capacity
     });
 
-    it('should handle reset during active wait queue', async () => {
+    it("should handle reset during active wait queue", async () => {
       limiter.tryConsume(10);
 
       const promise = limiter.consume(5, 5000);
@@ -474,12 +507,12 @@ describe('Rate Limiter - Token Bucket', () => {
 
       const result = await promise;
       // Behavior depends on implementation - either timeout or succeed after reset
-      expect(typeof result).toBe('boolean');
+      expect(typeof result).toBe("boolean");
     });
   });
 
-  describe('Different Configurations', () => {
-    it('should work with low capacity, high rate', () => {
+  describe("Different Configurations", () => {
+    it("should work with low capacity, high rate", () => {
       const fastLimiter = new TokenBucket({
         capacity: 5,
         refillRate: 100, // 100 tokens per second
@@ -491,12 +524,11 @@ describe('Rate Limiter - Token Bucket', () => {
       fastLimiter.tryConsume(5);
       expect(fastLimiter.getAvailableTokens()).toBe(0);
 
-      jest.advanceTimersByTime(100);
-      expect(fastLimiter.getAvailableTokens()).toBeGreaterThanOrEqual(10);
-      expect(fastLimiter.getAvailableTokens()).toBeLessThanOrEqual(15);
+      jest.advanceTimersByTime(100); // 100ms → 100*0.1=10 tokens, capped at capacity=5
+      expect(fastLimiter.getAvailableTokens()).toBe(5);
     });
 
-    it('should work with high capacity, low rate', () => {
+    it("should work with high capacity, low rate", () => {
       const slowLimiter = new TokenBucket({
         capacity: 100,
         refillRate: 1, // 1 token per second
@@ -512,7 +544,7 @@ describe('Rate Limiter - Token Bucket', () => {
       expect(slowLimiter.getAvailableTokens()).toBe(10);
     });
 
-    it('should handle zero refill rate', () => {
+    it("should handle zero refill rate", () => {
       const noRefillLimiter = new TokenBucket({
         capacity: 10,
         refillRate: 0,

@@ -2,7 +2,8 @@
  * Test utilities for creating fake messages and mocking Baileys socket
  */
 
-import { proto } from '@whiskeysockets/baileys';
+import { jest } from "@jest/globals";
+import { proto } from "@whiskeysockets/baileys";
 
 export interface MockMessageOptions {
   remoteJid?: string;
@@ -18,12 +19,14 @@ export interface MockMessageOptions {
 /**
  * Create a fake Baileys message for testing
  */
-export function createMockMessage(options: MockMessageOptions = {}): proto.IWebMessageInfo {
+export function createMockMessage(
+  options: MockMessageOptions = {},
+): proto.IWebMessageInfo {
   const {
-    remoteJid = '6281234567890@s.whatsapp.net',
+    remoteJid = "6281234567890@s.whatsapp.net",
     fromMe = false,
-    text = 'Hello world',
-    pushName = 'Test User',
+    text = "Hello world",
+    pushName = "Test User",
     timestamp = Math.floor(Date.now() / 1000),
     messageId = `msg_${Date.now()}`,
     isVCard = false,
@@ -34,7 +37,9 @@ export function createMockMessage(options: MockMessageOptions = {}): proto.IWebM
     ? {
         contactMessage: {
           displayName: pushName,
-          vcard: vCardData || `BEGIN:VCARD\nVERSION:3.0\nFN:${pushName}\nTEL;TYPE=CELL:+628123456789\nEND:VCARD`,
+          vcard:
+            vCardData ||
+            `BEGIN:VCARD\nVERSION:3.0\nFN:${pushName}\nTEL;TYPE=CELL:+628123456789\nEND:VCARD`,
         },
       }
     : {
@@ -57,7 +62,10 @@ export function createMockMessage(options: MockMessageOptions = {}): proto.IWebM
 /**
  * Create a fake LID message for testing Linked Identity resolution
  */
-export function createLIDMessage(lid: string, text: string): proto.IWebMessageInfo {
+export function createLIDMessage(
+  lid: string,
+  text: string,
+): proto.IWebMessageInfo {
   return createMockMessage({
     remoteJid: lid,
     fromMe: false,
@@ -69,15 +77,16 @@ export function createLIDMessage(lid: string, text: string): proto.IWebMessageIn
  * Create a fake vCard message with multiple contacts
  */
 export function createVCardArrayMessage(
-  contacts: Array<{ name: string; phone: string }>
+  contacts: Array<{ name: string; phone: string }>,
 ): proto.IWebMessageInfo {
   const vCards = contacts.map(
-    (c) => `BEGIN:VCARD\nVERSION:3.0\nFN:${c.name}\nTEL;TYPE=CELL:${c.phone}\nEND:VCARD`
+    (c) =>
+      `BEGIN:VCARD\nVERSION:3.0\nFN:${c.name}\nTEL;TYPE=CELL:${c.phone}\nEND:VCARD`,
   );
 
   return {
     key: {
-      remoteJid: '6281234567890@s.whatsapp.net',
+      remoteJid: "6281234567890@s.whatsapp.net",
       fromMe: false,
       id: `msg_${Date.now()}`,
     },
@@ -85,12 +94,12 @@ export function createVCardArrayMessage(
       contactsArrayMessage: {
         contacts: vCards.map((vcard) => ({
           vcard,
-          displayName: '',
+          displayName: "",
         })),
       },
     },
     messageTimestamp: Math.floor(Date.now() / 1000),
-    pushName: 'Test User',
+    pushName: "Test User",
   };
 }
 
@@ -105,24 +114,29 @@ export class MockBaileysSocket {
   };
 
   public user = {
-    id: '6281234567890:1@s.whatsapp.net',
+    id: "6281234567890:1@s.whatsapp.net",
   };
 
-  public sendMessage = jest.fn().mockResolvedValue({
-    key: { id: `sent_${Date.now()}`, remoteJid: '6281234567890@s.whatsapp.net' },
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any -- test mock
+  public sendMessage = jest.fn<any>().mockResolvedValue({
+    key: {
+      id: `sent_${Date.now()}`,
+      remoteJid: "6281234567890@s.whatsapp.net",
+    },
   });
 
-  public sendPresenceUpdate = jest.fn().mockResolvedValue(undefined);
-
-  public readMessages = jest.fn().mockResolvedValue(undefined);
-
-  public logout = jest.fn().mockResolvedValue(undefined);
-
-  public end = jest.fn().mockResolvedValue(undefined);
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any -- test mock
+  public sendPresenceUpdate = jest.fn<any>().mockResolvedValue(undefined);
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any -- test mock
+  public readMessages = jest.fn<any>().mockResolvedValue(undefined);
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any -- test mock
+  public logout = jest.fn<any>().mockResolvedValue(undefined);
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any -- test mock
+  public end = jest.fn<any>().mockResolvedValue(undefined);
 
   public signalRepository = {
     lidMapping: {
-      getPNForLID: jest.fn(),
+      getPNForLID: jest.fn<any>(),
     },
   };
 }
@@ -168,11 +182,11 @@ export function createWebhookPayload(options: {
   pushName?: string;
 }) {
   const {
-    from = '6281234567890',
-    message = 'Test message',
+    from = "6281234567890",
+    message = "Test message",
     timestamp = Math.floor(Date.now() / 1000),
     messageId = `msg_${Date.now()}`,
-    pushName = 'Test User',
+    pushName = "Test User",
   } = options;
 
   return {
@@ -193,7 +207,8 @@ export function createWebhookPayload(options: {
  * Mock Axios for testing webhook calls
  */
 export class MockAxiosInstance {
-  public post = jest.fn();
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any -- test mock
+  public post = jest.fn<any>();
 
   constructor() {
     this.post.mockResolvedValue({ data: { success: true } });
@@ -238,7 +253,7 @@ export interface PendingMessageEntry {
  */
 export function messageKeysEqual(
   a: proto.IMessageKey | null | undefined,
-  b: proto.IMessageKey | null | undefined
+  b: proto.IMessageKey | null | undefined,
 ): boolean {
   if (!a && !b) return true;
   if (!a || !b) return false;
