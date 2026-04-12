@@ -109,7 +109,7 @@ describe("Message Queue", () => {
       expect(pendingMessages.get(fromPhone)?.allMsgKeys.length).toBe(2);
     });
 
-    it("should flush messages when timer expires", async () => {
+    it("should flush messages when timer expires", () => {
       const fromPhone = "6281234567890";
       const msg = createMockMessage({ text: "Test message" });
 
@@ -123,9 +123,8 @@ describe("Message Queue", () => {
         firstTimestamp: Date.now(),
       });
 
-      // Fast forward past debounce time
+      // Fast forward past debounce time — callback fires synchronously
       jest.advanceTimersByTime(DEBOUNCE_MS + 100);
-      await flushPromises();
 
       expect(flushToWebhookSpy).toHaveBeenCalledWith(fromPhone);
     });
@@ -252,7 +251,7 @@ describe("Message Queue", () => {
       expect(flushToWebhookSpy).toHaveBeenCalled();
     });
 
-    it("should combine multiple rapid messages into one webhook call", async () => {
+    it("should combine multiple rapid messages into one webhook call", () => {
       const fromPhone = "6281234567890";
       const messages = ["Msg1", "Msg2", "Msg3", "Msg4"];
 
@@ -280,9 +279,8 @@ describe("Message Queue", () => {
         existing.timer = timer;
       }
 
-      // Fast forward to trigger flush
+      // Fast forward to trigger flush — callback fires synchronously
       jest.advanceTimersByTime(DEBOUNCE_MS + 100);
-      await flushPromises();
 
       expect(flushToWebhookSpy).toHaveBeenCalledTimes(1);
 
