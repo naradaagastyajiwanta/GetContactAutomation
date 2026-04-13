@@ -81,6 +81,7 @@ const statusConfig: Record<string, { label: string; icon: React.ElementType; col
 }
 
 const AUTO_PLACEHOLDERS = ['university_name', 'email', 'tanggal', 'nomor_surat']
+const MAX_ATTACHMENT_SIZE_BYTES = 10 * 1024 * 1024
 
 const EMAIL_COLUMN_KEYWORDS = ['email', 'e-mail', 'email address', 'alamat email', 'mail']
 const NAME_COLUMN_KEYWORDS = ['name', 'nama', 'university', 'instansi', 'company', 'lembaga', 'organization']
@@ -663,6 +664,18 @@ function ContentTab({
 
   async function handleAttachmentUpload(file: File) {
     if (!campaignId || isReadOnly) return
+
+    const lowerName = file.name.toLowerCase()
+    if (!lowerName.endsWith('.docx')) {
+      toast.error('Hanya file .docx yang didukung')
+      return
+    }
+
+    if (file.size > MAX_ATTACHMENT_SIZE_BYTES) {
+      toast.error('Ukuran file terlalu besar. Maksimal 10 MB')
+      return
+    }
+
     try {
       await uploadMutation.mutateAsync({ campaignId, file, variables: varValues })
       toast.success('Attachment uploaded')

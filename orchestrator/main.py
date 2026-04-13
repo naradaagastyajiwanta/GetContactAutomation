@@ -6069,7 +6069,11 @@ async def upload_external_recipients(
 
     from orchestrator.marketing.importer import parse_excel_bytes
 
-    rows, columns = parse_excel_bytes(content, filename or "upload.xlsx")
+    try:
+        rows, columns = parse_excel_bytes(content, filename or "upload.xlsx")
+    except Exception:
+        raise HTTPException(status_code=400, detail="Unable to parse spreadsheet file")
+
     if not rows:
         return {
             "success": True,
@@ -6618,15 +6622,24 @@ async def upload_attachment(
     variables: str = Form("")
 ):
     """Upload DOCX template and set variables for campaign"""
+    from orchestrator.email_blast import TEMPLATE_DIR, extract_docx_variables, save_campaign_attachment
+
+    await _require_email_campaign_access(campaign_id)
+
+    original_filename = (file.filename or "").strip()
+    if not original_filename:
+        raise HTTPException(status_code=400, detail="Attachment filename is required")
+
+    safe_filename = Path(original_filename).name
+    if safe_filename != original_filename:
+        raise HTTPException(status_code=400, detail="Invalid filename")
+
+    if not safe_filename.lower().endswith('.docx'):
+        raise HTTPException(status_code=400, detail="Only .docx files allowed")
+
+    max_attachment_bytes = int(cfg.get("EMAIL_BLAST_ATTACHMENT_MAX_BYTES", 10 * 1024 * 1024))
+
     try:
-        from orchestrator.email_blast import TEMPLATE_DIR, extract_docx_variables, save_campaign_attachment
-
-        await _require_email_campaign_access(campaign_id)
-
-        # Validate file type
-        if not file.filename.endswith('.docx'):
-            raise HTTPException(status_code=400, detail="Only .docx files allowed")
-
         def _validate_docx_template(docx_path: Path) -> None:
             if not zipfile.is_zipfile(docx_path):
                 raise HTTPException(status_code=400, detail="Uploaded file is not a valid DOCX archive")
@@ -6646,13 +6659,18 @@ async def upload_attachment(
                 raise HTTPException(status_code=400, detail="Uploaded file is not a readable DOCX archive")
 
         # Save to a temporary file first so corrupt uploads never become active templates.
-        filename = f"{campaign_id}_{file.filename}"
+        filename = f"{campaign_id}_{safe_filename}"
         filepath = TEMPLATE_DIR / filename
         tmp_path: Path | None = None
 
         content = await file.read()
         if not content:
             raise HTTPException(status_code=400, detail="Uploaded file is empty")
+        if len(content) > max_attachment_bytes:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Attachment too large. Max allowed is {max_attachment_bytes // (1024 * 1024)} MB",
+            )
 
         try:
             with tempfile.NamedTemporaryFile(delete=False, suffix='.docx', dir=str(TEMPLATE_DIR)) as tmp_file:
@@ -6681,12 +6699,17 @@ async def upload_attachment(
         custom_vars = [v for v in detected_vars if v not in AUTO_VARS]
 
         # Parse user-provided variables (JSON string like {"nomor_surat": "123/2024"})
-        user_vars = {}
+        user_vars: dict[str, str] = {}
         if variables:
             try:
-                user_vars = _json.loads(variables)
-            except:
-                pass
+                parsed_vars = _json.loads(variables)
+            except Exception:
+                raise HTTPException(status_code=400, detail="Invalid variables payload. Must be valid JSON object")
+
+            if not isinstance(parsed_vars, dict):
+                raise HTTPException(status_code=400, detail="Invalid variables payload. Must be a JSON object")
+
+            user_vars = {str(k): str(v) for k, v in parsed_vars.items()}
 
         # Merge: custom detected + user (user overrides detected if same key)
         all_vars = {v: "" for v in custom_vars}
@@ -6701,11 +6724,11 @@ async def upload_attachment(
             "variables": all_vars,
             "detected_variables": detected_vars
         }
+    except HTTPException:
+        raise
     except Exception as e:
-        log.error(f"[EmailBlast] Error uploading attachment: {e}")
-        import traceback
-        traceback.print_exc()
-        raise HTTPException(status_code=500, detail=f"Error uploading attachment: {str(e)}")
+        log.exception("[EmailBlast] Error uploading attachment")
+        raise HTTPException(status_code=500, detail="Error uploading attachment")
 
     return {
         "success": True,
