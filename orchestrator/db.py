@@ -2349,6 +2349,146 @@ async def get_university_provinces() -> list[str]:
         return [r[0] for r in rows]
 
 
+# ---------------------------------------------------------------------------
+# Phone Numbers (ig_contacts) - List & Stats
+# ---------------------------------------------------------------------------
+
+async def list_phone_numbers_paginated(
+    *,
+    search: str | None = None,
+    province: str | None = None,
+    university_search: str | None = None,
+    limit: int = 25,
+    offset: int = 0,
+    sort_by: str | None = None,
+    order: str | None = None,
+) -> dict:
+    """Return {data: [...], total: N} for all phone numbers with filters and sorting."""
+    conditions: list[str] = []
+    params: list = []
+
+    # Search by phone number or contact name
+    if search:
+        conditions.append("(c.phone_number LIKE ? OR c.contact_name LIKE ?)")
+        pattern = f"%{search}%"
+        params.extend([pattern, pattern])
+    
+    # Filter by university name
+    if university_search:
+        conditions.append("u.name LIKE ?")
+        params.append(f"%{university_search}%")
+    
+    # Filter by province
+    if province:
+        conditions.append("u.province = ?")
+        params.append(province)
+
+    where = ("WHERE " + " AND ".join(conditions)) if conditions else ""
+
+    # Build ORDER BY clause
+    order_by = "c.created_at DESC"  # default: newest first
+    if sort_by:
+        allowed_sorts = {
+            'phone_number': 'c.phone_number',
+            'contact_name': 'c.contact_name',
+            'university': 'u.name',
+            'province': 'u.province',
+            'created_at': 'c.created_at',
+        }
+        sort_column = allowed_sorts.get(sort_by, 'c.created_at')
+        sort_order = 'DESC' if order and order.lower() == 'desc' else 'ASC'
+        order_by = f"{sort_column} {sort_order}"
+
+    async with get_db() as db:
+        # Total count
+        cursor = await db.execute(
+            f"""SELECT COUNT(*)
+            FROM ig_contacts c
+            LEFT JOIN universities u ON c.university_id = u.id
+            {where}""",
+            params
+        )
+        row = await cursor.fetchone()
+        total = row[0] if row else 0
+
+        # Data page
+        cursor = await db.execute(
+            f"""SELECT c.id, c.phone_number, c.contact_name, c.source_post_url, 
+                       c.source_image_url, c.created_at,
+                       u.id as university_id, u.name as university_name, u.province
+            FROM ig_contacts c
+            LEFT JOIN universities u ON c.university_id = u.id
+            {where}
+            ORDER BY {order_by}
+            LIMIT ? OFFSET ?""",
+            params + [limit, offset],
+        )
+        rows = await cursor.fetchall()
+        
+        data = []
+        for row in rows:
+            data.append({
+                "id": row[0],
+                "phone_number": row[1],
+                "contact_name": row[2],
+                "source_post_url": row[3],
+                "source_image_url": row[4],
+                "created_at": row[5],
+                "university_id": row[6],
+                "university_name": row[7],
+                "province": row[8],
+            })
+        
+        return {"data": data, "total": total}
+
+
+async def get_phone_numbers_stats() -> dict:
+    """Return statistics: today's count, yesterday's count, % change."""
+    async with get_db() as db:
+        now = datetime.now(timezone.utc)
+        today_start = now.replace(hour=0, minute=0, second=0, microsecond=0).isoformat()
+        
+        # Yesterday
+        yesterday = now.replace(day=now.day - 1) if now.day > 1 else datetime(now.year, now.month - 1 if now.month > 1 else 12, 28, tzinfo=timezone.utc)
+        yesterday_start = yesterday.replace(hour=0, minute=0, second=0, microsecond=0).isoformat()
+        yesterday_end = yesterday.replace(hour=23, minute=59, second=59, microsecond=999999).isoformat()
+
+        # Total count as of today
+        cursor = await db.execute("SELECT COUNT(*) FROM ig_contacts")
+        row = await cursor.fetchone()
+        total_count = row[0] if row else 0
+
+        # Added today (since midnight)
+        cursor = await db.execute(
+            "SELECT COUNT(*) FROM ig_contacts WHERE created_at >= ?",
+            (today_start,)
+        )
+        row = await cursor.fetchone()
+        today_count = row[0] if row else 0
+
+        # Added yesterday
+        cursor = await db.execute(
+            "SELECT COUNT(*) FROM ig_contacts WHERE created_at >= ? AND created_at <= ?",
+            (yesterday_start, yesterday_end)
+        )
+        row = await cursor.fetchone()
+        yesterday_count = row[0] if row else 0
+
+        # Calculate percentage change
+        percent_change = 0.0
+        if yesterday_count > 0:
+            percent_change = ((today_count - yesterday_count) / yesterday_count) * 100
+        elif today_count > 0:
+            percent_change = 100.0  # If yesterday was 0 but today has numbers, it's infinite growth
+
+        return {
+            "total_count": total_count,
+            "today_count": today_count,
+            "yesterday_count": yesterday_count,
+            "percent_change": round(percent_change, 1),
+        }
+
+
 async def toggle_university_enabled(uni_id: int, enabled: bool) -> bool:
     """Set enabled flag for a single university. Returns True if row was found."""
     async with get_db() as db:

@@ -27,6 +27,12 @@ export const queryKeys = {
     posts: (id: number) => ["universities", "posts", id] as const,
     relatedIgs: (id: number) => ["universities", "relatedIgs", id] as const,
   },
+  phoneNumbers: {
+    all: ["phone-numbers"] as const,
+    list: (params: Record<string, unknown>) =>
+      ["phone-numbers", "list", params] as const,
+    stats: ["phone-numbers", "stats"] as const,
+  },
   conversations: {
     all: ["conversations"] as const,
     list: (params: Record<string, unknown>) =>

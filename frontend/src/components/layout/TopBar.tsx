@@ -13,6 +13,7 @@ import { saveLastPathBeforeLogout } from "../../lib/returnPath";
 const pageTitles: Record<string, string> = {
   "/": "Dashboard",
   "/universities": "Universities",
+  "/phone-numbers": "Phone Numbers",
   "/pipeline": "Pipeline",
   "/conversations": "Conversations",
   "/settings": "Settings",

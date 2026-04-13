@@ -41,6 +41,8 @@ from orchestrator.db import (
     export_contacts_filtered,
     match_university_names,
     get_university_provinces,
+    list_phone_numbers_paginated,
+    get_phone_numbers_stats,
     toggle_university_enabled,
     bulk_toggle_universities_enabled,
     get_pipeline_status,
@@ -1481,6 +1483,38 @@ async def bulk_toggle(payload: dict):
         return JSONResponse({"error": "ids list required"}, status_code=400)
     updated = await bulk_toggle_universities_enabled(ids, enabled)
     return {"updated": updated, "enabled": enabled}
+
+
+# ---------------------------------------------------------------------------
+# Phone Numbers (Extracted contacts from IG)
+# ---------------------------------------------------------------------------
+
+@app.get("/phone-numbers")
+async def list_phone_numbers(
+    search: str | None = None,
+    province: str | None = None,
+    university_search: str | None = None,
+    limit: int = 25,
+    offset: int = 0,
+    sort_by: str | None = None,
+    order: str | None = None,
+):
+    """List all phone numbers extracted from IG with filters and sorting."""
+    return await list_phone_numbers_paginated(
+        search=search,
+        province=province,
+        university_search=university_search,
+        limit=limit,
+        offset=offset,
+        sort_by=sort_by,
+        order=order,
+    )
+
+
+@app.get("/phone-numbers/stats")
+async def get_phone_stats():
+    """Return statistics: total count, today's count, yesterday's count, % change."""
+    return await get_phone_numbers_stats()
 
 
 # ---------------------------------------------------------------------------

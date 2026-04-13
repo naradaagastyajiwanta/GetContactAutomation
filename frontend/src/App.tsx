@@ -13,6 +13,7 @@ import { ProtectedLayout } from "./components/auth/ProtectedLayout";
 const DashboardPage = lazy(() => import("./pages/DashboardPage"));
 const UniversitiesPage = lazy(() => import("./pages/UniversitiesPage"));
 const UniversityDetailPage = lazy(() => import("./pages/UniversityDetailPage"));
+const PhoneNumbersPage = lazy(() => import("./pages/PhoneNumbersPage"));
 const PipelinePage = lazy(() => import("./pages/PipelinePage"));
 const ConversationsPage = lazy(() => import("./pages/ConversationsPage"));
 const ConversationDetailPage = lazy(
@@ -110,6 +111,16 @@ export default function App() {
                           <PermissionGuard permission="universities.view">
                             <ErrorBoundary>
                               <UniversityDetailPage />
+                            </ErrorBoundary>
+                          </PermissionGuard>
+                        }
+                      />
+                      <Route
+                        path="phone-numbers"
+                        element={
+                          <PermissionGuard permission="universities.view">
+                            <ErrorBoundary>
+                              <PhoneNumbersPage />
                             </ErrorBoundary>
                           </PermissionGuard>
                         }

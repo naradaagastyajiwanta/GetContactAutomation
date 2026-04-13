@@ -9,6 +9,7 @@ import {
   Video,
   CalendarClock,
   Smartphone,
+  Phone,
   Megaphone,
   Mail,
   Lightbulb,
@@ -77,6 +78,12 @@ const NAV_SECTIONS: NavSection[] = [
         to: "/universities",
         label: "Universities",
         icon: GraduationCap,
+        permission: "universities.view",
+      },
+      {
+        to: "/phone-numbers",
+        label: "Phone Numbers",
+        icon: Phone,
         permission: "universities.view",
       },
       {

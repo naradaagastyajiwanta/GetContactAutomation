@@ -22,7 +22,7 @@
       "failedEvents": [],
       "disconnectEvents": [],
       "warmUp": {
-        "startedAt": 1776058409856,
+        "startedAt": 1776075905278,
         "dailyCounts": {}
       },
       "timelock": {
@@ -111,7 +111,8 @@
         "6281717171037@s.whatsapp.net",
         "251569874415703@s.whatsapp.net",
         "6287761882915@s.whatsapp.net",
-        "48941269836024@s.whatsapp.net"
+        "48941269836024@s.whatsapp.net",
+        "6281383613557@s.whatsapp.net"
       ],
       "sendEvents": [],
       "failedEvents": [],
