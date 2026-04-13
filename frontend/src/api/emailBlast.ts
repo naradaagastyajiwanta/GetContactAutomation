@@ -28,6 +28,7 @@ export interface EmailBlastCampaign {
   started_at: string | null
   completed_at: string | null
   paused_at: string | null
+  revision?: string
 }
 
 export interface EmailBlastQuota {
@@ -232,9 +233,11 @@ export async function checkAllManagedSMTPAccounts(): Promise<{ success: boolean;
 }
 
 export interface UpdateEmailCampaignRequest {
+  name?: string
   subject?: string
   template_message?: string
   delay_between_ms?: number
+  expected_revision?: string
 }
 
 export async function updateEmailCampaign(id: number, data: UpdateEmailCampaignRequest): Promise<{ success: boolean; campaign: EmailBlastCampaign }> {

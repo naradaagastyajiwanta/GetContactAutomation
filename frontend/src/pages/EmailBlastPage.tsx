@@ -425,7 +425,7 @@ export default function EmailBlastPage() {
 
   // Sync state with URL when campaignIdFromUrl changes (navigating between campaigns)
   useEffect(() => {
-    if (campaignIdFromUrl !== undefined && activeView !== "campaign-detail") {
+    if (campaignIdFromUrl !== undefined) {
       setActiveView("campaign-detail");
       setActiveCampaignId(campaignIdFromUrl);
     }

@@ -7,6 +7,7 @@ import csv
 import io
 import json as _json
 import functools
+import hashlib
 import os
 import tempfile
 import zipfile
@@ -5878,6 +5879,27 @@ async def blast_force_resume_campaign(campaign_id: int, request: Request):
 # Email Blast Endpoints
 # ---------------------------------------------------------------------------
 
+def _campaign_content_revision(campaign: dict | None) -> str | None:
+    if not campaign:
+        return None
+
+    material = {
+        "name": campaign.get("name") or "",
+        "subject": campaign.get("subject") or "",
+        "template_message": campaign.get("template_message") or "",
+        "delay_between_ms": int(campaign.get("delay_between_ms") or 0),
+    }
+    serialized = _json.dumps(material, sort_keys=True, ensure_ascii=True, separators=(",", ":"))
+    return hashlib.sha256(serialized.encode("utf-8")).hexdigest()
+
+
+def _with_campaign_revision(campaign: dict | None) -> dict | None:
+    if not campaign:
+        return campaign
+    enriched = dict(campaign)
+    enriched["revision"] = _campaign_content_revision(campaign)
+    return enriched
+
 class EmailBlastCampaignCreate(BaseModel):
     name: str
     subject: str = ""
@@ -5923,14 +5945,17 @@ async def create_email_campaign(payload: EmailBlastCampaignCreate, request: Requ
 async def list_email_campaigns(request: Request, status: str | None = None):
     """List email blast campaigns."""
     campaigns = await email_blast.list_campaigns(status)
-    return {"success": True, "campaigns": campaigns}
+    return {
+        "success": True,
+        "campaigns": [_with_campaign_revision(c) for c in campaigns],
+    }
 
 
 @app.get("/email-blast/campaigns/{campaign_id}")
 async def get_email_campaign(campaign_id: int, request: Request):
     """Get email campaign details."""
     campaign = await _require_email_campaign_access(campaign_id)
-    return {"success": True, "campaign": campaign}
+    return {"success": True, "campaign": _with_campaign_revision(campaign)}
 
 
 @app.patch("/email-blast/campaigns/{campaign_id}")
@@ -5938,22 +5963,38 @@ async def update_email_campaign(campaign_id: int, payload: dict, request: Reques
     """Update email campaign details."""
     await _require_email_campaign_access(campaign_id)
 
+    expected_revision = payload.get("expected_revision")
+    current_campaign = await email_blast.get_campaign_status(campaign_id)
+    current_revision = _campaign_content_revision(current_campaign)
+    if expected_revision and current_revision and expected_revision != current_revision:
+        return JSONResponse(
+            {
+                "success": False,
+                "error": "Campaign content was changed by another user",
+                "code": "REVISION_CONFLICT",
+                "current_revision": current_revision,
+            },
+            status_code=409,
+        )
+
     async with get_db() as db:
         updates = []
         params = []
 
-        if 'name' in payload:
+        mutable_payload = {k: v for k, v in payload.items() if k != "expected_revision"}
+
+        if 'name' in mutable_payload:
             updates.append("name = ?")
-            params.append(payload['name'])
-        if 'subject' in payload:
+            params.append(mutable_payload['name'])
+        if 'subject' in mutable_payload:
             updates.append("subject = ?")
-            params.append(payload['subject'])
-        if 'template_message' in payload:
+            params.append(mutable_payload['subject'])
+        if 'template_message' in mutable_payload:
             updates.append("template_message = ?")
-            params.append(payload['template_message'])
-        if 'delay_between_ms' in payload:
+            params.append(mutable_payload['template_message'])
+        if 'delay_between_ms' in mutable_payload:
             updates.append("delay_between_ms = ?")
-            params.append(payload['delay_between_ms'])
+            params.append(mutable_payload['delay_between_ms'])
 
         if not updates:
             return {"success": False, "error": "No fields to update"}
@@ -5964,7 +6005,7 @@ async def update_email_campaign(campaign_id: int, payload: dict, request: Reques
         await db.commit()
 
     campaign = await email_blast.get_campaign_status(campaign_id)
-    return {"success": True, "campaign": campaign}
+    return {"success": True, "campaign": _with_campaign_revision(campaign)}
 
 
 @app.post("/email-blast/campaigns/{campaign_id}/recipients/add-all")

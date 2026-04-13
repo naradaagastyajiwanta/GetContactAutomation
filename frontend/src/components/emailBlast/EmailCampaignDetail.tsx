@@ -61,6 +61,7 @@ import { EmptyState } from '../ui/EmptyState'
 import { Modal } from '../ui/Modal'
 import type { EmailBlastCampaign } from '../../api/emailBlast'
 import type { AttachmentInfo } from '../../api/emailBlast'
+import type { UpdateEmailCampaignRequest } from '../../api/emailBlast'
 
 interface Props {
   campaignId?: number
@@ -525,6 +526,7 @@ function ContentTab({
   isSaving: boolean
   onPendingSavesChange?: (pending: boolean) => void
 }) {
+  const loadedCampaignIdRef = useRef<number | null>(null)
   const [name, setName] = useState(campaign.name ?? '')
   const [subject, setSubject] = useState(campaign.subject ?? '')
   const [body, setBody] = useState(campaign.template_message ?? '')
@@ -533,6 +535,7 @@ function ContentTab({
   const [showTestEmail, setShowTestEmail] = useState(false)
   const [varValues, setVarValues] = useState<Record<string, string>>({})
   const [autoSaveTimer, setAutoSaveTimer] = useState<ReturnType<typeof setTimeout> | null>(null)
+  const [revision, setRevision] = useState<string | undefined>(campaign.revision)
   // Use a boolean flag — don't track count, only whether a save is in-flight
   const [isDirty, setIsDirty] = useState(false)
 
@@ -540,6 +543,11 @@ function ContentTab({
   const updateMutation = useUpdateEmailCampaign()
 
   useEffect(() => {
+    if (loadedCampaignIdRef.current === campaign.id) {
+      return
+    }
+
+    loadedCampaignIdRef.current = campaign.id
     setName(campaign.name ?? '')
     setSubject(campaign.subject ?? '')
     setBody(campaign.template_message ?? '')
@@ -547,24 +555,43 @@ function ContentTab({
     setIsDirty(false)
     if (autoSaveTimer) clearTimeout(autoSaveTimer)
     setAutoSaveTimer(null)
-  }, [campaign])
+  }, [campaign.id, campaign.name, campaign.subject, campaign.template_message, campaign.delay_between_ms])
+
+  useEffect(() => {
+    setRevision(campaign.revision)
+  }, [campaign.id, campaign.revision])
 
   // Auto-save: debounced save on any field change
-  const triggerAutoSave = () => {
+  const triggerAutoSave = (partialUpdate: UpdateEmailCampaignRequest) => {
+    if (Object.keys(partialUpdate).length === 0) {
+      return
+    }
+
     if (autoSaveTimer) clearTimeout(autoSaveTimer)
     setIsDirty(true)
     onPendingSavesChange?.(true)
     const timer = setTimeout(() => {
       updateMutation.mutate(
-        { id: campaignId, data: { subject, template_message: body, delay_between_ms: delayMs * 1000 } },
         {
-          onSuccess: () => {
+          id: campaignId,
+          data: {
+            ...partialUpdate,
+            expected_revision: revision,
+          },
+        },
+        {
+          onSuccess: (res) => {
+            setRevision(res.campaign.revision)
             setIsDirty(false)
             onPendingSavesChange?.(false)
           },
-          onError: () => {
+          onError: (error) => {
             setIsDirty(false)
             onPendingSavesChange?.(false)
+            if (axios.isAxiosError(error) && error.response?.status === 409) {
+              toast.error('Konten campaign sudah diubah user lain. Silakan refresh lalu lanjut edit.')
+              return
+            }
             toast.error('Auto-save failed')
           },
         },
@@ -573,9 +600,9 @@ function ContentTab({
     setAutoSaveTimer(timer)
   }
 
-  const handleNameChange = (val: string) => { setName(val); triggerAutoSave() }
-  const handleSubjectChange = (val: string) => { setSubject(val); triggerAutoSave() }
-  const handleBodyChange = (val: string) => { setBody(val); triggerAutoSave() }
+  const handleNameChange = (val: string) => { setName(val); triggerAutoSave({ name: val }) }
+  const handleSubjectChange = (val: string) => { setSubject(val); triggerAutoSave({ subject: val }) }
+  const handleBodyChange = (val: string) => { setBody(val); triggerAutoSave({ template_message: val }) }
 
   useEffect(() => {
     if (attachment?.variables) {
@@ -592,7 +619,7 @@ function ContentTab({
     if (isReadOnly) return
     const next = body + p
     setBody(next)
-    triggerAutoSave()
+    triggerAutoSave({ template_message: next })
   }
 
   function handleSave() {
@@ -604,16 +631,30 @@ function ContentTab({
     }
     onPendingSavesChange?.(true)
     updateMutation.mutate(
-      { id: campaignId, data: { subject, template_message: body, delay_between_ms: delayMs * 1000 } },
       {
-        onSuccess: () => {
+        id: campaignId,
+        data: {
+          name,
+          subject,
+          template_message: body,
+          delay_between_ms: delayMs * 1000,
+          expected_revision: revision,
+        },
+      },
+      {
+        onSuccess: (res) => {
+          setRevision(res.campaign.revision)
           setIsDirty(false)
           onPendingSavesChange?.(false)
           toast.success('Saved')
         },
-        onError: () => {
+        onError: (error) => {
           setIsDirty(false)
           onPendingSavesChange?.(false)
+          if (axios.isAxiosError(error) && error.response?.status === 409) {
+            toast.error('Konten campaign sudah diubah user lain. Silakan refresh lalu lanjut edit.')
+            return
+          }
           toast.error('Failed to save')
         },
       },
@@ -807,7 +848,11 @@ function ContentTab({
           <input
             type="number"
             value={delayMs}
-            onChange={(e) => { setDelayMs(parseInt(e.target.value) || 1); triggerAutoSave() }}
+            onChange={(e) => {
+              const nextDelay = parseInt(e.target.value) || 1
+              setDelayMs(nextDelay)
+              triggerAutoSave({ delay_between_ms: nextDelay * 1000 })
+            }}
             disabled={isReadOnly}
             min={1}
             max={300}
@@ -1142,7 +1187,10 @@ function AddRecipientsModal({ isOpen, onClose, campaignId }: { isOpen: boolean; 
   }
 
   async function handleAddAll() {
-    await addAllMutation.mutateAsync(campaignId)
+    await addAllMutation.mutateAsync({
+      id: campaignId,
+      provinces: province ? [province] : undefined,
+    })
     onClose()
     toast.success('All universities added')
   }

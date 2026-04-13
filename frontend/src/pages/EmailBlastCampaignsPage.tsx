@@ -384,7 +384,7 @@ export default function EmailBlastCampaignsPage() {
           setName('')
           setShowCreate(false)
           if (result.success && result.campaign_id) {
-            navigate(`/email-blast/${result.campaign_id}`)
+            navigate(`/email-blast/campaigns/${result.campaign_id}`)
           }
         },
       }

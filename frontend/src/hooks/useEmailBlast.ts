@@ -133,7 +133,13 @@ export function useCancelEmailCampaign() {
 export function useAddAllRecipients() {
   const queryClient = useQueryClient()
   return useMutation({
-    mutationFn: (id: number) => addAllRecipientsToCampaign(id),
+    mutationFn: (input: number | { id: number; provinces?: string[] }) => {
+      if (typeof input === 'number') {
+        return addAllRecipientsToCampaign(input)
+      }
+
+      return addAllRecipientsToCampaign(input.id, input.provinces)
+    },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['email-blast-campaigns'] })
       queryClient.invalidateQueries({ queryKey: ['email-blast-campaign'] })
