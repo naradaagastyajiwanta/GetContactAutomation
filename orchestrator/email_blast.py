@@ -595,6 +595,19 @@ class SMTPClient:
             return False
         return any(kw in err_str for kw in proxy_keywords)
 
+    def _is_disconnected_state_error(self, exc: Exception) -> bool:
+        """Return True when the SMTP object lost its socket after being connected."""
+        err_str = str(exc).lower()
+        return isinstance(exc, smtplib.SMTPServerDisconnected) or any(
+            phrase in err_str
+            for phrase in (
+                "please run connect() first",
+                "please run connect first",
+                "please call connect() first",
+                "not connected",
+            )
+        )
+
     def _connect_account(self, acc: SMTPAccount, socks_enabled: bool, quiet: bool) -> smtplib.SMTP:
         """Open and authenticate an SMTP connection, optionally via SOCKS."""
         global _original_create_connection
@@ -717,6 +730,18 @@ class SMTPClient:
             "from_email": from_addr,
             "from_name": from_display,
         }
+
+        def _refresh_active_account() -> None:
+            nonlocal acc, from_addr, from_display, send_context
+            acc = self._current_account
+            from_addr = from_email or acc.user
+            from_display = from_name or acc.from_name
+            send_context = {
+                "smtp_account": acc.user,
+                "from_email": from_addr,
+                "from_name": from_display,
+            }
+
         try:
             msg = MIMEMultipart('mixed')
             msg['From'] = f"{from_display} <{from_addr}>"
@@ -742,7 +767,29 @@ class SMTPClient:
                     log.debug(f"[EmailBlast] Attached: {filename}")
 
             # Send
-            acc._connection.sendmail(from_addr, [to_email], msg.as_string())
+            try:
+                acc._connection.sendmail(from_addr, [to_email], msg.as_string())
+            except Exception as send_exc:
+                if self._is_disconnected_state_error(send_exc):
+                    log.warning(
+                        "[EmailBlast] SMTP connection lost before send for %s, reconnecting and retrying: %s",
+                        acc.user,
+                        send_exc,
+                    )
+                    with self._rotation_lock:
+                        self._disconnect_account(acc)
+                        if not self._ensure_connected(quiet=True):
+                            raise
+                        _refresh_active_account()
+
+                    msg['From'] = f"{from_display} <{from_addr}>"
+                    try:
+                        acc._connection.sendmail(from_addr, [to_email], msg.as_string())
+                    except Exception:
+                        raise send_exc
+                else:
+                    raise
+
             acc.email_count += 1
             acc.last_sent_monotonic = time.monotonic()
             today = self._today_key()
