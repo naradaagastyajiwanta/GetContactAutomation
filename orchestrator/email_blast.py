@@ -50,6 +50,40 @@ def _release_campaign_lock(campaign_id: int) -> None:
     _running_campaigns.discard(campaign_id)
 
 
+async def _get_campaign_status(campaign_id: int) -> str | None:
+    """Return the latest persisted campaign status."""
+    async with get_db() as db:
+        cursor = await db.execute(
+            "SELECT status FROM email_blast_campaigns WHERE id = ?",
+            (campaign_id,),
+        )
+        row = await cursor.fetchone()
+    return row[0] if row else None
+
+
+async def _abort_if_campaign_stopped(campaign_id: int) -> str | None:
+    """Return the non-running status when a campaign was paused/cancelled externally."""
+    status = await _get_campaign_status(campaign_id)
+    if status != "running":
+        log.info("[EmailBlast] Campaign %s stop requested (status=%s)", campaign_id, status)
+        await broadcast_campaign_update(campaign_id)
+        return status
+    return None
+
+
+async def _sleep_with_campaign_checks(campaign_id: int, delay_ms: int) -> str | None:
+    """Sleep in short intervals so pause/cancel takes effect promptly."""
+    remaining = max(0, int(delay_ms or 0))
+    while remaining > 0:
+        stopped = await _abort_if_campaign_stopped(campaign_id)
+        if stopped:
+            return stopped
+        chunk = min(remaining, 500)
+        await asyncio.sleep(chunk / 1000)
+        remaining -= chunk
+    return None
+
+
 async def sync_campaign_counters(campaign_id: int) -> dict:
     """Recalculate sent_count and failed_count from the actual recipient table.
 
@@ -1455,6 +1489,10 @@ Sekretariat Asosiasi AI
 """
 
     for recipient_id, university_id, email, uni_name, recipient_created_at in recipients:
+        stopped_status = await _abort_if_campaign_stopped(campaign_id)
+        if stopped_status:
+            break
+
         # Check daily quota before processing
         daily_limit = cfg.get("EMAIL_BLAST_DAILY_LIMIT", 200)
         if daily_limit > 0:
@@ -1636,6 +1674,9 @@ Sekretariat Asosiasi AI
 
         # Send email
         log.info(f"[EmailBlast] About to send email to {email} with attachment: {final_attachment}")
+        stopped_status = await _abort_if_campaign_stopped(campaign_id)
+        if stopped_status:
+            break
         try:
             success, error, send_context = smtp_client.send_email_with_context(
                 email, rendered_subject, rendered_msg, _resolve_from_email_for_send(from_email), from_name,
@@ -1777,7 +1818,9 @@ Sekretariat Asosiasi AI
         # Delay between emails
         actual_delay_ms = compute_inter_send_delay_ms(delay_ms)
         if actual_delay_ms > 0:
-            await asyncio.sleep(actual_delay_ms / 1000)
+            stopped_status = await _sleep_with_campaign_checks(campaign_id, actual_delay_ms)
+            if stopped_status:
+                break
 
     final_status, pending_count = await _finalize_campaign_status_after_run(campaign_id, max_recipients)
     log.info(
@@ -1867,6 +1910,10 @@ async def _retry_failed_email_blast_inner(campaign_id: int, max_recipients: int 
     invalid = 0
 
     for recipient_id, university_id, email, uni_name, stored_letter_number, recipient_created_at in recipients:
+        stopped_status = await _abort_if_campaign_stopped(campaign_id)
+        if stopped_status:
+            break
+
         # Check daily quota before processing
         daily_limit = cfg.get("EMAIL_BLAST_DAILY_LIMIT", 200)
         if daily_limit > 0:
@@ -1972,6 +2019,9 @@ async def _retry_failed_email_blast_inner(campaign_id: int, max_recipients: int 
         generated_pdf = None
 
         try:
+            stopped_status = await _abort_if_campaign_stopped(campaign_id)
+            if stopped_status:
+                break
             if attachment_path:
                 has_docx_template = attachment_filename and attachment_filename.endswith('.docx')
                 if has_docx_template:
@@ -2152,7 +2202,9 @@ async def _retry_failed_email_blast_inner(campaign_id: int, max_recipients: int 
 
         actual_delay_ms = compute_inter_send_delay_ms(delay_ms)
         if actual_delay_ms > 0:
-            await asyncio.sleep(actual_delay_ms / 1000)
+            stopped_status = await _sleep_with_campaign_checks(campaign_id, actual_delay_ms)
+            if stopped_status:
+                break
 
     log.info(f"[EmailBlast] Retry campaign {campaign_id} done: {sent} sent, {failed} failed")
     await broadcast_campaign_update(campaign_id)
@@ -2381,6 +2433,8 @@ def get_imap_mailboxes() -> list[dict]:
     imap_host = str(cfg.get("IMAP_HOST", cfg.get("SMTP_HOST", "mail.asosiasi.ai"))).strip() or "mail.asosiasi.ai"
     imap_port = int(cfg.get("IMAP_PORT", 993))
     imap_use_ssl = bool(cfg.get("IMAP_USE_SSL", True))
+    legacy_user = _normalize_mailbox_email(cfg.get("IMAP_USERNAME", ""))
+    legacy_password = str(cfg.get("IMAP_PASSWORD", "") or "")
 
     for account in _load_managed_smtp_accounts_config():
         if not account.get("enabled", True):
@@ -2388,6 +2442,10 @@ def get_imap_mailboxes() -> list[dict]:
 
         user = _normalize_mailbox_email(account.get("user"))
         password = str(account.get("password") or "")
+        if legacy_user and user == legacy_user and legacy_password:
+            # Allow IMAP auth to use a mailbox-specific password that differs
+            # from the SMTP credential stored in rotation accounts.
+            password = legacy_password
         if not user or not password or user in seen:
             continue
 
@@ -2401,8 +2459,6 @@ def get_imap_mailboxes() -> list[dict]:
         })
         seen.add(user)
 
-    legacy_user = _normalize_mailbox_email(cfg.get("IMAP_USERNAME", ""))
-    legacy_password = str(cfg.get("IMAP_PASSWORD", "") or "")
     if legacy_user and legacy_password and legacy_user not in seen:
         mailboxes.append({
             "mailbox_email": legacy_user,
