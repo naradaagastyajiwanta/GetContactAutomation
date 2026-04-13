@@ -32,6 +32,7 @@ import {
 } from 'lucide-react'
 import { useMutation } from '@tanstack/react-query'
 import { toast } from 'react-hot-toast'
+import * as XLSX from 'xlsx'
 import { cn, formatRelative } from '../../lib/utils'
 import {
   useEmailBlastCampaign,
@@ -78,6 +79,50 @@ const statusConfig: Record<string, { label: string; icon: React.ElementType; col
 }
 
 const AUTO_PLACEHOLDERS = ['university_name', 'email', 'tanggal', 'nomor_surat']
+
+const EMAIL_COLUMN_KEYWORDS = ['email', 'e-mail', 'email address', 'alamat email', 'mail']
+const NAME_COLUMN_KEYWORDS = ['name', 'nama', 'university', 'instansi', 'company', 'lembaga', 'organization']
+
+function normalizeSpreadsheetCell(value: unknown): string {
+  return String(value ?? '').trim()
+}
+
+function normalizeSpreadsheetHeader(value: unknown): string {
+  return normalizeSpreadsheetCell(value).toLowerCase()
+}
+
+function detectHeaderRow(rows: unknown[][]): number {
+  for (let i = 0; i < Math.min(rows.length, 10); i += 1) {
+    const normalized = rows[i].map(normalizeSpreadsheetHeader)
+    if (normalized.some((cell) => EMAIL_COLUMN_KEYWORDS.some((keyword) => cell.includes(keyword)))) {
+      return i
+    }
+  }
+  return 0
+}
+
+function detectColumnIndex(headers: unknown[], keywords: string[]): number {
+  const normalizedHeaders = headers.map(normalizeSpreadsheetHeader)
+  return normalizedHeaders.findIndex((header) => keywords.some((keyword) => header.includes(keyword)))
+}
+
+function parseRecipientSpreadsheet(file: File): Promise<unknown[][]> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader()
+    reader.onload = (event) => {
+      try {
+        const workbook = XLSX.read(event.target?.result, { type: 'binary' })
+        const worksheet = workbook.Sheets[workbook.SheetNames[0]]
+        const rows = XLSX.utils.sheet_to_json(worksheet, { header: 1, raw: false }) as unknown[][]
+        resolve(rows)
+      } catch (error) {
+        reject(error)
+      }
+    }
+    reader.onerror = () => reject(new Error('Gagal membaca file'))
+    reader.readAsBinaryString(file)
+  })
+}
 
 // ─── Template Rendering (client-side preview) ─────────────────────────────────
 
@@ -964,6 +1009,10 @@ function AddRecipientsModal({ isOpen, onClose, campaignId }: { isOpen: boolean; 
   const [selectedGroupIds, setSelectedGroupIds] = useState<Set<number>>(new Set())
   const [page, setPage] = useState(0)
   const [uploadFile, setUploadFile] = useState<File | null>(null)
+  const [sheetRows, setSheetRows] = useState<unknown[][]>([])
+  const [headerRowIndex, setHeaderRowIndex] = useState(0)
+  const [emailColumnIndex, setEmailColumnIndex] = useState(-1)
+  const [nameColumnIndex, setNameColumnIndex] = useState(-1)
   const PAGE_SIZE = 50
   const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null)
 
@@ -976,6 +1025,57 @@ function AddRecipientsModal({ isOpen, onClose, campaignId }: { isOpen: boolean; 
     }, 300)
     return () => { if (debounceRef.current) clearTimeout(debounceRef.current) }
   }, [searchInput])
+
+  useEffect(() => {
+    let cancelled = false
+
+    async function parseFile() {
+      if (!uploadFile) {
+        setSheetRows([])
+        setHeaderRowIndex(0)
+        setEmailColumnIndex(-1)
+        setNameColumnIndex(-1)
+        return
+      }
+
+      const ext = uploadFile.name.split('.').pop()?.toLowerCase()
+      if (!ext || !['xlsx', 'xls', 'csv'].includes(ext)) {
+        toast.error('Format file harus .xlsx, .xls, atau .csv')
+        setUploadFile(null)
+        return
+      }
+
+      try {
+        const rows = await parseRecipientSpreadsheet(uploadFile)
+        if (cancelled) return
+        setSheetRows(rows)
+        const detectedHeaderRow = detectHeaderRow(rows)
+        setHeaderRowIndex(detectedHeaderRow)
+        const headers = rows[detectedHeaderRow] ?? []
+        setEmailColumnIndex(detectColumnIndex(headers, EMAIL_COLUMN_KEYWORDS))
+        setNameColumnIndex(detectColumnIndex(headers, NAME_COLUMN_KEYWORDS))
+      } catch {
+        if (!cancelled) {
+          toast.error('File tidak bisa dibaca. Coba simpan ulang sebagai .xlsx atau .csv')
+          setUploadFile(null)
+          setSheetRows([])
+        }
+      }
+    }
+
+    void parseFile()
+
+    return () => {
+      cancelled = true
+    }
+  }, [uploadFile])
+
+  useEffect(() => {
+    if (sheetRows.length === 0) return
+    const headers = sheetRows[headerRowIndex] ?? []
+    setEmailColumnIndex(detectColumnIndex(headers, EMAIL_COLUMN_KEYWORDS))
+    setNameColumnIndex(detectColumnIndex(headers, NAME_COLUMN_KEYWORDS))
+  }, [headerRowIndex, sheetRows])
 
   const { data: univData, isLoading } = useUniversitiesWithEmails(province || undefined, search, PAGE_SIZE, page * PAGE_SIZE)
   const { data: provinces } = useProvinces()
@@ -1027,18 +1127,35 @@ function AddRecipientsModal({ isOpen, onClose, campaignId }: { isOpen: boolean; 
   }
 
   async function handleUploadExternalRecipients() {
-    if (!uploadFile) return
+    if (!uploadFile || sheetRows.length === 0) return
 
-    const ext = uploadFile.name.split('.').pop()?.toLowerCase()
-    if (!ext || !['xlsx', 'xls', 'csv'].includes(ext)) {
-      toast.error('Format file harus .xlsx, .xls, atau .csv')
+    if (emailColumnIndex < 0) {
+      toast.error('Pilih kolom email terlebih dahulu')
+      return
+    }
+
+    const dataRows = sheetRows.slice(headerRowIndex + 1)
+    const rows = dataRows
+      .map((row) => {
+        const cells = Array.isArray(row) ? row : []
+        const email = normalizeSpreadsheetCell(cells[emailColumnIndex])
+        const name = nameColumnIndex >= 0 ? normalizeSpreadsheetCell(cells[nameColumnIndex]) : ''
+        return {
+          email,
+          ...(name ? { name } : {}),
+        }
+      })
+      .filter((row) => row.email || row.name)
+
+    if (rows.length === 0) {
+      toast.error('Tidak ada row data yang bisa diimport dari file ini')
       return
     }
 
     try {
       const result = await uploadExternalMutation.mutateAsync({
         campaignId,
-        file: uploadFile,
+        rows,
       })
 
       const summaryParts = [
@@ -1069,8 +1186,19 @@ function AddRecipientsModal({ isOpen, onClose, campaignId }: { isOpen: boolean; 
     setSearchInput('')
     setSearch('')
     setUploadFile(null)
+    setSheetRows([])
+    setHeaderRowIndex(0)
+    setEmailColumnIndex(-1)
+    setNameColumnIndex(-1)
     onClose()
   }
+
+  const uploadPreviewHeaders = Array.isArray(sheetRows[headerRowIndex]) ? sheetRows[headerRowIndex] : []
+  const uploadPreviewRows = sheetRows
+    .slice(headerRowIndex + 1)
+    .filter((row) => Array.isArray(row) && row.some((cell) => normalizeSpreadsheetCell(cell)))
+    .slice(0, 5)
+  const headerRowOptions = sheetRows.slice(0, Math.min(sheetRows.length, 10))
 
   return (
     <Modal isOpen={isOpen} onClose={handleClose} title="Add Recipients" size="lg">
@@ -1268,7 +1396,7 @@ function AddRecipientsModal({ isOpen, onClose, campaignId }: { isOpen: boolean; 
         ) : (
           <>
             <div className="rounded-xl border border-indigo-100 bg-indigo-50 px-4 py-3 text-sm text-indigo-700 dark:border-indigo-900/60 dark:bg-indigo-950/30 dark:text-indigo-300">
-              Upload file recipient eksternal untuk campaign ini. Data akan masuk langsung ke recipient campaign dan tidak akan ditambahkan ke tabel universitas.
+              Upload file recipient eksternal untuk campaign ini. Data akan masuk langsung ke recipient campaign dan tidak akan ditambahkan ke tabel universitas. Kalau sistem salah deteksi, Anda bisa pilih sendiri baris header dan kolom email.
             </div>
 
             <div className="mt-4 rounded-xl border border-dashed border-gray-300 p-5 dark:border-gray-700">
@@ -1279,7 +1407,7 @@ function AddRecipientsModal({ isOpen, onClose, campaignId }: { isOpen: boolean; 
                 <div className="min-w-0 flex-1">
                   <p className="text-sm font-medium text-gray-900 dark:text-gray-100">Upload Excel atau CSV</p>
                   <p className="mt-1 text-xs text-gray-500 dark:text-gray-400">
-                    Minimal harus ada kolom <span className="font-mono">email</span>. Kolom nama bisa pakai <span className="font-mono">name</span> atau <span className="font-mono">nama</span>.
+                    Setelah file dibaca, Anda bisa pilih sendiri baris header, kolom email, dan kolom nama.
                   </p>
                   <p className="mt-1 text-xs text-gray-400 dark:text-gray-500">
                     Format yang didukung: .xlsx, .xls, .csv
@@ -1311,9 +1439,114 @@ function AddRecipientsModal({ isOpen, onClose, campaignId }: { isOpen: boolean; 
               </div>
             </div>
 
-            <div className="mt-4 rounded-xl border border-gray-200 bg-gray-50 px-4 py-3 text-xs text-gray-600 dark:border-gray-700 dark:bg-gray-800 dark:text-gray-300">
-              Contoh header yang aman dipakai: <span className="font-mono">email</span>, <span className="font-mono">name</span>. Jika nama kosong, sistem akan pakai email sebagai label recipient.
-            </div>
+            {sheetRows.length > 0 && (
+              <div className="mt-4 space-y-4">
+                <div className="grid gap-3 md:grid-cols-3">
+                  <div>
+                    <label className="mb-1 block text-xs font-semibold uppercase tracking-wider text-gray-500 dark:text-gray-400">
+                      Header Row
+                    </label>
+                    <select
+                      value={headerRowIndex}
+                      onChange={(e) => setHeaderRowIndex(Number(e.target.value))}
+                      className="w-full rounded-lg border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 dark:border-gray-700 dark:bg-gray-800 dark:text-gray-100"
+                    >
+                      {headerRowOptions.map((row, idx) => (
+                        <option key={idx} value={idx}>
+                          Row {idx + 1}: {row.map((cell) => normalizeSpreadsheetCell(cell)).filter(Boolean).slice(0, 3).join(' | ') || '(empty)'}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+
+                  <div>
+                    <label className="mb-1 block text-xs font-semibold uppercase tracking-wider text-gray-500 dark:text-gray-400">
+                      Kolom Email
+                    </label>
+                    <select
+                      value={emailColumnIndex}
+                      onChange={(e) => setEmailColumnIndex(Number(e.target.value))}
+                      className="w-full rounded-lg border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 dark:border-gray-700 dark:bg-gray-800 dark:text-gray-100"
+                    >
+                      <option value={-1}>Pilih kolom email</option>
+                      {uploadPreviewHeaders.map((header, idx) => (
+                        <option key={idx} value={idx}>
+                          {normalizeSpreadsheetCell(header) || `Column ${idx + 1}`}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+
+                  <div>
+                    <label className="mb-1 block text-xs font-semibold uppercase tracking-wider text-gray-500 dark:text-gray-400">
+                      Kolom Nama
+                    </label>
+                    <select
+                      value={nameColumnIndex}
+                      onChange={(e) => setNameColumnIndex(Number(e.target.value))}
+                      className="w-full rounded-lg border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 dark:border-gray-700 dark:bg-gray-800 dark:text-gray-100"
+                    >
+                      <option value={-1}>Tanpa kolom nama</option>
+                      {uploadPreviewHeaders.map((header, idx) => (
+                        <option key={idx} value={idx}>
+                          {normalizeSpreadsheetCell(header) || `Column ${idx + 1}`}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+                </div>
+
+                <div className="rounded-xl border border-gray-200 bg-gray-50 px-4 py-3 text-xs text-gray-600 dark:border-gray-700 dark:bg-gray-800 dark:text-gray-300">
+                  {emailColumnIndex >= 0 ? (
+                    <span>
+                      Sistem akan import mulai dari row {headerRowIndex + 2}. Jika nama kosong, sistem pakai email sebagai label recipient.
+                    </span>
+                  ) : (
+                    <span className="text-amber-600 dark:text-amber-400">
+                      Sistem belum bisa menentukan kolom email. Pilih manual di dropdown Kolom Email.
+                    </span>
+                  )}
+                </div>
+
+                <div className="overflow-hidden rounded-xl border border-gray-200 dark:border-gray-700">
+                  <div className="border-b border-gray-200 bg-gray-50 px-4 py-2 text-xs font-semibold uppercase tracking-wider text-gray-500 dark:border-gray-700 dark:bg-gray-800 dark:text-gray-400">
+                    Preview Data
+                  </div>
+                  <div className="overflow-x-auto">
+                    <table className="min-w-full text-sm">
+                      <thead className="bg-white dark:bg-gray-900">
+                        <tr>
+                          {uploadPreviewHeaders.map((header, idx) => (
+                            <th key={idx} className="border-b border-gray-200 px-3 py-2 text-left text-xs font-semibold text-gray-500 dark:border-gray-700 dark:text-gray-400">
+                              {normalizeSpreadsheetCell(header) || `Column ${idx + 1}`}
+                            </th>
+                          ))}
+                        </tr>
+                      </thead>
+                      <tbody className="bg-white dark:bg-gray-900">
+                        {uploadPreviewRows.length === 0 ? (
+                          <tr>
+                            <td colSpan={Math.max(uploadPreviewHeaders.length, 1)} className="px-3 py-4 text-sm text-gray-400">
+                              Tidak ada data setelah header row yang dipilih.
+                            </td>
+                          </tr>
+                        ) : (
+                          uploadPreviewRows.map((row, rowIndex) => (
+                            <tr key={rowIndex}>
+                              {uploadPreviewHeaders.map((_, colIndex) => (
+                                <td key={colIndex} className="border-t border-gray-100 px-3 py-2 text-sm text-gray-700 dark:border-gray-800 dark:text-gray-200">
+                                  {normalizeSpreadsheetCell((row as unknown[])[colIndex]) || '—'}
+                                </td>
+                              ))}
+                            </tr>
+                          ))
+                        )}
+                      </tbody>
+                    </table>
+                  </div>
+                </div>
+              </div>
+            )}
 
             <div className="mt-auto flex items-center justify-end gap-2 pt-4 border-t border-gray-100 dark:border-gray-800">
               <button
@@ -1324,10 +1557,10 @@ function AddRecipientsModal({ isOpen, onClose, campaignId }: { isOpen: boolean; 
               </button>
               <button
                 onClick={handleUploadExternalRecipients}
-                disabled={!uploadFile || uploadExternalMutation.isPending}
+                disabled={!uploadFile || uploadExternalMutation.isPending || emailColumnIndex < 0}
                 className={cn(
                   'inline-flex items-center gap-2 rounded-lg px-4 py-2 text-sm font-medium transition-colors',
-                  !uploadFile || uploadExternalMutation.isPending
+                  !uploadFile || uploadExternalMutation.isPending || emailColumnIndex < 0
                     ? 'bg-gray-100 text-gray-400 dark:bg-gray-700 cursor-not-allowed'
                     : 'bg-indigo-600 text-white hover:bg-indigo-700'
                 )}

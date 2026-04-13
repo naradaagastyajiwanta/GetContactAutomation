@@ -5887,6 +5887,16 @@ class EmailBlastStartRequest(BaseModel):
     max_recipients: int | None = None
 
 
+class ExternalEmailBlastRecipientRow(BaseModel):
+    email: str | None = None
+    name: str | None = None
+    contact_person: str | None = None
+
+
+class EmailBlastExternalRecipientsImportRequest(BaseModel):
+    rows: list[ExternalEmailBlastRecipientRow]
+
+
 @app.post("/email-blast/campaigns")
 async def create_email_campaign(payload: EmailBlastCampaignCreate, request: Request):
     """Create new email blast campaign."""
@@ -6036,6 +6046,32 @@ async def upload_external_recipients(
         "skipped_missing_email": result["skipped_missing_email"],
         "skipped_invalid_format": result["skipped_invalid_format"],
         "columns": columns,
+        "message": f"Added {result['added']} external recipient(s)",
+    }
+
+
+@app.post("/email-blast/campaigns/{campaign_id}/recipients/import")
+async def import_external_recipients(
+    campaign_id: int,
+    payload: EmailBlastExternalRecipientsImportRequest,
+    request: Request,
+):
+    """Import already-mapped external recipients directly into campaign recipients."""
+    await _require_email_campaign_access(campaign_id)
+
+    rows = [row.model_dump() for row in payload.rows]
+    if not rows:
+        raise HTTPException(status_code=400, detail="No rows provided")
+
+    result = await email_blast.add_external_recipients_from_rows(campaign_id, rows)
+    return {
+        "success": True,
+        "recipients_added": result["added"],
+        "processed_rows": result["processed_rows"],
+        "duplicate_or_existing": result["duplicate_or_existing"],
+        "skipped_missing_email": result["skipped_missing_email"],
+        "skipped_invalid_format": result["skipped_invalid_format"],
+        "columns": ["email", "name"],
         "message": f"Added {result['added']} external recipient(s)",
     }
 

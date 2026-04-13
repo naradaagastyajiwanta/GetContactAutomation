@@ -100,6 +100,11 @@ export interface UploadExternalRecipientsResponse {
   message: string
 }
 
+export interface ExternalRecipientImportRow {
+  email: string
+  name?: string
+}
+
 export interface CreateEmailCampaignRequest {
   name: string
   subject: string
@@ -154,13 +159,11 @@ export async function addSelectedRecipients(
 
 export async function uploadExternalRecipients(
   campaignId: number,
-  file: File,
+  rows: ExternalRecipientImportRow[],
 ): Promise<UploadExternalRecipientsResponse> {
-  const formData = new FormData()
-  formData.append('file', file)
-
-  const uploadClient = axios.create({ baseURL: '/api' })
-  const response = await uploadClient.post(`/email-blast/campaigns/${campaignId}/recipients/upload`, formData)
+  const response = await apiClient.post(`/email-blast/campaigns/${campaignId}/recipients/import`, {
+    rows,
+  })
   return response.data
 }
 

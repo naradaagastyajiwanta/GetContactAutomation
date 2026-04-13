@@ -158,8 +158,8 @@ export function useAddSelectedRecipients() {
 export function useUploadExternalRecipients() {
   const queryClient = useQueryClient()
   return useMutation({
-    mutationFn: ({ campaignId, file }: { campaignId: number; file: File }) =>
-      uploadExternalRecipients(campaignId, file),
+    mutationFn: ({ campaignId, rows }: { campaignId: number; rows: { email: string; name?: string }[] }) =>
+      uploadExternalRecipients(campaignId, rows),
     onSuccess: (_data: UploadExternalRecipientsResponse) => {
       queryClient.invalidateQueries({ queryKey: ['email-blast-campaigns'] })
       queryClient.invalidateQueries({ queryKey: ['email-blast-campaign'] })
