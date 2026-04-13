@@ -25,7 +25,7 @@ _pw_executor = ThreadPoolExecutor(max_workers=2, thread_name_prefix="pw-login")
 import httpx
 from fastapi import FastAPI, BackgroundTasks, UploadFile, File as FastAPIFile, Form, Query, WebSocket, WebSocketDisconnect, Request, Response, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse, StreamingResponse
+from fastapi.responses import JSONResponse, StreamingResponse, HTMLResponse
 from pydantic import BaseModel
 
 from orchestrator.config import WA_SERVICE_URL, WEBHOOK_URL, log, is_paused, set_paused, cfg, SYSTEM_DEVICE_ID
@@ -5209,23 +5209,57 @@ async def sentry_debug():
 async def codex_oauth_start():
     """Begin a Codex OAuth login flow.
 
-    Spawns a local callback server on http://localhost:1455, returns
-    the authorize URL for the FE to open in a new tab. The FE should
-    poll ``GET /auth/codex/poll`` (or wait via the dedicated endpoint
-    below) to know when login completes.
+    Spawns a local callback server on http://localhost:1455 (dev mode),
+    or prepares for a persistent /auth/codex-callback endpoint (production).
+    Returns the authorize URL for the FE to open in a new tab, along with
+    the callback URL it should use.
+
+    The FE should poll ``POST /auth/codex/wait`` to wait for login to complete.
     """
     from orchestrator.llm import codex_login_server
+    from orchestrator import config
+
+    # Determine whether we're using ephemeral server (dev) or persistent endpoint (prod)
+    callback_url = config.OAUTH_CALLBACK_URL
+    spawn_ephemeral_server = "localhost" in callback_url or "127.0.0.1" in callback_url
 
     try:
-        flow = await codex_login_server.begin_login()
+        flow = await codex_login_server.begin_login(
+            spawn_ephemeral_server=spawn_ephemeral_server
+        )
     except RuntimeError as e:
         raise HTTPException(status_code=409, detail=str(e))
+
     return {
         "authorize_url": flow.url,
         "state": flow.state,
+        "callback_url": callback_url,
         "callback_host": codex_login_server.CALLBACK_HOST,
         "callback_port": codex_login_server.CALLBACK_PORT,
     }
+
+
+@app.get("/auth/codex-callback")
+async def codex_oauth_callback_get(
+    code: str | None = None,
+    state: str | None = None,
+    error: str | None = None,
+    error_description: str | None = None,
+):
+    """Production OAuth callback endpoint.
+
+    OpenAI redirects here after the user logs in. This is the persistent
+    counterpart to the ephemeral localhost:1455 server used in dev mode.
+
+    For production deployments, register this endpoint's full public URL
+    (e.g., https://getcontact.najworks.me/auth/codex-callback) as a
+    redirect_uri in your OpenAI app settings.
+    """
+    from orchestrator.llm import codex_login_server
+
+    result = codex_login_server.handle_callback_data(code, state, error, error_description)
+    return HTMLResponse(content=result["html"], status_code=200 if result["success"] else 400)
+
 
 
 @app.post("/auth/codex/wait")

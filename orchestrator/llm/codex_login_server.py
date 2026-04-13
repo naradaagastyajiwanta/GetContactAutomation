@@ -146,21 +146,35 @@ def _render_error_html(message: str) -> str:
     return ERROR_HTML.replace("{message}", message)
 
 
-async def _handle_callback(request: web.Request) -> web.Response:
-    """Catch the OAuth redirect, hand the code back to the waiting future."""
+def handle_callback_data(
+    code: str | None,
+    state: str | None,
+    error: str | None,
+    error_description: str | None,
+) -> dict:
+    """Process OAuth callback parameters and update the active session future.
+
+    This logic is shared between:
+      - The ephemeral aiohttp server (_handle_callback)
+      - The persistent FastAPI endpoint (/auth/codex-callback)
+
+    Returns a dict with keys:
+      - success: bool
+      - message: str
+      - html: str (HTML to return to browser)
+
+    Side effects:
+      - Updates _active_session.future if active
+    """
     global _active_session
+
     session = _active_session
     if session is None:
-        return web.Response(
-            text=_render_error_html("No login in progress."),
-            content_type="text/html",
-            status=400,
-        )
-
-    code = request.query.get("code")
-    state = request.query.get("state")
-    error = request.query.get("error")
-    error_description = request.query.get("error_description")
+        return {
+            "success": False,
+            "message": "No login in progress.",
+            "html": _render_error_html("No login in progress."),
+        }
 
     if error:
         full_error = (
@@ -169,20 +183,20 @@ async def _handle_callback(request: web.Request) -> web.Response:
         log.warning("[codex-login] callback returned error: %s", full_error)
         if not session.future.done():
             session.future.set_result({"error": full_error})
-        return web.Response(
-            text=_render_error_html(f"OAuth error: {full_error}"),
-            content_type="text/html",
-            status=400,
-        )
+        return {
+            "success": False,
+            "message": f"OAuth error: {full_error}",
+            "html": _render_error_html(f"OAuth error: {full_error}"),
+        }
 
     if not code:
         if not session.future.done():
             session.future.set_result(None)
-        return web.Response(
-            text=_render_error_html("Callback missing 'code' parameter."),
-            content_type="text/html",
-            status=400,
-        )
+        return {
+            "success": False,
+            "message": "Callback missing 'code' parameter.",
+            "html": _render_error_html("Callback missing 'code' parameter."),
+        }
 
     if state and state != session.state:
         log.warning(
@@ -190,15 +204,36 @@ async def _handle_callback(request: web.Request) -> web.Response:
         )
         if not session.future.done():
             session.future.set_result(None)
-        return web.Response(
-            text=_render_error_html("State mismatch — possible CSRF."),
-            content_type="text/html",
-            status=400,
-        )
+        return {
+            "success": False,
+            "message": "State mismatch — possible CSRF.",
+            "html": _render_error_html("State mismatch — possible CSRF."),
+        }
 
     if not session.future.done():
         session.future.set_result({"code": code, "state": state})
-    return web.Response(text=SUCCESS_HTML, content_type="text/html")
+
+    log.info("[codex-login] OAuth code captured successfully from callback")
+    return {
+        "success": True,
+        "message": "OAuth code captured successfully.",
+        "html": SUCCESS_HTML,
+    }
+
+
+async def _handle_callback(request: web.Request) -> web.Response:
+    """Catch the OAuth redirect, hand the code back to the waiting future."""
+    code = request.query.get("code")
+    state = request.query.get("state")
+    error = request.query.get("error")
+    error_description = request.query.get("error_description")
+
+    result = handle_callback_data(code, state, error, error_description)
+    return web.Response(
+        text=result["html"],
+        content_type="text/html",
+        status=400 if not result["success"] else 200,
+    )
 
 
 # --- public API --------------------------------------------------------------
@@ -207,8 +242,14 @@ async def _handle_callback(request: web.Request) -> web.Response:
 async def begin_login(
     *,
     timeout_seconds: int = DEFAULT_LOGIN_TIMEOUT_SECONDS,
+    spawn_ephemeral_server: bool = True,
 ) -> AuthorizationFlow:
     """Spawn the local callback server and return the authorize URL.
+
+    Args:
+      spawn_ephemeral_server: If False, skip spawning the ephemeral
+        aiohttp server (use this for production with persistent /auth/codex-callback
+        endpoint). If True, spawn the server on localhost:1455 (dev mode).
 
     **Idempotent behaviour** — if a previous login is still in flight
     (e.g. the user closed the browser tab without completing OAuth and
@@ -222,8 +263,9 @@ async def begin_login(
 
     The caller (FastAPI handler) returns the URL to the FE; the FE
     opens it in a new tab; the user logs in; the OAuth provider
-    redirects back to ``http://localhost:1455/auth/callback``; this
-    server captures the code and resolves the in-memory future.
+    redirects back to the callback URL; this server (if spawned) captures
+    the code and resolves the in-memory future, OR a persistent endpoint
+    updates the future directly.
 
     To wait for the result, ``await wait_for_login_result()``.
     """
@@ -259,6 +301,44 @@ async def begin_login(
 
         flow = build_authorization_flow()
 
+        # Only spawn ephemeral server for dev (callback is localhost:1455)
+        if not spawn_ephemeral_server:
+            log.info(
+                "[codex-login] production mode: no ephemeral server, "
+                "using persistent /auth/codex-callback endpoint"
+            )
+            loop = asyncio.get_running_loop()
+            future: asyncio.Future = loop.create_future()
+
+            async def _timeout_watchdog():
+                try:
+                    await asyncio.sleep(timeout_seconds)
+                    if not future.done():
+                        future.set_result(None)
+                        log.warning(
+                            "[codex-login] login timed out after %ds", timeout_seconds
+                        )
+                except asyncio.CancelledError:
+                    pass
+
+            timeout_task = loop.create_task(_timeout_watchdog())
+
+            _active_session = LoginSession(
+                pkce=flow.pkce,
+                state=flow.state,
+                authorize_url=flow.url,
+                future=future,
+                runner=None,  # No server runner in production mode
+                site=None,
+                timeout_task=timeout_task,
+            )
+            log.info(
+                "[codex-login] waiting for OAuth redirect via persistent endpoint, "
+                "awaitingcode"
+            )
+            return flow
+
+        # Dev mode: spawn ephemeral server on localhost:1455
         app = web.Application()
         app.router.add_get(CALLBACK_PATH, _handle_callback)
         runner = web.AppRunner(app, access_log=None)
@@ -357,18 +437,25 @@ async def finalize_login() -> None:
 
 
 async def _shutdown_session(session: LoginSession) -> None:
-    """Stop the callback server and cancel the timeout watchdog."""
+    """Stop the callback server and cancel the timeout watchdog.
+    
+    Handles both dev mode (with server) and production mode (no server).
+    """
     if not session.timeout_task.done():
         session.timeout_task.cancel()
         with contextlib.suppress(asyncio.CancelledError, Exception):
             await session.timeout_task
     if not session.future.done():
         session.future.set_result(None)
-    try:
-        await session.site.stop()
-    except Exception:
-        pass
-    try:
-        await session.runner.cleanup()
-    except Exception:
-        pass
+    
+    # Production mode: site and runner may be None
+    if session.site is not None:
+        try:
+            await session.site.stop()
+        except Exception:
+            pass
+    if session.runner is not None:
+        try:
+            await session.runner.cleanup()
+        except Exception:
+            pass

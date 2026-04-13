@@ -39,6 +39,7 @@ export interface LLMMetricsResponse {
 export interface StartLoginResponse {
   authorize_url: string;
   state: string;
+  callback_url: string; // Dynamic callback URL (localhost:1455 for dev, production domain for prod)
   callback_host: string;
   callback_port: number;
 }

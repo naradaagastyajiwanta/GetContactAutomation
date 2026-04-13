@@ -93,6 +93,7 @@ export function ChatGPTOAuthPanel() {
   const [showManual, setShowManual] = useState(false);
   const [manualInput, setManualInput] = useState("");
   const [manualSubmitting, setManualSubmitting] = useState(false);
+  const [lastCallbackUrl, setLastCallbackUrl] = useState<string | null>(null);
 
   // Auto-dismiss success banner after 6 seconds
   const successTimerRef = useRef<number | null>(null);
@@ -168,6 +169,9 @@ export function ChatGPTOAuthPanel() {
 
       const start = await startCodexLogin();
       if (isStale()) return;
+
+      // Store the callback URL for display in manual paste mode
+      setLastCallbackUrl(start.callback_url);
 
       // Open the authorize URL in a new tab so the user can complete OAuth
       window.open(start.authorize_url, "_blank", "noopener,noreferrer");
@@ -485,7 +489,11 @@ export function ChatGPTOAuthPanel() {
                     type="text"
                     value={manualInput}
                     onChange={(e) => setManualInput(e.target.value)}
-                    placeholder="http://localhost:1455/auth/callback?code=...&state=..."
+                    placeholder={
+                      lastCallbackUrl
+                        ? `${lastCallbackUrl}?code=...&state=...`
+                        : "http://localhost:1455/auth/callback?code=...&state=..."
+                    }
                     className="w-full rounded border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-800 px-2 py-1.5 text-xs font-mono"
                   />
                   <div className="flex gap-2">
