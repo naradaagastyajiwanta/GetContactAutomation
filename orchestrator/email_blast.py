@@ -679,10 +679,6 @@ class SMTPClient:
                 with self._rotation_lock:
                     self._rotate_next()
             return False
-        finally:
-            if should_patch and _original_create_connection is not None:
-                socket.create_connection = _original_create_connection
-                _original_create_connection = None
 
     def disconnect(self) -> None:
         """Disconnect all account connections."""
