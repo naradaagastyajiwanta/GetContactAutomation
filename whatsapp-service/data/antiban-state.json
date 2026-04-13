@@ -15,13 +15,14 @@
         "6283169824750@s.whatsapp.net",
         "6281919707099@s.whatsapp.net",
         "6287811152506@s.whatsapp.net",
-        "6285121084588@s.whatsapp.net"
+        "6285121084588@s.whatsapp.net",
+        "266270859653314@s.whatsapp.net"
       ],
       "sendEvents": [],
       "failedEvents": [],
       "disconnectEvents": [],
       "warmUp": {
-        "startedAt": 1776052792067,
+        "startedAt": 1776058409856,
         "dailyCounts": {}
       },
       "timelock": {

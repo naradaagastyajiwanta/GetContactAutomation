@@ -574,6 +574,59 @@ class SMTPClient:
                 pass
             acc._connection = None
 
+    def _should_fallback_to_direct(self, exc: Exception) -> bool:
+        """Return True when the failure looks like a SOCKS/WARP transport issue."""
+        err_str = str(exc).lower()
+        auth_keywords = ("auth", "535", "501", "534", "user", "password", "authentication")
+        proxy_keywords = (
+            "host unreachable",
+            "can't complete socks5 connection",
+            "socks5",
+            "socks",
+            "proxy",
+            "network is unreachable",
+            "no route to host",
+            "connection refused",
+            "timed out",
+            "timeout",
+            "0x04",
+        )
+        if any(kw in err_str for kw in auth_keywords):
+            return False
+        return any(kw in err_str for kw in proxy_keywords)
+
+    def _connect_account(self, acc: SMTPAccount, socks_enabled: bool, quiet: bool) -> smtplib.SMTP:
+        """Open and authenticate an SMTP connection, optionally via SOCKS."""
+        global _original_create_connection
+        should_patch = socks_enabled
+
+        try:
+            if should_patch:
+                if _original_create_connection is None:
+                    _original_create_connection = socket.create_connection
+                    socket.create_connection = _socks_create_connection
+                if not quiet:
+                    log.info(f"[EmailBlast] SOCKS5 proxy active: {_get_socks_config()['host']}:{_get_socks_config()['port']}")
+
+            if not quiet:
+                log.info(f"[EmailBlast] SMTP connecting: {acc.host}:{acc.port} as {acc.user} (SOCKS5={socks_enabled})")
+
+            if acc.use_ssl:
+                context = ssl.create_default_context()
+                conn = smtplib.SMTP_SSL(acc.host, acc.port, context=context)
+            else:
+                conn = smtplib.SMTP(acc.host, acc.port)
+                conn.ehlo()
+                conn.starttls(context=ssl.create_default_context())
+
+            conn.login(acc.user, acc.password)
+            return conn
+
+        finally:
+            if should_patch and _original_create_connection is not None:
+                socket.create_connection = _original_create_connection
+                _original_create_connection = None
+
     def _ensure_connected(self, quiet: bool = False) -> bool:
         """Ensure current account is connected. Rotates if needed.
 
@@ -588,30 +641,10 @@ class SMTPClient:
         if acc._connection is not None:
             return True
 
-        global _original_create_connection
         socks_config = _get_socks_config()
-        should_patch = socks_config["enabled"]
 
         try:
-            if should_patch:
-                if _original_create_connection is None:
-                    _original_create_connection = socket.create_connection
-                    socket.create_connection = _socks_create_connection
-                if not quiet:
-                    log.info(f"[EmailBlast] SOCKS5 proxy active: {socks_config['host']}:{socks_config['port']}")
-
-            if not quiet:
-                log.info(f"[EmailBlast] SMTP connecting: {acc.host}:{acc.port} as {acc.user} (SOCKS5={socks_config['enabled']})")
-
-            if acc.use_ssl:
-                context = ssl.create_default_context()
-                conn = smtplib.SMTP_SSL(acc.host, acc.port, context=context)
-            else:
-                conn = smtplib.SMTP(acc.host, acc.port)
-                conn.ehlo()
-                conn.starttls(context=ssl.create_default_context())
-
-            conn.login(acc.user, acc.password)
+            conn = self._connect_account(acc, socks_config["enabled"], quiet)
             acc._connection = conn
             acc.degraded = False
             if not quiet:
@@ -619,6 +652,22 @@ class SMTPClient:
             return True
 
         except Exception as e:
+            if socks_config["enabled"] and self._should_fallback_to_direct(e):
+                log.warning(
+                    "[EmailBlast] SMTP SOCKS connection failed for %s, retrying direct: %s",
+                    acc.user,
+                    e,
+                )
+                try:
+                    conn = self._connect_account(acc, False, quiet)
+                    acc._connection = conn
+                    acc.degraded = False
+                    if not quiet:
+                        log.info(f"[EmailBlast] SMTP connected without SOCKS fallback: {acc.user}")
+                    return True
+                except Exception as direct_exc:
+                    e = direct_exc
+
             err_str = str(e).lower()
             log.error(f"[EmailBlast] SMTP connect failed for {acc.user}: {e}")
             # Mark as degraded so we rotate away
