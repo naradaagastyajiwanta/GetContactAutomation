@@ -7,10 +7,14 @@ import csv
 import io
 import json as _json
 import functools
+import os
+import tempfile
+import zipfile
 from collections import OrderedDict
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any, Optional
 
 # Dedicated thread-pool for long-running Playwright operations so they
@@ -6582,13 +6586,49 @@ async def upload_attachment(
         if not file.filename.endswith('.docx'):
             raise HTTPException(status_code=400, detail="Only .docx files allowed")
 
-        # Save uploaded file
+        def _validate_docx_template(docx_path: Path) -> None:
+            if not zipfile.is_zipfile(docx_path):
+                raise HTTPException(status_code=400, detail="Uploaded file is not a valid DOCX archive")
+
+            try:
+                with zipfile.ZipFile(docx_path, 'r') as archive:
+                    bad_member = archive.testzip()
+                    if bad_member:
+                        raise HTTPException(
+                            status_code=400,
+                            detail=f"Uploaded DOCX is corrupted (bad member: {bad_member})",
+                        )
+
+                    if 'word/document.xml' not in archive.namelist():
+                        raise HTTPException(status_code=400, detail="Uploaded file is missing word/document.xml")
+            except zipfile.BadZipFile:
+                raise HTTPException(status_code=400, detail="Uploaded file is not a readable DOCX archive")
+
+        # Save to a temporary file first so corrupt uploads never become active templates.
         filename = f"{campaign_id}_{file.filename}"
         filepath = TEMPLATE_DIR / filename
+        tmp_path: Path | None = None
 
         content = await file.read()
-        with open(filepath, 'wb') as f:
-            f.write(content)
+        if not content:
+            raise HTTPException(status_code=400, detail="Uploaded file is empty")
+
+        try:
+            with tempfile.NamedTemporaryFile(delete=False, suffix='.docx', dir=str(TEMPLATE_DIR)) as tmp_file:
+                tmp_file.write(content)
+                tmp_path = Path(tmp_file.name)
+
+            _validate_docx_template(tmp_path)
+
+            os.replace(tmp_path, filepath)
+            tmp_path = None
+
+        finally:
+            if tmp_path and tmp_path.exists():
+                try:
+                    tmp_path.unlink()
+                except Exception:
+                    pass
 
         # Extract variables from document
         detected_vars = extract_docx_variables(str(filepath))

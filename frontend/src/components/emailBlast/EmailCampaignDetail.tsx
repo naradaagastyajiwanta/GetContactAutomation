@@ -4,6 +4,7 @@
  */
 
 import { useState, useEffect, useCallback, useRef } from 'react'
+import axios from 'axios'
 import {
   ArrowLeft,
   Save,
@@ -133,6 +134,26 @@ function renderPreview(text: string | null | undefined, vars: Record<string, str
     result = result.replace(new RegExp(`\\{\\{${key}\\}\\}`, 'g'), val || `{{${key}}}`)
   }
   return result
+}
+
+function getUploadErrorMessage(error: unknown, fallback: string): string {
+  if (axios.isAxiosError(error)) {
+    const detail = error.response?.data?.detail
+    if (typeof detail === 'string' && detail.trim()) {
+      return detail
+    }
+
+    const message = error.response?.data?.message
+    if (typeof message === 'string' && message.trim()) {
+      return message
+    }
+  }
+
+  if (error instanceof Error && error.message.trim()) {
+    return error.message
+  }
+
+  return fallback
 }
 
 // ─── Preview Modal ─────────────────────────────────────────────────────────────
@@ -400,8 +421,8 @@ function AttachmentVarForm({
       // If no file, just save values
       toast.success('Variable values saved')
       onSaved()
-    } catch {
-      toast.error('Failed to save variables')
+    } catch (error) {
+      toast.error(getUploadErrorMessage(error, 'Failed to save variables'))
     } finally {
       setIsSaving(false)
     }
@@ -604,8 +625,8 @@ function ContentTab({
     try {
       await uploadMutation.mutateAsync({ campaignId, file, variables: varValues })
       toast.success('Attachment uploaded')
-    } catch {
-      toast.error('Failed to upload attachment')
+    } catch (error) {
+      toast.error(getUploadErrorMessage(error, 'Failed to upload attachment. Please upload the DOCX again.'))
     }
   }
 
