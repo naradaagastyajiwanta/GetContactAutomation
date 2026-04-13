@@ -1202,7 +1202,7 @@ function AddRecipientsModal({ isOpen, onClose, campaignId }: { isOpen: boolean; 
 
   return (
     <Modal isOpen={isOpen} onClose={handleClose} title="Add Recipients" size="lg">
-      <div className="flex flex-col" style={{ height: '70vh' }}>
+      <div className="flex h-[70vh] max-h-[70vh] flex-col overflow-hidden">
         <div className="mb-3 flex gap-2 rounded-xl bg-gray-100 p-1 dark:bg-gray-800">
           <button
             onClick={() => setSourceMode('system')}
@@ -1395,160 +1395,162 @@ function AddRecipientsModal({ isOpen, onClose, campaignId }: { isOpen: boolean; 
           </>
         ) : (
           <>
-            <div className="rounded-xl border border-indigo-100 bg-indigo-50 px-4 py-3 text-sm text-indigo-700 dark:border-indigo-900/60 dark:bg-indigo-950/30 dark:text-indigo-300">
-              Upload file recipient eksternal untuk campaign ini. Data akan masuk langsung ke recipient campaign dan tidak akan ditambahkan ke tabel universitas. Kalau sistem salah deteksi, Anda bisa pilih sendiri baris header dan kolom email.
-            </div>
+            <div className="mt-4 flex-1 min-h-0 overflow-y-auto space-y-4 pr-1">
+              <div className="rounded-xl border border-indigo-100 bg-indigo-50 px-4 py-3 text-sm text-indigo-700 dark:border-indigo-900/60 dark:bg-indigo-950/30 dark:text-indigo-300">
+                Upload file recipient eksternal untuk campaign ini. Data akan masuk langsung ke recipient campaign dan tidak akan ditambahkan ke tabel universitas. Kalau sistem salah deteksi, Anda bisa pilih sendiri baris header dan kolom email.
+              </div>
 
-            <div className="mt-4 rounded-xl border border-dashed border-gray-300 p-5 dark:border-gray-700">
-              <div className="flex items-start gap-3">
-                <div className="rounded-lg bg-gray-100 p-2 dark:bg-gray-800">
-                  <Upload className="h-4 w-4 text-gray-500 dark:text-gray-300" />
+              <div className="rounded-xl border border-dashed border-gray-300 p-5 dark:border-gray-700">
+                <div className="flex items-start gap-3">
+                  <div className="rounded-lg bg-gray-100 p-2 dark:bg-gray-800">
+                    <Upload className="h-4 w-4 text-gray-500 dark:text-gray-300" />
+                  </div>
+                  <div className="min-w-0 flex-1">
+                    <p className="text-sm font-medium text-gray-900 dark:text-gray-100">Upload Excel atau CSV</p>
+                    <p className="mt-1 text-xs text-gray-500 dark:text-gray-400">
+                      Setelah file dibaca, Anda bisa pilih sendiri baris header, kolom email, dan kolom nama.
+                    </p>
+                    <p className="mt-1 text-xs text-gray-400 dark:text-gray-500">
+                      Format yang didukung: .xlsx, .xls, .csv
+                    </p>
+                    <input
+                      id="email-blast-external-upload"
+                      type="file"
+                      accept=".xlsx,.xls,.csv"
+                      className="hidden"
+                      onChange={(e) => setUploadFile(e.target.files?.[0] ?? null)}
+                    />
+                    <div className="mt-3 flex flex-wrap items-center gap-3">
+                      <label
+                        htmlFor="email-blast-external-upload"
+                        className="inline-flex cursor-pointer items-center gap-2 rounded-lg border border-gray-200 bg-white px-3 py-2 text-sm font-medium text-gray-700 hover:bg-gray-50 dark:border-gray-700 dark:bg-gray-800 dark:text-gray-200 dark:hover:bg-gray-700"
+                      >
+                        <Upload className="h-4 w-4" />
+                        Pilih File
+                      </label>
+                      {uploadFile ? (
+                        <span className="min-w-0 truncate text-sm text-gray-600 dark:text-gray-300">
+                          {uploadFile.name}
+                        </span>
+                      ) : (
+                        <span className="text-sm text-gray-400">Belum ada file dipilih</span>
+                      )}
+                    </div>
+                  </div>
                 </div>
-                <div className="min-w-0 flex-1">
-                  <p className="text-sm font-medium text-gray-900 dark:text-gray-100">Upload Excel atau CSV</p>
-                  <p className="mt-1 text-xs text-gray-500 dark:text-gray-400">
-                    Setelah file dibaca, Anda bisa pilih sendiri baris header, kolom email, dan kolom nama.
-                  </p>
-                  <p className="mt-1 text-xs text-gray-400 dark:text-gray-500">
-                    Format yang didukung: .xlsx, .xls, .csv
-                  </p>
-                  <input
-                    id="email-blast-external-upload"
-                    type="file"
-                    accept=".xlsx,.xls,.csv"
-                    className="hidden"
-                    onChange={(e) => setUploadFile(e.target.files?.[0] ?? null)}
-                  />
-                  <div className="mt-3 flex flex-wrap items-center gap-3">
-                    <label
-                      htmlFor="email-blast-external-upload"
-                      className="inline-flex cursor-pointer items-center gap-2 rounded-lg border border-gray-200 bg-white px-3 py-2 text-sm font-medium text-gray-700 hover:bg-gray-50 dark:border-gray-700 dark:bg-gray-800 dark:text-gray-200 dark:hover:bg-gray-700"
-                    >
-                      <Upload className="h-4 w-4" />
-                      Pilih File
-                    </label>
-                    {uploadFile ? (
-                      <span className="min-w-0 truncate text-sm text-gray-600 dark:text-gray-300">
-                        {uploadFile.name}
+              </div>
+
+              {sheetRows.length > 0 && (
+                <div className="space-y-4">
+                  <div className="grid gap-3 md:grid-cols-3">
+                    <div>
+                      <label className="mb-1 block text-xs font-semibold uppercase tracking-wider text-gray-500 dark:text-gray-400">
+                        Header Row
+                      </label>
+                      <select
+                        value={headerRowIndex}
+                        onChange={(e) => setHeaderRowIndex(Number(e.target.value))}
+                        className="w-full rounded-lg border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 dark:border-gray-700 dark:bg-gray-800 dark:text-gray-100"
+                      >
+                        {headerRowOptions.map((row, idx) => (
+                          <option key={idx} value={idx}>
+                            Row {idx + 1}: {row.map((cell) => normalizeSpreadsheetCell(cell)).filter(Boolean).slice(0, 3).join(' | ') || '(empty)'}
+                          </option>
+                        ))}
+                      </select>
+                    </div>
+
+                    <div>
+                      <label className="mb-1 block text-xs font-semibold uppercase tracking-wider text-gray-500 dark:text-gray-400">
+                        Kolom Email
+                      </label>
+                      <select
+                        value={emailColumnIndex}
+                        onChange={(e) => setEmailColumnIndex(Number(e.target.value))}
+                        className="w-full rounded-lg border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 dark:border-gray-700 dark:bg-gray-800 dark:text-gray-100"
+                      >
+                        <option value={-1}>Pilih kolom email</option>
+                        {uploadPreviewHeaders.map((header, idx) => (
+                          <option key={idx} value={idx}>
+                            {normalizeSpreadsheetCell(header) || `Column ${idx + 1}`}
+                          </option>
+                        ))}
+                      </select>
+                    </div>
+
+                    <div>
+                      <label className="mb-1 block text-xs font-semibold uppercase tracking-wider text-gray-500 dark:text-gray-400">
+                        Kolom Nama
+                      </label>
+                      <select
+                        value={nameColumnIndex}
+                        onChange={(e) => setNameColumnIndex(Number(e.target.value))}
+                        className="w-full rounded-lg border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 dark:border-gray-700 dark:bg-gray-800 dark:text-gray-100"
+                      >
+                        <option value={-1}>Tanpa kolom nama</option>
+                        {uploadPreviewHeaders.map((header, idx) => (
+                          <option key={idx} value={idx}>
+                            {normalizeSpreadsheetCell(header) || `Column ${idx + 1}`}
+                          </option>
+                        ))}
+                      </select>
+                    </div>
+                  </div>
+
+                  <div className="rounded-xl border border-gray-200 bg-gray-50 px-4 py-3 text-xs text-gray-600 dark:border-gray-700 dark:bg-gray-800 dark:text-gray-300">
+                    {emailColumnIndex >= 0 ? (
+                      <span>
+                        Sistem akan import mulai dari row {headerRowIndex + 2}. Jika nama kosong, sistem pakai email sebagai label recipient.
                       </span>
                     ) : (
-                      <span className="text-sm text-gray-400">Belum ada file dipilih</span>
+                      <span className="text-amber-600 dark:text-amber-400">
+                        Sistem belum bisa menentukan kolom email. Pilih manual di dropdown Kolom Email.
+                      </span>
                     )}
                   </div>
+
+                  <div className="overflow-hidden rounded-xl border border-gray-200 dark:border-gray-700">
+                    <div className="border-b border-gray-200 bg-gray-50 px-4 py-2 text-xs font-semibold uppercase tracking-wider text-gray-500 dark:border-gray-700 dark:bg-gray-800 dark:text-gray-400">
+                      Preview Data
+                    </div>
+                    <div className="overflow-x-auto">
+                      <table className="min-w-full text-sm">
+                        <thead className="bg-white dark:bg-gray-900">
+                          <tr>
+                            {uploadPreviewHeaders.map((header, idx) => (
+                              <th key={idx} className="border-b border-gray-200 px-3 py-2 text-left text-xs font-semibold text-gray-500 dark:border-gray-700 dark:text-gray-400">
+                                {normalizeSpreadsheetCell(header) || `Column ${idx + 1}`}
+                              </th>
+                            ))}
+                          </tr>
+                        </thead>
+                        <tbody className="bg-white dark:bg-gray-900">
+                          {uploadPreviewRows.length === 0 ? (
+                            <tr>
+                              <td colSpan={Math.max(uploadPreviewHeaders.length, 1)} className="px-3 py-4 text-sm text-gray-400">
+                                Tidak ada data setelah header row yang dipilih.
+                              </td>
+                            </tr>
+                          ) : (
+                            uploadPreviewRows.map((row, rowIndex) => (
+                              <tr key={rowIndex}>
+                                {uploadPreviewHeaders.map((_, colIndex) => (
+                                  <td key={colIndex} className="border-t border-gray-100 px-3 py-2 text-sm text-gray-700 dark:border-gray-800 dark:text-gray-200">
+                                    {normalizeSpreadsheetCell((row as unknown[])[colIndex]) || '—'}
+                                  </td>
+                                ))}
+                              </tr>
+                            ))
+                          )}
+                        </tbody>
+                      </table>
+                    </div>
+                  </div>
                 </div>
-              </div>
+              )}
             </div>
 
-            {sheetRows.length > 0 && (
-              <div className="mt-4 space-y-4">
-                <div className="grid gap-3 md:grid-cols-3">
-                  <div>
-                    <label className="mb-1 block text-xs font-semibold uppercase tracking-wider text-gray-500 dark:text-gray-400">
-                      Header Row
-                    </label>
-                    <select
-                      value={headerRowIndex}
-                      onChange={(e) => setHeaderRowIndex(Number(e.target.value))}
-                      className="w-full rounded-lg border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 dark:border-gray-700 dark:bg-gray-800 dark:text-gray-100"
-                    >
-                      {headerRowOptions.map((row, idx) => (
-                        <option key={idx} value={idx}>
-                          Row {idx + 1}: {row.map((cell) => normalizeSpreadsheetCell(cell)).filter(Boolean).slice(0, 3).join(' | ') || '(empty)'}
-                        </option>
-                      ))}
-                    </select>
-                  </div>
-
-                  <div>
-                    <label className="mb-1 block text-xs font-semibold uppercase tracking-wider text-gray-500 dark:text-gray-400">
-                      Kolom Email
-                    </label>
-                    <select
-                      value={emailColumnIndex}
-                      onChange={(e) => setEmailColumnIndex(Number(e.target.value))}
-                      className="w-full rounded-lg border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 dark:border-gray-700 dark:bg-gray-800 dark:text-gray-100"
-                    >
-                      <option value={-1}>Pilih kolom email</option>
-                      {uploadPreviewHeaders.map((header, idx) => (
-                        <option key={idx} value={idx}>
-                          {normalizeSpreadsheetCell(header) || `Column ${idx + 1}`}
-                        </option>
-                      ))}
-                    </select>
-                  </div>
-
-                  <div>
-                    <label className="mb-1 block text-xs font-semibold uppercase tracking-wider text-gray-500 dark:text-gray-400">
-                      Kolom Nama
-                    </label>
-                    <select
-                      value={nameColumnIndex}
-                      onChange={(e) => setNameColumnIndex(Number(e.target.value))}
-                      className="w-full rounded-lg border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 dark:border-gray-700 dark:bg-gray-800 dark:text-gray-100"
-                    >
-                      <option value={-1}>Tanpa kolom nama</option>
-                      {uploadPreviewHeaders.map((header, idx) => (
-                        <option key={idx} value={idx}>
-                          {normalizeSpreadsheetCell(header) || `Column ${idx + 1}`}
-                        </option>
-                      ))}
-                    </select>
-                  </div>
-                </div>
-
-                <div className="rounded-xl border border-gray-200 bg-gray-50 px-4 py-3 text-xs text-gray-600 dark:border-gray-700 dark:bg-gray-800 dark:text-gray-300">
-                  {emailColumnIndex >= 0 ? (
-                    <span>
-                      Sistem akan import mulai dari row {headerRowIndex + 2}. Jika nama kosong, sistem pakai email sebagai label recipient.
-                    </span>
-                  ) : (
-                    <span className="text-amber-600 dark:text-amber-400">
-                      Sistem belum bisa menentukan kolom email. Pilih manual di dropdown Kolom Email.
-                    </span>
-                  )}
-                </div>
-
-                <div className="overflow-hidden rounded-xl border border-gray-200 dark:border-gray-700">
-                  <div className="border-b border-gray-200 bg-gray-50 px-4 py-2 text-xs font-semibold uppercase tracking-wider text-gray-500 dark:border-gray-700 dark:bg-gray-800 dark:text-gray-400">
-                    Preview Data
-                  </div>
-                  <div className="overflow-x-auto">
-                    <table className="min-w-full text-sm">
-                      <thead className="bg-white dark:bg-gray-900">
-                        <tr>
-                          {uploadPreviewHeaders.map((header, idx) => (
-                            <th key={idx} className="border-b border-gray-200 px-3 py-2 text-left text-xs font-semibold text-gray-500 dark:border-gray-700 dark:text-gray-400">
-                              {normalizeSpreadsheetCell(header) || `Column ${idx + 1}`}
-                            </th>
-                          ))}
-                        </tr>
-                      </thead>
-                      <tbody className="bg-white dark:bg-gray-900">
-                        {uploadPreviewRows.length === 0 ? (
-                          <tr>
-                            <td colSpan={Math.max(uploadPreviewHeaders.length, 1)} className="px-3 py-4 text-sm text-gray-400">
-                              Tidak ada data setelah header row yang dipilih.
-                            </td>
-                          </tr>
-                        ) : (
-                          uploadPreviewRows.map((row, rowIndex) => (
-                            <tr key={rowIndex}>
-                              {uploadPreviewHeaders.map((_, colIndex) => (
-                                <td key={colIndex} className="border-t border-gray-100 px-3 py-2 text-sm text-gray-700 dark:border-gray-800 dark:text-gray-200">
-                                  {normalizeSpreadsheetCell((row as unknown[])[colIndex]) || '—'}
-                                </td>
-                              ))}
-                            </tr>
-                          ))
-                        )}
-                      </tbody>
-                    </table>
-                  </div>
-                </div>
-              </div>
-            )}
-
-            <div className="mt-auto flex items-center justify-end gap-2 pt-4 border-t border-gray-100 dark:border-gray-800">
+            <div className="mt-4 flex shrink-0 items-center justify-end gap-2 border-t border-gray-100 pt-4 dark:border-gray-800">
               <button
                 onClick={handleClose}
                 className="px-4 py-1.5 text-sm text-gray-500 dark:text-gray-400 hover:text-gray-900 dark:hover:text-gray-100"
