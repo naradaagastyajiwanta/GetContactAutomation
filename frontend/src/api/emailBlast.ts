@@ -89,6 +89,17 @@ export interface EmailBlastRecipient {
   created_at: string
 }
 
+export interface UploadExternalRecipientsResponse {
+  success: boolean
+  recipients_added: number
+  processed_rows: number
+  duplicate_or_existing: number
+  skipped_missing_email: number
+  skipped_invalid_format: number
+  columns: string[]
+  message: string
+}
+
 export interface CreateEmailCampaignRequest {
   name: string
   subject: string
@@ -138,6 +149,18 @@ export async function addSelectedRecipients(
     body.group_ids = groupIds
   }
   const response = await apiClient.post(`/email-blast/campaigns/${id}/recipients/add`, body)
+  return response.data
+}
+
+export async function uploadExternalRecipients(
+  campaignId: number,
+  file: File,
+): Promise<UploadExternalRecipientsResponse> {
+  const formData = new FormData()
+  formData.append('file', file)
+
+  const uploadClient = axios.create({ baseURL: '/api' })
+  const response = await uploadClient.post(`/email-blast/campaigns/${campaignId}/recipients/upload`, formData)
   return response.data
 }
 

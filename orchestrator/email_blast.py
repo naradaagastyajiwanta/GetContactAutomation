@@ -1313,6 +1313,78 @@ async def add_email_recipients_from_marketing_contacts(
     return added
 
 
+async def add_external_recipients_from_rows(
+    campaign_id: int,
+    rows: list[dict],
+) -> dict[str, int]:
+    """Add external recipients directly to a campaign without touching universities.
+
+    Expected row keys come from spreadsheet parsing and may include:
+    - email
+    - name
+    - contact_person
+    """
+    added = 0
+    duplicate_or_existing = 0
+    skipped_missing_email = 0
+    skipped_invalid_format = 0
+    seen_emails: set[str] = set()
+
+    async with get_db() as db:
+        for row in rows:
+            email = str(row.get("email") or "").strip()
+            if not email:
+                skipped_missing_email += 1
+                continue
+
+            normalized_email = email.lower()
+            if normalized_email in seen_emails:
+                duplicate_or_existing += 1
+                continue
+            seen_emails.add(normalized_email)
+
+            # Keep import lightweight: only reject obviously malformed addresses here.
+            if "@" not in email or email.startswith("@") or email.endswith("@"):
+                skipped_invalid_format += 1
+                continue
+
+            display_name = (
+                str(row.get("name") or "").strip()
+                or str(row.get("contact_person") or "").strip()
+                or email
+            )
+
+            try:
+                cursor = await db.execute(
+                    """INSERT OR IGNORE INTO email_blast_recipients
+                       (campaign_id, university_id, email, university_name)
+                       VALUES (?, NULL, ?, ?)""",
+                    (campaign_id, email, display_name),
+                )
+                if cursor.lastrowid is not None and cursor.lastrowid > 0:
+                    added += 1
+                else:
+                    duplicate_or_existing += 1
+            except Exception:
+                duplicate_or_existing += 1
+
+        await db.commit()
+
+        await db.execute(
+            "UPDATE email_blast_campaigns SET total_recipients = total_recipients + ? WHERE id = ?",
+            (added, campaign_id),
+        )
+        await db.commit()
+
+    return {
+        "added": added,
+        "duplicate_or_existing": duplicate_or_existing,
+        "skipped_missing_email": skipped_missing_email,
+        "skipped_invalid_format": skipped_invalid_format,
+        "processed_rows": len(rows),
+    }
+
+
 async def add_all_emails_to_campaign(campaign_id: int,
                                       provinces: list[str] = None) -> int:
     """Add all universities with emails to campaign, optionally filtered"""

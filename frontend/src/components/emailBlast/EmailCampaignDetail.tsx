@@ -48,6 +48,7 @@ import {
   useAddSelectedRecipients,
   useCreateEmailCampaign,
   useUploadAttachment,
+  useUploadExternalRecipients,
   useSendTestEmail,
 } from '../../hooks/useEmailBlast'
 import { useUniversitiesWithEmails, useProvinces } from '../../hooks/useUniversities'
@@ -955,12 +956,14 @@ function RecipientsTab({
 // ─── Add Recipients Modal ─────────────────────────────────────────────────────
 
 function AddRecipientsModal({ isOpen, onClose, campaignId }: { isOpen: boolean; onClose: () => void; campaignId: number }) {
+  const [sourceMode, setSourceMode] = useState<'system' | 'upload'>('system')
   const [searchInput, setSearchInput] = useState('')
   const [search, setSearch] = useState('')
   const [selectedIds, setSelectedIds] = useState<Set<number>>(new Set())
   const [province, setProvince] = useState('')
   const [selectedGroupIds, setSelectedGroupIds] = useState<Set<number>>(new Set())
   const [page, setPage] = useState(0)
+  const [uploadFile, setUploadFile] = useState<File | null>(null)
   const PAGE_SIZE = 50
   const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null)
 
@@ -979,6 +982,7 @@ function AddRecipientsModal({ isOpen, onClose, campaignId }: { isOpen: boolean; 
   const { data: groupsData } = useUniversityGroups()
   const addSelectedMutation = useAddSelectedRecipients()
   const addAllMutation = useAddAllRecipients()
+  const uploadExternalMutation = useUploadExternalRecipients()
 
   const universities = univData?.data ?? []
   const total = univData?.total ?? 0
@@ -1022,180 +1026,327 @@ function AddRecipientsModal({ isOpen, onClose, campaignId }: { isOpen: boolean; 
     toast.success('All universities added')
   }
 
+  async function handleUploadExternalRecipients() {
+    if (!uploadFile) return
+
+    const ext = uploadFile.name.split('.').pop()?.toLowerCase()
+    if (!ext || !['xlsx', 'xls', 'csv'].includes(ext)) {
+      toast.error('Format file harus .xlsx, .xls, atau .csv')
+      return
+    }
+
+    try {
+      const result = await uploadExternalMutation.mutateAsync({
+        campaignId,
+        file: uploadFile,
+      })
+
+      const summaryParts = [
+        `${result.recipients_added} ditambahkan`,
+      ]
+      if (result.duplicate_or_existing > 0) {
+        summaryParts.push(`${result.duplicate_or_existing} duplikat/existing`)
+      }
+      if (result.skipped_missing_email > 0) {
+        summaryParts.push(`${result.skipped_missing_email} tanpa email`)
+      }
+      if (result.skipped_invalid_format > 0) {
+        summaryParts.push(`${result.skipped_invalid_format} format tidak valid`)
+      }
+
+      toast.success(summaryParts.join(' • '))
+      handleClose()
+    } catch (error: any) {
+      toast.error(error?.response?.data?.detail || 'Gagal upload recipient eksternal')
+    }
+  }
+
   function handleClose() {
+    setSourceMode('system')
     setSelectedIds(new Set())
     setSelectedGroupIds(new Set())
     setPage(0)
     setSearchInput('')
     setSearch('')
+    setUploadFile(null)
     onClose()
   }
 
   return (
     <Modal isOpen={isOpen} onClose={handleClose} title="Add Recipients" size="lg">
       <div className="flex flex-col" style={{ height: '70vh' }}>
-        {/* Search + Filter */}
-        <div className="flex gap-2">
-          <div className="relative flex-1">
-            <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-400" />
-            <input
-              type="text"
-              value={searchInput}
-              onChange={(e) => setSearchInput(e.target.value)}
-              placeholder="Search..."
-              className="w-full pl-9 pr-3 py-2 text-sm border border-gray-200 dark:border-gray-700 rounded-lg bg-white dark:bg-gray-800 focus:border-indigo-500 focus:outline-none dark:text-gray-100"
-            />
-          </div>
-          <select
-            value={province}
-            onChange={(e) => { setProvince(e.target.value); setPage(0); setSearchInput(''); setSearch('') }}
-            className="text-sm border border-gray-200 dark:border-gray-700 rounded-lg px-3 py-2 bg-white dark:bg-gray-800 dark:text-gray-100"
+        <div className="mb-3 flex gap-2 rounded-xl bg-gray-100 p-1 dark:bg-gray-800">
+          <button
+            onClick={() => setSourceMode('system')}
+            className={cn(
+              'flex-1 rounded-lg px-3 py-2 text-sm font-medium transition-colors',
+              sourceMode === 'system'
+                ? 'bg-white text-gray-900 shadow-sm dark:bg-gray-700 dark:text-gray-100'
+                : 'text-gray-500 hover:text-gray-900 dark:text-gray-400 dark:hover:text-gray-100'
+            )}
           >
-            <option value="">All</option>
-            {(provinces ?? []).map((p) => <option key={p} value={p}>{p}</option>)}
-          </select>
+            Dari System
+          </button>
+          <button
+            onClick={() => setSourceMode('upload')}
+            className={cn(
+              'flex-1 rounded-lg px-3 py-2 text-sm font-medium transition-colors',
+              sourceMode === 'upload'
+                ? 'bg-white text-gray-900 shadow-sm dark:bg-gray-700 dark:text-gray-100'
+                : 'text-gray-500 hover:text-gray-900 dark:text-gray-400 dark:hover:text-gray-100'
+            )}
+          >
+            Upload Excel
+          </button>
         </div>
 
-        {/* Group chips */}
-        {groupsData && groupsData.groups.length > 0 && (
-          <div className="flex flex-wrap gap-1.5 mt-1">
-            {groupsData.groups.map((g) => (
-              <button
-                key={g.id}
-                onClick={() => {
-                  setSelectedGroupIds((prev) => {
-                    const next = new Set(prev)
-                    if (next.has(g.id)) next.delete(g.id)
-                    else next.add(g.id)
-                    return next
-                  })
-                }}
-                className={cn(
-                  'px-2.5 py-1 text-xs rounded-full border transition-colors',
-                  selectedGroupIds.has(g.id)
-                    ? 'bg-indigo-600 text-white border-indigo-600'
-                    : 'bg-white text-gray-600 border-gray-200 dark:bg-gray-800 dark:text-gray-400 dark:border-gray-700'
-                )}
+        {sourceMode === 'system' ? (
+          <>
+            {/* Search + Filter */}
+            <div className="flex gap-2">
+              <div className="relative flex-1">
+                <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-400" />
+                <input
+                  type="text"
+                  value={searchInput}
+                  onChange={(e) => setSearchInput(e.target.value)}
+                  placeholder="Search..."
+                  className="w-full pl-9 pr-3 py-2 text-sm border border-gray-200 dark:border-gray-700 rounded-lg bg-white dark:bg-gray-800 focus:border-indigo-500 focus:outline-none dark:text-gray-100"
+                />
+              </div>
+              <select
+                value={province}
+                onChange={(e) => { setProvince(e.target.value); setPage(0); setSearchInput(''); setSearch('') }}
+                className="text-sm border border-gray-200 dark:border-gray-700 rounded-lg px-3 py-2 bg-white dark:bg-gray-800 dark:text-gray-100"
               >
-                {g.name}
-              </button>
-            ))}
-          </div>
-        )}
+                <option value="">All</option>
+                {(provinces ?? []).map((p) => <option key={p} value={p}>{p}</option>)}
+              </select>
+            </div>
 
-        {/* List */}
-        <div className="flex-1 overflow-y-auto min-h-0 mt-3 -mx-6 px-6">
-          {isLoading ? (
-            <div className="flex items-center justify-center py-16">
-              <Spinner />
+            {/* Group chips */}
+            {groupsData && groupsData.groups.length > 0 && (
+              <div className="flex flex-wrap gap-1.5 mt-1">
+                {groupsData.groups.map((g) => (
+                  <button
+                    key={g.id}
+                    onClick={() => {
+                      setSelectedGroupIds((prev) => {
+                        const next = new Set(prev)
+                        if (next.has(g.id)) next.delete(g.id)
+                        else next.add(g.id)
+                        return next
+                      })
+                    }}
+                    className={cn(
+                      'px-2.5 py-1 text-xs rounded-full border transition-colors',
+                      selectedGroupIds.has(g.id)
+                        ? 'bg-indigo-600 text-white border-indigo-600'
+                        : 'bg-white text-gray-600 border-gray-200 dark:bg-gray-800 dark:text-gray-400 dark:border-gray-700'
+                    )}
+                  >
+                    {g.name}
+                  </button>
+                ))}
+              </div>
+            )}
+
+            {/* List */}
+            <div className="flex-1 overflow-y-auto min-h-0 mt-3 -mx-6 px-6">
+              {isLoading ? (
+                <div className="flex items-center justify-center py-16">
+                  <Spinner />
+                </div>
+              ) : universities.length === 0 ? (
+                <div className="flex flex-col items-center justify-center py-16 text-gray-400">
+                  <Search className="w-8 h-8 mb-2 opacity-50" />
+                  <p className="text-sm">No results</p>
+                </div>
+              ) : (
+                universities.map((uni) => (
+                  <div
+                    key={uni.id}
+                    onClick={() => toggleSelect(uni.id)}
+                    className={cn(
+                      'flex items-center gap-3 px-3 py-2.5 rounded-lg cursor-pointer transition-colors mb-0.5',
+                      selectedIds.has(uni.id)
+                        ? 'bg-indigo-50 dark:bg-indigo-950/30'
+                        : 'hover:bg-gray-50 dark:hover:bg-gray-800/60'
+                    )}
+                  >
+                    <div className={cn(
+                      'w-4 h-4 rounded flex items-center justify-center shrink-0',
+                      selectedIds.has(uni.id)
+                        ? 'bg-indigo-600'
+                        : 'border border-gray-300 dark:border-gray-600'
+                    )}>
+                      {selectedIds.has(uni.id) && <Check className="w-2.5 h-2.5 text-white" />}
+                    </div>
+                    <div className="min-w-0 flex-1">
+                      <p className="text-sm font-medium text-gray-900 dark:text-gray-100 truncate">{uni.name}</p>
+                      <p className="text-xs text-gray-400 truncate">{uni.email || '—'}</p>
+                    </div>
+                    {uni.province && (
+                      <span className="shrink-0 text-[11px] px-2 py-0.5 rounded bg-gray-100 dark:bg-gray-700 text-gray-500 dark:text-gray-400">{uni.province}</span>
+                    )}
+                  </div>
+                ))
+              )}
             </div>
-          ) : universities.length === 0 ? (
-            <div className="flex flex-col items-center justify-center py-16 text-gray-400">
-              <Search className="w-8 h-8 mb-2 opacity-50" />
-              <p className="text-sm">No results</p>
-            </div>
-          ) : (
-            universities.map((uni) => (
-              <div
-                key={uni.id}
-                onClick={() => toggleSelect(uni.id)}
-                className={cn(
-                  'flex items-center gap-3 px-3 py-2.5 rounded-lg cursor-pointer transition-colors mb-0.5',
-                  selectedIds.has(uni.id)
-                    ? 'bg-indigo-50 dark:bg-indigo-950/30'
-                    : 'hover:bg-gray-50 dark:hover:bg-gray-800/60'
+
+            {/* Footer */}
+            <div className="flex items-center justify-between mt-3 pt-3 border-t border-gray-100 dark:border-gray-800">
+              <div className="flex items-center gap-4">
+                <button
+                  onClick={() => {
+                    if (universities.every((u) => selectedIds.has(u.id))) {
+                      setSelectedIds(new Set())
+                    } else {
+                      setSelectedIds((prev) => {
+                        const next = new Set(prev)
+                        universities.forEach((u) => next.add(u.id))
+                        return next
+                      })
+                    }
+                  }}
+                  className="text-xs text-gray-500 hover:text-gray-900 dark:text-gray-400 dark:hover:text-gray-100"
+                >
+                  {universities.every((u) => selectedIds.has(u.id)) ? 'Uncheck all' : 'Check all'}
+                </button>
+                {selectedIds.size > 0 && (
+                  <span className="text-xs text-indigo-600 font-medium">{selectedIds.size} selected</span>
                 )}
-              >
-                <div className={cn(
-                  'w-4 h-4 rounded flex items-center justify-center shrink-0',
-                  selectedIds.has(uni.id)
-                    ? 'bg-indigo-600'
-                    : 'border border-gray-300 dark:border-gray-600'
-                )}>
-                  {selectedIds.has(uni.id) && <Check className="w-2.5 h-2.5 text-white" />}
+              </div>
+              <div className="flex items-center gap-2">
+                {total > PAGE_SIZE && (
+                  <div className="flex items-center gap-1 mr-2">
+                    <button
+                      onClick={() => setPage((p) => Math.max(0, p - 1))}
+                      disabled={page === 0}
+                      className="w-6 h-6 flex items-center justify-center text-xs border border-gray-200 dark:border-gray-700 rounded hover:bg-gray-50 dark:hover:bg-gray-800 disabled:opacity-40"
+                    >
+                      ←
+                    </button>
+                    <span className="text-[11px] text-gray-400 px-1">{page + 1}/{totalPages}</span>
+                    <button
+                      onClick={() => setPage((p) => Math.min(totalPages - 1, p + 1))}
+                      disabled={page >= totalPages - 1}
+                      className="w-6 h-6 flex items-center justify-center text-xs border border-gray-200 dark:border-gray-700 rounded hover:bg-gray-50 dark:hover:bg-gray-800 disabled:opacity-40"
+                    >
+                      →
+                    </button>
+                  </div>
+                )}
+                <button
+                  onClick={handleClose}
+                  className="px-4 py-1.5 text-sm text-gray-500 dark:text-gray-400 hover:text-gray-900 dark:hover:text-gray-100"
+                >
+                  Cancel
+                </button>
+                <button
+                  onClick={handleAddAll}
+                  disabled={addAllMutation.isPending}
+                  className="px-3 py-1.5 text-xs border border-gray-200 dark:border-gray-700 rounded-lg text-gray-600 dark:text-gray-400 hover:bg-gray-50 dark:hover:bg-gray-800"
+                >
+                  All ({total})
+                </button>
+                <button
+                  onClick={handleAddSelected}
+                  disabled={selectedIds.size === 0 && selectedGroupIds.size === 0}
+                  className={cn(
+                    'px-4 py-1.5 text-sm rounded-lg font-medium transition-colors',
+                    selectedIds.size === 0 && selectedGroupIds.size === 0
+                      ? 'bg-gray-100 text-gray-400 dark:bg-gray-700 cursor-not-allowed'
+                      : 'bg-indigo-600 text-white hover:bg-indigo-700'
+                  )}
+                >
+                  Add {selectedIds.size > 0 ? `(${selectedIds.size})` : selectedGroupIds.size > 0 ? `(${selectedGroupIds.size})` : ''}
+                </button>
+              </div>
+            </div>
+          </>
+        ) : (
+          <>
+            <div className="rounded-xl border border-indigo-100 bg-indigo-50 px-4 py-3 text-sm text-indigo-700 dark:border-indigo-900/60 dark:bg-indigo-950/30 dark:text-indigo-300">
+              Upload file recipient eksternal untuk campaign ini. Data akan masuk langsung ke recipient campaign dan tidak akan ditambahkan ke tabel universitas.
+            </div>
+
+            <div className="mt-4 rounded-xl border border-dashed border-gray-300 p-5 dark:border-gray-700">
+              <div className="flex items-start gap-3">
+                <div className="rounded-lg bg-gray-100 p-2 dark:bg-gray-800">
+                  <Upload className="h-4 w-4 text-gray-500 dark:text-gray-300" />
                 </div>
                 <div className="min-w-0 flex-1">
-                  <p className="text-sm font-medium text-gray-900 dark:text-gray-100 truncate">{uni.name}</p>
-                  <p className="text-xs text-gray-400 truncate">{uni.email || '—'}</p>
+                  <p className="text-sm font-medium text-gray-900 dark:text-gray-100">Upload Excel atau CSV</p>
+                  <p className="mt-1 text-xs text-gray-500 dark:text-gray-400">
+                    Minimal harus ada kolom <span className="font-mono">email</span>. Kolom nama bisa pakai <span className="font-mono">name</span> atau <span className="font-mono">nama</span>.
+                  </p>
+                  <p className="mt-1 text-xs text-gray-400 dark:text-gray-500">
+                    Format yang didukung: .xlsx, .xls, .csv
+                  </p>
+                  <input
+                    id="email-blast-external-upload"
+                    type="file"
+                    accept=".xlsx,.xls,.csv"
+                    className="hidden"
+                    onChange={(e) => setUploadFile(e.target.files?.[0] ?? null)}
+                  />
+                  <div className="mt-3 flex flex-wrap items-center gap-3">
+                    <label
+                      htmlFor="email-blast-external-upload"
+                      className="inline-flex cursor-pointer items-center gap-2 rounded-lg border border-gray-200 bg-white px-3 py-2 text-sm font-medium text-gray-700 hover:bg-gray-50 dark:border-gray-700 dark:bg-gray-800 dark:text-gray-200 dark:hover:bg-gray-700"
+                    >
+                      <Upload className="h-4 w-4" />
+                      Pilih File
+                    </label>
+                    {uploadFile ? (
+                      <span className="min-w-0 truncate text-sm text-gray-600 dark:text-gray-300">
+                        {uploadFile.name}
+                      </span>
+                    ) : (
+                      <span className="text-sm text-gray-400">Belum ada file dipilih</span>
+                    )}
+                  </div>
                 </div>
-                {uni.province && (
-                  <span className="shrink-0 text-[11px] px-2 py-0.5 rounded bg-gray-100 dark:bg-gray-700 text-gray-500 dark:text-gray-400">{uni.province}</span>
-                )}
               </div>
-            ))
-          )}
-        </div>
+            </div>
 
-        {/* Footer */}
-        <div className="flex items-center justify-between mt-3 pt-3 border-t border-gray-100 dark:border-gray-800">
-          <div className="flex items-center gap-4">
-            <button
-              onClick={() => {
-                if (universities.every((u) => selectedIds.has(u.id))) {
-                  setSelectedIds(new Set())
-                } else {
-                  setSelectedIds((prev) => {
-                    const next = new Set(prev)
-                    universities.forEach((u) => next.add(u.id))
-                    return next
-                  })
-                }
-              }}
-              className="text-xs text-gray-500 hover:text-gray-900 dark:text-gray-400 dark:hover:text-gray-100"
-            >
-              {universities.every((u) => selectedIds.has(u.id)) ? 'Uncheck all' : 'Check all'}
-            </button>
-            {selectedIds.size > 0 && (
-              <span className="text-xs text-indigo-600 font-medium">{selectedIds.size} selected</span>
-            )}
-          </div>
-          <div className="flex items-center gap-2">
-            {total > PAGE_SIZE && (
-              <div className="flex items-center gap-1 mr-2">
-                <button
-                  onClick={() => setPage((p) => Math.max(0, p - 1))}
-                  disabled={page === 0}
-                  className="w-6 h-6 flex items-center justify-center text-xs border border-gray-200 dark:border-gray-700 rounded hover:bg-gray-50 dark:hover:bg-gray-800 disabled:opacity-40"
-                >
-                  ←
-                </button>
-                <span className="text-[11px] text-gray-400 px-1">{page + 1}/{totalPages}</span>
-                <button
-                  onClick={() => setPage((p) => Math.min(totalPages - 1, p + 1))}
-                  disabled={page >= totalPages - 1}
-                  className="w-6 h-6 flex items-center justify-center text-xs border border-gray-200 dark:border-gray-700 rounded hover:bg-gray-50 dark:hover:bg-gray-800 disabled:opacity-40"
-                >
-                  →
-                </button>
-              </div>
-            )}
-            <button
-              onClick={handleClose}
-              className="px-4 py-1.5 text-sm text-gray-500 dark:text-gray-400 hover:text-gray-900 dark:hover:text-gray-100"
-            >
-              Cancel
-            </button>
-            <button
-              onClick={handleAddAll}
-              disabled={addAllMutation.isPending}
-              className="px-3 py-1.5 text-xs border border-gray-200 dark:border-gray-700 rounded-lg text-gray-600 dark:text-gray-400 hover:bg-gray-50 dark:hover:bg-gray-800"
-            >
-              All ({total})
-            </button>
-            <button
-              onClick={handleAddSelected}
-              disabled={selectedIds.size === 0 && selectedGroupIds.size === 0}
-              className={cn(
-                'px-4 py-1.5 text-sm rounded-lg font-medium transition-colors',
-                selectedIds.size === 0 && selectedGroupIds.size === 0
-                  ? 'bg-gray-100 text-gray-400 dark:bg-gray-700 cursor-not-allowed'
-                  : 'bg-indigo-600 text-white hover:bg-indigo-700'
-              )}
-            >
-              Add {selectedIds.size > 0 ? `(${selectedIds.size})` : selectedGroupIds.size > 0 ? `(${selectedGroupIds.size})` : ''}
-            </button>
-          </div>
-        </div>
+            <div className="mt-4 rounded-xl border border-gray-200 bg-gray-50 px-4 py-3 text-xs text-gray-600 dark:border-gray-700 dark:bg-gray-800 dark:text-gray-300">
+              Contoh header yang aman dipakai: <span className="font-mono">email</span>, <span className="font-mono">name</span>. Jika nama kosong, sistem akan pakai email sebagai label recipient.
+            </div>
+
+            <div className="mt-auto flex items-center justify-end gap-2 pt-4 border-t border-gray-100 dark:border-gray-800">
+              <button
+                onClick={handleClose}
+                className="px-4 py-1.5 text-sm text-gray-500 dark:text-gray-400 hover:text-gray-900 dark:hover:text-gray-100"
+              >
+                Cancel
+              </button>
+              <button
+                onClick={handleUploadExternalRecipients}
+                disabled={!uploadFile || uploadExternalMutation.isPending}
+                className={cn(
+                  'inline-flex items-center gap-2 rounded-lg px-4 py-2 text-sm font-medium transition-colors',
+                  !uploadFile || uploadExternalMutation.isPending
+                    ? 'bg-gray-100 text-gray-400 dark:bg-gray-700 cursor-not-allowed'
+                    : 'bg-indigo-600 text-white hover:bg-indigo-700'
+                )}
+              >
+                {uploadExternalMutation.isPending ? (
+                  <>
+                    <RefreshCw className="h-4 w-4 animate-spin" />
+                    Uploading...
+                  </>
+                ) : (
+                  <>
+                    <Upload className="h-4 w-4" />
+                    Import Recipient
+                  </>
+                )}
+              </button>
+            </div>
+          </>
+        )}
       </div>
     </Modal>
   )

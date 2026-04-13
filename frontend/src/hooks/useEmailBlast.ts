@@ -8,6 +8,7 @@ import {
   getEmailCampaign,
   addAllRecipientsToCampaign,
   addSelectedRecipients,
+  uploadExternalRecipients,
   startEmailCampaign,
   pauseEmailCampaign,
   cancelEmailCampaign,
@@ -40,6 +41,7 @@ import {
   type CreateEmailCampaignRequest,
   type StartEmailCampaignRequest,
   type UpdateEmailCampaignRequest,
+  type UploadExternalRecipientsResponse,
 } from '../api/emailBlast'
 import toast from 'react-hot-toast'
 
@@ -146,6 +148,19 @@ export function useAddSelectedRecipients() {
     mutationFn: ({ id, universityIds, groupIds }: { id: number; universityIds: number[]; groupIds?: number[] }) =>
       addSelectedRecipients(id, universityIds, groupIds),
     onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['email-blast-campaigns'] })
+      queryClient.invalidateQueries({ queryKey: ['email-blast-campaign'] })
+      queryClient.invalidateQueries({ queryKey: ['email-blast-recipients'] })
+    },
+  })
+}
+
+export function useUploadExternalRecipients() {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: ({ campaignId, file }: { campaignId: number; file: File }) =>
+      uploadExternalRecipients(campaignId, file),
+    onSuccess: (_data: UploadExternalRecipientsResponse) => {
       queryClient.invalidateQueries({ queryKey: ['email-blast-campaigns'] })
       queryClient.invalidateQueries({ queryKey: ['email-blast-campaign'] })
       queryClient.invalidateQueries({ queryKey: ['email-blast-recipients'] })

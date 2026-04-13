@@ -5994,6 +5994,52 @@ async def add_selected_recipients(
     return {"success": True, "recipients_added": count}
 
 
+@app.post("/email-blast/campaigns/{campaign_id}/recipients/upload")
+async def upload_external_recipients(
+    campaign_id: int,
+    request: Request,
+    file: UploadFile = FastAPIFile(...),
+):
+    """Upload external recipients from spreadsheet without writing to universities."""
+    await _require_email_campaign_access(campaign_id)
+
+    filename = (file.filename or "").strip()
+    ext = filename.lower().rsplit(".", 1)[-1] if "." in filename else ""
+    if ext not in {"xlsx", "xls", "csv"}:
+        raise HTTPException(status_code=400, detail="Only .xlsx, .xls, or .csv files are supported")
+
+    content = await file.read()
+    if not content:
+        raise HTTPException(status_code=400, detail="Uploaded file is empty")
+
+    from orchestrator.marketing.importer import parse_excel_bytes
+
+    rows, columns = parse_excel_bytes(content, filename or "upload.xlsx")
+    if not rows:
+        return {
+            "success": True,
+            "recipients_added": 0,
+            "processed_rows": 0,
+            "duplicate_or_existing": 0,
+            "skipped_missing_email": 0,
+            "skipped_invalid_format": 0,
+            "columns": columns,
+            "message": "No parsable rows found in uploaded file",
+        }
+
+    result = await email_blast.add_external_recipients_from_rows(campaign_id, rows)
+    return {
+        "success": True,
+        "recipients_added": result["added"],
+        "processed_rows": result["processed_rows"],
+        "duplicate_or_existing": result["duplicate_or_existing"],
+        "skipped_missing_email": result["skipped_missing_email"],
+        "skipped_invalid_format": result["skipped_invalid_format"],
+        "columns": columns,
+        "message": f"Added {result['added']} external recipient(s)",
+    }
+
+
 @app.post("/email-blast/campaigns/{campaign_id}/start")
 async def start_email_campaign(campaign_id: int, payload: EmailBlastStartRequest, request: Request):
     """Start email blast campaign."""
