@@ -38,6 +38,11 @@ EXTERNAL_CODEX_FILE = Path.home() / ".codex" / "auth.json"
 _lock = asyncio.Lock()
 _cached: CodexTokens | None = None
 
+# Simple TTL cache for /v1/me profile data (fetched once, valid 10 min)
+_me_cache: dict | None = None
+_me_cache_at: float = 0.0
+_ME_CACHE_TTL = 600.0  # 10 minutes
+
 
 # --- public API ----------------------------------------------------------
 
@@ -193,6 +198,45 @@ def _extract_profile(tokens: CodexTokens) -> dict:
             "organizations": auth.get("organizations") or [],
         }
     except Exception:
+        return {}
+
+
+async def fetch_openai_me(access_token: str) -> dict:
+    """Call GET https://api.openai.com/v1/me with the OAuth token.
+
+    Returns a subset of useful fields (picture, created). Cached for
+    ``_ME_CACHE_TTL`` seconds so the status endpoint doesn't hammer the
+    API on every 30-second poll.
+    """
+    global _me_cache, _me_cache_at
+    now = time.time()
+    if _me_cache is not None and (now - _me_cache_at) < _ME_CACHE_TTL:
+        return _me_cache
+
+    try:
+        import httpx
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            r = await client.get(
+                "https://api.openai.com/v1/me",
+                headers={
+                    "Authorization": f"Bearer {access_token}",
+                    "User-Agent": "GetContactAI/1.0",
+                },
+            )
+        if r.status_code != 200:
+            return {}
+        data = r.json()
+        result = {
+            "picture": data.get("picture"),
+            "account_created": data.get("created"),
+            "has_payg_spend_limit": data.get("has_payg_project_spend_limit"),
+            "mfa_enabled": data.get("mfa_flag_enabled"),
+        }
+        _me_cache = result
+        _me_cache_at = now
+        return result
+    except Exception as exc:
+        log.debug("[codex-token-store] /v1/me fetch failed: %s", exc)
         return {}
 
 

@@ -5151,7 +5151,17 @@ async def codex_oauth_status():
                 "or /auth/codex/import-external to mirror ~/.codex/auth.json."
             ),
         }
-    return {"status": "logged_in", **snapshot}
+
+    # Fetch live profile data from api.openai.com/v1/me (TTL-cached 10 min)
+    me_data: dict = {}
+    try:
+        tokens = await codex_token_store.load_tokens()
+        if tokens:
+            me_data = await codex_token_store.fetch_openai_me(tokens.access_token)
+    except Exception:
+        pass
+
+    return {"status": "logged_in", **snapshot, **me_data}
 
 
 @app.get("/health/sentry-status")

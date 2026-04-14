@@ -390,24 +390,46 @@ export function ChatGPTOAuthPanel() {
                   {status.status === "logged_in" && (
                     <div className="mt-3 space-y-3">
                       {/* Account identity row */}
-                      <div className="flex items-center gap-2 text-sm">
-                        <User className="h-4 w-4 text-gray-400 flex-shrink-0" />
+                      <div className="flex items-center gap-3">
+                        {status.picture ? (
+                          <img
+                            src={status.picture}
+                            alt={status.user_name ?? "avatar"}
+                            className="h-10 w-10 rounded-full object-cover flex-shrink-0 ring-2 ring-white dark:ring-gray-700 shadow-sm"
+                            referrerPolicy="no-referrer"
+                          />
+                        ) : (
+                          <div className="h-10 w-10 rounded-full bg-gradient-to-br from-indigo-400 to-purple-500 flex items-center justify-center flex-shrink-0">
+                            <User className="h-5 w-5 text-white" />
+                          </div>
+                        )}
                         <div>
                           {status.user_name && (
-                            <span className="font-medium text-gray-900 dark:text-gray-100">
+                            <p className="text-sm font-semibold text-gray-900 dark:text-gray-100">
                               {status.user_name}
-                            </span>
+                            </p>
                           )}
                           {status.user_email && (
-                            <span className="ml-1.5 text-xs text-gray-500 dark:text-gray-400">
-                              ({status.user_email})
-                            </span>
+                            <p className="text-xs text-gray-500 dark:text-gray-400">
+                              {status.user_email}
+                            </p>
+                          )}
+                          {status.account_created && (
+                            <p className="text-[10px] text-gray-400 dark:text-gray-500 mt-0.5">
+                              Member since{" "}
+                              {new Date(
+                                status.account_created * 1000,
+                              ).toLocaleDateString("id-ID", {
+                                month: "long",
+                                year: "numeric",
+                              })}
+                            </p>
                           )}
                         </div>
                       </div>
 
                       {/* Plan + subscription row */}
-                      <div className="grid grid-cols-2 gap-2 text-xs">
+                      <div className="grid grid-cols-2 sm:grid-cols-3 gap-2 text-xs">
                         <div className="flex items-center gap-1.5 rounded-md bg-white/60 dark:bg-gray-800/60 px-2.5 py-1.5 border border-white/80 dark:border-gray-700">
                           <Crown className="h-3.5 w-3.5 text-amber-500 flex-shrink-0" />
                           <div>
@@ -441,6 +463,23 @@ export function ChatGPTOAuthPanel() {
                             </p>
                           </div>
                         </div>
+
+                        {status.mfa_enabled !== null &&
+                          status.mfa_enabled !== undefined && (
+                            <div className="flex items-center gap-1.5 rounded-md bg-white/60 dark:bg-gray-800/60 px-2.5 py-1.5 border border-white/80 dark:border-gray-700">
+                              <CheckCircle2
+                                className={`h-3.5 w-3.5 flex-shrink-0 ${status.mfa_enabled ? "text-green-500" : "text-gray-300"}`}
+                              />
+                              <div>
+                                <p className="text-[10px] text-gray-500 dark:text-gray-400 uppercase tracking-wide">
+                                  MFA
+                                </p>
+                                <p className="font-semibold text-gray-900 dark:text-gray-100">
+                                  {status.mfa_enabled ? "Aktif" : "Nonaktif"}
+                                </p>
+                              </div>
+                            </div>
+                          )}
                       </div>
 
                       {/* Subscription expiry */}

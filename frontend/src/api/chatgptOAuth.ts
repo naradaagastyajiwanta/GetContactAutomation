@@ -32,6 +32,11 @@ export interface CodexOAuthStatusResponse {
   user_name?: string | null;
   user_email?: string | null;
   organizations?: CodexOrganization[];
+  // Live profile from api.openai.com/v1/me (TTL-cached)
+  picture?: string | null;
+  account_created?: number | null;
+  has_payg_spend_limit?: boolean | null;
+  mfa_enabled?: boolean | null;
 }
 
 export interface LLMMetricsResponse {
