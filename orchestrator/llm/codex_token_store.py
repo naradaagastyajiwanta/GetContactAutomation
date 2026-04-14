@@ -170,6 +170,32 @@ async def import_external_codex_auth() -> bool:
     return True
 
 
+def _extract_profile(tokens: CodexTokens) -> dict:
+    """Decode JWT claims from the stored token and return profile info.
+
+    Prefers id_token (richest) over access_token. Returns empty dict on
+    any parse error so the caller can always safely spread the result.
+    """
+    from orchestrator.llm.codex_oauth import decode_jwt_payload
+    try:
+        raw = tokens.raw_id_token or tokens.access_token
+        if not raw:
+            return {}
+        claims = decode_jwt_payload(raw)
+        auth = claims.get("https://api.openai.com/auth") or {}
+        profile = claims.get("https://api.openai.com/profile") or {}
+        return {
+            "plan_type": auth.get("chatgpt_plan_type"),
+            "subscription_active_until": auth.get("chatgpt_subscription_active_until"),
+            "subscription_last_checked": auth.get("chatgpt_subscription_last_checked"),
+            "user_name": claims.get("name"),
+            "user_email": profile.get("email") or claims.get("email"),
+            "organizations": auth.get("organizations") or [],
+        }
+    except Exception:
+        return {}
+
+
 def get_status() -> dict:
     """Return a status dict for /health/codex-oauth — never blocks."""
     if _cached is None:
@@ -182,6 +208,7 @@ def get_status() -> dict:
             "expires_at": on_disk.expires_at,
             "expires_in_seconds": max(0, int(on_disk.expires_at - time.time())),
             "source": "disk",
+            **_extract_profile(on_disk),
         }
     return {
         "logged_in": True,
@@ -189,6 +216,7 @@ def get_status() -> dict:
         "expires_at": _cached.expires_at,
         "expires_in_seconds": max(0, int(_cached.expires_at - time.time())),
         "source": "cache",
+        **_extract_profile(_cached),
     }
 
 

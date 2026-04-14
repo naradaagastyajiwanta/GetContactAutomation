@@ -10,6 +10,10 @@ import {
   Clipboard,
   Download,
   X,
+  User,
+  Building2,
+  Crown,
+  CalendarClock,
 } from "lucide-react";
 import {
   cancelCodexLogin,
@@ -384,23 +388,88 @@ export function ChatGPTOAuthPanel() {
                     )}
                   </div>
                   {status.status === "logged_in" && (
-                    <div className="mt-2 grid gap-1 text-xs text-gray-700 dark:text-gray-300">
-                      {status.account_id && (
+                    <div className="mt-3 space-y-3">
+                      {/* Account identity row */}
+                      <div className="flex items-center gap-2 text-sm">
+                        <User className="h-4 w-4 text-gray-400 flex-shrink-0" />
                         <div>
-                          <span className="text-gray-500 dark:text-gray-400">
-                            Account:{" "}
+                          {status.user_name && (
+                            <span className="font-medium text-gray-900 dark:text-gray-100">
+                              {status.user_name}
+                            </span>
+                          )}
+                          {status.user_email && (
+                            <span className="ml-1.5 text-xs text-gray-500 dark:text-gray-400">
+                              ({status.user_email})
+                            </span>
+                          )}
+                        </div>
+                      </div>
+
+                      {/* Plan + subscription row */}
+                      <div className="grid grid-cols-2 gap-2 text-xs">
+                        <div className="flex items-center gap-1.5 rounded-md bg-white/60 dark:bg-gray-800/60 px-2.5 py-1.5 border border-white/80 dark:border-gray-700">
+                          <Crown className="h-3.5 w-3.5 text-amber-500 flex-shrink-0" />
+                          <div>
+                            <p className="text-[10px] text-gray-500 dark:text-gray-400 uppercase tracking-wide">
+                              Plan
+                            </p>
+                            <p className="font-semibold text-gray-900 dark:text-gray-100 capitalize">
+                              {status.plan_type
+                                ? status.plan_type === "plus"
+                                  ? "ChatGPT Plus"
+                                  : status.plan_type === "pro"
+                                    ? "ChatGPT Pro"
+                                    : status.plan_type === "team"
+                                      ? "ChatGPT Team"
+                                      : status.plan_type === "free"
+                                        ? "Free"
+                                        : status.plan_type
+                                : "—"}
+                            </p>
+                          </div>
+                        </div>
+
+                        <div className="flex items-center gap-1.5 rounded-md bg-white/60 dark:bg-gray-800/60 px-2.5 py-1.5 border border-white/80 dark:border-gray-700">
+                          <CalendarClock className="h-3.5 w-3.5 text-indigo-400 flex-shrink-0" />
+                          <div>
+                            <p className="text-[10px] text-gray-500 dark:text-gray-400 uppercase tracking-wide">
+                              Token Habis
+                            </p>
+                            <p className="font-semibold text-gray-900 dark:text-gray-100">
+                              {formatExpiry(status.expires_in_seconds)}
+                            </p>
+                          </div>
+                        </div>
+                      </div>
+
+                      {/* Subscription expiry */}
+                      {status.subscription_active_until && (
+                        <div className="text-xs text-gray-500 dark:text-gray-400 flex items-center gap-1.5">
+                          <CalendarClock className="h-3 w-3" />
+                          Subscription aktif s/d{" "}
+                          <span className="font-medium text-gray-700 dark:text-gray-300">
+                            {new Date(
+                              status.subscription_active_until,
+                            ).toLocaleDateString("id-ID", {
+                              day: "numeric",
+                              month: "long",
+                              year: "numeric",
+                            })}
                           </span>
-                          <code className="font-mono">{status.account_id}</code>
                         </div>
                       )}
-                      <div>
-                        <span className="text-gray-500 dark:text-gray-400">
-                          Token expires in:{" "}
-                        </span>
-                        <span className="font-medium">
-                          {formatExpiry(status.expires_in_seconds)}
-                        </span>
-                      </div>
+
+                      {/* Organization */}
+                      {status.organizations &&
+                        status.organizations.length > 0 && (
+                          <div className="flex items-center gap-1.5 text-xs text-gray-500 dark:text-gray-400">
+                            <Building2 className="h-3 w-3 flex-shrink-0" />
+                            {status.organizations
+                              .map((o) => `${o.title} (${o.role})`)
+                              .join(", ")}
+                          </div>
+                        )}
                     </div>
                   )}
                   {status.message && status.status !== "logged_in" && (

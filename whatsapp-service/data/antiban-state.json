@@ -20,9 +20,14 @@
       ],
       "sendEvents": [],
       "failedEvents": [],
-      "disconnectEvents": [],
+      "disconnectEvents": [
+        {
+          "at": 1776148793181,
+          "reason": "428"
+        }
+      ],
       "warmUp": {
-        "startedAt": 1776130795988,
+        "startedAt": 1776148795521,
         "dailyCounts": {}
       },
       "timelock": {

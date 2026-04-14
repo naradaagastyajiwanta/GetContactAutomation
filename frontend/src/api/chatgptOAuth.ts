@@ -11,6 +11,13 @@ import { apiClient } from "./client";
 
 export type CodexStatus = "logged_in" | "logged_out" | "disabled" | "error";
 
+export interface CodexOrganization {
+  id: string;
+  title: string;
+  role: string;
+  is_default: boolean;
+}
+
 export interface CodexOAuthStatusResponse {
   status: CodexStatus;
   message?: string;
@@ -18,6 +25,13 @@ export interface CodexOAuthStatusResponse {
   expires_at?: number;
   expires_in_seconds?: number;
   source?: "cache" | "disk" | "none";
+  // JWT-decoded profile fields (present when logged_in)
+  plan_type?: string | null;
+  subscription_active_until?: string | null;
+  subscription_last_checked?: string | null;
+  user_name?: string | null;
+  user_email?: string | null;
+  organizations?: CodexOrganization[];
 }
 
 export interface LLMMetricsResponse {
