@@ -98,6 +98,7 @@ services:
       - 8.8.8.8
     ports:
       - "8010:8000"
+      - "127.0.0.1:1455:8000"  # SSH tunnel OAuth: ssh -L 1455:localhost:1455 server
     volumes:
       - ./data:/app/data
       - ./.codex:/root/.codex:ro
