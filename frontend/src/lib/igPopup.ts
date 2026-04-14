@@ -73,5 +73,7 @@ export function subscribeIGPopup(fn: Listener) {
   _listeners.add(fn);
   // Immediately emit current state so the subscriber can hydrate
   fn(Array.from(_queue.values()).map((e) => e.config));
-  return () => _listeners.delete(fn);
+  return () => {
+    _listeners.delete(fn);
+  };
 }

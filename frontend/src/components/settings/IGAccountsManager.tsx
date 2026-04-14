@@ -549,8 +549,8 @@ function getAccountCategory(
   const s = acct.login_status;
   if (
     s === "banned" ||
-    s === "disconnected" ||
     s === "failed" ||
+    s === "challenge" ||
     s === "auth_limited"
   )
     return "action";
