@@ -3150,6 +3150,20 @@ async def update_config(payload: ConfigUpdatePayload):
         except Exception as e:
             log.warning("Failed to reschedule outreach jobs: %s", e)
 
+    # Reschedule pipeline agent jobs if their intervals changed
+    _pipeline_scheduler_keys = {
+        "AGENT_HANDLE_FINDER_INTERVAL_HOURS",
+        "AGENT_POST_SCRAPER_INTERVAL_HOURS",
+        "AGENT_PHONE_EXTRACTOR_INTERVAL_MINUTES",
+        "AGENT_BEM_DISCOVERY_INTERVAL_HOURS",
+    }
+    if validated.keys() & _pipeline_scheduler_keys:
+        try:
+            from orchestrator.scheduler import reschedule_pipeline_agent_jobs
+            reschedule_pipeline_agent_jobs()
+        except Exception as e:
+            log.warning("Failed to reschedule pipeline agent jobs: %s", e)
+
     # Reset ScrapingBot pool if accounts config changed
     if "SCRAPINGBOT_ACCOUNTS" in validated:
         try:

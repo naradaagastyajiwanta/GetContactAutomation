@@ -18,15 +18,21 @@ This factory is intentionally minimal — actual routing logic
 from __future__ import annotations
 
 import httpx
+import threading
 from openai import AsyncOpenAI
 
 from orchestrator.config import cfg, log
 from orchestrator.llm.codex_client import CodexClient, get_codex_client
 
-# --- real-API singleton ------------------------------------------------------
+# --- real-API client (thread-local) ------------------------------------------
+#
+# Using threading.local() instead of a module-level singleton prevents
+# "Event loop is closed" errors when agent jobs run in thread-pool workers
+# (each with their own event loop).  httpx binds its connection pool to the
+# event loop running at first use; a thread-local client stays bound to its
+# own thread's persistent loop and never sees a foreign closed loop.
 
-_real_client: AsyncOpenAI | None = None
-_real_client_key: str = ""
+_thread_local = threading.local()
 
 _DEFAULT_TIMEOUT = httpx.Timeout(
     connect=10.0, read=120.0, write=10.0, pool=10.0
@@ -34,21 +40,23 @@ _DEFAULT_TIMEOUT = httpx.Timeout(
 
 
 def get_real_client() -> AsyncOpenAI:
-    """Return the lazy ``AsyncOpenAI`` singleton for ``api.openai.com``.
+    """Return the ``AsyncOpenAI`` client for this thread.
 
-    Used for embeddings (always) and as fallback when Codex OAuth is
-    disabled or unhealthy.
+    Each thread (main event loop thread + each agent pool worker) gets its
+    own client instance bound to its own event loop.  Used for embeddings
+    (always) and as fallback when Codex OAuth is disabled or unhealthy.
     """
-    global _real_client, _real_client_key
     current_key = str(cfg.get("OPENAI_API_KEY", "") or "")
-    if _real_client is None or current_key != _real_client_key:
-        log.info("[llm-factory] (re)building real OpenAI API client")
-        _real_client = AsyncOpenAI(
+    client: AsyncOpenAI | None = getattr(_thread_local, "real_client", None)
+    stored_key: str = getattr(_thread_local, "real_client_key", "")
+    if client is None or current_key != stored_key:
+        log.info("[llm-factory] (re)building OpenAI client for thread '%s'", threading.current_thread().name)
+        _thread_local.real_client = AsyncOpenAI(
             api_key=current_key,
             timeout=_DEFAULT_TIMEOUT,
         )
-        _real_client_key = current_key
-    return _real_client
+        _thread_local.real_client_key = current_key
+    return _thread_local.real_client
 
 
 def get_codex() -> CodexClient:
@@ -61,7 +69,8 @@ def get_codex() -> CodexClient:
 
 
 def reset_clients() -> None:
-    """Drop cached singletons. Used by tests and on config changes."""
-    global _real_client, _real_client_key
-    _real_client = None
-    _real_client_key = ""
+    """Drop cached client for the current thread. Used by tests and on config changes."""
+    if hasattr(_thread_local, "real_client"):
+        del _thread_local.real_client
+    if hasattr(_thread_local, "real_client_key"):
+        del _thread_local.real_client_key

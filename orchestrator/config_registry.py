@@ -30,6 +30,7 @@ class ConfigGroup(str, Enum):
     PLAYWRIGHT = "Playwright Browser"
     DMS_INTEGRATION = "DMS Integration"
     GENERAL = "General"
+    PIPELINE_SCHEDULER = "Pipeline Scheduler"
 
 
 @dataclass(frozen=True)
@@ -766,6 +767,36 @@ CONFIG_DEFINITIONS: list[ConfigDef] = [
         group=ConfigGroup.GENERAL, label="Email Blast Daily Limit",
         description="Maximum emails to send per day (WIB). 0 = unlimited.",
         min_value=0, max_value=10000,
+    ),
+
+    # --- Pipeline Scheduler ---
+    ConfigDef(
+        key="AGENT_HANDLE_FINDER_INTERVAL_HOURS",
+        type=ConfigType.INT, default=1, group=ConfigGroup.PIPELINE_SCHEDULER,
+        label="Find IG Handles — Interval (jam)",
+        description="Seberapa sering agent pencari handle Instagram dijalankan secara otomatis. Contoh: 1 = tiap jam, 2 = tiap 2 jam.",
+        min_value=1, max_value=24,
+    ),
+    ConfigDef(
+        key="AGENT_POST_SCRAPER_INTERVAL_HOURS",
+        type=ConfigType.INT, default=2, group=ConfigGroup.PIPELINE_SCHEDULER,
+        label="Scrape Posts — Interval (jam)",
+        description="Seberapa sering agent scraping post Instagram dijalankan secara otomatis.",
+        min_value=1, max_value=24,
+    ),
+    ConfigDef(
+        key="AGENT_PHONE_EXTRACTOR_INTERVAL_MINUTES",
+        type=ConfigType.INT, default=15, group=ConfigGroup.PIPELINE_SCHEDULER,
+        label="Extract Phones — Interval (menit)",
+        description="Seberapa sering agent ekstraksi nomor telepon dari post dijalankan secara otomatis.",
+        min_value=5, max_value=120,
+    ),
+    ConfigDef(
+        key="AGENT_BEM_DISCOVERY_INTERVAL_HOURS",
+        type=ConfigType.INT, default=1, group=ConfigGroup.PIPELINE_SCHEDULER,
+        label="Discover BEM — Interval (jam)",
+        description="Seberapa sering agent pencarian akun BEM/Humas universitas dijalankan secara otomatis.",
+        min_value=1, max_value=24,
     ),
 ]
 

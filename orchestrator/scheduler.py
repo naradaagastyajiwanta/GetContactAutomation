@@ -4,6 +4,7 @@ Scheduler for daily WhatsApp outreach and follow-up management.
 import asyncio
 import concurrent.futures
 import json
+import threading
 from datetime import datetime, timedelta, timezone
 from functools import partial
 
@@ -58,15 +59,27 @@ _agent_pool = concurrent.futures.ThreadPoolExecutor(
     max_workers=2, thread_name_prefix="agent"
 )
 
+# Thread-local storage for persistent per-thread event loops.
+# Using a persistent loop (instead of creating + closing one per run) prevents
+# "Event loop is closed" errors from httpx connection pools that bind to the
+# loop on first use and break when that loop is closed mid-pool-lifetime.
+_thread_local = threading.local()
+
 
 def _run_async_in_new_loop(coro_fn, *args, **kwargs):
-    """Execute an async function in a fresh event loop (for thread pool)."""
-    loop = asyncio.new_event_loop()
-    asyncio.set_event_loop(loop)
-    try:
-        return loop.run_until_complete(coro_fn(*args, **kwargs))
-    finally:
-        loop.close()
+    """Execute an async function in a thread-local persistent event loop.
+
+    Each worker thread in ``_agent_pool`` gets its own event loop that
+    lives for the thread's lifetime.  This avoids the "Event loop is closed"
+    RuntimeError that occurs when httpx (used by the OpenAI SDK) binds its
+    connection pool to a loop that is later closed between scheduler ticks.
+    """
+    loop = getattr(_thread_local, "loop", None)
+    if loop is None or loop.is_closed():
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        _thread_local.loop = loop
+    return loop.run_until_complete(coro_fn(*args, **kwargs))
 
 
 async def run_agent_in_thread(coro_fn, *args, **kwargs):
@@ -778,6 +791,33 @@ def reschedule_outreach_jobs() -> None:
     log.info("Rescheduled outreach jobs to hours %s", hour_range)
 
 
+def reschedule_pipeline_agent_jobs() -> None:
+    """Re-apply cron expressions for pipeline agent jobs after config change."""
+    scheduler.reschedule_job(
+        "agent_handle_finder", trigger="cron",
+        hour=f"*/{cfg.AGENT_HANDLE_FINDER_INTERVAL_HOURS}", minute="0", timezone=WIB,
+    )
+    scheduler.reschedule_job(
+        "agent_post_scraper", trigger="cron",
+        hour=f"*/{cfg.AGENT_POST_SCRAPER_INTERVAL_HOURS}", minute="10", timezone=WIB,
+    )
+    scheduler.reschedule_job(
+        "agent_phone_extractor", trigger="cron",
+        minute=f"*/{cfg.AGENT_PHONE_EXTRACTOR_INTERVAL_MINUTES}", timezone=WIB,
+    )
+    scheduler.reschedule_job(
+        "agent_bem_discovery", trigger="cron",
+        hour=f"*/{cfg.AGENT_BEM_DISCOVERY_INTERVAL_HOURS}", minute="40", timezone=WIB,
+    )
+    log.info(
+        "Rescheduled pipeline agents — handles=*/%dh, posts=*/%dh, phones=*/%dm, bem=*/%dh",
+        cfg.AGENT_HANDLE_FINDER_INTERVAL_HOURS,
+        cfg.AGENT_POST_SCRAPER_INTERVAL_HOURS,
+        cfg.AGENT_PHONE_EXTRACTOR_INTERVAL_MINUTES,
+        cfg.AGENT_BEM_DISCOVERY_INTERVAL_HOURS,
+    )
+
+
 async def _reset_stale_error_clients(group_id: int, older_than_minutes: int = 60) -> int:
     """Reset marketing_clients stuck in 'error' state back to 'pending' after a cooldown.
 
@@ -849,12 +889,12 @@ def setup_scheduler():
         replace_existing=True,
     )
 
-    # Agent 1: Find IG handles — every hour, 24/7
+    # Agent 1: Find IG handles — configurable interval (default: every hour, 24/7)
     # Uses _threaded_ wrapper to run in a separate thread (keeps event loop free)
     scheduler.add_job(
         _threaded_handle_search,
         "cron",
-        hour="*/1",
+        hour=f"*/{cfg.AGENT_HANDLE_FINDER_INTERVAL_HOURS}",
         minute="0",
         timezone=WIB,
         id="agent_handle_finder",
@@ -863,11 +903,11 @@ def setup_scheduler():
         misfire_grace_time=300,  # Skip if more than 5 min late (avoids fire-on-startup)
     )
 
-    # Agent 2: Scrape posts — every 2 hours, 24/7
+    # Agent 2: Scrape posts — configurable interval (default: every 2 hours, 24/7)
     scheduler.add_job(
         _threaded_post_scrape,
         "cron",
-        hour="*/2",
+        hour=f"*/{cfg.AGENT_POST_SCRAPER_INTERVAL_HOURS}",
         minute="10",
         timezone=WIB,
         id="agent_post_scraper",
@@ -876,11 +916,11 @@ def setup_scheduler():
         misfire_grace_time=300,
     )
 
-    # Agent 3: Extract phones — every 15 minutes, 24/7
+    # Agent 3: Extract phones — configurable interval (default: every 15 minutes, 24/7)
     scheduler.add_job(
         _threaded_phone_extraction,
         "cron",
-        minute="*/15",
+        minute=f"*/{cfg.AGENT_PHONE_EXTRACTOR_INTERVAL_MINUTES}",
         timezone=WIB,
         id="agent_phone_extractor",
         replace_existing=True,
@@ -888,11 +928,11 @@ def setup_scheduler():
         misfire_grace_time=300,
     )
 
-    # Agent 4: BEM discovery — every hour, 24/7
+    # Agent 4: BEM discovery — configurable interval (default: every hour, 24/7)
     scheduler.add_job(
         _threaded_bem_discovery,
         "cron",
-        hour="*/1",
+        hour=f"*/{cfg.AGENT_BEM_DISCOVERY_INTERVAL_HOURS}",
         minute="40",
         timezone=WIB,
         id="agent_bem_discovery",
