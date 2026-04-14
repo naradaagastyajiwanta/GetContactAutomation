@@ -75,6 +75,14 @@ share credentials with the official Codex CLI on the same machine.
 The orchestrator manages refreshes from its own store after import,
 so subsequent `codex login` runs won't propagate automatically.
 
+If `~/.codex/auth.json` is already present on the host, the orchestrator
+also tries to import it automatically during startup. In that case,
+you do not need to click the import button in the UI at all.
+
+For Docker production, mount the host `.codex` directory into the
+orchestrator container at `/root/.codex` so the startup import can see
+the file.
+
 ## Verify
 
 After login, check the Settings → ChatGPT tab:

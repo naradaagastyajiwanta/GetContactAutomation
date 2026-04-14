@@ -28,7 +28,7 @@ import secrets
 import time
 from dataclasses import dataclass
 from typing import Any
-from urllib.parse import urlencode, urlparse, parse_qs
+from urllib.parse import urlencode, urlparse, parse_qs, quote
 
 import httpx
 
@@ -161,13 +161,11 @@ def build_authorization_flow(
         "code_challenge": pkce.challenge,
         "code_challenge_method": "S256",
         "state": state,
-        # openclaw and codex-cli send these — they unlock the Codex
-        # backend with simplified flow + organization context.
-        "id_token_add_organizations": "true",
-        "codex_cli_simplified_flow": "true",
-        "originator": originator,
     }
-    url = f"{AUTHORIZE_URL}?{urlencode(params)}"
+    # Use quote_via=quote so spaces in scope become %20, not +.
+    # Auth0 (which auth.openai.com uses) rejects requests with + in query values.
+    url = f"{AUTHORIZE_URL}?{urlencode(params, quote_via=quote)}"
+    log.info("[codex-oauth] authorize URL: %s", url)
     return AuthorizationFlow(pkce=pkce, state=state, url=url)
 
 
@@ -269,9 +267,23 @@ async def _post_token_endpoint(body: dict, *, label: str) -> CodexTokens:
             f"OAuth {label} failed: HTTP {response.status_code} — {snippet}"
         )
 
-    payload = response.json()
+    return _parse_token_payload(response.json(), label=label, fallback_refresh=body.get("refresh_token"))
+
+
+def _parse_token_payload(
+    payload: dict,
+    *,
+    label: str = "token",
+    fallback_refresh: str | None = None,
+) -> CodexTokens:
+    """Parse a successful token endpoint JSON response into CodexTokens.
+
+    Shared by PKCE exchange and refresh flows.
+    ``fallback_refresh`` is used when the server omits refresh_token on
+    refresh grants (RFC 6749 §6 allows keeping the original token).
+    """
     access_token = payload.get("access_token")
-    refresh_token = payload.get("refresh_token") or body.get("refresh_token")
+    refresh_token = payload.get("refresh_token") or fallback_refresh
     expires_in = payload.get("expires_in")
     id_token = payload.get("id_token")
 
@@ -283,12 +295,8 @@ async def _post_token_endpoint(body: dict, *, label: str) -> CodexTokens:
             bool(refresh_token),
             expires_in,
         )
-        raise CodexOAuthError(
-            f"OAuth {label} response missing required fields"
-        )
+        raise CodexOAuthError(f"OAuth {label} response missing required fields")
 
-    # The account_id we want lives in the JWT id_token (or sometimes the
-    # access_token, which is also a JWT in this flow).
     account_id = None
     raw_jwt_for_account = id_token or access_token
     if raw_jwt_for_account:

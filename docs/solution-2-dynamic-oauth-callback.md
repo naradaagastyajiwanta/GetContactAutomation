@@ -9,20 +9,20 @@ This document describes the implementation of **Solution 2** for ChatGPT OAuth, 
 Previously, the OAuth callback URL was hardcoded to `http://localhost:1455/auth/callback`, which only worked in development. Solution 2 makes the callback URL dynamic and environment-aware:
 
 - **Development:** Uses ephemeral aiohttp server on `localhost:1455` (unchanged from before)
-- **Production:** Uses a persistent FastAPI endpoint at `/auth/codex-callback` on the public domain
-
-## What Changed
-
-### Backend Changes
-
-#### 1. Configuration (`orchestrator/config.py`)
+ **Production:** Uses a persistent FastAPI endpoint exposed through `/api/auth/codex-callback` on the public domain
+# For production: https://get-contact-automation.airabot.id/api/auth/codex-callback (fixed endpoint)
+**New `/api/auth/codex-callback` GET endpoint:**
+2. **Production:** `https://get-contact-automation.airabot.id/api/auth/codex-callback`
+OAUTH_CALLBACK_URL=https://get-contact-automation.airabot.id/api/auth/codex-callback
+   - Backend `/api/auth/codex-callback` endpoint captures the code via the `/api/` proxy
+ Contact OpenAI support to add `https://youromain.com/api/auth/codex-callback`
 
 Added new environment variable:
 
 ```python
 # ChatGPT OAuth callback URL — used for dynamic redirect handling.
 # For development: http://localhost:1455/auth/callback (ephemeral server)
-# For production: https://getcontact.najworks.me/auth/codex-callback (fixed endpoint)
+# For production: https://get-contact-automation.airabot.id/api/auth/codex-callback (fixed endpoint)
 OAUTH_CALLBACK_URL = os.getenv("OAUTH_CALLBACK_URL", "http://localhost:1455/auth/callback")
 ```
 
@@ -119,9 +119,9 @@ export interface StartLoginResponse {
 Contact OpenAI support to register **both** redirect URIs in your app settings:
 
 1. **Development:** `http://localhost:1455/auth/callback`
-2. **Production:** `https://getcontact.najworks.me/auth/codex-callback`
+2. **Production:** `https://get-contact-automation.airabot.id/api/auth/codex-callback`
 
-(Or use your actual production domain in place of `getcontact.najworks.me`)
+(Or use your actual production domain in place of `get-contact-automation.airabot.id`)
 
 ### Step 2: Configure Environment Variables
 
@@ -133,7 +133,7 @@ CHATGPT_OAUTH_ENABLED=true
 CHATGPT_OAUTH_FALLBACK_TO_API=true
 
 # Set the production callback URL
-OAUTH_CALLBACK_URL=https://getcontact.najworks.me/auth/codex-callback
+OAUTH_CALLBACK_URL=https://get-contact-automation.airabot.id/api/auth/codex-callback
 
 # Still required for embeddings and fallback
 OPENAI_API_KEY=sk-...

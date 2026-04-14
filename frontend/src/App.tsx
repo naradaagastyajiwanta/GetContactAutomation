@@ -53,6 +53,7 @@ const DbMigrationPage = lazy(() =>
   })),
 );
 const LoginPage = lazy(() => import("./pages/LoginPage"));
+const OAuthCallbackPage = lazy(() => import("./pages/OAuthCallbackPage"));
 
 const queryClient = new QueryClient({
   defaultOptions: { queries: { retry: 1, refetchOnWindowFocus: false } },
@@ -80,6 +81,15 @@ export default function App() {
                     element={
                       <ErrorBoundary>
                         <LoginPage />
+                      </ErrorBoundary>
+                    }
+                  />
+                  {/* OAuth callback — must be public (no auth required) */}
+                  <Route
+                    path="oauth/callback"
+                    element={
+                      <ErrorBoundary>
+                        <OAuthCallbackPage />
                       </ErrorBoundary>
                     }
                   />

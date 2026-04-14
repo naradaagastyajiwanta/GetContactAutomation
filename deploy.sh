@@ -6,7 +6,7 @@
 
 set -e
 
-DOMAIN="getcontact.najworks.me"
+DOMAIN="get-contact-automation.airabot.id"
 APP_DIR="/opt/getcontact-ai-agent"
 REPO_URL=""  # Set your git repo URL here, or copy files manually
 

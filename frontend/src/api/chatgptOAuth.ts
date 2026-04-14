@@ -39,35 +39,18 @@ export interface LLMMetricsResponse {
 export interface StartLoginResponse {
   authorize_url: string;
   state: string;
-  callback_url: string; // Dynamic callback URL (localhost:1455 for dev, production domain for prod)
-  callback_host: string;
-  callback_port: number;
+  callback_url: string; // The redirect URI registered with OpenAI
 }
 
 /**
  * Successful login/refresh result from the orchestrator.
- * Shared shape between /auth/codex/manual, /auth/codex/refresh, and
- * the happy path of /auth/codex/wait.
+ * Returned by /auth/codex/manual and /auth/codex/refresh.
  */
 export interface LoginResultResponse {
   status: "logged_in" | "refreshed";
   account_id?: string | null;
   expires_at: number;
 }
-
-/**
- * Result from the /auth/codex/wait long-poll endpoint. Either the
- * normal success payload OR a ``superseded`` marker when the backend
- * detected that a newer /auth/codex/start call replaced this flow
- * (e.g. user closed the browser mid-OAuth and clicked Login again).
- * The FE should silently discard superseded results — no error, no toast.
- */
-export type LoginWaitResponse =
-  | LoginResultResponse
-  | {
-      status: "superseded";
-      message: string;
-    };
 
 export async function getCodexStatus(): Promise<CodexOAuthStatusResponse> {
   const { data } = await apiClient.get<CodexOAuthStatusResponse>(
@@ -86,27 +69,6 @@ export async function getLLMMetrics(): Promise<LLMMetricsResponse> {
 export async function startCodexLogin(): Promise<StartLoginResponse> {
   const { data } =
     await apiClient.post<StartLoginResponse>("/auth/codex/start");
-  return data;
-}
-
-/**
- * Long-poll the orchestrator until the OAuth callback is captured and
- * the token exchange completes. Resolves with the logged-in status.
- *
- * Pass `timeoutSeconds` to control how long the orchestrator will
- * wait for the user to complete the browser flow before giving up.
- */
-export async function waitForCodexLogin(
-  timeoutSeconds: number = 300,
-): Promise<LoginWaitResponse> {
-  const { data } = await apiClient.post<LoginWaitResponse>(
-    "/auth/codex/wait",
-    null,
-    {
-      params: { timeout_seconds: timeoutSeconds },
-      timeout: (timeoutSeconds + 30) * 1000,
-    },
-  );
   return data;
 }
 

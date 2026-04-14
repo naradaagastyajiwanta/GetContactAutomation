@@ -29,9 +29,13 @@ VISION_MODEL = os.getenv("VISION_MODEL", "gpt-5.4")
 
 # ChatGPT OAuth callback URL — used for dynamic redirect handling.
 # For development: http://localhost:1455/auth/callback (ephemeral server)
-# For production: https://getcontact.najworks.me/auth/codex-callback (fixed endpoint)
+# For production: https://get-contact-automation.airabot.id/api/auth/codex-callback (fixed endpoint)
 # When unset, defaults to localhost:1455 for dev.
 OAUTH_CALLBACK_URL = os.getenv("OAUTH_CALLBACK_URL", "http://localhost:1455/auth/callback")
+
+# Frontend URL — used to redirect the browser back to the FE after OAuth callback.
+# The backend redirects the OAuth tab to {FRONTEND_URL}/oauth/callback?oauth=success
+FRONTEND_URL = os.getenv("FRONTEND_URL", "http://localhost:5173")
 
 # WhatsApp Service
 WA_SERVICE_URL = os.getenv("WA_SERVICE_URL", "http://localhost:3100")

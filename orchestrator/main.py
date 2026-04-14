@@ -399,6 +399,21 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         log.warning("Failed to cleanup old pipeline logs: %s", e)
 
+    # Auto-seed Codex OAuth credentials from ~/.codex/auth.json if the
+    # project store is empty. This lets production start up already
+    # authenticated when the host has been logged in with the official
+    # Codex CLI, without requiring any UI copy/paste flow.
+    try:
+        from orchestrator.llm import codex_token_store
+
+        current_tokens = await codex_token_store.load_tokens()
+        if current_tokens is None:
+            imported = await codex_token_store.import_external_codex_auth()
+            if imported:
+                log.info("Imported Codex CLI credentials automatically at startup")
+    except Exception as e:
+        log.warning("Codex credential auto-import failed (non-critical): %s", e)
+
     # Register webhook with WA service
     await register_webhook()
 
@@ -5209,36 +5224,36 @@ async def sentry_debug():
 async def codex_oauth_start():
     """Begin a Codex OAuth login flow.
 
-    Spawns a local callback server on http://localhost:1455 (dev mode),
-    or prepares for a persistent /auth/codex-callback endpoint (production).
-    Returns the authorize URL for the FE to open in a new tab, along with
-    the callback URL it should use.
+    Generates a PKCE pair and returns the authorize URL. For dev deployments
+    (localhost callback), also ensures the ephemeral aiohttp server on port
+    1455 is running to catch the redirect.
 
-    The FE should poll ``POST /auth/codex/wait`` to wait for login to complete.
+    After calling this endpoint the FE should:
+    1. Open ``authorize_url`` in a new tab
+    2. Poll GET /health/codex-oauth every few seconds until status="logged_in"
+
+    Token exchange is handled server-side in the callback — no long-polling
+    needed from the FE.
     """
     from orchestrator.llm import codex_login_server
     from orchestrator import config
 
-    # Determine whether we're using ephemeral server (dev) or persistent endpoint (prod)
     callback_url = config.OAUTH_CALLBACK_URL
     spawn_ephemeral_server = "localhost" in callback_url or "127.0.0.1" in callback_url
 
-    try:
-        flow = await codex_login_server.begin_login(
-            spawn_ephemeral_server=spawn_ephemeral_server
-        )
-    except RuntimeError as e:
-        raise HTTPException(status_code=409, detail=str(e))
+    flow = await codex_login_server.begin_login(
+        spawn_ephemeral_server=spawn_ephemeral_server,
+        redirect_uri=callback_url,
+    )
 
     return {
         "authorize_url": flow.url,
         "state": flow.state,
         "callback_url": callback_url,
-        "callback_host": codex_login_server.CALLBACK_HOST,
-        "callback_port": codex_login_server.CALLBACK_PORT,
     }
 
 
+@app.get("/auth/callback")
 @app.get("/auth/codex-callback")
 async def codex_oauth_callback_get(
     code: str | None = None,
@@ -5246,99 +5261,58 @@ async def codex_oauth_callback_get(
     error: str | None = None,
     error_description: str | None = None,
 ):
-    """Production OAuth callback endpoint.
+    """Production OAuth callback endpoint (mirrors AgentFix /auth/callback).
 
-    OpenAI redirects here after the user logs in. This is the persistent
-    counterpart to the ephemeral localhost:1455 server used in dev mode.
+    OpenAI redirects the browser here after login. This endpoint performs
+    the token exchange immediately and redirects the browser to the FE
+    callback page ({FRONTEND_URL}/oauth/callback?oauth=success).
 
-    For production deployments, register this endpoint's full public URL
-    (e.g., https://getcontact.najworks.me/auth/codex-callback) as a
-    redirect_uri in your OpenAI app settings.
-    """
-    from orchestrator.llm import codex_login_server
-
-    result = codex_login_server.handle_callback_data(code, state, error, error_description)
-    return HTMLResponse(content=result["html"], status_code=200 if result["success"] else 400)
-
-
-
-@app.post("/auth/codex/wait")
-async def codex_oauth_wait(timeout_seconds: int = 300):
-    """Block until the in-flight login resolves, then exchange the code.
-
-    Returns the final logged-in status. The FE should call this after
-    ``/auth/codex/start`` and treat the request as long-polling.
+    For production deployments, set OAUTH_CALLBACK_URL to this endpoint's
+    full public URL (e.g. https://domain.com/api/auth/codex-callback).
     """
     from orchestrator.llm import (
         codex_login_server,
         codex_oauth as oauth_mod,
         codex_token_store,
     )
+    from orchestrator import config
 
-    pkce = codex_login_server.get_active_pkce()
-    if pkce is None:
-        raise HTTPException(
-            status_code=400,
-            detail="No login in progress. Call /auth/codex/start first.",
-        )
+    frontend_url = str(config.FRONTEND_URL or "http://localhost:5173").rstrip("/")
+    fe_callback = f"{frontend_url}/oauth/callback"
 
-    result = await codex_login_server.wait_for_login_result(timeout=float(timeout_seconds))
-    if result is None:
-        await codex_login_server.cancel_login()
-        raise HTTPException(
-            status_code=408,
-            detail="Login timed out or was cancelled.",
-        )
+    if error:
+        desc = error_description or error
+        log.warning("[codex-callback] OAuth error from provider: %s", desc)
+        return RedirectResponse(f"{fe_callback}?error={error}&error_description={desc}")
 
-    # Session was superseded by a newer /auth/codex/start call (e.g. user
-    # closed the browser tab and clicked Login again). Return a 200 with
-    # a distinguishable status so the FE can silently discard this
-    # response without showing an error toast. Do NOT call cancel_login()
-    # here — the newer session is active and must not be torn down.
-    if result.get("superseded"):
-        return {
-            "status": "superseded",
-            "message": "A newer login attempt replaced this one.",
-        }
+    if not code or not state:
+        return RedirectResponse(f"{fe_callback}?error=missing_params")
 
-    if "error" in result:
-        await codex_login_server.cancel_login()
-        raise HTTPException(
-            status_code=400,
-            detail=f"OAuth provider rejected the request: {result['error']}",
-        )
-
-    code = result.get("code")
-    if not code:
-        await codex_login_server.cancel_login()
-        raise HTTPException(status_code=400, detail="Callback returned no authorization code")
+    verifier = await codex_login_server.pop_pkce_verifier(state)
+    if verifier is None:
+        return RedirectResponse(f"{fe_callback}?error=invalid_state")
 
     try:
         tokens = await oauth_mod.exchange_authorization_code(
             code=code,
-            verifier=pkce.verifier,
+            verifier=verifier,
         )
+        await codex_token_store.save_tokens(tokens)
+        log.info("[codex-callback] tokens saved (account=%s)", tokens.account_id)
     except oauth_mod.CodexOAuthError as e:
-        await codex_login_server.cancel_login()
-        raise HTTPException(status_code=502, detail=f"Token exchange failed: {e}")
+        log.error("[codex-callback] token exchange failed: %s", e)
+        return RedirectResponse(f"{fe_callback}?error=token_exchange_failed")
 
-    await codex_token_store.save_tokens(tokens)
-    await codex_login_server.finalize_login()
-    return {
-        "status": "logged_in",
-        "account_id": tokens.account_id,
-        "expires_at": tokens.expires_at,
-    }
+    return RedirectResponse(f"{fe_callback}?oauth=success")
 
 
 @app.post("/auth/codex/manual")
 async def codex_oauth_manual(payload: dict):
-    """Headless fallback: caller pastes the redirect URL or auth code.
+    """Headless fallback: paste the redirect URL or bare auth code.
 
     Body: ``{"input": "http://localhost:1455/auth/callback?code=...&state=..."}``
-    or just ``{"input": "AUTHORIZATION_CODE"}``. The handler must have
-    been preceded by ``/auth/codex/start`` so the PKCE verifier is in
-    memory.
+    The state in the pasted URL is used to look up the PKCE verifier, so
+    ``/auth/codex/start`` must have been called first to register it.
     """
     from orchestrator.llm import (
         codex_login_server,
@@ -5349,27 +5323,33 @@ async def codex_oauth_manual(payload: dict):
     raw = (payload or {}).get("input") or ""
     parsed = oauth_mod.parse_authorization_input(raw)
     code = parsed.get("code")
-    if not code:
-        raise HTTPException(status_code=400, detail="Could not parse authorization code")
+    state = parsed.get("state")
 
-    pkce = codex_login_server.get_active_pkce()
-    if pkce is None:
+    if not code:
+        raise HTTPException(status_code=400, detail="Could not parse authorization code from input")
+
+    verifier = None
+    if state:
+        verifier = await codex_login_server.pop_pkce_verifier(state)
+
+    if verifier is None:
         raise HTTPException(
             status_code=400,
-            detail="No login in progress. Call /auth/codex/start first.",
+            detail=(
+                "PKCE verifier not found for this state. "
+                "Call /auth/codex/start first, then paste the full redirect URL."
+            ),
         )
 
     try:
         tokens = await oauth_mod.exchange_authorization_code(
             code=code,
-            verifier=pkce.verifier,
+            verifier=verifier,
         )
     except oauth_mod.CodexOAuthError as e:
-        await codex_login_server.cancel_login()
         raise HTTPException(status_code=502, detail=f"Token exchange failed: {e}")
 
     await codex_token_store.save_tokens(tokens)
-    await codex_login_server.finalize_login()
     return {
         "status": "logged_in",
         "account_id": tokens.account_id,
@@ -5379,11 +5359,13 @@ async def codex_oauth_manual(payload: dict):
 
 @app.post("/auth/codex/cancel")
 async def codex_oauth_cancel():
-    """Cancel an in-flight login flow (tear down the callback server)."""
+    """Clear pending PKCE states (called when user cancels the login flow)."""
     from orchestrator.llm import codex_login_server
 
     await codex_login_server.cancel_login()
     return {"ok": True}
+
+
 
 
 @app.post("/auth/codex/logout")

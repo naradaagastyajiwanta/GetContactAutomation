@@ -124,6 +124,7 @@ services:
       - 8.8.8.8
     ports:
       - "8000:8000"
+      - "1455:8000"    # OAuth callback — OpenAI redirects to localhost:1455/auth/callback
     volumes:
       - ./data:/app/data
     env_file:

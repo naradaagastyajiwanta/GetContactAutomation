@@ -20,7 +20,6 @@ import {
   refreshCodexToken,
   startCodexLogin,
   submitCodexManualCode,
-  waitForCodexLogin,
   type CodexOAuthStatusResponse,
   type CodexStatus,
   type LLMMetricsResponse,
@@ -109,16 +108,22 @@ export function ChatGPTOAuthPanel() {
     }, 6000);
   };
 
-  // Monotonic counter for login attempts — used to silently discard
-  // stale results when the user starts a fresh login before the
-  // previous one has resolved (e.g. closed browser tab mid-OAuth).
-  const loginAttemptRef = useRef(0);
+  // Interval handle for status polling during login
+  const pollIntervalRef = useRef<number | null>(null);
+
+  const stopPolling = () => {
+    if (pollIntervalRef.current !== null) {
+      window.clearInterval(pollIntervalRef.current);
+      pollIntervalRef.current = null;
+    }
+  };
 
   useEffect(() => {
     return () => {
       if (successTimerRef.current !== null) {
         window.clearTimeout(successTimerRef.current);
       }
+      stopPolling();
     };
   }, []);
 
@@ -143,82 +148,63 @@ export function ChatGPTOAuthPanel() {
   }, []);
 
   const handleLogin = async () => {
-    // Bump the attempt counter and capture our own ID. Any previous
-    // handleLogin invocation that is still awaiting a long-poll will
-    // notice (on resume) that its ID no longer matches the latest and
-    // silently discard its result — no flicker error toasts when the
-    // user retries after closing a stale browser tab.
-    const myAttempt = ++loginAttemptRef.current;
-    const isStale = () => loginAttemptRef.current !== myAttempt;
-
     setError(null);
     setSuccess(null);
     setLoginInProgress(true);
+    stopPolling();
+
     try {
-      // Proactively tell the backend to tear down any leftover in-flight
-      // session from a previous click. The backend's begin_login() also
-      // auto-supersedes stale sessions, so this is belt-and-suspenders —
-      // if the first call here fails (no active session), that's fine.
-      try {
-        await cancelCodexLogin();
-      } catch {
-        /* no active flow — nothing to cancel */
-      }
-
-      if (isStale()) return;
-
       const start = await startCodexLogin();
-      if (isStale()) return;
 
-      // Store the callback URL for display in manual paste mode
+      // Store callback URL so manual paste placeholder is accurate
       setLastCallbackUrl(start.callback_url);
 
-      // Open the authorize URL in a new tab so the user can complete OAuth
+      // Open authorize URL in a new tab. Token exchange happens server-side
+      // (ephemeral server for dev, persistent endpoint for prod). The new
+      // tab will be redirected to /oauth/callback?oauth=success when done.
       window.open(start.authorize_url, "_blank", "noopener,noreferrer");
 
-      // Long-poll the orchestrator until the callback fires
-      const result = await waitForCodexLogin(300);
+      // Poll GET /health/codex-oauth every 3 s until logged_in or timeout.
+      // No long-poll needed — the backend resolves the flow independently.
+      const POLL_MS = 3_000;
+      const TIMEOUT_MS = 300_000;
+      let elapsed = 0;
 
-      // A newer handleLogin call started and already superseded this one
-      if (isStale()) return;
+      await new Promise<void>((resolve, reject) => {
+        pollIntervalRef.current = window.setInterval(async () => {
+          elapsed += POLL_MS;
+          if (elapsed >= TIMEOUT_MS) {
+            reject(
+              new Error("Login timed out after 5 minutes. Please try again."),
+            );
+            return;
+          }
+          try {
+            const s = await getCodexStatus();
+            setStatus(s);
+            if (s.status === "logged_in") {
+              resolve();
+            }
+          } catch {
+            // Transient network error — keep polling
+          }
+        }, POLL_MS);
+      });
 
-      // Server-side supersede marker: another /auth/codex/start call
-      // replaced this session (e.g. user clicked Login twice). Silently
-      // discard — the newer attempt handler will take over.
-      if (result.status === "superseded") {
-        console.log("[codex-login] superseded by newer attempt, discarding");
-        return;
-      }
-
-      await refresh();
-      const accountSnippet = result.account_id
-        ? ` (account: ${result.account_id.slice(0, 8)}…)`
-        : "";
-      showSuccess(
-        `Login successful${accountSnippet}. Tokens stored and ready to use.`,
-      );
-      console.log("Codex login complete:", result);
+      showSuccess("Login successful. Tokens stored and ready to use.");
     } catch (e: unknown) {
-      // If a newer attempt has already taken over, silently drop this
-      // error — the user already moved on.
-      if (isStale()) return;
-
       const message =
         (e as { response?: { data?: { detail?: string } } })?.response?.data
           ?.detail ?? (e instanceof Error ? e.message : "Login failed");
       setError(String(message));
-      // Best-effort cleanup of the in-flight server
       try {
         await cancelCodexLogin();
       } catch {
         /* ignore */
       }
     } finally {
-      // Only clear the spinner if we are the latest attempt. Otherwise
-      // a newer attempt is still running and should keep the spinner on.
-      if (!isStale()) {
-        setLoginInProgress(false);
-      }
+      stopPolling();
+      setLoginInProgress(false);
     }
   };
 
@@ -231,15 +217,13 @@ export function ChatGPTOAuthPanel() {
     setError(null);
     setSuccess(null);
     try {
-      // Make sure a flow is in progress so the PKCE verifier exists in
-      // memory. If user clicked Login earlier the start call already
-      // happened; if not, this will start a fresh one.
+      // If the user hasn't clicked "Login with ChatGPT" yet, start a flow
+      // now so the PKCE verifier is registered. The pasted URL must contain
+      // the matching state token — so the user should open the authorize URL
+      // returned here in their browser before pasting the redirect URL.
       if (!loginInProgress) {
-        try {
-          await startCodexLogin();
-        } catch {
-          // 409 Conflict is fine — there's already an active flow
-        }
+        const start = await startCodexLogin();
+        setLastCallbackUrl(start.callback_url);
       }
       const result = await submitCodexManualCode(manualInput.trim());
       setManualInput("");
@@ -446,7 +430,7 @@ export function ChatGPTOAuthPanel() {
                       className="inline-flex items-center gap-1.5 rounded-md border border-gray-300 dark:border-gray-600 px-3 py-1.5 text-xs font-medium text-gray-700 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-gray-700"
                     >
                       <Clipboard className="h-3.5 w-3.5" />
-                      Manual paste (headless)
+                      Manual paste
                     </button>
                     <button
                       onClick={handleImportExternal}
@@ -589,31 +573,35 @@ export function ChatGPTOAuthPanel() {
             <ol className="list-decimal list-inside space-y-2">
               <li>
                 Click <strong>Login with ChatGPT</strong>. The orchestrator
-                generates a PKCE verifier, spawns a temporary callback server on{" "}
-                <code>localhost:1455</code>, and opens the OpenAI authorize URL
-                in a new tab.
+                generates a PKCE pair and opens the OpenAI authorize URL in a
+                new tab. For dev (<code>localhost:1455</code>) an ephemeral
+                callback server is kept ready; for production the persistent{" "}
+                <code>/auth/codex-callback</code> endpoint handles it.
               </li>
               <li>
                 Sign in with your ChatGPT Plus / Pro account. OpenAI redirects
-                back to the callback server, which captures the authorization
-                code and exchanges it for an access + refresh token.
+                the new tab to the callback URL. The server exchanges the
+                authorization code for tokens <strong>immediately</strong> and
+                redirects the tab to <code>/oauth/callback?oauth=success</code>.
+              </li>
+              <li>
+                This page polls <code>/health/codex-oauth</code> every 3 s. As
+                soon as tokens are saved the status updates to{" "}
+                <em>Logged in</em> — no long-poll required.
               </li>
               <li>
                 Tokens are stored at <code>data/codex_auth/auth.json</code>{" "}
-                (gitignored). The store auto-refreshes the access token before
-                expiry on every API call.
+                (gitignored) and auto-refreshed before expiry on every API call.
               </li>
               <li>
-                For headless servers without browser access, use{" "}
-                <strong>Manual paste</strong>: open the authorize URL on a
-                machine with a browser, complete OAuth, then paste the redirect
-                URL back here.
+                For headless servers, use <strong>Manual paste</strong>: click
+                Login first (to register the PKCE state), then open the
+                authorize URL on any browser, complete OAuth, and paste the full
+                redirect URL back here.
               </li>
               <li>
                 Or click <strong>Import ~/.codex/auth.json</strong> if you
-                already ran <code>codex login</code> on this host with the
-                official Codex CLI — the orchestrator can mirror those
-                credentials.
+                already ran <code>codex login</code> on this host.
               </li>
               <li>
                 Once logged in, set <code>CHATGPT_OAUTH_ENABLED=true</code> in
