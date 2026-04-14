@@ -9,10 +9,11 @@ import { queryKeys } from "../lib/queryKeys";
 
 /**
  * Polls IG account health every 60s.
- * Shows popup notifications when accounts go down or recover.
+ * Shows popup notifications when accounts go down, recover, or are broken on first load.
  */
 export function useIGAccountHealth() {
   const prevRef = useRef<IGAccountsHealthResponse | null>(null);
+  const initialPopupShownRef = useRef(false);
 
   const query = useQuery({
     queryKey: queryKeys.igAccountsHealth,
@@ -29,12 +30,52 @@ export function useIGAccountHealth() {
     const prev = prevRef.current;
     prevRef.current = current;
 
-    // Skip first load — don't spam popups on page open
-    if (!prev) return;
+    // ── First load: show popup if accounts are already broken ──────────────
+    if (!prev) {
+      if (!initialPopupShownRef.current && !current.all_ok) {
+        initialPopupShownRef.current = true;
 
+        const badAccounts = current.accounts
+          .filter((a) => a.status !== "connected")
+          .map((a) => ({
+            username: a.username,
+            status: a.status as
+              | "banned"
+              | "disconnected"
+              | "auth_limited"
+              | "rate_limited"
+              | "error",
+          }));
+
+        const hasBanned = badAccounts.some((a) => a.status === "banned");
+        const hasDisconnected = badAccounts.some(
+          (a) => a.status === "disconnected",
+        );
+
+        showIGPopup({
+          id: "ig-health-initial",
+          type: hasBanned || hasDisconnected ? "error" : "warning",
+          title:
+            current.connected === 0
+              ? "Semua akun Instagram tidak aktif"
+              : `${current.total - current.connected} dari ${current.total} akun Instagram bermasalah`,
+          message: hasBanned
+            ? "Ada akun yang diblokir oleh Instagram dan tidak bisa digunakan. Perlu diganti dengan akun baru."
+            : hasDisconnected
+              ? "Beberapa sesi login sudah tidak valid — perlu import ulang cookies dari browser kamu."
+              : "Beberapa akun Instagram perlu perhatian. Lihat status masing-masing di bawah.",
+          accounts: badAccounts,
+          ctaLabel: "Perbaiki di Pengaturan Instagram",
+          ctaHref: "/settings?tab=instagram&guide=1",
+          duration: 0, // sticky
+        });
+      }
+      return;
+    }
+
+    // ── Status transitions (subsequent polls) ──────────────────────────────
     const prevMap = new Map(prev.accounts.map((a) => [a.username, a.status]));
 
-    // Collect all accounts that changed to a bad state
     type ChangedAcct = {
       username: string;
       status:
@@ -60,48 +101,34 @@ export function useIGAccountHealth() {
       }
 
       if (oldStatus !== "connected" && acct.status === "connected") {
-        recovered.push({
-          username: acct.username,
-          status: "connected",
-        });
+        recovered.push({ username: acct.username, status: "connected" });
       }
     }
 
-    // Show one aggregated popup for all accounts that went bad
     if (wentBad.length > 0) {
       const hasBanned = wentBad.some((a) => a.status === "banned");
       const hasDisconnected = wentBad.some((a) => a.status === "disconnected");
 
-      let title: string;
-      let message: string;
-
-      if (hasBanned) {
-        title = "Ada akun Instagram yang diblokir";
-        message =
-          "Instagram memblokir satu atau lebih akun kamu. Akun yang diblokir tidak bisa digunakan untuk scraping dan perlu diganti dengan akun baru.";
-      } else if (hasDisconnected) {
-        title = "Sesi Instagram habis";
-        message =
-          "Login sesi kamu sudah tidak valid — seperti password yang berubah atau sesi yang ditutup dari aplikasi Instagram. Perlu import ulang cookies untuk melanjutkan scraping.";
-      } else {
-        title = "Status akun Instagram berubah";
-        message =
-          "Beberapa akun Instagram kamu mengalami perubahan status dan mungkin tidak bisa scraping secara penuh. Lihat detail di bawah.";
-      }
-
       showIGPopup({
         id: "ig-health-bad",
         type: hasBanned || hasDisconnected ? "error" : "warning",
-        title,
-        message,
+        title: hasBanned
+          ? "Ada akun Instagram yang diblokir"
+          : hasDisconnected
+            ? "Sesi Instagram habis"
+            : "Status akun Instagram berubah",
+        message: hasBanned
+          ? "Instagram memblokir satu atau lebih akun kamu. Akun yang diblokir tidak bisa digunakan dan perlu diganti dengan akun baru."
+          : hasDisconnected
+            ? "Login sesi kamu sudah tidak valid — seperti password yang berubah atau sesi yang ditutup dari aplikasi Instagram. Perlu import ulang cookies untuk melanjutkan scraping."
+            : "Beberapa akun Instagram kamu mengalami perubahan status dan mungkin tidak bisa scraping secara penuh.",
         accounts: wentBad,
         ctaLabel: "Perbaiki di Pengaturan Instagram",
         ctaHref: "/settings?tab=instagram&guide=1",
-        duration: 0, // sticky — user must close manually
+        duration: 0,
       });
     }
 
-    // Show recovery popup (auto-dismiss)
     if (recovered.length > 0) {
       showIGPopup({
         id: "ig-health-recovered",
@@ -116,7 +143,6 @@ export function useIGAccountHealth() {
       });
     }
 
-    // All accounts down — replace existing bad popup with more urgent one
     if (prev.connected > 0 && current.connected === 0 && current.total > 0) {
       showIGPopup({
         id: "ig-all-down",
@@ -126,7 +152,7 @@ export function useIGAccountHealth() {
           "Tidak ada satu pun akun Instagram yang bisa digunakan saat ini. Scraping tidak bisa berjalan sampai kamu memperbaiki minimal satu akun.",
         ctaLabel: "Perbaiki di Pengaturan Instagram",
         ctaHref: "/settings?tab=instagram&guide=1",
-        duration: 0, // sticky
+        duration: 0,
       });
     }
   }, [query.data]);

@@ -3,8 +3,6 @@ import { Outlet } from "react-router-dom";
 import { Sidebar } from "./Sidebar";
 import { TopBar } from "./TopBar";
 import { MobileNav } from "./MobileNav";
-import { IgSessionBanner } from "./IgSessionBanner";
-import { IgPlaywrightBanner } from "./IgPlaywrightBanner";
 import { IGStatusPopup } from "../ui/IGStatusPopup";
 import { NotificationCenter } from "../notifications/NotificationCenter";
 
@@ -29,13 +27,7 @@ export function AppShell() {
         </main>
       </div>
 
-      {/* Floating banners — bottom-right */}
-      <div className="fixed bottom-4 right-4 z-50 flex flex-col gap-3 w-[400px] max-w-[calc(100vw-2rem)]">
-        <IgPlaywrightBanner />
-        <IgSessionBanner />
-      </div>
-
-      {/* IG status popup — top-right, above banners */}
+      {/* IG status popup — top-right */}
       <IGStatusPopup />
     </div>
   );
