@@ -1,4 +1,5 @@
-import { useState } from "react";
+import { useState, useEffect } from "react";
+import { useSearchParams } from "react-router-dom";
 import {
   Settings,
   Instagram,
@@ -62,11 +63,20 @@ export default function SettingsPage() {
   const isAdmin = hasPermission("*");
   const canManageSettings = hasPermission("settings.manage"); // admin only
 
+  const [searchParams] = useSearchParams();
+
   // Operators default to instagram (the only tab they can see)
   const [activeTab, setActiveTab] = useState<TabId>(
     canManageSettings ? "control" : "instagram",
   );
   const [igTab, setIgTab] = useState<IgTabId>("accounts");
+
+  // Deep-link support: /settings?tab=instagram[&guide=1]
+  const highlightGuide = searchParams.get("guide") === "1";
+  useEffect(() => {
+    const tab = searchParams.get("tab");
+    if (tab === "instagram") setActiveTab("instagram");
+  }, [searchParams]);
 
   usePageTour("settings", SETTINGS_TOUR_STEPS);
 
@@ -227,7 +237,9 @@ export default function SettingsPage() {
             </div>
 
             {/* Instagram sub-tab content */}
-            {igTab === "accounts" && <IGAccountsManager />}
+            {igTab === "accounts" && (
+              <IGAccountsManager highlightGuide={highlightGuide} />
+            )}
             {igTab === "sessions" && <IGSessionUploader />}
             {igTab === "scrapingbot" && <ScrapingBotAccountsManager />}
           </div>

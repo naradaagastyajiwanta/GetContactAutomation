@@ -532,7 +532,44 @@ function AccountCard({
 // Main component
 // ---------------------------------------------------------------------------
 
-export function IGAccountsManager() {
+// ---------------------------------------------------------------------------
+// Account category helper
+// ---------------------------------------------------------------------------
+
+type AccountCategory = "action" | "cooldown" | "active" | "untested";
+
+function getAccountCategory(
+  acct: IGAccount,
+  pool?: IGAccountPoolStatus,
+): AccountCategory {
+  // Cooldown is temporary — no action needed, auto-recovers
+  if (pool?.cooldown_remaining_s && pool.cooldown_remaining_s > 0)
+    return "cooldown";
+
+  const s = acct.login_status;
+  if (
+    s === "banned" ||
+    s === "disconnected" ||
+    s === "failed" ||
+    s === "auth_limited"
+  )
+    return "action";
+
+  if (s === "success" || (pool?.login_ok && pool?.cooldown_remaining_s === 0))
+    return "active";
+
+  return "untested";
+}
+
+// ---------------------------------------------------------------------------
+// Main component
+// ---------------------------------------------------------------------------
+
+export function IGAccountsManager({
+  highlightGuide = false,
+}: {
+  highlightGuide?: boolean;
+}) {
   const { data, isLoading, refetch } = useIGAccounts();
   const queryClient = useQueryClient();
   const deleteMut = useDeleteIGAccount();
@@ -565,6 +602,41 @@ export function IGAccountsManager() {
   for (const ps of poolStatus) {
     poolMap.set(ps.username, ps);
   }
+
+  // Grouped by category for the categorized grid view
+  const actionAccounts = accounts.filter(
+    (a) => getAccountCategory(a, poolMap.get(a.username)) === "action",
+  );
+  const cooldownAccounts = accounts.filter(
+    (a) => getAccountCategory(a, poolMap.get(a.username)) === "cooldown",
+  );
+  const activeAccounts = accounts.filter(
+    (a) => getAccountCategory(a, poolMap.get(a.username)) === "active",
+  );
+  const untestedAccounts = accounts.filter(
+    (a) => getAccountCategory(a, poolMap.get(a.username)) === "untested",
+  );
+
+  // Shared card renderer to avoid repeating props across groups
+  const renderCard = (acct: IGAccount) => (
+    <AccountCard
+      key={acct.id}
+      acct={acct}
+      pool={poolMap.get(acct.username)}
+      isTesting={false}
+      isSyncing={syncingAccountId === acct.id}
+      testingDisabled={false}
+      onTestLogin={() => handleTestLogin(acct)}
+      onToggleEnabled={() => handleToggleEnabled(acct)}
+      onEdit={() => setEditAccount(acct)}
+      onDelete={() => setConfirmDeleteId(acct.id)}
+      onExportSession={() => handleExportSession(acct)}
+      onImportSession={() => handleImportSession(acct)}
+      onCookieImport={() =>
+        setCookieImportAccount({ id: acct.id, username: acct.username })
+      }
+    />
+  );
 
   const handleToggleEnabled = (acct: IGAccount) => {
     updateMut.mutate({ id: acct.id, enabled: !acct.enabled });
@@ -685,10 +757,22 @@ export function IGAccountsManager() {
           <div className="flex gap-2">
             <button
               onClick={() => setShowGuide(true)}
-              title="Cara setup Instagram"
-              className="rounded-lg p-1.5 text-gray-400 hover:bg-gray-100 hover:text-gray-600 dark:hover:bg-gray-700 dark:hover:text-gray-300"
+              title="Panduan setup Instagram — klik untuk lihat langkah-langkahnya"
+              className={cn(
+                "relative rounded-lg p-1.5 transition-colors hover:bg-gray-100 dark:hover:bg-gray-700",
+                highlightGuide
+                  ? "text-indigo-500 hover:text-indigo-600"
+                  : "text-gray-400 hover:text-gray-600 dark:hover:text-gray-300",
+              )}
             >
-              <HelpCircle className="h-4 w-4" />
+              <HelpCircle
+                className={cn("h-4 w-4", highlightGuide && "animate-pulse")}
+              />
+              {highlightGuide && (
+                <span className="absolute -right-1 -top-1 h-2.5 w-2.5 rounded-full bg-indigo-500">
+                  <span className="absolute inset-0 rounded-full bg-indigo-400 animate-ping" />
+                </span>
+              )}
             </button>
             <Button
               variant="ghost"
@@ -758,29 +842,86 @@ export function IGAccountsManager() {
               </Button>
             </div>
           ) : (
-            <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-3">
-              {accounts.map((acct) => (
-                <AccountCard
-                  key={acct.id}
-                  acct={acct}
-                  pool={poolMap.get(acct.username)}
-                  isTesting={false}
-                  isSyncing={syncingAccountId === acct.id}
-                  testingDisabled={false}
-                  onTestLogin={() => handleTestLogin(acct)}
-                  onToggleEnabled={() => handleToggleEnabled(acct)}
-                  onEdit={() => setEditAccount(acct)}
-                  onDelete={() => setConfirmDeleteId(acct.id)}
-                  onExportSession={() => handleExportSession(acct)}
-                  onImportSession={() => handleImportSession(acct)}
-                  onCookieImport={() =>
-                    setCookieImportAccount({
-                      id: acct.id,
-                      username: acct.username,
-                    })
-                  }
-                />
-              ))}
+            <div className="space-y-6">
+              {/* ── Perlu Tindakan ─────────────────────────────────────── */}
+              {actionAccounts.length > 0 && (
+                <div className="space-y-3">
+                  <div className="flex items-center gap-2 rounded-lg bg-red-50 px-3 py-2 dark:bg-red-950/30">
+                    <AlertCircle className="h-4 w-4 flex-shrink-0 text-red-500" />
+                    <div className="flex-1 min-w-0">
+                      <span className="text-sm font-semibold text-red-700 dark:text-red-400">
+                        Perlu Tindakan ({actionAccounts.length})
+                      </span>
+                      <span className="ml-2 text-xs text-red-500 dark:text-red-500">
+                        — import ulang cookies atau ganti akun
+                      </span>
+                    </div>
+                  </div>
+                  <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-3">
+                    {actionAccounts.map(renderCard)}
+                  </div>
+                </div>
+              )}
+
+              {/* ── Tunggu Cooldown ────────────────────────────────────── */}
+              {cooldownAccounts.length > 0 && (
+                <div className="space-y-3">
+                  <div className="flex items-center gap-2 rounded-lg bg-amber-50 px-3 py-2 dark:bg-amber-950/30">
+                    <Timer className="h-4 w-4 flex-shrink-0 text-amber-500" />
+                    <div className="flex-1 min-w-0">
+                      <span className="text-sm font-semibold text-amber-700 dark:text-amber-400">
+                        Tunggu Cooldown ({cooldownAccounts.length})
+                      </span>
+                      <span className="ml-2 text-xs text-amber-500 dark:text-amber-500">
+                        — tidak perlu tindakan, aktif kembali otomatis
+                      </span>
+                    </div>
+                  </div>
+                  <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-3">
+                    {cooldownAccounts.map(renderCard)}
+                  </div>
+                </div>
+              )}
+
+              {/* ── Berjalan Normal ────────────────────────────────────── */}
+              {activeAccounts.length > 0 && (
+                <div className="space-y-3">
+                  <div className="flex items-center gap-2 rounded-lg bg-green-50 px-3 py-2 dark:bg-green-950/30">
+                    <CheckCircle2 className="h-4 w-4 flex-shrink-0 text-green-500" />
+                    <div className="flex-1 min-w-0">
+                      <span className="text-sm font-semibold text-green-700 dark:text-green-400">
+                        Berjalan Normal ({activeAccounts.length})
+                      </span>
+                      <span className="ml-2 text-xs text-green-500 dark:text-green-500">
+                        — siap digunakan untuk scraping
+                      </span>
+                    </div>
+                  </div>
+                  <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-3">
+                    {activeAccounts.map(renderCard)}
+                  </div>
+                </div>
+              )}
+
+              {/* ── Belum Dicoba ───────────────────────────────────────── */}
+              {untestedAccounts.length > 0 && (
+                <div className="space-y-3">
+                  <div className="flex items-center gap-2 rounded-lg bg-gray-50 px-3 py-2 dark:bg-gray-800/50">
+                    <ShieldQuestion className="h-4 w-4 flex-shrink-0 text-gray-400" />
+                    <div className="flex-1 min-w-0">
+                      <span className="text-sm font-semibold text-gray-500 dark:text-gray-400">
+                        Belum Disetup ({untestedAccounts.length})
+                      </span>
+                      <span className="ml-2 text-xs text-gray-400 dark:text-gray-500">
+                        — klik Import Cookies di kartu untuk mengaktifkan
+                      </span>
+                    </div>
+                  </div>
+                  <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-3">
+                    {untestedAccounts.map(renderCard)}
+                  </div>
+                </div>
+              )}
             </div>
           )}
         </div>
