@@ -876,12 +876,11 @@ def setup_scheduler():
         misfire_grace_time=300,
     )
 
-    # Agent 3: Extract phones — every hour, 24/7
+    # Agent 3: Extract phones — every 15 minutes, 24/7
     scheduler.add_job(
         _threaded_phone_extraction,
         "cron",
-        hour="*/1",
-        minute="30",
+        minute="*/15",
         timezone=WIB,
         id="agent_phone_extractor",
         replace_existing=True,
