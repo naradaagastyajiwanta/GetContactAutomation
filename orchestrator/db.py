@@ -2443,33 +2443,30 @@ async def list_phone_numbers_paginated(
 
 
 async def get_phone_numbers_stats() -> dict:
-    """Return statistics: today's count, yesterday's count, % change."""
+    """Return statistics: today's count, yesterday's count, % change (WIB)."""
     async with get_db() as db:
-        now = datetime.now(timezone.utc)
-        today_start = now.replace(hour=0, minute=0, second=0, microsecond=0).isoformat()
-        
-        # Yesterday
-        yesterday = now.replace(day=now.day - 1) if now.day > 1 else datetime(now.year, now.month - 1 if now.month > 1 else 12, 28, tzinfo=timezone.utc)
-        yesterday_start = yesterday.replace(hour=0, minute=0, second=0, microsecond=0).isoformat()
-        yesterday_end = yesterday.replace(hour=23, minute=59, second=59, microsecond=999999).isoformat()
-
-        # Total count as of today
+        # Total count as of now
         cursor = await db.execute("SELECT COUNT(*) FROM ig_contacts")
         row = await cursor.fetchone()
         total_count = row[0] if row else 0
 
-        # Added today (since midnight)
+        # Bucket by WIB day (UTC+7) so records around local midnight are counted correctly.
         cursor = await db.execute(
-            "SELECT COUNT(*) FROM ig_contacts WHERE created_at >= ?",
-            (today_start,)
+            """
+            SELECT COUNT(*)
+            FROM ig_contacts
+            WHERE date(datetime(created_at, '+7 hours')) = date(datetime('now', '+7 hours'))
+            """
         )
         row = await cursor.fetchone()
         today_count = row[0] if row else 0
 
-        # Added yesterday
         cursor = await db.execute(
-            "SELECT COUNT(*) FROM ig_contacts WHERE created_at >= ? AND created_at <= ?",
-            (yesterday_start, yesterday_end)
+            """
+            SELECT COUNT(*)
+            FROM ig_contacts
+            WHERE date(datetime(created_at, '+7 hours')) = date(datetime('now', '+7 hours', '-1 day'))
+            """
         )
         row = await cursor.fetchone()
         yesterday_count = row[0] if row else 0
