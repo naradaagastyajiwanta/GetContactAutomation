@@ -236,7 +236,7 @@ class _IgSessionPool:
                     s["ok"] = False
                     s["error"] = error
                     log.warning(
-                        "IG session %s marked as %s â€” rotating to next",
+                        "IG session %s marked as %s â€" rotating to next",
                         s["label"], error,
                     )
                     # Auto-rotate to next session
@@ -568,7 +568,7 @@ async def search_ig_from_website(university_name: str, website_url: str | None =
             except Exception:
                 continue
     if not html:
-        # No HTML but we found the website URL â€” return it without handle
+        # No HTML but we found the website URL â€" return it without handle
         return {"handle": None, "website_url": website_url}
 
     handles = _IG_LINK_RE.findall(html)
@@ -607,7 +607,7 @@ async def search_ig_from_website(university_name: str, website_url: str | None =
     return {
         "handle": handle,
         "url": f"https://www.instagram.com/{handle}/",
-        "confidence": 0.9,  # Very high â€” from their own website
+        "confidence": 0.9,  # Very high â€" from their own website
         "website_url": website_url,
     }
 
@@ -629,7 +629,7 @@ async def search_ig_handle(
     # Normalize: PDDIKTI names are ALL CAPS â†’ title case for better Google results
     name = university_name.strip().title()
 
-    # Build search queries â€” exact, relaxed, and human-like variants.
+    # Build search queries â€" exact, relaxed, and human-like variants.
     queries: list[str] = []
     seen_queries: set[str] = set()
 
@@ -798,7 +798,7 @@ def _calculate_confidence(
     title_lower = title.lower()
     snippet_lower = snippet.lower()
 
-    # Words that are generic institution types or location names â€” NOT unique to a specific university
+    # Words that are generic institution types or location names â€" NOT unique to a specific university
     _GENERIC_WORDS = {
         # Institution types
         "universitas", "institut", "sekolah", "tinggi", "politeknik",
@@ -838,7 +838,7 @@ def _calculate_confidence(
         abbrev_score = 0.30 if abbrev_match else 0.0
         score += max(word_score, abbrev_score)
     else:
-        # Handle only matches generic words â€” weak signal
+        # Handle only matches generic words â€" weak signal
         generic_in_handle = sum(1 for w in uni_words if len(w) > 3 and w in handle_stripped)
         if generic_in_handle > 0:
             score += 0.10
@@ -970,7 +970,7 @@ _WA_LINK_RE = re.compile(r'(?:wa\.me/|api\.whatsapp\.com/send\?phone=)(\+?62\d{8
 # How many "has_phone" results before we stop scanning more posts
 _ENOUGH_PHONE_RESULTS = 10
 
-# Sub-department handle prefixes â€” these are NOT the main university account
+# Sub-department handle prefixes â€" these are NOT the main university account
 _DEPT_HANDLE_KEYWORDS = [
     # Administrative / departmental sub-units
     "kemahasiswaan", "humas", "pmb", "biro", "upt", "lppm",
@@ -1128,11 +1128,11 @@ def _ig_web_get_posts(client: httpx.Client, user_id: int, max_posts: int, max_id
     """Fetch posts via Instagram Web API feed endpoint with pagination.
 
     Args:
-        max_id: Pagination cursor â€” pass the ``next_max_id`` from a previous
+        max_id: Pagination cursor â€" pass the ``next_max_id`` from a previous
                 call to fetch *older* posts.
 
     Returns:
-        (posts, next_max_id) â€” ``next_max_id`` is ``None`` when there are no
+        (posts, next_max_id) â€" ``next_max_id`` is ``None`` when there are no
         more pages.
     """
     params: dict = {"count": max_posts}
@@ -1232,7 +1232,7 @@ def scrape_ig_posts_sync(
       4. Early stop once we have enough "has_phone" results
       5. Return bio + has_phone + likely_flyer for downstream extraction
 
-    This is a SYNC function â€” call from executor in async context.
+    This is a SYNC function â€" call from executor in async context.
     Returns list of {"post_url", "image_url", "caption", "timestamp", "source"}.
     """
     if max_posts is None:
@@ -1403,7 +1403,7 @@ def _score_ig_user(user_data: dict, university_name: str) -> float:
     uni_lower = university_name.lower()
     uni_words = [w for w in uni_lower.split() if len(w) > 3]
 
-    # Location word = last word (city/region name) â€” most distinguishing
+    # Location word = last word (city/region name) â€" most distinguishing
     all_words = university_name.lower().split()
     location_word = all_words[-1] if all_words else ""
 
@@ -1413,7 +1413,7 @@ def _score_ig_user(user_data: dict, university_name: str) -> float:
 
     score = 0.0
 
-    # Location match is critical â€” worth the most
+    # Location match is critical â€" worth the most
     if location_word and len(location_word) > 3:
         if location_word in full_name:
             score += 0.35
@@ -1520,7 +1520,7 @@ def search_ig_handle_via_ig(
     Search for university's Instagram handle directly via IG Web Search API.
     Tries multiple query variants (full name + abbreviated).
     Returns: {"handle": str, "url": str, "confidence": float} or None.
-    Sync function â€” call from executor in async context.
+    Sync function â€" call from executor in async context.
     """
     if not _ig_pool.get_current_session_id():
         return None
@@ -1618,7 +1618,7 @@ def verify_ig_handle(handle: str, university_name: str) -> dict:
     """
     Verify an IG handle by fetching the profile and checking bio content.
     Returns: {"verified": bool, "confidence_boost": float, "bio": str, "reason": str}
-    Sync function â€” call from executor in async context.
+    Sync function â€" call from executor in async context.
     """
     if not _ig_pool.get_current_session_id():
         return {"verified": False, "confidence_boost": 0, "bio": "", "reason": "no session"}
@@ -1630,7 +1630,7 @@ def verify_ig_handle(handle: str, university_name: str) -> dict:
         client.close()
 
     if not profile:
-        # Profile fetch failed (likely rate limited) â€” don't penalize,
+        # Profile fetch failed (likely rate limited) â€" don't penalize,
         # let the search-phase confidence stand as-is.
         return {"verified": True, "confidence_boost": 0, "bio": "", "reason": "profile fetch failed (skipped)"}
 
@@ -1840,7 +1840,7 @@ def scrape_ig_posts_with_fallback(
             return posts, diagnostics
         return posts
 
-    # For Apify/ScrapingBot we do NOT inflate fetch_count â€” they can only
+    # For Apify/ScrapingBot we do NOT inflate fetch_count â€" they can only
     # return the N most-recent posts and don't support cursor pagination.
     # Requesting more just wastes paid API credits on posts we already have.
     # Any genuinely new posts (posted since last scrape) will appear at the
@@ -1848,7 +1848,7 @@ def scrape_ig_posts_with_fallback(
     fetch_count = effective_max
     if deeper and known:
         log.info(
-            "[Fallback] @%s: re-scrape mode â€” %d posts already in DB, fetching latest %d",
+            "[Fallback] @%s: re-scrape mode â€" %d posts already in DB, fetching latest %d",
             handle, len(known), fetch_count,
         )
 
@@ -1936,7 +1936,7 @@ def scrape_ig_posts_with_fallback(
             log.warning("[Tier1-Direct] @%s failed: %s", handle, e)
             diagnostics["session_error"] = str(e)
     else:
-        log.info("[Tier1-Direct] Skipping â€” no healthy IG sessions")
+        log.info("[Tier1-Direct] Skipping â€" no healthy IG sessions")
         diagnostics["session_error"] = diagnostics.get("session_error") or "no healthy IG sessions"
 
         # Tier 2: Apify — DISABLED (no longer in use)
@@ -1968,7 +1968,7 @@ def scrape_ig_posts_with_fallback(
             log.warning("[Tier3-ScrapingBot] @%s failed: %s", handle, e)
             diagnostics["scrapingbot_error"] = str(e)
     else:
-        log.debug("[Tier3-ScrapingBot] Skipping â€” not configured")
+        log.debug("[Tier3-ScrapingBot] Skipping â€" not configured")
         diagnostics["scrapingbot_error"] = "not configured"
 
     log.warning("[Fallback] @%s: all tiers failed or 0 new posts", handle)
@@ -2031,7 +2031,7 @@ def search_ig_handle_with_fallback(
         except Exception as e:
             log.warning("[Tier1-Direct] Search failed for '%s': %s", university_name[:40], e)
     else:
-        log.info("[Tier1-Direct] Skipping search â€” no healthy IG sessions")
+        log.info("[Tier1-Direct] Skipping search â€" no healthy IG sessions")
 
     # Apify fallback intentionally disabled for handle search.
     # Tier 2: Scraping-Bot doesn't have search, skip
@@ -2554,7 +2554,7 @@ def _parse_phone_contacts_json(
         name = str(item.get("name", "")).strip()
         if not phone:
             continue
-        # Clear generic/label names â€” treat as no name
+        # Clear generic/label names â€" treat as no name
         if name and _is_generic_name(name):
             name = ""
         validated = validate_phone(phone)
@@ -2580,7 +2580,7 @@ _BEM_BIO_KEYWORDS = [
     "dema", "dewan eksekutif mahasiswa",
 ]
 
-# Generic institution words â€” not distinctive for search queries
+# Generic institution words â€" not distinctive for search queries
 _UNI_GENERIC_WORDS = {
     "universitas", "institut", "sekolah", "tinggi", "negeri", "islam",
     "agama", "politeknik", "akademi", "ilmu", "teknologi", "swasta",
@@ -2659,7 +2659,7 @@ def search_bem_handle_via_ig(university_name: str) -> dict | None:
 
     Uses acronym-based and distinctive-word queries for better hit rate.
     Returns: {"handle": str, "confidence": float} or None.
-    Sync function â€” call from executor in async context.
+    Sync function â€" call from executor in async context.
     """
     if not _ig_pool.get_current_session_id():
         log.warning("[BEM-Search] No IG session available, skipping %s", university_name)
@@ -3086,7 +3086,7 @@ def _score_bem_user(user_data: dict, university_name: str) -> float:
 
     score = 0.0
 
-    # â”€â”€ Gate: must contain BEM keyword â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    # â"€â"€ Gate: must contain BEM keyword â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€
     has_bem = any(kw in username for kw in _BEM_HANDLE_KEYWORDS) or any(
         kw in full_name for kw in _BEM_BIO_KEYWORDS
     )
@@ -3095,7 +3095,7 @@ def _score_bem_user(user_data: dict, university_name: str) -> float:
 
     score += 0.25  # Base score for being BEM
 
-    # â”€â”€ Acronym check (strongest signal) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    # â"€â"€ Acronym check (strongest signal) â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€
     # "universitas ahmad dahlan aceh" â†’ "uada"; without location â†’ "uad"
     all_initials = "".join(w[0] for w in all_words).lower()
     no_loc_initials = "".join(w[0] for w in all_words[:-1]).lower() if len(all_words) > 1 else all_initials
@@ -3105,21 +3105,21 @@ def _score_bem_user(user_data: dict, university_name: str) -> float:
     elif len(all_initials) >= 2 and all_initials in combined:
         score += 0.30
 
-    # â”€â”€ Location match â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    # â"€â"€ Location match â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€
     if location_word and len(location_word) > 2:
         if location_word in full_name:
             score += 0.20
         elif location_word in username:
             score += 0.15
 
-    # â”€â”€ Distinctive words match â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    # â"€â"€ Distinctive words match â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€
     unique_words = [w for w in all_words if w not in _UNI_GENERIC_WORDS
                     and w != location_word and len(w) > 2]
     if unique_words:
         matching = sum(1 for w in unique_words if w in full_name or w in username)
         score += 0.20 * min(matching / len(unique_words), 1.0)
 
-    # â”€â”€ Verified bonus â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    # â"€â"€ Verified bonus â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€
     if user_data.get("is_verified", False):
         score += 0.10
 
@@ -3309,14 +3309,14 @@ def find_related_accounts_from_following(
         if username in _NON_INSTITUTION_HANDLES:
             continue
 
-        # â”€â”€ Try to classify by handle keywords â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+        # â"€â"€ Try to classify by handle keywords â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€
         matched_type = None
         for keywords, rel_type in _RELATION_KEYWORDS:
             if any(_username_matches_keyword(username, kw) for kw in keywords):
                 matched_type = rel_type
                 break
 
-        # â”€â”€ Fallback: classify by bio/full_name keywords â”€â”€â”€â”€â”€
+        # â"€â"€ Fallback: classify by bio/full_name keywords â"€â"€â"€â"€â"€
         if not matched_type:
             for rel_type, bio_kws in _BIO_KEYWORDS.items():
                 if any(kw in full_name for kw in bio_kws):
@@ -3330,14 +3330,14 @@ def find_related_accounts_from_following(
 
         # Gemini pre-classified this candidate — trust its label as last resort
         if not matched_type:
-            gemini_rel = user.get(“_gemini_relation”, “”)
+            gemini_rel = user.get("_gemini_relation", "")
             valid_types = {rt for _, rt in _RELATION_KEYWORDS}
             if gemini_rel in valid_types:
                 matched_type = gemini_rel
             else:
                 continue
 
-        # â”€â”€ Score: how likely is this account related to THIS university? â”€
+        # â"€â"€ Score: how likely is this account related to THIS university? â"€
         confidence = 0.3  # base: matched a category
 
         # Acronym match  (e.g. "bemuad" contains "uad")
