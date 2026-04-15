@@ -110,6 +110,15 @@ Central dispatch for all OpenAI SDK calls. When `CHATGPT_OAUTH_ENABLED=true`, ch
 **Login flow:** Settings → ChatGPT tab → click "Login with ChatGPT" (opens browser to OpenAI) OR "Manual paste" for headless OR "Import ~/.codex/auth.json" for hosts with the official Codex CLI. See `docs/chatgpt-oauth-setup.md`.
 
 ### Instagram Scraping
+
+Scraping uses a tiered failover chain (highest to lowest priority):
+1. **Playwright** (`playlist_ig.py`) — primary, free, session-based; requires WARP proxies running
+2. **Instaloader** — free, kicks in when Playwright returns alt-text captions
+3. **Apify API** (`apify_client.py`) — paid, second-tier fallback
+4. **ScrapingBot** (`scrapingbot_client.py`) — paid, third-tier fallback
+
+WARP proxy containers (`PROXY_POOL_ENABLED=true`, SOCKS5 ports 1080/1081) must be running for reliable scraping. Without them, Playwright scraping will hit rate limits quickly. Tier behavior is controlled via config_registry keys (`PW_*`, `INSTALOADER_*`, `PROXY_POOL_*`).
+
 - `instagram.py` — IG scraping and phone number extraction
 - `apify_client.py` — Web scraping via Apify API
 - `scrapingbot_client.py` — Alternative scraping service
@@ -171,6 +180,53 @@ SQLite at `data/getcontact.db` (configurable via `DATABASE_PATH`). Schema auto-c
 
 Dynamic config values are stored in a `config_registry` table managed by `config_registry.py`.
 
+**Adding a new runtime config setting:** Add a `ConfigDef` entry to the `CONFIG_DEFINITIONS` list in `config_registry.py`:
+```python
+ConfigDef(key="MY_SETTING", type=ConfigType.INT, default=10, group="RATE_LIMITING",
+          label="My Setting", description="What it does", min_value=1, max_value=100)
+```
+Access in code via `cfg.MY_SETTING`. Use `sensitive=True` to mask the value in API responses, `choices=[...]` for dropdowns, `model_picker="openai"|"gemini"|"all"` for model selector UI. DB values override env vars; env vars override defaults.
+
+**Adding new columns (inline migration pattern):** Schema is append-only — never drop columns. Add new columns in `init_db()` using PRAGMA inspection:
+```python
+cursor = await db.execute("PRAGMA table_info(table_name)")
+columns = {row[1] for row in await cursor.fetchall()}
+if "new_column" not in columns:
+    await db.execute("ALTER TABLE table_name ADD COLUMN new_column TEXT DEFAULT ''")
+```
+WAL mode is always enabled at startup (`PRAGMA journal_mode=WAL`). For new tables or larger migrations, create a `scripts/migrate_*.py` script and run it once manually.
+
+## Conversation State Machine
+
+Full transition chain with trigger events:
+
+```
+PENDING → INITIAL_SENT   (scheduler picks eligible contact, queues first WA message)
+INITIAL_SENT → WAITING_REPLY
+WAITING_REPLY → ANALYZING  (webhook receives reply, per-phone lock acquired in main.py)
+ANALYZING → GOT_NUMBER     (LLM extracts phone → auto-queues create_audiensi task)
+ANALYZING → NEED_MORE      (LLM needs clarification)
+ANALYZING → REFUSED        (contact declined)
+ANALYZING → WAITING_REPLY  (ambiguous reply, send follow-up question)
+WAITING_REPLY → FOLLOWUP_SENT  (scheduler: elapsed > FOLLOWUP_1_AFTER_HOURS, MAX_FOLLOWUP_ATTEMPTS not reached)
+Any active state → ABANDONED   (max follow-ups exceeded or timeout)
+Any active state → UNDELIVERED (WhatsApp send failure)
+```
+
+Audiensi conversation flow (`orchestrator/audiensi/states.py`):
+`QUEUED → APPROVED → INITIAL_SENT → WAITING_REPLY → SCHEDULING → SCHEDULED → ZOOM_SENT`
+Terminal states: `ZOOM_SENT`, `REFUSED`, `ABANDONED`
+
+**Per-phone concurrency lock** in `main.py` (`_get_phone_lock()`, LRU OrderedDict) ensures only one webhook handler processes a given phone at a time.
+
+## Adding a New API Endpoint
+
+1. Define a Pydantic request model (snake_case fields) in `main.py` or a sub-router file
+2. Decorate with `@require_permission("module:action")` before the route decorator
+3. Use `get_request_user(request)` to retrieve the session user if needed
+4. Follow HTTP verb conventions: `POST /resource/{id}/action` for state changes, `GET /resource?state=x&limit=50&offset=0` for filtered lists
+5. Broadcast state changes via `await ws_manager.broadcast_type("event_type", ...)` so the frontend updates without polling
+
 ## Frontend Structure
 
 Pages and hooks are organized by feature domain. Each feature has:
@@ -180,6 +236,8 @@ Pages and hooks are organized by feature domain. Each feature has:
 - UI components in `frontend/src/components/<feature>/`
 
 Major feature domains: pipeline, blast (WA), email-blast, marketing, CRM, audiensi, DMS schedules, conversations, university groups, settings/config, logs, auth.
+
+**Frontend API layer:** A single axios instance in `frontend/src/api/` uses `baseURL: '/api'` and `withCredentials: true` (session cookie `dms_marketing_session` auto-sent). A 401 response broadcasts an `app:unauthorized` event to trigger logout. Per-domain API modules (e.g., `conversations.ts`, `blast.ts`) export typed functions. React Query hooks in `hooks/` wrap these: `useQuery` for reads (falls back to 3s polling interval when WebSocket is disconnected), `useMutation` for writes. Query keys are centralized in `frontend/src/lib/queryKeys.ts` — always use these for consistent cache invalidation.
 
 ## Frontend Onboarding Tour System
 
