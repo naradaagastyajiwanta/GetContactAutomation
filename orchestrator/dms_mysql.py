@@ -32,14 +32,23 @@ from orchestrator.config import log, cfg
 # Connection pool management
 # ---------------------------------------------------------------------------
 
-_pool: aiomysql.Pool | None = None
+# Per-event-loop pool registry.
+# Agent jobs run in ThreadPoolExecutor threads, each with their own asyncio
+# event loop (see scheduler._run_async_in_new_loop). aiomysql pools are bound
+# to the loop that created them — sharing a single global pool across loops
+# raises "Future attached to a different loop". Keying by id(loop) gives each
+# loop its own pool (main FastAPI loop + up to 2 agent threads = 3 pools max).
+_pools: dict[int, aiomysql.Pool] = {}
 
 
 async def init_dms_pool() -> aiomysql.Pool | None:
-    """Create and return the DMS MySQL connection pool."""
-    global _pool
-    if _pool is not None:
-        return _pool
+    """Create and return the DMS MySQL connection pool for the current event loop."""
+    loop = asyncio.get_running_loop()
+    loop_id = id(loop)
+
+    existing = _pools.get(loop_id)
+    if existing is not None and not existing._closing:
+        return existing
 
     host = cfg.get("DMS_MYSQL_HOST", "")
     if not host:
@@ -47,7 +56,7 @@ async def init_dms_pool() -> aiomysql.Pool | None:
         return None
 
     try:
-        _pool = await aiomysql.create_pool(
+        pool = await aiomysql.create_pool(
             host=host,
             port=cfg.get("DMS_MYSQL_PORT", 3306),
             user=cfg.get("DMS_MYSQL_USER", ""),
@@ -65,22 +74,24 @@ async def init_dms_pool() -> aiomysql.Pool | None:
             # 500 we saw in prod). 5min is well under any NAT timeout.
             pool_recycle=300,
         )
+        _pools[loop_id] = pool
         log.info("DMS MySQL: pool created (%s:%s/%s)",
                  host, cfg.get("DMS_MYSQL_PORT", 3306), cfg.get("DMS_MYSQL_DATABASE", ""))
-        return _pool
+        return pool
     except Exception as e:
         log.error("DMS MySQL: failed to create pool: %s", e)
-        _pool = None
+        _pools.pop(loop_id, None)
         return None
 
 
 async def close_dms_pool() -> None:
-    """Close the DMS MySQL connection pool."""
-    global _pool
-    if _pool:
-        _pool.close()
-        await _pool.wait_closed()
-        _pool = None
+    """Close the DMS MySQL connection pool for the current event loop."""
+    loop = asyncio.get_running_loop()
+    loop_id = id(loop)
+    pool = _pools.pop(loop_id, None)
+    if pool:
+        pool.close()
+        await pool.wait_closed()
         log.info("DMS MySQL: pool closed")
 
 
@@ -95,7 +106,11 @@ async def get_dms_cursor():
     garbage — the root cause of the intermittent login 500 we saw in
     prod (``KeyError: 'dms_user_id'``).
     """
-    pool = _pool or await init_dms_pool()
+    loop = asyncio.get_running_loop()
+    loop_id = id(loop)
+    pool = _pools.get(loop_id)
+    if pool is None or pool._closing:
+        pool = await init_dms_pool()
     if pool is None:
         raise RuntimeError("DMS MySQL pool not available — check DMS_MYSQL_HOST config")
     async with pool.acquire() as conn:
