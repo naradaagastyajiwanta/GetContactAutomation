@@ -7,6 +7,7 @@ stages:
 
 variables:
   VPS_PORT: "22"
+  DEPLOY_DIR: "/var/www/get_contact_jiwan"
   PIP_CACHE_DIR: "$CI_PROJECT_DIR/.cache/pip"
   PYTHONDONTWRITEBYTECODE: "1"
 
@@ -131,11 +132,11 @@ deploy:
       fi
       echo "--- Clone/fetch ---"
       sshpass -p "$VPS_PASSWORD" ssh -o StrictHostKeyChecking=no -p "$VPS_PORT" "$VPS_USER@$VPS_HOST" \
-        "mkdir -p /var/www/get_contact_jiwan && chown -R $VPS_USER:$VPS_USER /var/www/get_contact_jiwan/data 2>/dev/null || true && cd /var/www/get_contact_jiwan && if [ -d .git ]; then git -c safe.directory=/var/www/get_contact_jiwan fetch origin main --depth=5 && git -c safe.directory=/var/www/get_contact_jiwan reset --hard $CI_COMMIT_SHA && echo OK; else git -c safe.directory=/var/www/get_contact_jiwan clone --depth=5 --branch main $REPO_URL . && echo OK; fi"
+        "mkdir -p $DEPLOY_DIR && chown -R $VPS_USER:$VPS_USER $DEPLOY_DIR/data 2>/dev/null || true && cd $DEPLOY_DIR && if [ -d .git ]; then git -c safe.directory=$DEPLOY_DIR fetch origin main --depth=5 && git -c safe.directory=$DEPLOY_DIR reset --hard $CI_COMMIT_SHA && echo OK; else git -c safe.directory=$DEPLOY_DIR clone --depth=5 --branch main $REPO_URL . && echo OK; fi"
       echo "--- Env file ---"
       if [ -n "$ENV_PRODUCTION" ]; then
         printf '%s' "$ENV_PRODUCTION" > /tmp/env_production_deploy
-        sshpass -p "$VPS_PASSWORD" scp -o StrictHostKeyChecking=no -P "$VPS_PORT" /tmp/env_production_deploy "$VPS_USER@$VPS_HOST:/var/www/get_contact_jiwan/.env.production"
+        sshpass -p "$VPS_PASSWORD" scp -o StrictHostKeyChecking=no -P "$VPS_PORT" /tmp/env_production_deploy "$VPS_USER@$VPS_HOST:$DEPLOY_DIR/.env.production"
         rm -f /tmp/env_production_deploy
         echo "env written from CI variable"
       else
@@ -145,8 +146,8 @@ deploy:
       if [ -n "$DB_PRODUCTION_B64" ]; then
         echo "$DB_PRODUCTION_B64" | base64 -d > /tmp/getcontact_inject.db
         sshpass -p "$VPS_PASSWORD" ssh -o StrictHostKeyChecking=no -p "$VPS_PORT" "$VPS_USER@$VPS_HOST" \
-          "cd /var/www/get_contact_jiwan && docker compose -f docker-compose.prod.yml stop orchestrator 2>/dev/null || true && cp data/getcontact.db data/getcontact_before_inject.db 2>/dev/null || true"
-        sshpass -p "$VPS_PASSWORD" scp -o StrictHostKeyChecking=no -P "$VPS_PORT" /tmp/getcontact_inject.db "$VPS_USER@$VPS_HOST:/var/www/get_contact_jiwan/data/getcontact.db"
+          "cd $DEPLOY_DIR && docker compose -f docker-compose.prod.yml stop orchestrator 2>/dev/null || true && cp data/getcontact.db data/getcontact_before_inject.db 2>/dev/null || true"
+        sshpass -p "$VPS_PASSWORD" scp -o StrictHostKeyChecking=no -P "$VPS_PORT" /tmp/getcontact_inject.db "$VPS_USER@$VPS_HOST:$DEPLOY_DIR/data/getcontact.db"
         rm -f /tmp/getcontact_inject.db
         echo "DB injected — delete DB_PRODUCTION_B64 variable from GitLab after this run"
       else
@@ -154,7 +155,7 @@ deploy:
       fi
       echo "--- Permissions ---"
       sshpass -p "$VPS_PASSWORD" ssh -o StrictHostKeyChecking=no -p "$VPS_PORT" "$VPS_USER@$VPS_HOST" \
-        "chown -R $VPS_USER:$VPS_USER /var/www/get_contact_jiwan && mkdir -p /var/www/get_contact_jiwan/data /var/www/get_contact_jiwan/data/audiensi_docs /var/www/get_contact_jiwan/data/templates /var/www/get_contact_jiwan/data/ig_sessions /var/www/get_contact_jiwan/data/pw_sessions && mkdir -p /var/www/get_contact_jiwan/whatsapp-service/auth_store /var/www/get_contact_jiwan/whatsapp-service/auth_store_backup && mkdir -p /var/www/get_contact_jiwan/whatsapp-service/auth_store_device_1 /var/www/get_contact_jiwan/whatsapp-service/auth_store_device_2 /var/www/get_contact_jiwan/whatsapp-service/auth_store_device_3 /var/www/get_contact_jiwan/whatsapp-service/auth_store_device_4 /var/www/get_contact_jiwan/whatsapp-service/auth_store_device_5 /var/www/get_contact_jiwan/whatsapp-service/data && ls /var/www/get_contact_jiwan/.env.production && echo env_exists || echo env_missing"
+        "chown -R $VPS_USER:$VPS_USER $DEPLOY_DIR && mkdir -p $DEPLOY_DIR/data $DEPLOY_DIR/data/audiensi_docs $DEPLOY_DIR/data/templates $DEPLOY_DIR/data/ig_sessions $DEPLOY_DIR/data/pw_sessions && mkdir -p $DEPLOY_DIR/whatsapp-service/auth_store $DEPLOY_DIR/whatsapp-service/auth_store_backup && mkdir -p $DEPLOY_DIR/whatsapp-service/auth_store_device_1 $DEPLOY_DIR/whatsapp-service/auth_store_device_2 $DEPLOY_DIR/whatsapp-service/auth_store_device_3 $DEPLOY_DIR/whatsapp-service/auth_store_device_4 $DEPLOY_DIR/whatsapp-service/auth_store_device_5 $DEPLOY_DIR/whatsapp-service/data && ls $DEPLOY_DIR/.env.production && echo env_exists || echo env_missing"
       echo "--- Build & Up (with SENTRY_RELEASE=$CI_COMMIT_SHORT_SHA) ---"
       # SENTRY_RELEASE is passed via an env-prefix so docker compose
       # substitutes ${SENTRY_RELEASE:-} in docker-compose.prod.yml → the
@@ -171,10 +172,10 @@ deploy:
       # the FIRST request after deploy hits a warm cache instead of
       # waiting for the `valid=10s` TTL to refresh.
       sshpass -p "$VPS_PASSWORD" ssh -o StrictHostKeyChecking=no -p "$VPS_PORT" "$VPS_USER@$VPS_HOST" \
-        "cd /var/www/get_contact_jiwan && SENTRY_RELEASE=$CI_COMMIT_SHORT_SHA docker compose -f docker-compose.prod.yml build && SENTRY_RELEASE=$CI_COMMIT_SHORT_SHA docker compose -f docker-compose.prod.yml up -d --remove-orphans && docker compose -f docker-compose.prod.yml restart nginx && docker system prune -f --filter until=72h 2>/dev/null || true"
+        "cd $DEPLOY_DIR && SENTRY_RELEASE=$CI_COMMIT_SHORT_SHA docker compose -f docker-compose.prod.yml build && SENTRY_RELEASE=$CI_COMMIT_SHORT_SHA docker compose -f docker-compose.prod.yml up -d --remove-orphans && docker compose -f docker-compose.prod.yml restart nginx && docker system prune -f --filter until=72h 2>/dev/null || true"
       echo "--- Status ---"
       sshpass -p "$VPS_PASSWORD" ssh -o StrictHostKeyChecking=no -p "$VPS_PORT" "$VPS_USER@$VPS_HOST" \
-        "cd /var/www/get_contact_jiwan && docker compose -f docker-compose.prod.yml ps"
+        "cd $DEPLOY_DIR && docker compose -f docker-compose.prod.yml ps"
       echo "--- Done ---"
 
 verify:
@@ -188,7 +189,7 @@ verify:
       set -e
       echo "Verification..."
       sleep 30
-      sshpass -p "$VPS_PASSWORD" ssh -o StrictHostKeyChecking=no -p "$VPS_PORT" "$VPS_USER@$VPS_HOST" "cd /var/www/get_contact_jiwan && docker compose -f docker-compose.prod.yml ps"
+      sshpass -p "$VPS_PASSWORD" ssh -o StrictHostKeyChecking=no -p "$VPS_PORT" "$VPS_USER@$VPS_HOST" "cd $DEPLOY_DIR && docker compose -f docker-compose.prod.yml ps"
       echo "--- Orchestrator health ---"
       for i in 1 2 3; do
         sshpass -p "$VPS_PASSWORD" ssh -o StrictHostKeyChecking=no -p "$VPS_PORT" "$VPS_USER@$VPS_HOST" "curl -sf http://localhost:8010/health" && break
