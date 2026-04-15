@@ -18,6 +18,7 @@ import logging
 import os
 import socket
 import time as _time
+import urllib.request
 from typing import Any
 
 from orchestrator.config import log
@@ -75,18 +76,66 @@ def _rate_limit_wait() -> None:
     _last_query_time = _time.monotonic()
 
 
+def _test_proxy_http(proxy_url: str, timeout: float = 3.0) -> bool:
+    """Test that traffic can actually route through the proxy (not just TCP connect).
+
+    A TCP connection to gost/SOCKS5 succeeds even when the proxy can't route
+    (e.g. WARP data plane broken → gost returns 503). This probes a real
+    HTTP GET through the proxy so we only use it when it truly works.
+    """
+    # socks5h:// is not supported by urllib.request's default handlers.
+    # We only need a TCP-level probe: connect to proxy, send minimal HTTP,
+    # check we get any HTTP response (not a connection reset).
+    # Strategy: open raw socket through SOCKS5 handshake to a known lightweight host.
+    try:
+        host = proxy_url.split("//")[-1]  # "127.0.0.1:1080"
+        ip, port_str = host.rsplit(":", 1)
+        port = int(port_str)
+
+        with socket.create_connection((ip, port), timeout=timeout) as sock:
+            # SOCKS5 handshake: greeting
+            sock.sendall(b"\x05\x01\x00")  # ver=5, nmethods=1, no-auth
+            greeting_resp = sock.recv(2)
+            if len(greeting_resp) < 2 or greeting_resp[0] != 5 or greeting_resp[1] == 0xFF:
+                return False  # proxy rejected or not SOCKS5
+
+            # SOCKS5 connect request to a known host
+            target_host = b"duck.com"
+            sock.sendall(
+                b"\x05\x01\x00\x03"  # ver=5, cmd=connect, rsv=0, atyp=domain
+                + bytes([len(target_host)])
+                + target_host
+                + b"\x00\x50"  # port 80
+            )
+            connect_resp = sock.recv(10)
+            # Rep field (index 1): 0x00 = success
+            if len(connect_resp) < 2 or connect_resp[1] != 0x00:
+                return False
+
+            # Send a minimal HTTP GET; we just need the proxy to route it
+            sock.sendall(b"GET / HTTP/1.0\r\nHost: duck.com\r\n\r\n")
+            response_start = sock.recv(12)
+            return response_start.startswith(b"HTTP/")
+    except Exception:
+        return False
+
+
 def _resolve_ddg_proxy() -> str | None:
     """Resolve the proxy to use for DDG queries.
 
     Priority:
-    1. Explicit DDG_PROXY env var — but verify it's reachable first (avoids using a dead proxy)
+    1. Explicit DDG_PROXY env var — but verify traffic actually routes through it
     2. Host-local WARP proxy probed on port 40000 (WarpProxy mode) or 1080 (tunnel mode)
     3. No proxy (try direct)
+
+    Uses a real SOCKS5+HTTP probe (not just TCP connect) so a listening-but-broken
+    proxy (e.g. WARP data plane down) is correctly detected and skipped.
+    Cache result for 60 s to avoid hammering a broken proxy on every query.
     """
     global _proxy_probe_checked_at, _proxy_probe_result
 
     now = _time.monotonic()
-    if now - _proxy_probe_checked_at < 15:
+    if now - _proxy_probe_checked_at < 60:
         return _proxy_probe_result
 
     _proxy_probe_checked_at = now
@@ -94,23 +143,31 @@ def _resolve_ddg_proxy() -> str | None:
     # Build candidate list: explicit env var first, then well-known local ports
     candidates: list[tuple[int, str]] = []
     if _DDG_PROXY:
-        # Extract port from socks5h://host:port or socks5://host:port
         try:
             port = int(_DDG_PROXY.rsplit(":", 1)[-1])
             candidates.append((port, _DDG_PROXY))
         except (ValueError, IndexError):
-            candidates.append((1080, _DDG_PROXY))  # fallback assumption
+            candidates.append((1080, _DDG_PROXY))
     # Always probe common WARP ports as fallback
     candidates += [(40000, _LOCAL_WARP_PROXY_ALT), (1080, _LOCAL_WARP_PROXY)]
 
     for port, proxy_url in candidates:
+        # First: fast TCP check (avoids 3s timeout if port isn't even open)
         try:
             with socket.create_connection(("127.0.0.1", port), timeout=0.5):
-                _proxy_probe_result = proxy_url
-                return _proxy_probe_result
+                pass
         except OSError:
             continue
 
+        # Second: real HTTP probe through the SOCKS5 proxy
+        if _test_proxy_http(proxy_url, timeout=3.0):
+            log.debug("[DDG] Proxy %s is healthy — using it", proxy_url)
+            _proxy_probe_result = proxy_url
+            return _proxy_probe_result
+        else:
+            log.debug("[DDG] Proxy %s TCP-reachable but traffic not routing — skipping", proxy_url)
+
+    log.debug("[DDG] No working proxy found — using direct connection")
     _proxy_probe_result = None
     return None
 

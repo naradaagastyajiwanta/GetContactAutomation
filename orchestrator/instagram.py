@@ -2946,6 +2946,7 @@ async def search_related_accounts_via_search(
     ddg_incomplete = _ddg_consecutive_failures >= _DDG_CIRCUIT_BREAK
 
     if (not candidate_users or ddg_incomplete) and cfg.SERPER_API_KEY:
+
         consecutive_errors = 0
         async with httpx.AsyncClient(timeout=15) as client:
             for rel_type, prefixes in _TYPE_QUERIES.items():
@@ -2989,6 +2990,57 @@ async def search_related_accounts_via_search(
                             "full_name": _clean_search_title(result.get("title", ""), handle),
                             "is_verified": False,
                         })
+
+    # ------------- Fallback: Gemini + Google Search grounding (no API key needed beyond GEMINI_API_KEY) -------------
+    # Used when DDG + Serper both found nothing (proxy broken, no Serper key, etc.)
+    if not candidate_users and cfg.get("GEMINI_API_KEY", ""):
+        try:
+            from orchestrator.research_agents.gemini_caller import call_gemini
+            uni_words_g = university_name.strip().split()
+            acronym_g = "".join(w[0] for w in uni_words_g).upper()
+            prompt = (
+                f"Cari akun Instagram resmi dari BEM (Badan Eksekutif Mahasiswa) dan unit kemahasiswaan "
+                f"dari universitas '{university_name}' ({acronym_g}) di Indonesia. "
+                f"Cari juga: Humas, PMB, LPPM, dan Senat dari universitas ini di Instagram.\n\n"
+                f"Kembalikan HANYA JSON array berisi objek dengan field:\n"
+                f"  handle (string: username Instagram tanpa @),\n"
+                f"  relation_type (string: bem/humas/pmb/lppm/senat/kemahasiswaan/alumni/fakultas),\n"
+                f"  confidence (float 0-1)\n\n"
+                f"Contoh: [{{\"handle\": \"bem_undiknas\", \"relation_type\": \"bem\", \"confidence\": 0.9}}]\n"
+                f"Jika tidak ditemukan, kembalikan array kosong []."
+            )
+            parsed, _ = await call_gemini(prompt, use_search_grounding=True)
+            if isinstance(parsed, list):
+                gemini_items = parsed
+            elif isinstance(parsed, dict) and not parsed.get("_parse_failed"):
+                # Sometimes Gemini wraps in a dict key
+                for v in parsed.values():
+                    if isinstance(v, list):
+                        gemini_items = v
+                        break
+                else:
+                    gemini_items = []
+            else:
+                gemini_items = []
+
+            for item in gemini_items:
+                if not isinstance(item, dict):
+                    continue
+                handle = (item.get("handle") or "").strip().lstrip("@").lower()
+                if not handle or handle in seen_handles:
+                    continue
+                seen_handles.add(handle)
+                candidate_users.append({
+                    "username": handle,
+                    "full_name": "",
+                    "is_verified": False,
+                    "_gemini_relation": item.get("relation_type", ""),
+                    "_gemini_confidence": float(item.get("confidence", 0.5)),
+                })
+            if gemini_items:
+                log.info("[BEM-Gemini] %s -> %d candidates from Gemini grounding", university_name, len(gemini_items))
+        except Exception as e:
+            log.warning("[BEM-Gemini] Gemini fallback failed for %s: %s", university_name, e)
 
     if not candidate_users:
         log.info("[BEM-Search] No candidates found for %s", university_name)
@@ -3276,8 +3328,14 @@ def find_related_accounts_from_following(
                                   "bem" in username.split(".")):
             matched_type = "bem"
 
+        # Gemini pre-classified this candidate — trust its label as last resort
         if not matched_type:
-            continue
+            gemini_rel = user.get(“_gemini_relation”, “”)
+            valid_types = {rt for _, rt in _RELATION_KEYWORDS}
+            if gemini_rel in valid_types:
+                matched_type = gemini_rel
+            else:
+                continue
 
         # â”€â”€ Score: how likely is this account related to THIS university? â”€
         confidence = 0.3  # base: matched a category
@@ -3303,6 +3361,11 @@ def find_related_accounts_from_following(
         # Verified bonus
         if user.get("is_verified", False):
             confidence += 0.05
+
+        # Gemini grounding bonus — Gemini already used Google Search to verify this handle
+        gemini_conf = user.get("_gemini_confidence", 0.0)
+        if gemini_conf:
+            confidence = max(confidence, gemini_conf * 0.9)
 
         confidence = round(min(confidence, 1.0), 3)
 
