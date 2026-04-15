@@ -132,13 +132,13 @@ deploy:
       fi
       echo "--- Clone/fetch ---"
       sshpass -p "$VPS_PASSWORD" ssh -o StrictHostKeyChecking=no -p "$VPS_PORT" "$VPS_USER@$VPS_HOST" \
-        "sudo mkdir -p $DEPLOY_DIR && sudo chown -R $VPS_USER:$VPS_USER $DEPLOY_DIR && cd $DEPLOY_DIR && if [ -d .git ]; then sudo git -c safe.directory=$DEPLOY_DIR fetch origin main --depth=5 && sudo git -c safe.directory=$DEPLOY_DIR reset --hard $CI_COMMIT_SHA && echo OK; else sudo git -c safe.directory=$DEPLOY_DIR clone --depth=5 --branch main $REPO_URL . && echo OK; fi"
+        "echo '$VPS_PASSWORD' | sudo -S true 2>/dev/null && sudo mkdir -p $DEPLOY_DIR && sudo chown -R $VPS_USER:$VPS_USER $DEPLOY_DIR && cd $DEPLOY_DIR && if [ -d .git ]; then sudo git -c safe.directory=$DEPLOY_DIR fetch origin main --depth=5 && sudo git -c safe.directory=$DEPLOY_DIR reset --hard $CI_COMMIT_SHA && echo OK; else sudo git -c safe.directory=$DEPLOY_DIR clone --depth=5 --branch main $REPO_URL . && echo OK; fi"
       echo "--- Env file ---"
       if [ -n "$ENV_PRODUCTION" ]; then
         printf '%s' "$ENV_PRODUCTION" > /tmp/env_production_deploy
         sshpass -p "$VPS_PASSWORD" scp -o StrictHostKeyChecking=no -P "$VPS_PORT" /tmp/env_production_deploy "$VPS_USER@$VPS_HOST:/tmp/env_production_deploy"
         sshpass -p "$VPS_PASSWORD" ssh -o StrictHostKeyChecking=no -p "$VPS_PORT" "$VPS_USER@$VPS_HOST" \
-          "sudo mv /tmp/env_production_deploy $DEPLOY_DIR/.env.production && sudo chown $VPS_USER:$VPS_USER $DEPLOY_DIR/.env.production"
+          "echo '$VPS_PASSWORD' | sudo -S true 2>/dev/null && sudo mv /tmp/env_production_deploy $DEPLOY_DIR/.env.production && sudo chown $VPS_USER:$VPS_USER $DEPLOY_DIR/.env.production"
         rm -f /tmp/env_production_deploy
         echo "env written from CI variable"
       else
@@ -148,10 +148,10 @@ deploy:
       if [ -n "$DB_PRODUCTION_B64" ]; then
         echo "$DB_PRODUCTION_B64" | base64 -d > /tmp/getcontact_inject.db
         sshpass -p "$VPS_PASSWORD" ssh -o StrictHostKeyChecking=no -p "$VPS_PORT" "$VPS_USER@$VPS_HOST" \
-          "cd $DEPLOY_DIR && docker compose -f docker-compose.prod.yml stop orchestrator 2>/dev/null || true && sudo cp data/getcontact.db data/getcontact_before_inject.db 2>/dev/null || true"
+          "echo '$VPS_PASSWORD' | sudo -S true 2>/dev/null && cd $DEPLOY_DIR && docker compose -f docker-compose.prod.yml stop orchestrator 2>/dev/null || true && sudo cp data/getcontact.db data/getcontact_before_inject.db 2>/dev/null || true"
         sshpass -p "$VPS_PASSWORD" scp -o StrictHostKeyChecking=no -P "$VPS_PORT" /tmp/getcontact_inject.db "$VPS_USER@$VPS_HOST:/tmp/getcontact_inject.db"
         sshpass -p "$VPS_PASSWORD" ssh -o StrictHostKeyChecking=no -p "$VPS_PORT" "$VPS_USER@$VPS_HOST" \
-          "sudo mv /tmp/getcontact_inject.db $DEPLOY_DIR/data/getcontact.db && sudo chown $VPS_USER:$VPS_USER $DEPLOY_DIR/data/getcontact.db"
+          "echo '$VPS_PASSWORD' | sudo -S true 2>/dev/null && sudo mv /tmp/getcontact_inject.db $DEPLOY_DIR/data/getcontact.db && sudo chown $VPS_USER:$VPS_USER $DEPLOY_DIR/data/getcontact.db"
         rm -f /tmp/getcontact_inject.db
         echo "DB injected — delete DB_PRODUCTION_B64 variable from GitLab after this run"
       else
@@ -159,7 +159,7 @@ deploy:
       fi
       echo "--- Permissions ---"
       sshpass -p "$VPS_PASSWORD" ssh -o StrictHostKeyChecking=no -p "$VPS_PORT" "$VPS_USER@$VPS_HOST" \
-        "sudo chown -R $VPS_USER:$VPS_USER $DEPLOY_DIR && sudo mkdir -p $DEPLOY_DIR/data $DEPLOY_DIR/data/audiensi_docs $DEPLOY_DIR/data/templates $DEPLOY_DIR/data/ig_sessions $DEPLOY_DIR/data/pw_sessions && sudo mkdir -p $DEPLOY_DIR/whatsapp-service/auth_store $DEPLOY_DIR/whatsapp-service/auth_store_backup && sudo mkdir -p $DEPLOY_DIR/whatsapp-service/auth_store_device_1 $DEPLOY_DIR/whatsapp-service/auth_store_device_2 $DEPLOY_DIR/whatsapp-service/auth_store_device_3 $DEPLOY_DIR/whatsapp-service/auth_store_device_4 $DEPLOY_DIR/whatsapp-service/auth_store_device_5 $DEPLOY_DIR/whatsapp-service/data && sudo chown -R $VPS_USER:$VPS_USER $DEPLOY_DIR && ls $DEPLOY_DIR/.env.production && echo env_exists || echo env_missing"
+        "echo '$VPS_PASSWORD' | sudo -S true 2>/dev/null && sudo chown -R $VPS_USER:$VPS_USER $DEPLOY_DIR && sudo mkdir -p $DEPLOY_DIR/data $DEPLOY_DIR/data/audiensi_docs $DEPLOY_DIR/data/templates $DEPLOY_DIR/data/ig_sessions $DEPLOY_DIR/data/pw_sessions && sudo mkdir -p $DEPLOY_DIR/whatsapp-service/auth_store $DEPLOY_DIR/whatsapp-service/auth_store_backup && sudo mkdir -p $DEPLOY_DIR/whatsapp-service/auth_store_device_1 $DEPLOY_DIR/whatsapp-service/auth_store_device_2 $DEPLOY_DIR/whatsapp-service/auth_store_device_3 $DEPLOY_DIR/whatsapp-service/auth_store_device_4 $DEPLOY_DIR/whatsapp-service/auth_store_device_5 $DEPLOY_DIR/whatsapp-service/data && sudo chown -R $VPS_USER:$VPS_USER $DEPLOY_DIR && ls $DEPLOY_DIR/.env.production && echo env_exists || echo env_missing"
       echo "--- Build & Up (with SENTRY_RELEASE=$CI_COMMIT_SHORT_SHA) ---"
       # SENTRY_RELEASE is passed via an env-prefix so docker compose
       # substitutes ${SENTRY_RELEASE:-} in docker-compose.prod.yml → the
