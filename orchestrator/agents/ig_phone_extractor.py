@@ -233,11 +233,16 @@ async def run_phone_extraction_for_universities(university_ids: list[int]) -> di
             contacts: list[PhoneContact] = []
             caption = post.get("caption") or ""
             image_url = post.get("image_url")
+            image_data = post.get("image_data")  # legacy base64 cache
+            image_bucket_url = post.get("image_bucket_url")  # permanent bucket URL
+            effective_url = image_bucket_url or image_url
 
             extraction_failed = False
-            if image_url:
+            if effective_url:
                 try:
-                    contacts = await extract_phone_from_image(image_url, caption)
+                    contacts = await extract_phone_from_image(
+                        effective_url, caption, image_b64=image_data or None
+                    )
                 except Exception as e:
                     extraction_failed = True
                     log.warning(

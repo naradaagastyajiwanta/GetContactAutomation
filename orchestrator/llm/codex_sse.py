@@ -96,9 +96,18 @@ async def collect_completed_response(
 
     Mirrors ``collectCompletedResponseFromSse`` from openai-oauth-core.
     Raises ``CodexSSEError`` if no response is seen.
+
+    NOTE: The Codex backend (ChatGPT Plus) sends ``response.completed``
+    with ``output: []`` — the actual output items are delivered earlier
+    via ``response.output_item.done`` events. We collect those items
+    separately and inject them into the final snapshot when the snapshot's
+    ``output`` array is empty.
     """
     latest_response: dict | None = None
     latest_error: dict | None = None
+    # Collect completed output items from response.output_item.done events.
+    # Keyed by output_index so ordering is preserved when injecting.
+    completed_items: dict[int, dict] = {}
 
     async for event in iterate_sse_events(response):
         if not event.data:
@@ -114,16 +123,34 @@ async def collect_completed_response(
             latest_error = parsed
             continue
 
+        # Collect completed items emitted before response.completed.
+        # The Codex backend delivers full item content here even though
+        # the final response.completed snapshot has output: [].
+        if event.event == "response.output_item.done":
+            item = parsed.get("item")
+            idx = parsed.get("output_index")
+            if isinstance(item, dict) and isinstance(idx, int):
+                completed_items[idx] = item
+
         # Each progress event carries a snapshot of the response object.
         # The last one wins.
         candidate = parsed.get("response")
         if isinstance(candidate, dict):
             latest_response = candidate
 
-    if latest_response is not None:
-        return latest_response
+    if latest_response is None:
+        err_suffix = (
+            f" Last error: {json.dumps(latest_error)}" if latest_error else ""
+        )
+        raise CodexSSEError(f"No completed response found in SSE stream.{err_suffix}")
 
-    err_suffix = (
-        f" Last error: {json.dumps(latest_error)}" if latest_error else ""
-    )
-    raise CodexSSEError(f"No completed response found in SSE stream.{err_suffix}")
+    # If the snapshot's output array is empty but we collected items from
+    # output_item.done events, inject them so callers see a fully-populated
+    # output array regardless of which backend sent them.
+    if not latest_response.get("output") and completed_items:
+        latest_response = dict(latest_response)
+        latest_response["output"] = [
+            completed_items[i] for i in sorted(completed_items)
+        ]
+
+    return latest_response
