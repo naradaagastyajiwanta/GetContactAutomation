@@ -158,7 +158,11 @@ deploy:
       fi
       echo "--- Permissions ---"
       sshpass -p "$VPS_PASSWORD" ssh -o StrictHostKeyChecking=no -p "$VPS_PORT" "$VPS_USER@$VPS_HOST" \
-        "mkdir -p $DEPLOY_DIR/data $DEPLOY_DIR/data/audiensi_docs $DEPLOY_DIR/data/templates $DEPLOY_DIR/data/ig_sessions $DEPLOY_DIR/data/pw_sessions && mkdir -p $DEPLOY_DIR/whatsapp-service/auth_store $DEPLOY_DIR/whatsapp-service/auth_store_backup && mkdir -p $DEPLOY_DIR/whatsapp-service/auth_store_device_1 $DEPLOY_DIR/whatsapp-service/auth_store_device_2 $DEPLOY_DIR/whatsapp-service/auth_store_device_3 $DEPLOY_DIR/whatsapp-service/auth_store_device_4 $DEPLOY_DIR/whatsapp-service/auth_store_device_5 $DEPLOY_DIR/whatsapp-service/auth_store_u195 $DEPLOY_DIR/whatsapp-service/auth_store_u90 $DEPLOY_DIR/whatsapp-service/auth_store_u195_1 $DEPLOY_DIR/whatsapp-service/auth_store_u195_2 $DEPLOY_DIR/whatsapp-service/auth_store_u195_3 $DEPLOY_DIR/whatsapp-service/auth_store_u195_4 $DEPLOY_DIR/whatsapp-service/auth_store_u195_5 $DEPLOY_DIR/whatsapp-service/data && ls $DEPLOY_DIR/.env.production && echo env_exists || echo env_missing"
+        "cd $DEPLOY_DIR && \
+         mkdir -p data data/audiensi_docs data/templates data/ig_sessions data/pw_sessions whatsapp-service/data && \
+         grep -oP '^\s+- \./\K[^:]+(?=:)' docker-compose.prod.yml | sort -u | xargs -I{} mkdir -p {} && \
+         echo 'All bind-mount dirs created' && \
+         ls .env.production && echo env_exists || echo env_missing"
       echo "--- Build & Up (with SENTRY_RELEASE=$CI_COMMIT_SHORT_SHA) ---"
       # SENTRY_RELEASE is passed via an env-prefix so docker compose
       # substitutes ${SENTRY_RELEASE:-} in docker-compose.prod.yml → the
