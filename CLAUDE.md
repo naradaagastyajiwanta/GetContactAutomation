@@ -92,6 +92,8 @@ cd whatsapp-service && npm test         # Run all tests (errorHandling, memoryCl
 - `proxy_pool.py` — Proxy management for WARP containers
 - `bucket.py` — S3/GCS-compatible object storage for IG post image caching (supports GCS, Cloudflare R2, AWS S3)
 - `audiensi_research.py` — Audiensi research table management (separate from core audiensi pipeline)
+- `university_groups.py` — University group management (grouping contacts for targeted campaigns)
+- `duckduckgo_client.py` — DuckDuckGo search client for web lookups
 - `auth/service.py` — Role-based access control with DMS integration and SQLite fallback
 
 ### LLM Access Layer (`orchestrator/llm/`)
@@ -122,7 +124,7 @@ WARP proxy containers (`PROXY_POOL_ENABLED=true`, SOCKS5 ports 1080/1081) must b
 - `instagram.py` — IG scraping and phone number extraction
 - `apify_client.py` — Web scraping via Apify API
 - `scrapingbot_client.py` — Alternative scraping service
-- `playlist_ig.py` — Playwright-based Instagram scraping (browser automation)
+- `playwright_ig.py` — Playwright-based Instagram scraping (browser automation)
 - `mcp_browser_client.py` — MCP browser integration
 - `agents/ig_handle_finder.py` — Agent 1: website → IG Web → Serper Google search
 - `agents/ig_post_scraper.py` — Agent 2: scrape recent IG posts
@@ -132,13 +134,19 @@ WARP proxy containers (`PROXY_POOL_ENABLED=true`, SOCKS5 ports 1080/1081) must b
 
 ### Marketing (`orchestrator/marketing/`)
 Multi-agent system for discovering and reaching marketing contacts.
-- `mkt_orchestrator.py` — Main orchestration engine coordinating sub-agents
+- `marketing_agent.py` — Entry point: wires memory, orchestrator, and result reporting; called by `orchestration.py`
+- `orchestration.py` — Top-level run coordination (`_run_full_search()`)
+- `mkt_orchestrator.py` — Core orchestration engine coordinating sub-agents
 - `search.py` — Marketing contact search & discovery
 - `mkt_sub_agents.py` — Sub-agent implementations (specialized roles)
 - `generator.py` — Message/content generation
 - `mkt_prompts.py` — LLM prompts
 - `groups.py` — Marketing group management
 - `mkt_memory.py` — Marketing context memory across sessions
+- `handoff.py` — Handoff logic between orchestrator and sub-agents
+- `importer.py` — Contact import utilities
+- `serializers.py` — Data serialization helpers
+- `constants.py` / `errors.py` — Shared constants and error types
 - `discovery/` — Industry-specific discovery agents (annual reports, BNSP, JDIH, LKIP, asosiasi)
 
 ### OSINT (`orchestrator/osint/`)
@@ -166,7 +174,10 @@ Automates scheduling formal university meetings (audiensi).
 
 ### Research Agents (`orchestrator/research_agents/`)
 - `gemini_caller.py` — Google Gemini LLM integration
-- `agents/` — Specialized agents: topic, psychographics, birth city lookup, rector research
+- `graph.py` — Research graph for entity relationships
+- `reviewer.py` — Research result review and validation
+- `state.py` — Research session state
+- `agents/` — Specialized agents: topic (`topic_agents.py`), psychographics, birth city lookup, rector research
 
 ### Base Agent Framework (`orchestrator/agent/`)
 - `react_agent.py` — ReAct (Reasoning + Acting) pattern base class
@@ -258,6 +269,24 @@ Guided spotlight tour built with **Driver.js**. Two layers:
 
 **Tour configs:** `frontend/src/tours/` — one file per page (dashboard, pipeline, universities, conversations, audiensi, whatsapp, blast, marketing, crm, learning, knowledge).
 
+## Frontend: Auth & Permission Pattern
+
+Every feature with a permission boundary:
+- Use `useAuth().hasPermission('feature.action')` for conditional rendering
+- Use `<PermissionGuard permission="feature.view">` for route-level guards
+- Roles: `admin` (all), `operator` (view+manage), `viewer` (view only)
+- Admin-only permission: `settings.manage`
+
+## Frontend: New Page Checklist
+
+When adding a new page, follow this pattern:
+1. Page file: `frontend/src/pages/NamaPage.tsx`
+2. Hook: `frontend/src/hooks/useNama.ts` — API calls, state management
+3. API client: `frontend/src/api/nama.ts` — axios calls to orchestrator
+4. Components: `frontend/src/components/nama/` — sub-components
+5. Route: add in `frontend/src/App.tsx` with `<PermissionGuard>`
+6. Tour: add `data-tour="pagename-element"` attributes + `frontend/src/tours/pagename.tour.ts` + call `usePageTour('pagename', STEPS)`
+
 ## WhatsApp Service
 
 - `index.ts` — Main Express server with all REST routes and Baileys integration
@@ -279,7 +308,7 @@ Copy `.env.example` to `.env` (or `.env.production.example` for Docker/productio
 
 ## CI/CD
 
-GitLab CI/CD pipeline defined in `.gitlab-ci.yml`. Deploys to GCP. Production Docker config is in `docker-compose.prod.yml`.
+GitLab CI/CD pipeline defined in `.gitlab-ci.yml`. Deploys to a VPS via SSH (sshpass). Production Docker config is in `docker-compose.prod.yml`.
 
 Pipeline stages: `test` → `deploy` → `verify`. The `test` stage runs in parallel:
 - `python_smoke_test` (hard gate) — `scripts/test_llm_factory.py` + `test_llm_gateway.py`
