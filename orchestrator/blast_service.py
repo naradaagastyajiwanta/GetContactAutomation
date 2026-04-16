@@ -1188,7 +1188,7 @@ async def _blast_worker(campaign_id: int) -> None:
                                     break  # hard error on alt device, fall through to wait
 
                         if alt_sent:
-                            break  # exit retry loop — recipient done
+                            continue  # recipient marked sent via alt device — fetch next recipient
 
                         # All devices blocked (or single device) — wait then retry same recipient.
                         wait_s = min(retry_after_ms / 1000.0, 30.0) if retry_after_ms > 0 else 5.0

@@ -309,9 +309,10 @@ export class AntiBanManager {
     const contentHash = hashContent(content);
     const recent = this.getRecentSendStats(state, now, contentHash);
 
-    // Cooldown, manual pause, and health checks can be overridden by force flag.
-    // Hard rate limits (warm-up daily cap, per-day/hour/minute, identical message,
-    // and timelock-463) are always enforced regardless of force.
+    // Cooldown, manual pause, health checks, and warm-up daily cap can be
+    // overridden by force flag (explicit user override of anti-ban policy).
+    // Timelock-463, per-minute/hour spam guards, and identical-message checks
+    // are still enforced regardless of force.
     if (!force) {
       if (state.nextAllowedAt && state.nextAllowedAt > now) {
         return {
@@ -370,7 +371,7 @@ export class AntiBanManager {
       };
     }
 
-    if (warmUp.todaySent >= warmUp.todayLimit) {
+    if (!force && warmUp.todaySent >= warmUp.todayLimit) {
       this.deferUntil(state, warmUp.nextResetAt);
       this.saveState();
       return {
