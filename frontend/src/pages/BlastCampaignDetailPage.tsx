@@ -2041,10 +2041,11 @@ export default function BlastCampaignDetailPage() {
         ) : (
           <div>
             {/* Table header */}
-            <div className="grid grid-cols-[1fr_1fr_1fr_80px_40px] gap-2 px-4 py-2 bg-gray-50 dark:bg-gray-750 text-[11px] font-medium text-gray-500 dark:text-gray-400 uppercase tracking-wider border-b border-gray-200 dark:border-gray-700">
+            <div className="grid grid-cols-[1fr_1fr_120px_120px_76px_40px] gap-2 px-4 py-2 bg-gray-50 dark:bg-gray-750 text-[11px] font-medium text-gray-500 dark:text-gray-400 uppercase tracking-wider border-b border-gray-200 dark:border-gray-700">
               <span>Contact</span>
               <span>University</span>
               <span>Phone</span>
+              <span>Device</span>
               <span>Status</span>
               <span></span>
             </div>
@@ -2052,7 +2053,7 @@ export default function BlastCampaignDetailPage() {
             {recipients.map((r) => (
               <div
                 key={r.id}
-                className="grid grid-cols-[1fr_1fr_1fr_80px_40px] gap-2 items-center px-4 py-2 border-b border-gray-100 dark:border-gray-700/50 hover:bg-gray-50 dark:hover:bg-gray-800 text-sm"
+                className="grid grid-cols-[1fr_1fr_120px_120px_76px_40px] gap-2 items-center px-4 py-2 border-b border-gray-100 dark:border-gray-700/50 hover:bg-gray-50 dark:hover:bg-gray-800 text-sm"
               >
                 <span className="truncate text-gray-900 dark:text-gray-100">
                   {r.contact_name || "-"}
@@ -2060,8 +2061,23 @@ export default function BlastCampaignDetailPage() {
                 <span className="truncate text-gray-500 dark:text-gray-400 text-xs">
                   {r.university_name || "-"}
                 </span>
-                <span className="text-gray-600 dark:text-gray-400 text-xs font-mono">
+                <span className="text-gray-600 dark:text-gray-400 text-xs font-mono truncate">
                   {r.phone_number}
+                </span>
+                <span
+                  className="truncate text-xs"
+                  title={r.sent_device_id ?? undefined}
+                >
+                  {r.sent_device_id ? (
+                    <span className="inline-flex items-center gap-1 text-indigo-600 dark:text-indigo-400">
+                      <Smartphone className="w-3 h-3 shrink-0" />
+                      {r.sent_device_id}
+                    </span>
+                  ) : r.status === "pending" ? (
+                    <span className="text-gray-400">—</span>
+                  ) : (
+                    <span className="text-gray-400">—</span>
+                  )}
                 </span>
                 <RecipientStatusBadge status={r.status} />
                 <div>

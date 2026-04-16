@@ -55,6 +55,7 @@ export interface BlastRecipient {
   status: "pending" | "sent" | "failed" | "skipped";
   error_message: string | null;
   sent_at: string | null;
+  sent_device_id: string | null;
   created_at: string;
 }
 

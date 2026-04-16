@@ -1166,6 +1166,15 @@ async def init_db() -> None:
             )
         await db.commit()
 
+        # Migration: add sent_device_id column to blast_recipients to track which device sent each message
+        cursor = await db.execute("PRAGMA table_info(blast_recipients)")
+        recipient_cols = {row[1] for row in await cursor.fetchall()}
+        if "sent_device_id" not in recipient_cols:
+            await db.execute(
+                "ALTER TABLE blast_recipients ADD COLUMN sent_device_id TEXT"
+            )
+        await db.commit()
+
         # Migration: add error_message column to marketing_clients if missing
         cursor = await db.execute("PRAGMA table_info(marketing_clients)")
         columns = {row[1] for row in await cursor.fetchall()}

@@ -1110,8 +1110,8 @@ async def _blast_worker(campaign_id: int) -> None:
                     async with get_db() as db:
                         now = datetime.now(timezone.utc).isoformat()
                         await db.execute(
-                            "UPDATE blast_recipients SET status = 'sent', rendered_message = ?, sent_at = ? WHERE id = ?",
-                            (message, now, recipient["id"]),
+                            "UPDATE blast_recipients SET status = 'sent', rendered_message = ?, sent_at = ?, sent_device_id = ? WHERE id = ?",
+                            (message, now, device_id, recipient["id"]),
                         )
                         await db.execute(
                             "UPDATE blast_campaigns SET sent_count = sent_count + 1 WHERE id = ?",
@@ -1208,8 +1208,8 @@ async def _blast_worker(campaign_id: int) -> None:
                     )
                     async with get_db() as db:
                         await db.execute(
-                            "UPDATE blast_recipients SET status = 'failed', error_message = ? WHERE id = ?",
-                            (result.error or 'WA service returned failure (not connected or send rejected)', recipient["id"]),
+                            "UPDATE blast_recipients SET status = 'failed', error_message = ?, sent_device_id = ? WHERE id = ?",
+                            (result.error or 'WA service returned failure (not connected or send rejected)', device_id, recipient["id"]),
                         )
                         await db.execute(
                             "UPDATE blast_campaigns SET failed_count = failed_count + 1 WHERE id = ?",
@@ -1229,8 +1229,8 @@ async def _blast_worker(campaign_id: int) -> None:
                 log.error("[Blast] Failed to send to %s: %s", recipient["phone_number"], e)
                 async with get_db() as db:
                     await db.execute(
-                        "UPDATE blast_recipients SET status = 'failed', error_message = ? WHERE id = ?",
-                        (str(e), recipient["id"]),
+                        "UPDATE blast_recipients SET status = 'failed', error_message = ?, sent_device_id = ? WHERE id = ?",
+                        (str(e), device_id, recipient["id"]),
                     )
                     await db.execute(
                         "UPDATE blast_campaigns SET failed_count = failed_count + 1 WHERE id = ?",
