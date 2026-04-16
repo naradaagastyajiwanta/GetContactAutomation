@@ -1022,9 +1022,19 @@ async def _blast_worker(campaign_id: int) -> None:
                 log.info("[Blast] Campaign %d no longer sending, stopping worker", campaign_id)
                 break
 
-            # Resolve device — multi-device rotation if device_ids is set
-            _raw_ids = current.get("device_ids") or "[]"
-            _ids_list: list[str] = json.loads(_raw_ids) if isinstance(_raw_ids, str) else []
+            # Resolve device — multi-device rotation if device_ids is set.
+            # current comes from get_campaign() → _normalize_campaign() which
+            # already parses device_ids to a list, so handle both list and str.
+            _raw_ids = current.get("device_ids") or []
+            if isinstance(_raw_ids, list):
+                _ids_list: list[str] = _raw_ids
+            elif isinstance(_raw_ids, str):
+                try:
+                    _ids_list = json.loads(_raw_ids)
+                except (json.JSONDecodeError, ValueError):
+                    _ids_list = []
+            else:
+                _ids_list = []
             if len(_ids_list) >= 2:
                 _sent = current.get("sent_count", 0) or 0
                 device_id = _ids_list[_sent % len(_ids_list)]
