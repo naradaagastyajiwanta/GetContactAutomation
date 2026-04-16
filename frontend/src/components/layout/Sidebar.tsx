@@ -1,7 +1,6 @@
 import { useState, useEffect } from "react";
 import { Link, useLocation } from "react-router-dom";
 import {
-  Bot,
   LayoutDashboard,
   GitBranch,
   GraduationCap,
@@ -270,9 +269,7 @@ export function Sidebar() {
     >
       {/* Brand */}
       <div className="flex h-14 items-center gap-2.5 border-b border-gray-100 px-5 dark:border-gray-800/80">
-        <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-gray-900 dark:bg-indigo-600">
-          <Bot className="h-4 w-4 text-white" />
-        </div>
+        <img src="/favicon.svg" alt="logo" className="h-8 w-8" />
         <span className="text-sm font-semibold text-gray-900 dark:text-white">
           DMS Marketing
         </span>
