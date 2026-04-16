@@ -1150,8 +1150,47 @@ async def _blast_worker(campaign_id: int) -> None:
                     paused_reason = _format_antiban_pause_reason(result)
 
                     if antiban_override:
-                        # User chose to override anti-ban — log warning but keep going.
-                        # Wait for the retry window (capped at 30s) then continue.
+                        # User chose to override anti-ban. With multiple devices, try
+                        # the other devices in the rotation before waiting, so one
+                        # device hitting its daily limit doesn't stall the whole queue.
+                        alt_sent = False
+                        if len(_ids_list) >= 2:
+                            for _offset in range(1, len(_ids_list)):
+                                _alt_device = _ids_list[(_sent + _offset) % len(_ids_list)]
+                                _alt_result = await message_queue.send_now_detailed(
+                                    recipient["phone_number"],
+                                    message,
+                                    device_id=_alt_device,
+                                    force_antiban=True,
+                                )
+                                if _alt_result.success:
+                                    async with get_db() as _db:
+                                        _now2 = datetime.now(timezone.utc).isoformat()
+                                        await _db.execute(
+                                            """UPDATE blast_recipients
+                                               SET status = 'sent', rendered_message = ?,
+                                                   sent_at = ?, sent_device_id = ?
+                                               WHERE id = ?""",
+                                            (message, _now2, _alt_device, recipient["id"]),
+                                        )
+                                        await _db.execute(
+                                            "UPDATE blast_campaigns SET sent_count = sent_count + 1 WHERE id = ?",
+                                            (campaign_id,),
+                                        )
+                                        await _db.commit()
+                                    log.info(
+                                        "[Blast] Campaign %d: sent to %s via alt device %s after primary blocked",
+                                        campaign_id, recipient["phone_number"], _alt_device,
+                                    )
+                                    alt_sent = True
+                                    break
+                                elif not _alt_result.blocked:
+                                    break  # hard error on alt device, fall through to wait
+
+                        if alt_sent:
+                            break  # exit retry loop — recipient done
+
+                        # All devices blocked (or single device) — wait then retry same recipient.
                         wait_s = min(retry_after_ms / 1000.0, 30.0) if retry_after_ms > 0 else 5.0
                         log.warning(
                             "[Blast] Anti-ban override active for campaign %d — "
