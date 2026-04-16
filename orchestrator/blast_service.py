@@ -1109,13 +1109,48 @@ async def _blast_worker(campaign_id: int) -> None:
             antiban_override = bool(current.get("antiban_override", 0))
 
             try:
-                # Send directly (not via queue) so we get an actual success/failure result.
-                result = await message_queue.send_now_detailed(
-                    recipient["phone_number"],
-                    message,
-                    device_id=device_id,
-                    force_antiban=antiban_override,
+                # Try each device in rotation order, skipping disconnected ones so a
+                # single offline device never blocks the whole queue.
+                _primary_idx = _sent % len(_ids_list) if _ids_list else 0
+                _ordered_devices = (
+                    [_ids_list[(_primary_idx + i) % len(_ids_list)] for i in range(len(_ids_list))]
+                    if _ids_list else [device_id]
                 )
+                result = None
+                for _candidate in _ordered_devices:
+                    _r = await message_queue.send_now_detailed(
+                        recipient["phone_number"], message,
+                        device_id=_candidate, force_antiban=antiban_override,
+                    )
+                    if _r.device_unavailable:
+                        log.warning(
+                            "[Blast] Campaign %d: device %s disconnected, trying next for %s",
+                            campaign_id, _candidate, recipient["phone_number"],
+                        )
+                        continue
+                    result = _r
+                    device_id = _candidate
+                    break
+                else:
+                    # Every device is disconnected — pause campaign
+                    _paused_reason = "Semua device terputus — reconnect device lalu resume"
+                    async with get_db() as db:
+                        _now_p = datetime.now(timezone.utc).isoformat()
+                        await db.execute(
+                            """UPDATE blast_campaigns SET status = 'paused', paused_at = ?, paused_reason = ?
+                               WHERE id = ? AND status = 'sending'""",
+                            (_now_p, _paused_reason, campaign_id),
+                        )
+                        await db.commit()
+                    await ws_manager.broadcast_type(
+                        "blast_paused", campaign_id=campaign_id,
+                        reason=_paused_reason, auto_resume_at=None,
+                    )
+                    log.warning("[Blast] Campaign %d paused — all devices disconnected", campaign_id)
+                    break  # exit outer while True
+
+                if result is None:
+                    continue  # safety — shouldn't reach here
 
                 if result.success:
                     # Mark as sent only when WA service actually confirmed delivery
@@ -1150,47 +1185,8 @@ async def _blast_worker(campaign_id: int) -> None:
                     paused_reason = _format_antiban_pause_reason(result)
 
                     if antiban_override:
-                        # User chose to override anti-ban. With multiple devices, try
-                        # the other devices in the rotation before waiting, so one
-                        # device hitting its daily limit doesn't stall the whole queue.
-                        alt_sent = False
-                        if len(_ids_list) >= 2:
-                            for _offset in range(1, len(_ids_list)):
-                                _alt_device = _ids_list[(_sent + _offset) % len(_ids_list)]
-                                _alt_result = await message_queue.send_now_detailed(
-                                    recipient["phone_number"],
-                                    message,
-                                    device_id=_alt_device,
-                                    force_antiban=True,
-                                )
-                                if _alt_result.success:
-                                    async with get_db() as _db:
-                                        _now2 = datetime.now(timezone.utc).isoformat()
-                                        await _db.execute(
-                                            """UPDATE blast_recipients
-                                               SET status = 'sent', rendered_message = ?,
-                                                   sent_at = ?, sent_device_id = ?
-                                               WHERE id = ?""",
-                                            (message, _now2, _alt_device, recipient["id"]),
-                                        )
-                                        await _db.execute(
-                                            "UPDATE blast_campaigns SET sent_count = sent_count + 1 WHERE id = ?",
-                                            (campaign_id,),
-                                        )
-                                        await _db.commit()
-                                    log.info(
-                                        "[Blast] Campaign %d: sent to %s via alt device %s after primary blocked",
-                                        campaign_id, recipient["phone_number"], _alt_device,
-                                    )
-                                    alt_sent = True
-                                    break
-                                elif not _alt_result.blocked:
-                                    break  # hard error on alt device, fall through to wait
-
-                        if alt_sent:
-                            continue  # recipient marked sent via alt device — fetch next recipient
-
-                        # All devices blocked (or single device) — wait then retry same recipient.
+                        # All devices already tried for disconnection (outer loop above).
+                        # Primary device is connected but hit anti-ban limit — wait then retry.
                         wait_s = min(retry_after_ms / 1000.0, 30.0) if retry_after_ms > 0 else 5.0
                         log.warning(
                             "[Blast] Anti-ban override active for campaign %d — "

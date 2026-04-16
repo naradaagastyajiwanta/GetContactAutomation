@@ -17,6 +17,7 @@ RETRY_DELAYS = [2, 5, 10]  # seconds – exponential backoff
 class SendAttemptResult:
     success: bool
     blocked: bool = False
+    device_unavailable: bool = False  # device disconnected — caller should try another device
     error: str | None = None
     retry_after_ms: int | None = None
     anti_ban: dict[str, Any] | None = None
@@ -145,16 +146,19 @@ class MessageQueue:
                     return SendAttemptResult(success=True, anti_ban=data.get("antiBan"))
                 else:
                     error = data.get("error", "unknown")
-                    # "not connected" is transient — worth retrying
-                    if "not connected" in error.lower():
+                    _is_disconnect = any(k in error.lower() for k in ("not connected", "not found", "device", "disconnected"))
+                    # Disconnected devices are transient — retry briefly then let caller try another device
+                    if _is_disconnect:
                         if attempt < MAX_SEND_RETRIES:
                             delay = RETRY_DELAYS[attempt]
                             log.warning(
-                                "WA not connected, retry %d/%d in %ds",
+                                "WA device unavailable, retry %d/%d in %ds",
                                 attempt + 1, MAX_SEND_RETRIES, delay,
                             )
                             await asyncio.sleep(delay)
                             continue
+                        # Retries exhausted — signal caller to try another device
+                        return SendAttemptResult(success=False, device_unavailable=True, error=error, anti_ban=data.get("antiBan"))
                     # Permanent failure or retries exhausted
                     log.error("WA send failed for %s: %s", payload["to"], error)
                     return SendAttemptResult(success=False, error=error, anti_ban=data.get("antiBan"))
