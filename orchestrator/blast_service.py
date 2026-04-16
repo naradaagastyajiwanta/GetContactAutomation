@@ -99,6 +99,16 @@ def _normalize_campaign(campaign: Optional[dict]) -> Optional[dict]:
     normalized["weekend_factor"] = max(0.0, _as_float(normalized.get("weekend_factor"), 0.5))
     normalized["auto_resume_enabled"] = _as_bool(normalized.get("auto_resume_enabled"), True)
     normalized["paused_reason"] = normalized.get("paused_reason")
+    # Parse device_ids from JSON string → list (SQLite stores as TEXT)
+    raw_ids = normalized.get("device_ids")
+    if isinstance(raw_ids, str):
+        try:
+            parsed = json.loads(raw_ids)
+            normalized["device_ids"] = parsed if isinstance(parsed, list) else []
+        except (json.JSONDecodeError, ValueError):
+            normalized["device_ids"] = []
+    elif not isinstance(raw_ids, list):
+        normalized["device_ids"] = []
     return normalized
 
 
