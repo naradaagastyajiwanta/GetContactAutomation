@@ -34,7 +34,10 @@ import {
   Timer,
   Zap,
   ShieldAlert,
+  FileSpreadsheet,
+  Upload,
 } from "lucide-react";
+import * as XLSX from "xlsx";
 import { cn } from "../lib/utils";
 import {
   useBlastCampaign,
@@ -780,6 +783,295 @@ function FilterChip({
 }
 
 // ---------------------------------------------------------------------------
+// Excel Upload Modal
+// ---------------------------------------------------------------------------
+
+function ExcelUploadModal({
+  campaignId,
+  onClose,
+}: {
+  campaignId: number;
+  onClose: () => void;
+}) {
+  const fileRef = useRef<HTMLInputElement>(null);
+  const addMutation = useAddRecipients();
+
+  // Parsed sheet state
+  const [headers, setHeaders] = useState<string[]>([]);
+  const [rows, setRows] = useState<string[][]>([]);
+  const [fileName, setFileName] = useState("");
+  const [parseError, setParseError] = useState("");
+
+  // Column mapping chosen by user
+  const [phoneCol, setPhoneCol] = useState<string>("");
+  const [nameCol, setNameCol] = useState<string>("");
+
+  const handleFile = (file: File) => {
+    setParseError("");
+    setHeaders([]);
+    setRows([]);
+    setPhoneCol("");
+    setNameCol("");
+    setFileName(file.name);
+
+    const reader = new FileReader();
+    reader.onload = (e) => {
+      try {
+        const data = new Uint8Array(e.target!.result as ArrayBuffer);
+        const wb = XLSX.read(data, { type: "array" });
+        const ws = wb.Sheets[wb.SheetNames[0]];
+        const json: string[][] = XLSX.utils.sheet_to_json(ws, {
+          header: 1,
+          defval: "",
+          raw: false,
+        }) as string[][];
+
+        if (!json || json.length < 2) {
+          setParseError("File kosong atau hanya ada satu baris.");
+          return;
+        }
+
+        const hdrs = json[0].map((h) => String(h).trim());
+        const dataRows = json
+          .slice(1)
+          .filter((r) => r.some((cell) => String(cell).trim()));
+        setHeaders(hdrs);
+        setRows(dataRows);
+
+        // Auto-detect phone column
+        const phoneGuess = hdrs.find((h) =>
+          /phone|no\.?hp|nomer|nomor|hp|wa|whatsapp/i.test(h),
+        );
+        const nameGuess = hdrs.find((h) => /name|nama/i.test(h));
+        if (phoneGuess) setPhoneCol(phoneGuess);
+        if (nameGuess) setNameCol(nameGuess);
+      } catch {
+        setParseError("Gagal membaca file. Pastikan format .xlsx atau .xls.");
+      }
+    };
+    reader.readAsArrayBuffer(file);
+  };
+
+  const handleDrop = (e: React.DragEvent) => {
+    e.preventDefault();
+    const file = e.dataTransfer.files[0];
+    if (file) handleFile(file);
+  };
+
+  const phoneColIdx = headers.indexOf(phoneCol);
+  const nameColIdx = headers.indexOf(nameCol);
+
+  // Preview — first 5 data rows
+  const preview = rows.slice(0, 5);
+
+  // Validate: must have phone column and at least one non-empty phone
+  const validRows = rows.filter((r) => {
+    const phone = String(r[phoneColIdx] ?? "").trim();
+    return phone.length >= 5;
+  });
+  const canImport = phoneColIdx >= 0 && validRows.length > 0;
+
+  const handleImport = () => {
+    const recipients = validRows.map((r) => ({
+      phone_number: String(r[phoneColIdx] ?? "").trim(),
+      contact_name:
+        nameColIdx >= 0 ? String(r[nameColIdx] ?? "").trim() || null : null,
+    }));
+    addMutation.mutate({ campaignId, recipients }, { onSuccess: onClose });
+  };
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 backdrop-blur-sm p-4">
+      <div className="relative bg-white dark:bg-gray-800 rounded-2xl shadow-2xl w-full max-w-2xl max-h-[90vh] flex flex-col">
+        {/* Header */}
+        <div className="flex items-center justify-between p-4 border-b border-gray-200 dark:border-gray-700 shrink-0">
+          <div className="flex items-center gap-2">
+            <FileSpreadsheet className="w-5 h-5 text-green-600" />
+            <h2 className="text-base font-semibold text-gray-900 dark:text-gray-100">
+              Upload Excel
+            </h2>
+          </div>
+          <button
+            onClick={onClose}
+            className="p-1.5 rounded-lg hover:bg-gray-100 dark:hover:bg-gray-700 text-gray-400 transition-colors"
+          >
+            <X className="w-5 h-5" />
+          </button>
+        </div>
+
+        <div className="flex-1 overflow-y-auto p-4 space-y-4">
+          {/* Drop zone */}
+          <div
+            onDragOver={(e) => e.preventDefault()}
+            onDrop={handleDrop}
+            onClick={() => fileRef.current?.click()}
+            className="flex flex-col items-center justify-center gap-2 rounded-xl border-2 border-dashed border-gray-300 dark:border-gray-600 bg-gray-50 dark:bg-gray-900/30 px-6 py-8 cursor-pointer hover:border-green-400 hover:bg-green-50/30 dark:hover:bg-green-900/10 transition-colors"
+          >
+            <Upload className="w-7 h-7 text-gray-400" />
+            {fileName ? (
+              <p className="text-sm font-medium text-green-700 dark:text-green-400">
+                {fileName}
+              </p>
+            ) : (
+              <>
+                <p className="text-sm text-gray-600 dark:text-gray-400">
+                  Drag & drop file Excel, atau{" "}
+                  <span className="text-indigo-600 dark:text-indigo-400 font-medium">
+                    klik untuk browse
+                  </span>
+                </p>
+                <p className="text-xs text-gray-400">.xlsx · .xls · .csv</p>
+              </>
+            )}
+            <input
+              ref={fileRef}
+              type="file"
+              accept=".xlsx,.xls,.csv"
+              className="hidden"
+              onChange={(e) => {
+                const f = e.target.files?.[0];
+                if (f) handleFile(f);
+                e.target.value = "";
+              }}
+            />
+          </div>
+
+          {parseError && (
+            <p className="text-sm text-red-600 dark:text-red-400">
+              {parseError}
+            </p>
+          )}
+
+          {/* Column mapping */}
+          {headers.length > 0 && (
+            <div className="rounded-xl border border-gray-200 dark:border-gray-700 p-4 space-y-3">
+              <p className="text-xs font-semibold uppercase tracking-wider text-gray-500 dark:text-gray-400">
+                Pilih kolom
+              </p>
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <label className="block text-xs font-medium text-gray-700 dark:text-gray-300 mb-1">
+                    Kolom nomor HP <span className="text-red-400">*</span>
+                  </label>
+                  <select
+                    value={phoneCol}
+                    onChange={(e) => setPhoneCol(e.target.value)}
+                    className="w-full rounded-lg border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-900 text-sm px-2 py-1.5 focus:ring-1 focus:ring-indigo-500 focus:border-indigo-500"
+                  >
+                    <option value="">— Pilih kolom —</option>
+                    {headers.map((h) => (
+                      <option key={h} value={h}>
+                        {h}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+                <div>
+                  <label className="block text-xs font-medium text-gray-700 dark:text-gray-300 mb-1">
+                    Kolom nama{" "}
+                    <span className="text-gray-400 font-normal">
+                      (opsional)
+                    </span>
+                  </label>
+                  <select
+                    value={nameCol}
+                    onChange={(e) => setNameCol(e.target.value)}
+                    className="w-full rounded-lg border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-900 text-sm px-2 py-1.5 focus:ring-1 focus:ring-indigo-500 focus:border-indigo-500"
+                  >
+                    <option value="">— Tidak ada —</option>
+                    {headers.map((h) => (
+                      <option key={h} value={h}>
+                        {h}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+              </div>
+            </div>
+          )}
+
+          {/* Preview table */}
+          {headers.length > 0 && phoneColIdx >= 0 && preview.length > 0 && (
+            <div className="rounded-xl border border-gray-200 dark:border-gray-700 overflow-hidden">
+              <div className="px-3 py-2 bg-gray-50 dark:bg-gray-900/40 flex items-center justify-between">
+                <p className="text-xs font-semibold uppercase tracking-wider text-gray-500">
+                  Preview (5 baris pertama)
+                </p>
+                <span className="text-xs text-gray-400">
+                  {validRows.length} baris valid dari {rows.length} total
+                </span>
+              </div>
+              <div className="overflow-x-auto">
+                <table className="w-full text-xs">
+                  <thead>
+                    <tr className="border-b border-gray-200 dark:border-gray-700 bg-gray-50/60 dark:bg-gray-900/20">
+                      <th className="px-3 py-2 text-left font-medium text-gray-500 dark:text-gray-400">
+                        Nomor HP
+                      </th>
+                      <th className="px-3 py-2 text-left font-medium text-gray-500 dark:text-gray-400">
+                        Nama
+                      </th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {preview.map((row, i) => (
+                      <tr
+                        key={i}
+                        className="border-b border-gray-100 dark:border-gray-700/50 last:border-0"
+                      >
+                        <td className="px-3 py-2 text-gray-800 dark:text-gray-200 font-mono">
+                          {String(row[phoneColIdx] ?? "").trim() || (
+                            <span className="text-gray-400 italic">kosong</span>
+                          )}
+                        </td>
+                        <td className="px-3 py-2 text-gray-600 dark:text-gray-400">
+                          {nameColIdx >= 0
+                            ? String(row[nameColIdx] ?? "").trim() || "—"
+                            : "—"}
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          )}
+        </div>
+
+        {/* Footer */}
+        <div className="flex items-center justify-between p-4 border-t border-gray-200 dark:border-gray-700 shrink-0">
+          <span className="text-xs text-gray-500 dark:text-gray-400">
+            {canImport
+              ? `${validRows.length} kontak siap diimport`
+              : "Upload file lalu pilih kolom nomor HP"}
+          </span>
+          <div className="flex gap-2">
+            <button
+              onClick={onClose}
+              className="px-3 py-1.5 text-sm text-gray-600 dark:text-gray-400 hover:text-gray-900 dark:hover:text-gray-100 transition-colors"
+            >
+              Batal
+            </button>
+            <button
+              onClick={handleImport}
+              disabled={!canImport || addMutation.isPending}
+              className="flex items-center gap-1.5 px-4 py-1.5 bg-green-600 hover:bg-green-700 text-white text-sm font-semibold rounded-lg disabled:opacity-50 transition-colors"
+            >
+              {addMutation.isPending ? (
+                <Loader2 className="w-3.5 h-3.5 animate-spin" />
+              ) : (
+                <FileSpreadsheet className="w-3.5 h-3.5" />
+              )}
+              Import {canImport ? validRows.length : ""} Kontak
+            </button>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
 // Template Placeholder Buttons
 // ---------------------------------------------------------------------------
 
@@ -975,6 +1267,7 @@ export default function BlastCampaignDetailPage() {
 
   // Contact selector modal
   const [showContactModal, setShowContactModal] = useState(false);
+  const [showExcelModal, setShowExcelModal] = useState(false);
 
   // Sections toggle
   const [showSettings, setShowSettings] = useState(true);
@@ -1657,6 +1950,13 @@ export default function BlastCampaignDetailPage() {
                 </button>
               )}
               <button
+                onClick={() => setShowExcelModal(true)}
+                className="flex items-center gap-1 px-3 py-1.5 bg-green-600 hover:bg-green-700 text-white text-xs font-medium rounded-lg transition-colors"
+              >
+                <FileSpreadsheet className="w-3.5 h-3.5" />
+                Upload Excel
+              </button>
+              <button
                 onClick={() => setShowContactModal(true)}
                 className="flex items-center gap-1 px-3 py-1.5 bg-indigo-600 hover:bg-indigo-700 text-white text-xs font-medium rounded-lg transition-colors"
               >
@@ -1719,13 +2019,22 @@ export default function BlastCampaignDetailPage() {
                 mulai membangun target list.
               </p>
               {canEditCampaign && (
-                <button
-                  onClick={() => setShowContactModal(true)}
-                  className="mt-4 inline-flex items-center gap-2 rounded-xl bg-indigo-600 px-4 py-2 text-sm font-medium text-white transition-colors hover:bg-indigo-700"
-                >
-                  <Plus className="h-4 w-4" />
-                  Pilih recipient
-                </button>
+                <div className="mt-4 flex items-center justify-center gap-2 flex-wrap">
+                  <button
+                    onClick={() => setShowExcelModal(true)}
+                    className="inline-flex items-center gap-2 rounded-xl bg-green-600 px-4 py-2 text-sm font-medium text-white transition-colors hover:bg-green-700"
+                  >
+                    <FileSpreadsheet className="h-4 w-4" />
+                    Upload Excel
+                  </button>
+                  <button
+                    onClick={() => setShowContactModal(true)}
+                    className="inline-flex items-center gap-2 rounded-xl bg-indigo-600 px-4 py-2 text-sm font-medium text-white transition-colors hover:bg-indigo-700"
+                  >
+                    <Plus className="h-4 w-4" />
+                    Pilih recipient
+                  </button>
+                </div>
               )}
             </div>
           </div>
@@ -2435,6 +2744,14 @@ export default function BlastCampaignDetailPage() {
         <ContactSelectorModal
           campaignId={campaignId}
           onClose={() => setShowContactModal(false)}
+        />
+      )}
+
+      {/* Excel Upload Modal */}
+      {showExcelModal && (
+        <ExcelUploadModal
+          campaignId={campaignId}
+          onClose={() => setShowExcelModal(false)}
         />
       )}
 
