@@ -1036,7 +1036,9 @@ async def _blast_worker(campaign_id: int) -> None:
             else:
                 _ids_list = []
             if len(_ids_list) >= 2:
-                _sent = current.get("sent_count", 0) or 0
+                # Use total attempts (sent + failed) so failed sends don't
+                # re-use the same device index repeatedly.
+                _sent = (current.get("sent_count", 0) or 0) + (current.get("failed_count", 0) or 0)
                 device_id = _ids_list[_sent % len(_ids_list)]
             else:
                 device_id = (_ids_list[0] if _ids_list else None) or current["device_id"] or SYSTEM_DEVICE_ID
