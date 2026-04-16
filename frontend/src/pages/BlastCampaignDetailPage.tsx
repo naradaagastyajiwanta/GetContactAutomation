@@ -53,6 +53,7 @@ import {
   useCancelCampaign,
   useDeleteCampaign,
   useForceResumeCampaign,
+  useResetFailedRecipients,
 } from "../hooks/useBlast";
 import { useMyDevices, useWhatsAppDevices } from "../hooks/useWhatsApp";
 import type {
@@ -1157,6 +1158,7 @@ export default function BlastCampaignDetailPage() {
   const cancelMutation = useCancelCampaign();
   const deleteMutation = useDeleteCampaign();
   const forceResumeMutation = useForceResumeCampaign();
+  const resetFailedMutation = useResetFailedRecipients();
 
   const [showForceResumeModal, setShowForceResumeModal] = useState(false);
 
@@ -1677,6 +1679,23 @@ export default function BlastCampaignDetailPage() {
                     </button>
                   </div>
                 )}
+              {/* Reset Failed — shown when paused and there are failed recipients */}
+              {canManageBlast && campaign.failed_count > 0 && (
+                <div className="pt-1">
+                  <button
+                    onClick={() => resetFailedMutation.mutate(campaignId)}
+                    disabled={resetFailedMutation.isPending}
+                    className="inline-flex items-center gap-1.5 rounded-lg border border-amber-400 dark:border-amber-600 bg-amber-50 dark:bg-amber-900/20 px-2.5 py-1 text-xs font-semibold text-amber-700 dark:text-amber-400 hover:bg-amber-100 dark:hover:bg-amber-900/40 transition-colors disabled:opacity-50"
+                  >
+                    {resetFailedMutation.isPending ? (
+                      <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                    ) : (
+                      <AlertCircle className="w-3.5 h-3.5" />
+                    )}
+                    Reset {campaign.failed_count} Gagal → Pending
+                  </button>
+                </div>
+              )}
             </div>
           )}
           <div className="h-2.5 bg-gray-100 dark:bg-gray-700 rounded-full overflow-hidden flex">

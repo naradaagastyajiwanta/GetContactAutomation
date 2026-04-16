@@ -6172,6 +6172,37 @@ async def blast_force_resume_campaign(campaign_id: int, request: Request):
     return result
 
 
+@app.post("/blast/campaigns/{campaign_id}/reset-failed")
+async def blast_reset_failed_recipients(campaign_id: int, request: Request):
+    """Reset all failed recipients in a campaign back to pending so they are retried on next start/resume."""
+    await _require_blast_campaign_access(campaign_id)
+    async with get_db() as db:
+        cur = await db.execute(
+            "SELECT COUNT(*) FROM blast_recipients WHERE campaign_id = ? AND status = 'failed'",
+            (campaign_id,),
+        )
+        row = await cur.fetchone()
+        failed_count = row[0] if row else 0
+
+        if failed_count == 0:
+            return {"success": True, "message": "No failed recipients", "reset_count": 0}
+
+        await db.execute(
+            "UPDATE blast_recipients SET status = 'pending', error_message = NULL, attempted_at = NULL "
+            "WHERE campaign_id = ? AND status = 'failed'",
+            (campaign_id,),
+        )
+        # Adjust campaign failed_count counter
+        await db.execute(
+            "UPDATE blast_campaigns SET failed_count = MAX(0, failed_count - ?) WHERE id = ?",
+            (failed_count, campaign_id),
+        )
+        await db.commit()
+
+    await ws_manager.broadcast_type("blast_update", campaign_id=campaign_id)
+    return {"success": True, "message": f"Reset {failed_count} failed recipients to pending", "reset_count": failed_count}
+
+
 # ---------------------------------------------------------------------------
 # Email Blast Endpoints
 # ---------------------------------------------------------------------------

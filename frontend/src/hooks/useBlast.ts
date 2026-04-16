@@ -16,6 +16,7 @@ import {
   pauseCampaign,
   cancelCampaign,
   forceResumeCampaign,
+  resetFailedRecipients,
   type BlastContactsParams,
   type CreateCampaignPayload,
 } from "../api/blast";
@@ -272,5 +273,26 @@ export function useForceResumeCampaign() {
       }
     },
     onError: () => toast.error("Failed to force resume campaign"),
+  });
+}
+
+export function useResetFailedRecipients() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (campaignId: number) => resetFailedRecipients(campaignId),
+    onSuccess: (data, campaignId) => {
+      if (data.success) {
+        if (data.reset_count > 0) {
+          toast.success(
+            `${data.reset_count} penerima gagal dikembalikan ke pending`,
+          );
+        } else {
+          toast.success("Tidak ada penerima gagal");
+        }
+        qc.invalidateQueries({ queryKey: blastKeys.campaign(campaignId) });
+        qc.invalidateQueries({ queryKey: blastKeys.campaigns() });
+      }
+    },
+    onError: () => toast.error("Gagal reset penerima"),
   });
 }

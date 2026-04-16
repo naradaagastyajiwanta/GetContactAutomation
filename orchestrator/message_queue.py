@@ -133,6 +133,33 @@ class MessageQueue:
                         anti_ban=data.get("antiBan"),
                     )
 
+                # Check for disconnect errors in 4xx/5xx body BEFORE raise_for_status,
+                # so HTTP 500 "Device not connected" is detected as device_unavailable
+                # rather than being swallowed by the HTTPStatusError exception handler.
+                if resp.status_code >= 400:
+                    _body_error = data.get("error", "")
+                    _is_disconnect = any(
+                        k in _body_error.lower()
+                        for k in ("not connected", "not found", "device", "disconnected")
+                    )
+                    if _is_disconnect:
+                        if attempt < MAX_SEND_RETRIES:
+                            delay = RETRY_DELAYS[attempt]
+                            log.warning(
+                                "WA device unavailable (HTTP %d), retry %d/%d in %ds: %s",
+                                resp.status_code, attempt + 1, MAX_SEND_RETRIES, delay, _body_error,
+                            )
+                            await asyncio.sleep(delay)
+                            continue
+                        log.warning(
+                            "WA device unavailable (HTTP %d) after retries for %s: %s",
+                            resp.status_code, payload["to"], _body_error,
+                        )
+                        return SendAttemptResult(
+                            success=False, device_unavailable=True,
+                            error=_body_error, anti_ban=data.get("antiBan"),
+                        )
+
                 resp.raise_for_status()
                 if data.get("success"):
                     log.info("Sent WA %s to %s", msg_type, payload["to"])

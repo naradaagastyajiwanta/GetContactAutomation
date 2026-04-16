@@ -288,3 +288,12 @@ export async function forceResumeCampaign(
   );
   return data;
 }
+
+export async function resetFailedRecipients(
+  campaignId: number,
+): Promise<{ success: boolean; reset_count: number; message: string }> {
+  const { data } = await apiClient.post(
+    `/blast/campaigns/${campaignId}/reset-failed`,
+  );
+  return data;
+}
