@@ -1268,7 +1268,12 @@ export class DeviceManager {
     }
 
     if (normalized.startsWith("0")) {
+      // Local format with leading zero: 08xx → 628xx
       normalized = "62" + normalized.slice(1);
+    } else if (!normalized.startsWith("62") && normalized.startsWith("8")) {
+      // Local format without leading zero: 8xx → 628xx
+      // Common when numbers are scraped or imported stripped of the leading 0
+      normalized = "62" + normalized;
     }
 
     return normalized + "@s.whatsapp.net";
