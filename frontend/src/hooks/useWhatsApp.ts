@@ -13,12 +13,16 @@ import {
   forceRecoverDevice,
   bulkSendWhatsApp,
   bulkSendDocumentWhatsApp,
+  bulkSendRotateWhatsApp,
+  bulkSendDocumentRotateWhatsApp,
   setupMyDevice,
   getMyDevices,
   deleteMyDevice,
   updateMyDeviceLabel,
   pauseDeviceAntiBan,
   resumeDeviceAntiBan,
+  getWaBlastLog,
+  type WaBlastLogEntry,
 } from "../api/whatsapp";
 import { queryKeys } from "../lib/queryKeys";
 
@@ -209,6 +213,50 @@ export function useBulkSendDocumentWhatsApp() {
   });
 }
 
+export function useBulkSendRotateWhatsApp() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: bulkSendRotateWhatsApp,
+    onSuccess: (data) => {
+      if (data.success) {
+        const summary = data.per_device
+          .map((d) => `${d.queued} via ${d.device_id}`)
+          .join(", ");
+        toast.success(`${data.total_queued} pesan di-queue (${summary})`);
+        queryClient.invalidateQueries({ queryKey: queryKeys.whatsapp.devices });
+        queryClient.invalidateQueries({
+          queryKey: queryKeys.whatsapp.myDevices,
+        });
+      } else {
+        toast.error(data.error || "Failed to bulk send");
+      }
+    },
+    onError: () => toast.error("Failed to bulk send messages"),
+  });
+}
+
+export function useBulkSendDocumentRotateWhatsApp() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: bulkSendDocumentRotateWhatsApp,
+    onSuccess: (data) => {
+      if (data.success) {
+        const summary = data.per_device
+          .map((d) => `${d.queued} via ${d.device_id}`)
+          .join(", ");
+        toast.success(`${data.total_queued} dokumen di-queue (${summary})`);
+        queryClient.invalidateQueries({ queryKey: queryKeys.whatsapp.devices });
+        queryClient.invalidateQueries({
+          queryKey: queryKeys.whatsapp.myDevices,
+        });
+      } else {
+        toast.error(data.error || "Failed to bulk send documents");
+      }
+    },
+    onError: () => toast.error("Failed to bulk send documents"),
+  });
+}
+
 // ---------------------------------------------------------------------------
 // Per-User Device (My Device) Hooks
 // ---------------------------------------------------------------------------
@@ -291,5 +339,24 @@ export function useResumeAntiBan() {
     onError: () => {
       toast.error("Failed to resume anti-ban");
     },
+  });
+}
+
+
+// ---------------------------------------------------------------------------
+// WA Blast Log
+// ---------------------------------------------------------------------------
+
+export type { WaBlastLogEntry };
+
+export function useWaBlastLog(params?: {
+  blast_id?: string;
+  limit?: number;
+  offset?: number;
+}) {
+  return useQuery({
+    queryKey: ["wa-blast-log", params],
+    queryFn: () => getWaBlastLog(params),
+    staleTime: 30_000,
   });
 }

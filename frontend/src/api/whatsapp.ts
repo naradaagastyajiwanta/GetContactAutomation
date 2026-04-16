@@ -78,6 +78,32 @@ export interface BulkSendResponse {
   error?: string;
 }
 
+export interface BulkSendRotatePayload {
+  phone_numbers: string[];
+  message: string;
+  device_ids: string[];
+}
+
+export interface BulkSendDocumentRotatePayload {
+  phone_numbers: string[];
+  file_path: string;
+  file_name: string;
+  caption?: string;
+  device_ids: string[];
+}
+
+export interface PerDeviceResult {
+  device_id: string;
+  queued: number;
+}
+
+export interface BulkSendRotateResponse {
+  success: boolean;
+  total_queued: number;
+  per_device: PerDeviceResult[];
+  error?: string;
+}
+
 /**
  * Get all WhatsApp devices with their status
  */
@@ -162,6 +188,32 @@ export async function bulkSendDocumentWhatsApp(
 ): Promise<BulkSendResponse> {
   const { data } = await apiClient.post<BulkSendResponse>(
     "/wa/bulk-send-document",
+    payload,
+  );
+  return data;
+}
+
+/**
+ * Bulk send text messages distributed round-robin across multiple devices
+ */
+export async function bulkSendRotateWhatsApp(
+  payload: BulkSendRotatePayload,
+): Promise<BulkSendRotateResponse> {
+  const { data } = await apiClient.post<BulkSendRotateResponse>(
+    "/wa/bulk-send-rotate",
+    payload,
+  );
+  return data;
+}
+
+/**
+ * Bulk send document messages distributed round-robin across multiple devices
+ */
+export async function bulkSendDocumentRotateWhatsApp(
+  payload: BulkSendDocumentRotatePayload,
+): Promise<BulkSendRotateResponse> {
+  const { data } = await apiClient.post<BulkSendRotateResponse>(
+    "/wa/bulk-send-document-rotate",
     payload,
   );
   return data;
@@ -265,6 +317,37 @@ export async function updateMyDeviceLabel(
     `/wa/me/device/${deviceId}/label`,
     { label },
   );
+  return data;
+}
+
+// ---------------------------------------------------------------------------
+// WA Blast Log
+// ---------------------------------------------------------------------------
+
+export interface WaBlastLogEntry {
+  id: number;
+  blast_id: string;
+  phone: string;
+  device_id: string;
+  mode: "text" | "document";
+  preview: string | null;
+  triggered_by: string | null;
+  created_at: string;
+}
+
+export interface WaBlastLogResponse {
+  entries: WaBlastLogEntry[];
+  total: number;
+}
+
+export async function getWaBlastLog(params?: {
+  blast_id?: string;
+  limit?: number;
+  offset?: number;
+}): Promise<WaBlastLogResponse> {
+  const { data } = await apiClient.get<WaBlastLogResponse>("/wa/blast-log", {
+    params,
+  });
   return data;
 }
 

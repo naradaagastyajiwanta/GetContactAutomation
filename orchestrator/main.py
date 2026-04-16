@@ -10,6 +10,7 @@ import functools
 import hashlib
 import os
 import tempfile
+import uuid
 import zipfile
 from collections import OrderedDict
 from concurrent.futures import ThreadPoolExecutor
@@ -553,7 +554,8 @@ def _required_permission_for_request(method: str, path: str) -> str | None:
 
     if normalized.startswith("/wa"):
         # bulk-send is open to all users with a WA device — only whatsapp.view required
-        if normalized in ("/wa/bulk-send", "/wa/bulk-send-document"):
+        if normalized in ("/wa/bulk-send", "/wa/bulk-send-document",
+                          "/wa/bulk-send-rotate", "/wa/bulk-send-document-rotate"):
             return "whatsapp.view"
         return "whatsapp.view" if upper_method == "GET" else "whatsapp.manage"
 
@@ -2795,6 +2797,38 @@ async def wa_reset_device_antiban(device_id: str, request: Request):
         return response.json()
 
 
+async def _log_wa_blast(
+    blast_id: str,
+    phone_device_pairs: list[tuple[str, str]],  # [(phone, device_id), ...]
+    mode: str,
+    preview: str,
+    triggered_by: str,
+) -> None:
+    """Persist one row per (phone, device_id) pair into wa_blast_log."""
+    async with get_db() as db:
+        await db.executemany(
+            """
+            INSERT INTO wa_blast_log (blast_id, phone, device_id, mode, preview, triggered_by)
+            VALUES (?, ?, ?, ?, ?, ?)
+            """,
+            [
+                (blast_id, phone, device_id, mode, preview, triggered_by)
+                for phone, device_id in phone_device_pairs
+            ],
+        )
+        await db.commit()
+
+
+def _distribute_round_robin(
+    phone_numbers: list[str], device_ids: list[str]
+) -> dict[str, list[str]]:
+    """Round-robin distribute phone numbers across device_ids."""
+    buckets: dict[str, list[str]] = {d: [] for d in device_ids}
+    for i, phone in enumerate(phone_numbers):
+        buckets[device_ids[i % len(device_ids)]].append(phone)
+    return buckets
+
+
 @app.post("/wa/bulk-send")
 async def wa_bulk_send(payload: dict, request: Request):
     """
@@ -2831,13 +2865,23 @@ async def wa_bulk_send(payload: dict, request: Request):
         if not message:
             return {"success": False, "error": "No message provided"}
 
+        blast_id = str(uuid.uuid4())
         for phone in phone_numbers:
             await message_queue.enqueue_send(phone, message, device_id=resolved_device_id)
+
+        await _log_wa_blast(
+            blast_id=blast_id,
+            phone_device_pairs=[(p, resolved_device_id) for p in phone_numbers],
+            mode="text",
+            preview=message[:80],
+            triggered_by=user.get("email") or user.get("dms_user_id", "unknown"),
+        )
 
         return {
             "success": True,
             "queued": len(phone_numbers),
             "device_id": resolved_device_id,
+            "blast_id": blast_id,
         }
     except HTTPException:
         raise
@@ -2891,16 +2935,26 @@ async def wa_bulk_send_document(payload: dict, request: Request):
         if not file_name:
             return {"success": False, "error": "No file_name provided"}
 
+        blast_id = str(uuid.uuid4())
         for phone in phone_numbers:
             await message_queue.enqueue_send_document(
                 phone, file_path, file_name, caption, device_id=resolved_device_id
             )
+
+        await _log_wa_blast(
+            blast_id=blast_id,
+            phone_device_pairs=[(p, resolved_device_id) for p in phone_numbers],
+            mode="document",
+            preview=file_name,
+            triggered_by=user.get("email") or user.get("dms_user_id", "unknown"),
+        )
 
         return {
             "success": True,
             "queued": len(phone_numbers),
             "device_id": resolved_device_id,
             "file_name": file_name,
+            "blast_id": blast_id,
         }
     except HTTPException:
         raise
@@ -2910,6 +2964,173 @@ async def wa_bulk_send_document(payload: dict, request: Request):
             status_code=500,
             content={"success": False, "error": f"Bulk send document failed: {e}"},
         )
+
+
+@app.post("/wa/bulk-send-rotate")
+async def wa_bulk_send_rotate(payload: dict, request: Request):
+    """
+    Bulk send text messages distributed round-robin across multiple devices.
+
+    Body: { phone_numbers: ["628xxx", ...], message: "Hello!", device_ids: ["device_1", "u5"] }
+    Response: { success, total_queued, per_device: [{device_id, queued}] }
+    """
+    try:
+        user = await get_request_user(request)
+        phone_numbers = payload.get("phone_numbers", [])
+        message = payload.get("message", "")
+        device_ids = payload.get("device_ids", [])
+
+        if not phone_numbers:
+            return {"success": False, "error": "No phone numbers provided"}
+        if not message:
+            return {"success": False, "error": "No message provided"}
+        if not device_ids:
+            return {"success": False, "error": "No devices selected"}
+
+        # Validate ownership — non-admin must own every selected device
+        if not has_permission(user, "*"):
+            for device_id in device_ids:
+                await _assert_device_access(device_id, user)
+
+        blast_id = str(uuid.uuid4())
+        buckets = _distribute_round_robin(phone_numbers, device_ids)
+        per_device = []
+        all_pairs: list[tuple[str, str]] = []
+        for device_id, phones in buckets.items():
+            for phone in phones:
+                await message_queue.enqueue_send(phone, message, device_id=device_id)
+                all_pairs.append((phone, device_id))
+            per_device.append({"device_id": device_id, "queued": len(phones)})
+
+        await _log_wa_blast(
+            blast_id=blast_id,
+            phone_device_pairs=all_pairs,
+            mode="text",
+            preview=message[:80],
+            triggered_by=user.get("email") or user.get("dms_user_id", "unknown"),
+        )
+
+        return {"success": True, "total_queued": len(phone_numbers), "per_device": per_device, "blast_id": blast_id}
+    except HTTPException:
+        raise
+    except Exception as e:
+        log.error("Bulk send rotate failed: %s", e)
+        return JSONResponse(
+            status_code=500,
+            content={"success": False, "error": f"Bulk send rotate failed: {e}"},
+        )
+
+
+@app.post("/wa/bulk-send-document-rotate")
+async def wa_bulk_send_document_rotate(payload: dict, request: Request):
+    """
+    Bulk send document messages distributed round-robin across multiple devices.
+
+    Body: { phone_numbers, file_path, file_name, caption?, device_ids: string[] }
+    Response: { success, total_queued, per_device: [{device_id, queued}] }
+    """
+    try:
+        user = await get_request_user(request)
+        phone_numbers = payload.get("phone_numbers", [])
+        file_path = payload.get("file_path", "")
+        file_name = payload.get("file_name", "")
+        caption = payload.get("caption")
+        device_ids = payload.get("device_ids", [])
+
+        if not phone_numbers:
+            return {"success": False, "error": "No phone numbers provided"}
+        if not file_path or not file_name:
+            return {"success": False, "error": "file_path and file_name required"}
+        if not device_ids:
+            return {"success": False, "error": "No devices selected"}
+
+        if not has_permission(user, "*"):
+            for device_id in device_ids:
+                await _assert_device_access(device_id, user)
+
+        blast_id = str(uuid.uuid4())
+        buckets = _distribute_round_robin(phone_numbers, device_ids)
+        per_device = []
+        all_pairs: list[tuple[str, str]] = []
+        for device_id, phones in buckets.items():
+            for phone in phones:
+                await message_queue.enqueue_send_document(
+                    phone, file_path, file_name, caption, device_id=device_id
+                )
+                all_pairs.append((phone, device_id))
+            per_device.append({"device_id": device_id, "queued": len(phones)})
+
+        await _log_wa_blast(
+            blast_id=blast_id,
+            phone_device_pairs=all_pairs,
+            mode="document",
+            preview=file_name,
+            triggered_by=user.get("email") or user.get("dms_user_id", "unknown"),
+        )
+
+        return {"success": True, "total_queued": len(phone_numbers), "per_device": per_device, "blast_id": blast_id}
+    except HTTPException:
+        raise
+    except Exception as e:
+        log.error("Bulk send document rotate failed: %s", e)
+        return JSONResponse(
+            status_code=500,
+            content={"success": False, "error": f"Bulk send document rotate failed: {e}"},
+        )
+
+
+@app.get("/wa/blast-log")
+async def get_wa_blast_log(
+    request: Request,
+    blast_id: str | None = None,
+    limit: int = 200,
+    offset: int = 0,
+):
+    """
+    Return wa_blast_log entries.
+
+    Query params:
+      blast_id  — filter to a single blast session
+      limit     — max rows (default 200)
+      offset    — pagination offset
+
+    Response: {
+      entries: [{id, blast_id, phone, device_id, mode, preview, triggered_by, created_at}],
+      total: int
+    }
+    """
+    await get_request_user(request)  # auth gate
+    async with get_db() as db:
+        if blast_id:
+            cursor = await db.execute(
+                "SELECT COUNT(*) FROM wa_blast_log WHERE blast_id = ?", (blast_id,)
+            )
+        else:
+            cursor = await db.execute("SELECT COUNT(*) FROM wa_blast_log")
+        total = (await cursor.fetchone())[0]
+
+        if blast_id:
+            cursor = await db.execute(
+                """
+                SELECT id, blast_id, phone, device_id, mode, preview, triggered_by, created_at
+                FROM wa_blast_log WHERE blast_id = ?
+                ORDER BY id ASC LIMIT ? OFFSET ?
+                """,
+                (blast_id, limit, offset),
+            )
+        else:
+            cursor = await db.execute(
+                """
+                SELECT id, blast_id, phone, device_id, mode, preview, triggered_by, created_at
+                FROM wa_blast_log
+                ORDER BY id DESC LIMIT ? OFFSET ?
+                """,
+                (limit, offset),
+            )
+        rows = await cursor.fetchall()
+        entries = [dict(r) for r in rows]
+
+    return {"entries": entries, "total": total}
 
 
 # ---------------------------------------------------------------------------

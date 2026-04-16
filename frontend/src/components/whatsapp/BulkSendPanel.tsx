@@ -2,7 +2,7 @@
  * WaBlastPanel Component
  *
  * Powerful blast panel: paste or file-upload numbers, text or document mode,
- * number parsing/deduplication, live queue progress polling.
+ * number parsing/deduplication, multi-device rotation, live queue progress polling.
  */
 
 import { useState, useEffect, useRef, useCallback, useMemo } from "react";
@@ -15,14 +15,16 @@ import {
   CheckCircle,
   RefreshCw,
   X,
-  ChevronDown,
 } from "lucide-react";
 import {
   useMyDevices,
   useWhatsAppDevices,
   useBulkSendWhatsApp,
   useBulkSendDocumentWhatsApp,
+  useBulkSendRotateWhatsApp,
+  useBulkSendDocumentRotateWhatsApp,
 } from "../../hooks/useWhatsApp";
+import type { PerDeviceResult } from "../../api/whatsapp";
 import { useAuth } from "../../context/AuthContext";
 import { cn } from "../../lib/utils";
 
@@ -106,9 +108,11 @@ export function WaBlastPanel() {
   const { data: allDevicesData } = useWhatsAppDevices(isAdmin);
   const bulkSendMutation = useBulkSendWhatsApp();
   const bulkSendDocMutation = useBulkSendDocumentWhatsApp();
+  const bulkSendRotateMutation = useBulkSendRotateWhatsApp();
+  const bulkSendDocRotateMutation = useBulkSendDocumentRotateWhatsApp();
 
   const [inputMode, setInputMode] = useState<InputMode>("paste");
-  const [selectedDeviceId, setSelectedDeviceId] = useState<string>("");
+  const [selectedDeviceIds, setSelectedDeviceIds] = useState<string[]>([]);
   const [numbers, setNumbers] = useState<string[]>([]);
   const [rawPaste, setRawPaste] = useState<string>("");
   const [invalidCount, setInvalidCount] = useState<number>(0);
@@ -121,13 +125,15 @@ export function WaBlastPanel() {
   const [isDragging, setIsDragging] = useState<boolean>(false);
   const [isSent, setIsSent] = useState<boolean>(false);
   const [sentCount, setSentCount] = useState<number>(0);
-  const [queueStats, setQueueStats] = useState<QueueStats | null>(null);
+  const [perDeviceResult, setPerDeviceResult] = useState<PerDeviceResult[]>([]);
+  const [perDeviceQueueStats, setPerDeviceQueueStats] = useState<
+    Record<string, QueueStats>
+  >({});
 
   const fileInputRef = useRef<HTMLInputElement>(null);
 
-  // All devices (not just connected) for the dropdown.
+  // All devices (not just connected) for the selector.
   // Admins see all system devices; non-admins see only their personal devices.
-  // Memoized so the auto-select effect has a stable dependency.
   const allDevices = useMemo(
     () =>
       isAdmin
@@ -147,35 +153,42 @@ export function WaBlastPanel() {
   );
 
   const hasDevices = allDevices.length > 0;
-  const selectedDevice = allDevices.find((d) => d.id === selectedDeviceId);
-  const isSelectedConnected = selectedDevice?.connected ?? false;
+  const selectedDevices = allDevices.filter((d) =>
+    selectedDeviceIds.includes(d.id),
+  );
+  const connectedSelectedDevices = selectedDevices.filter((d) => d.connected);
+  const disconnectedSelectedDevices = selectedDevices.filter(
+    (d) => !d.connected,
+  );
+  const hasAtLeastOneConnectedSelected = connectedSelectedDevices.length > 0;
 
-  // Auto-select first connected device on mount / when devices load
+  // Auto-select all connected devices on mount / when devices load
   useEffect(() => {
-    if (selectedDeviceId || allDevices.length === 0) return;
-    const connected = allDevices.find((d) => d.connected);
-    setSelectedDeviceId(connected ? connected.id : allDevices[0].id);
-  }, [allDevices, selectedDeviceId]);
+    if (selectedDeviceIds.length > 0 || allDevices.length === 0) return;
+    const connectedIds = allDevices.filter((d) => d.connected).map((d) => d.id);
+    setSelectedDeviceIds(
+      connectedIds.length > 0 ? connectedIds : [allDevices[0].id],
+    );
+  }, [allDevices, selectedDeviceIds.length]);
 
-  // Extract live queue stats from the selected device's data
+  // Extract live queue stats from all selected devices
   useEffect(() => {
     if (!isSent) return;
-    let stats: QueueStats | undefined;
-    if (isAdmin) {
-      const deviceEntry = allDevicesData?.devices.find(
-        (d) => d.id === selectedDeviceId,
-      );
-      stats = (deviceEntry as any)?.queueStats as QueueStats | undefined;
-    } else {
-      const deviceEntry = myDevicesData?.devices.find(
-        (e) => e.device_id === selectedDeviceId,
-      );
-      stats = (deviceEntry?.device as any)?.queueStats as
-        | QueueStats
-        | undefined;
+    const statsMap: Record<string, QueueStats> = {};
+    for (const id of selectedDeviceIds) {
+      let stats: QueueStats | undefined;
+      if (isAdmin) {
+        const entry = allDevicesData?.devices.find((d) => d.id === id);
+        stats = (entry as unknown as { queueStats?: QueueStats })?.queueStats;
+      } else {
+        const entry = myDevicesData?.devices.find((e) => e.device_id === id);
+        stats = (entry?.device as unknown as { queueStats?: QueueStats })
+          ?.queueStats;
+      }
+      if (stats) statsMap[id] = stats;
     }
-    if (stats) setQueueStats(stats);
-  }, [myDevicesData, allDevicesData, isSent, selectedDeviceId, isAdmin]);
+    if (Object.keys(statsMap).length > 0) setPerDeviceQueueStats(statsMap);
+  }, [myDevicesData, allDevicesData, isSent, selectedDeviceIds, isAdmin]);
 
   // Parse paste input
   const handlePasteChange = (raw: string) => {
@@ -216,12 +229,22 @@ export function WaBlastPanel() {
     if (fileInputRef.current) fileInputRef.current.value = "";
   };
 
-  const isSending = bulkSendMutation.isPending || bulkSendDocMutation.isPending;
+  function toggleDevice(id: string) {
+    setSelectedDeviceIds((prev) =>
+      prev.includes(id) ? prev.filter((x) => x !== id) : [...prev, id],
+    );
+  }
+
+  const isSending =
+    bulkSendMutation.isPending ||
+    bulkSendDocMutation.isPending ||
+    bulkSendRotateMutation.isPending ||
+    bulkSendDocRotateMutation.isPending;
 
   const canSubmit =
     numbers.length > 0 &&
-    !!selectedDeviceId &&
-    isSelectedConnected &&
+    selectedDeviceIds.length > 0 &&
+    hasAtLeastOneConnectedSelected &&
     (mode === "text"
       ? message.trim().length > 0
       : filePath.trim().length > 0 && fileName.trim().length > 0);
@@ -230,43 +253,86 @@ export function WaBlastPanel() {
     e.preventDefault();
     if (!canSubmit) return;
 
+    const connectedIds = connectedSelectedDevices.map((d) => d.id);
+
     if (mode === "text") {
-      bulkSendMutation.mutate(
-        {
-          phone_numbers: numbers,
-          message: message.trim(),
-          device_id: selectedDeviceId,
-        },
-        {
-          onSuccess: () => {
-            setIsSent(true);
-            setSentCount(numbers.length);
+      if (connectedIds.length === 1) {
+        bulkSendMutation.mutate(
+          {
+            phone_numbers: numbers,
+            message: message.trim(),
+            device_id: connectedIds[0],
           },
-        },
-      );
+          {
+            onSuccess: () => {
+              setIsSent(true);
+              setSentCount(numbers.length);
+            },
+          },
+        );
+      } else {
+        bulkSendRotateMutation.mutate(
+          {
+            phone_numbers: numbers,
+            message: message.trim(),
+            device_ids: connectedIds,
+          },
+          {
+            onSuccess: (data) => {
+              if (data.success) {
+                setIsSent(true);
+                setSentCount(data.total_queued);
+                setPerDeviceResult(data.per_device);
+              }
+            },
+          },
+        );
+      }
     } else {
-      bulkSendDocMutation.mutate(
-        {
-          phone_numbers: numbers,
-          file_path: filePath.trim(),
-          file_name: fileName.trim(),
-          caption: caption.trim() || undefined,
-          device_id: selectedDeviceId,
-        },
-        {
-          onSuccess: () => {
-            setIsSent(true);
-            setSentCount(numbers.length);
+      if (connectedIds.length === 1) {
+        bulkSendDocMutation.mutate(
+          {
+            phone_numbers: numbers,
+            file_path: filePath.trim(),
+            file_name: fileName.trim(),
+            caption: caption.trim() || undefined,
+            device_id: connectedIds[0],
           },
-        },
-      );
+          {
+            onSuccess: () => {
+              setIsSent(true);
+              setSentCount(numbers.length);
+            },
+          },
+        );
+      } else {
+        bulkSendDocRotateMutation.mutate(
+          {
+            phone_numbers: numbers,
+            file_path: filePath.trim(),
+            file_name: fileName.trim(),
+            caption: caption.trim() || undefined,
+            device_ids: connectedIds,
+          },
+          {
+            onSuccess: (data) => {
+              if (data.success) {
+                setIsSent(true);
+                setSentCount(data.total_queued);
+                setPerDeviceResult(data.per_device);
+              }
+            },
+          },
+        );
+      }
     }
   };
 
   const handleReset = () => {
     setIsSent(false);
     setSentCount(0);
-    setQueueStats(null);
+    setPerDeviceResult([]);
+    setPerDeviceQueueStats({});
     setNumbers([]);
     setRawPaste("");
     setInvalidCount(0);
@@ -275,21 +341,30 @@ export function WaBlastPanel() {
     setFilePath("");
     setFileName("");
     setCaption("");
+    // selectedDeviceIds intentionally preserved for next blast
   };
-
-  // Progress calculation
-  const progressTotal =
-    queueStats != null
-      ? queueStats.pending + queueStats.sent + queueStats.failed
-      : sentCount;
-  const progressDone = queueStats?.sent ?? 0;
-  const progressPct =
-    progressTotal > 0 ? Math.round((progressDone / progressTotal) * 100) : 0;
 
   // ---------------------------------------------------------------------------
   // POST-SEND: progress view
   // ---------------------------------------------------------------------------
   if (isSent) {
+    const isMultiDevice = perDeviceResult.length > 1;
+
+    const aggregateStats = Object.values(perDeviceQueueStats).reduce(
+      (acc, s) => ({
+        pending: acc.pending + s.pending,
+        sent: acc.sent + s.sent,
+        failed: acc.failed + s.failed,
+      }),
+      { pending: 0, sent: 0, failed: 0 },
+    );
+    const progressTotal =
+      aggregateStats.pending + aggregateStats.sent + aggregateStats.failed ||
+      sentCount;
+    const progressDone = aggregateStats.sent;
+    const progressPct =
+      progressTotal > 0 ? Math.round((progressDone / progressTotal) * 100) : 0;
+
     return (
       <div className="space-y-5">
         {/* Success header */}
@@ -300,10 +375,16 @@ export function WaBlastPanel() {
               {sentCount} pesan berhasil di-queue
             </p>
             <p className="text-xs text-green-700 dark:text-green-400 mt-0.5">
-              Dikirim ke device:{" "}
-              <span className="font-mono">
-                {selectedDevice?.name ?? selectedDeviceId}
-              </span>
+              {isMultiDevice ? (
+                <>Dirotasi ke {perDeviceResult.length} devices</>
+              ) : (
+                <>
+                  Dikirim ke device:{" "}
+                  <span className="font-mono">
+                    {selectedDevices[0]?.name ?? selectedDeviceIds[0]}
+                  </span>
+                </>
+              )}
             </p>
           </div>
         </div>
@@ -326,12 +407,12 @@ export function WaBlastPanel() {
           </div>
         </div>
 
-        {/* Stats row */}
-        {queueStats != null && (
+        {/* Aggregate stats row */}
+        {Object.keys(perDeviceQueueStats).length > 0 && (
           <div className="grid grid-cols-3 gap-3">
             <div className="text-center p-3 rounded-xl bg-gray-50 dark:bg-gray-900/50 border border-gray-100 dark:border-gray-700">
               <p className="text-lg font-bold text-amber-600 dark:text-amber-400">
-                {queueStats.pending}
+                {aggregateStats.pending}
               </p>
               <p className="text-[11px] text-gray-500 dark:text-gray-400 mt-0.5">
                 pending
@@ -339,7 +420,7 @@ export function WaBlastPanel() {
             </div>
             <div className="text-center p-3 rounded-xl bg-gray-50 dark:bg-gray-900/50 border border-gray-100 dark:border-gray-700">
               <p className="text-lg font-bold text-green-600 dark:text-green-400">
-                {queueStats.sent}
+                {aggregateStats.sent}
               </p>
               <p className="text-[11px] text-gray-500 dark:text-gray-400 mt-0.5">
                 terkirim
@@ -347,12 +428,48 @@ export function WaBlastPanel() {
             </div>
             <div className="text-center p-3 rounded-xl bg-gray-50 dark:bg-gray-900/50 border border-gray-100 dark:border-gray-700">
               <p className="text-lg font-bold text-red-600 dark:text-red-400">
-                {queueStats.failed}
+                {aggregateStats.failed}
               </p>
               <p className="text-[11px] text-gray-500 dark:text-gray-400 mt-0.5">
                 gagal
               </p>
             </div>
+          </div>
+        )}
+
+        {/* Per-device breakdown (multi-device only) */}
+        {isMultiDevice && perDeviceResult.length > 0 && (
+          <div className="space-y-2">
+            <p className="text-xs font-semibold text-gray-500 dark:text-gray-400 uppercase tracking-wider">
+              Per Device
+            </p>
+            {perDeviceResult.map((r) => {
+              const stats = perDeviceQueueStats[r.device_id];
+              const devName =
+                allDevices.find((d) => d.id === r.device_id)?.name ??
+                r.device_id;
+              return (
+                <div
+                  key={r.device_id}
+                  className="flex items-center justify-between px-3 py-2 rounded-xl border border-gray-100 dark:border-gray-700 bg-gray-50 dark:bg-gray-900/50 text-xs"
+                >
+                  <span className="font-medium text-gray-700 dark:text-gray-300 truncate">
+                    {devName}
+                  </span>
+                  <div className="flex gap-3 flex-shrink-0 tabular-nums">
+                    <span className="text-amber-600 dark:text-amber-400">
+                      {stats?.pending ?? r.queued} pending
+                    </span>
+                    <span className="text-green-600 dark:text-green-400">
+                      {stats?.sent ?? 0} terkirim
+                    </span>
+                    <span className="text-red-600 dark:text-red-400">
+                      {stats?.failed ?? 0} gagal
+                    </span>
+                  </div>
+                </div>
+              );
+            })}
           </div>
         )}
 
@@ -383,6 +500,11 @@ export function WaBlastPanel() {
       <div>
         <label className="block text-xs font-semibold text-gray-600 dark:text-gray-400 uppercase tracking-wider mb-1.5">
           Device <span className="text-red-400">*</span>
+          {selectedDeviceIds.length > 1 && (
+            <span className="ml-2 text-blue-500 font-normal normal-case text-[11px]">
+              rotating {selectedDeviceIds.length} devices
+            </span>
+          )}
         </label>
         {!hasDevices ? (
           <div className="flex items-center gap-2.5 p-3 rounded-lg bg-amber-50 dark:bg-amber-900/15 border border-amber-200 dark:border-amber-800">
@@ -392,27 +514,66 @@ export function WaBlastPanel() {
             </p>
           </div>
         ) : (
-          <div className="relative">
-            <select
-              value={selectedDeviceId}
-              onChange={(e) => setSelectedDeviceId(e.target.value)}
-              className="w-full appearance-none px-3 py-2 pr-8 border border-gray-300 dark:border-gray-600 rounded-xl text-sm focus:ring-1 focus:ring-blue-500 focus:border-blue-500 dark:bg-gray-900 dark:text-gray-100 transition-colors"
-            >
-              {allDevices.map((d) => (
-                <option key={d.id} value={d.id}>
-                  {d.connected ? "● " : "○ "}
-                  {d.name}
-                  {d.phoneNumber ? ` (${d.phoneNumber})` : ""}
-                  {d.connected ? "" : " — offline"}
-                </option>
-              ))}
-            </select>
-            <ChevronDown className="pointer-events-none absolute right-2.5 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-400" />
+          <div className="space-y-1.5">
+            {allDevices.map((d) => {
+              const checked = selectedDeviceIds.includes(d.id);
+              return (
+                <label
+                  key={d.id}
+                  className={cn(
+                    "flex items-center gap-3 px-3 py-2 rounded-xl border cursor-pointer transition-all select-none",
+                    checked
+                      ? "border-blue-500 bg-blue-50 dark:bg-blue-900/20"
+                      : "border-gray-200 dark:border-gray-700 hover:border-gray-300 dark:hover:border-gray-600",
+                    !d.connected && "opacity-60",
+                  )}
+                >
+                  <input
+                    type="checkbox"
+                    checked={checked}
+                    onChange={() => toggleDevice(d.id)}
+                    className="accent-blue-600 w-4 h-4 flex-shrink-0"
+                  />
+                  <span
+                    className={cn(
+                      "w-2 h-2 rounded-full flex-shrink-0",
+                      d.connected ? "bg-green-500" : "bg-gray-400",
+                    )}
+                  />
+                  <div className="flex-1 min-w-0">
+                    <span className="text-sm font-medium text-gray-800 dark:text-gray-200 truncate block">
+                      {d.name}
+                    </span>
+                  </div>
+                  {d.phoneNumber && (
+                    <span className="text-xs text-gray-400 flex-shrink-0">
+                      {d.phoneNumber}
+                    </span>
+                  )}
+                  {!d.connected && (
+                    <span className="text-[11px] text-amber-500 flex-shrink-0">
+                      offline
+                    </span>
+                  )}
+                </label>
+              );
+            })}
           </div>
         )}
-        {selectedDeviceId && !isSelectedConnected && (
-          <p className="mt-1.5 text-xs text-amber-600 dark:text-amber-400">
-            Device ini offline — hubungkan dulu di tab Devices
+        {/* Validation messages */}
+        {selectedDeviceIds.length === 0 && hasDevices && (
+          <p className="mt-1.5 text-xs text-red-500">Pilih minimal 1 device</p>
+        )}
+        {disconnectedSelectedDevices.length > 0 &&
+          hasAtLeastOneConnectedSelected && (
+            <p className="mt-1.5 text-xs text-amber-600 dark:text-amber-400">
+              {disconnectedSelectedDevices.length} device offline akan dilewati
+              saat pengiriman
+            </p>
+          )}
+        {selectedDeviceIds.length > 0 && !hasAtLeastOneConnectedSelected && (
+          <p className="mt-1.5 text-xs text-red-500">
+            Semua device yang dipilih offline — hubungkan dulu di tab Devices
           </p>
         )}
       </div>

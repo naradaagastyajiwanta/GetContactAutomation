@@ -436,12 +436,26 @@ CREATE TABLE IF NOT EXISTS blast_recipients (
 );
 """
 
+CREATE TABLE IF NOT EXISTS wa_blast_log (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    blast_id    TEXT    NOT NULL,          -- UUID shared by all phones in the same blast session
+    phone       TEXT    NOT NULL,
+    device_id   TEXT    NOT NULL,
+    mode        TEXT    NOT NULL DEFAULT 'text',  -- 'text' | 'document'
+    preview     TEXT,                      -- first 80 chars of message, or file_name for docs
+    triggered_by TEXT,                     -- user email / identifier
+    created_at  TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+"""
+
 _INDEXES_BLAST = """
 CREATE INDEX IF NOT EXISTS idx_blast_campaigns_status ON blast_campaigns(status);
 CREATE INDEX IF NOT EXISTS idx_blast_campaigns_owner ON blast_campaigns(created_by_dms_user_id);
 CREATE INDEX IF NOT EXISTS idx_blast_campaigns_auto_resume ON blast_campaigns(auto_resume_at);
 CREATE INDEX IF NOT EXISTS idx_blast_recipients_campaign ON blast_recipients(campaign_id);
 CREATE INDEX IF NOT EXISTS idx_blast_recipients_status ON blast_recipients(status);
+CREATE INDEX IF NOT EXISTS idx_wa_blast_log_blast_id ON wa_blast_log(blast_id);
+CREATE INDEX IF NOT EXISTS idx_wa_blast_log_created ON wa_blast_log(created_at);
 """
 
 # ---------------------------------------------------------------------------

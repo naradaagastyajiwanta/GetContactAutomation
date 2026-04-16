@@ -12,6 +12,7 @@ import {
   Wifi,
   WifiOff,
   MessageCircle,
+  ClipboardList,
 } from "lucide-react";
 import {
   useWaStatus,
@@ -20,6 +21,7 @@ import {
   useWaRestart,
   useWhatsAppDevices,
   useMyDevices,
+  useWaBlastLog,
 } from "../hooks/useWhatsApp";
 import { useStartTestConversation } from "../hooks/useConversations";
 import { Button } from "../components/ui/Button";
@@ -30,7 +32,7 @@ import { cn } from "../lib/utils";
 import { usePageTour } from "../hooks/usePageTour";
 import { WHATSAPP_TOUR_STEPS } from "../tours/whatsapp.tour";
 
-type TabId = "devices" | "quick-test" | "blast";
+type TabId = "devices" | "quick-test" | "blast" | "blast-log";
 
 function TabButton({
   id,
@@ -269,6 +271,13 @@ export default function WhatsAppPage() {
           label="Blast WA"
           isActive={activeTab === "blast"}
           onClick={() => setActiveTab("blast")}
+        />
+        <TabButton
+          id="blast-log"
+          icon={ClipboardList}
+          label="Blast Log"
+          isActive={activeTab === "blast-log"}
+          onClick={() => setActiveTab("blast-log")}
         />
       </div>
 
@@ -511,6 +520,9 @@ export default function WhatsAppPage() {
             <WaBlastPanel />
           </div>
         )}
+
+        {/* Blast Log Tab */}
+        {activeTab === "blast-log" && <BlastLogTab />}
       </div>
 
       {/* ── Footer tip ─────────────────────────────────────── */}
@@ -555,6 +567,153 @@ export default function WhatsAppPage() {
           </div>
         </div>
       )}
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// BlastLogTab — shows wa_blast_log entries: which device blasted which number
+// ---------------------------------------------------------------------------
+
+function BlastLogTab() {
+  const { data, isLoading } = useWaBlastLog({ limit: 500 });
+  const entries = data?.entries ?? [];
+
+  // Group by blast_id so each session is collapsible
+  const grouped = entries.reduce<
+    Record<
+      string,
+      {
+        blast_id: string;
+        created_at: string;
+        triggered_by: string | null;
+        mode: string;
+        preview: string | null;
+        rows: typeof entries;
+      }
+    >
+  >((acc, e) => {
+    if (!acc[e.blast_id]) {
+      acc[e.blast_id] = {
+        blast_id: e.blast_id,
+        created_at: e.created_at,
+        triggered_by: e.triggered_by,
+        mode: e.mode,
+        preview: e.preview,
+        rows: [],
+      };
+    }
+    acc[e.blast_id].rows.push(e);
+    return acc;
+  }, {});
+
+  const sessions = Object.values(grouped).sort(
+    (a, b) =>
+      new Date(b.created_at).getTime() - new Date(a.created_at).getTime(),
+  );
+
+  const [openId, setOpenId] = useState<string | null>(
+    sessions[0]?.blast_id ?? null,
+  );
+
+  if (isLoading) {
+    return (
+      <div className="p-8 flex items-center justify-center text-gray-400 dark:text-gray-500 text-sm">
+        Memuat log...
+      </div>
+    );
+  }
+
+  if (sessions.length === 0) {
+    return (
+      <div className="p-8 text-center text-gray-400 dark:text-gray-500 text-sm">
+        Belum ada blast yang tercatat. Log akan muncul setelah blast pertama
+        dikirim.
+      </div>
+    );
+  }
+
+  return (
+    <div className="divide-y divide-gray-100 dark:divide-gray-700">
+      {sessions.map((session) => {
+        const isOpen = openId === session.blast_id;
+        const shortId = session.blast_id.slice(0, 8);
+        const ts = new Date(session.created_at).toLocaleString("id-ID", {
+          day: "2-digit",
+          month: "short",
+          year: "numeric",
+          hour: "2-digit",
+          minute: "2-digit",
+        });
+
+        return (
+          <div key={session.blast_id}>
+            {/* Session header */}
+            <button
+              type="button"
+              onClick={() => setOpenId(isOpen ? null : session.blast_id)}
+              className="w-full flex items-center gap-3 px-5 py-3 text-left hover:bg-gray-50 dark:hover:bg-gray-700/40 transition-colors"
+            >
+              <span
+                className={cn(
+                  "inline-flex items-center px-2 py-0.5 rounded text-[10px] font-bold uppercase tracking-wider flex-shrink-0",
+                  session.mode === "document"
+                    ? "bg-blue-100 text-blue-700 dark:bg-blue-900/40 dark:text-blue-300"
+                    : "bg-green-100 text-green-700 dark:bg-green-900/40 dark:text-green-300",
+                )}
+              >
+                {session.mode}
+              </span>
+              <div className="flex-1 min-w-0">
+                <p className="text-sm font-semibold text-gray-800 dark:text-gray-200 truncate">
+                  {session.preview || "(no preview)"}
+                </p>
+                <p className="text-xs text-gray-400 dark:text-gray-500 mt-0.5">
+                  {ts} · {session.rows.length} nomor ·{" "}
+                  {session.triggered_by ?? "unknown"} ·{" "}
+                  <span className="font-mono">{shortId}…</span>
+                </p>
+              </div>
+              <span className="text-xs text-gray-400 dark:text-gray-500 flex-shrink-0">
+                {isOpen ? "▲" : "▼"}
+              </span>
+            </button>
+
+            {/* Per-number rows */}
+            {isOpen && (
+              <div className="overflow-x-auto">
+                <table className="w-full text-xs">
+                  <thead>
+                    <tr className="bg-gray-50 dark:bg-gray-900/60 text-gray-500 dark:text-gray-400">
+                      <th className="px-5 py-2 text-left font-semibold">
+                        Nomor Tujuan
+                      </th>
+                      <th className="px-5 py-2 text-left font-semibold">
+                        Device yang Dipakai
+                      </th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-gray-100 dark:divide-gray-700/60">
+                    {session.rows.map((r) => (
+                      <tr
+                        key={r.id}
+                        className="hover:bg-gray-50 dark:hover:bg-gray-700/20"
+                      >
+                        <td className="px-5 py-2 font-mono text-gray-800 dark:text-gray-200">
+                          {r.phone}
+                        </td>
+                        <td className="px-5 py-2 font-mono text-blue-700 dark:text-blue-300">
+                          {r.device_id}
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
+          </div>
+        );
+      })}
     </div>
   );
 }
