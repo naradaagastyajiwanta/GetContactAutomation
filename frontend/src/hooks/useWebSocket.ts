@@ -138,7 +138,8 @@ type WSEvent =
       cooldown_seconds: number;
       fallback_active: boolean;
       message: string;
-    };
+    }
+  | { type: "bot_paused"; paused: boolean };
 
 // Singleton WebSocket across all hook instances
 let wsInstance: WebSocket | null = null;
@@ -855,6 +856,14 @@ function handleEventQuery(
       qc.invalidateQueries({ queryKey: ["codex-status"] });
       break;
     }
+    case "bot_paused":
+      // Instantly reflect pause/resume state from any source (scheduler, other tabs, etc.)
+      qc.setQueryData(
+        ["control"],
+        (old: Record<string, unknown> | undefined) =>
+          old ? { ...old, paused: data.paused } : { paused: data.paused },
+      );
+      break;
   }
 }
 

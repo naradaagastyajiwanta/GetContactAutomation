@@ -174,6 +174,13 @@ export function usePauseBot() {
       toast.success(
         "Pipeline stopped — agents will finish current item and stop",
       );
+      // Immediately update cache so button flips to "Resume Pipeline" without
+      // waiting for the background refetch (which can be slow or fail).
+      queryClient.setQueryData(
+        queryKeys.control,
+        (old: Record<string, unknown> | undefined) =>
+          old ? { ...old, paused: true } : { paused: true },
+      );
       queryClient.invalidateQueries({ queryKey: queryKeys.pipeline.status });
       queryClient.invalidateQueries({ queryKey: queryKeys.control });
     },
@@ -189,6 +196,13 @@ export function useResumeBot() {
     mutationFn: () => resumeBot(),
     onSuccess: () => {
       toast.success("Pipeline resumed");
+      // Immediately update cache so button flips to "Stop Pipeline" without
+      // waiting for the background refetch.
+      queryClient.setQueryData(
+        queryKeys.control,
+        (old: Record<string, unknown> | undefined) =>
+          old ? { ...old, paused: false } : { paused: false },
+      );
       queryClient.invalidateQueries({ queryKey: queryKeys.pipeline.status });
       queryClient.invalidateQueries({ queryKey: queryKeys.control });
     },

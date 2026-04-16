@@ -2393,6 +2393,7 @@ async def pause_bot():
     set_paused(True)
     await upsert_config("BOT_PAUSED", "true")
     log.info("Bot PAUSED by operator")
+    await ws_manager.broadcast_type("bot_paused", {"paused": True})
     return {"paused": True}
 
 
@@ -2402,6 +2403,7 @@ async def resume_bot():
     set_paused(False)
     await upsert_config("BOT_PAUSED", "false")
     log.info("Bot RESUMED by operator")
+    await ws_manager.broadcast_type("bot_paused", {"paused": False})
     return {"paused": False}
 
 
