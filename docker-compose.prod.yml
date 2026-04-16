@@ -25,6 +25,13 @@ services:
       - ./whatsapp-service/auth_store_device_3:/app/auth_store_device_3
       - ./whatsapp-service/auth_store_device_4:/app/auth_store_device_4
       - ./whatsapp-service/auth_store_device_5:/app/auth_store_device_5
+      - ./whatsapp-service/auth_store_u195:/app/auth_store_u195
+      - ./whatsapp-service/auth_store_u90:/app/auth_store_u90
+      - ./whatsapp-service/auth_store_u195_1:/app/auth_store_u195_1
+      - ./whatsapp-service/auth_store_u195_2:/app/auth_store_u195_2
+      - ./whatsapp-service/auth_store_u195_3:/app/auth_store_u195_3
+      - ./whatsapp-service/auth_store_u195_4:/app/auth_store_u195_4
+      - ./whatsapp-service/auth_store_u195_5:/app/auth_store_u195_5
       - ./whatsapp-service/data:/app/data
     environment:
       - NODE_ENV=production
