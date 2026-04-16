@@ -1157,6 +1157,15 @@ async def init_db() -> None:
         await db.executescript(_INDEXES_UNIVERSITY_GROUPS)
         await db.executescript(_DDL_MARKETING)
 
+        # Migration: add device_ids column to blast_campaigns for multi-device rotation
+        cursor = await db.execute("PRAGMA table_info(blast_campaigns)")
+        blast_cols = {row[1] for row in await cursor.fetchall()}
+        if "device_ids" not in blast_cols:
+            await db.execute(
+                "ALTER TABLE blast_campaigns ADD COLUMN device_ids TEXT NOT NULL DEFAULT '[]'"
+            )
+        await db.commit()
+
         # Migration: add error_message column to marketing_clients if missing
         cursor = await db.execute("PRAGMA table_info(marketing_clients)")
         columns = {row[1] for row in await cursor.fetchall()}

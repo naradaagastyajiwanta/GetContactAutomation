@@ -7,6 +7,7 @@ rendering template messages with placeholders, and executing blast sends.
 
 import asyncio
 import hashlib
+import json
 import random
 import re
 from datetime import datetime, time, timedelta, timezone
@@ -320,11 +321,14 @@ async def list_campaigns(
 
 async def update_campaign(campaign_id: int, **fields) -> Optional[dict]:
     """Update campaign fields. Only draft campaigns can be fully edited."""
-    allowed = {"name", "template_message", "device_id",
+    allowed = {"name", "template_message", "device_id", "device_ids",
                "delay_between_ms", "human_delay_min_ms", "human_delay_max_ms",
                "content_variation_enabled", "schedule_enabled", "schedule_timezone",
                "active_hours_start", "active_hours_end", "peak_hours_start", "peak_hours_end",
                "lunch_break_start", "lunch_break_end", "weekend_factor", "auto_resume_enabled"}
+    # Serialize device_ids list to JSON string before storing
+    if "device_ids" in fields and isinstance(fields["device_ids"], list):
+        fields = {**fields, "device_ids": json.dumps(fields["device_ids"])}
     updates = {k: v for k, v in fields.items() if k in allowed and v is not None}
 
     if not updates:
@@ -1008,7 +1012,14 @@ async def _blast_worker(campaign_id: int) -> None:
                 log.info("[Blast] Campaign %d no longer sending, stopping worker", campaign_id)
                 break
 
-            device_id = current["device_id"] or SYSTEM_DEVICE_ID
+            # Resolve device — multi-device rotation if device_ids is set
+            _raw_ids = current.get("device_ids") or "[]"
+            _ids_list: list[str] = json.loads(_raw_ids) if isinstance(_raw_ids, str) else []
+            if len(_ids_list) >= 2:
+                _sent = current.get("sent_count", 0) or 0
+                device_id = _ids_list[_sent % len(_ids_list)]
+            else:
+                device_id = (_ids_list[0] if _ids_list else None) or current["device_id"] or SYSTEM_DEVICE_ID
             allowed_now, wait_ms, wait_reason = _campaign_allows_schedule(
                 current,
                 datetime.now(timezone.utc),

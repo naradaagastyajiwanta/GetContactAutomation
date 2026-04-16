@@ -9,6 +9,7 @@ export interface BlastCampaign {
   name: string;
   template_message: string;
   device_id: string;
+  device_ids: string[];
   delay_between_ms: number;
   human_delay_min_ms: number;
   human_delay_max_ms: number;
@@ -130,6 +131,7 @@ export interface CreateCampaignPayload {
   name: string;
   template_message?: string;
   device_id?: string;
+  device_ids?: string[];
   delay_between_ms?: number;
   human_delay_min_ms?: number;
   human_delay_max_ms?: number;

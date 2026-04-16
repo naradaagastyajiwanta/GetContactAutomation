@@ -870,7 +870,7 @@ export default function BlastCampaignDetailPage() {
 
   // Local form state
   const [templateDraft, setTemplateDraft] = useState<string | null>(null);
-  const [deviceDraft, setDeviceDraft] = useState<string | null>(null);
+  const [deviceDraft, setDeviceDraft] = useState<string[] | null>(null);
   const [delayDraft, setDelayDraft] = useState<number | null>(null);
   const [humanMinDraft, setHumanMinDraft] = useState<number | null>(null);
   const [humanMaxDraft, setHumanMaxDraft] = useState<number | null>(null);
@@ -895,7 +895,14 @@ export default function BlastCampaignDetailPage() {
 
   // Derived values (draft state overrides server value)
   const currentTemplate = templateDraft ?? campaign?.template_message ?? "";
-  const currentDevice = deviceDraft ?? campaign?.device_id ?? "";
+  // currentDeviceIds: always an array of selected device IDs
+  const currentDeviceIds: string[] =
+    deviceDraft ??
+    (campaign?.device_ids?.length
+      ? campaign.device_ids
+      : campaign?.device_id
+        ? [campaign.device_id]
+        : []);
   const currentDelay = delayDraft ?? campaign?.delay_between_ms ?? 5000;
   const currentHumanMin = humanMinDraft ?? campaign?.human_delay_min_ms ?? 2000;
   const currentHumanMax = humanMaxDraft ?? campaign?.human_delay_max_ms ?? 8000;
@@ -919,14 +926,16 @@ export default function BlastCampaignDetailPage() {
     autoResumeDraft ?? Boolean(campaign?.auto_resume_enabled ?? true);
   const campaignSentCount = campaign?.sent_count ?? 0;
   const campaignFailedCount = campaign?.failed_count ?? 0;
-  const selectedDeviceDetails = myDevices.find(
-    (device) => device.id === currentDevice,
+  const selectedDevices = myDevices.filter((d) =>
+    currentDeviceIds.includes(d.id),
   );
-  const selectedDeviceConnected =
-    selectedDeviceDetails?.connectionState === "connected";
+  const connectedSelectedDevices = selectedDevices.filter(
+    (d) => d.connectionState === "connected",
+  );
+  const selectedDeviceConnected = connectedSelectedDevices.length > 0;
   const templateReady = currentTemplate.trim().length > 0;
   const recipientReady = totalRecipients > 0;
-  const deviceReady = Boolean(selectedDeviceConnected);
+  const deviceReady = selectedDeviceConnected;
   const campaignReady = templateReady && recipientReady && deviceReady;
   const pendingCount = Math.max(
     0,
@@ -938,21 +947,31 @@ export default function BlastCampaignDetailPage() {
   const templateCharacterCount = currentTemplate.trim().length;
   const primaryPreview = previewData?.previews?.[0] ?? null;
 
-  // Auto-select device: if the campaign's stored device_id is not in the user's
-  // device list (e.g., old "device_1" default, or device belonging to another user),
-  // auto-select the first connected device, then first any device.
+  // Auto-select device: if none of the stored device_ids are in the user's list,
+  // fall back to first connected (or first available).
   useEffect(() => {
     if (deviceDraft !== null) return; // user already made a choice this session
     if (!devicesDataReady || myDevices.length === 0) return;
-    const storedId = campaign?.device_id ?? "";
-    const inList = myDevices.some((d) => d.id === storedId);
-    if (inList) return; // stored device is valid — nothing to do
+    const storedIds = campaign?.device_ids?.length
+      ? campaign.device_ids
+      : campaign?.device_id
+        ? [campaign.device_id]
+        : [];
+    const validStored = storedIds.filter((id) =>
+      myDevices.some((d) => d.id === id),
+    );
+    if (validStored.length > 0) return; // stored devices are valid — nothing to do
     const firstConnected = myDevices.find(
       (d) => d.connectionState === "connected",
     );
     const autoId = firstConnected?.id ?? myDevices[0]?.id ?? "";
-    if (autoId) setDeviceDraft(autoId);
-  }, [devicesDataReady, campaign?.device_id, deviceDraft]);
+    if (autoId) setDeviceDraft([autoId]);
+  }, [
+    devicesDataReady,
+    campaign?.device_id,
+    campaign?.device_ids,
+    deviceDraft,
+  ]);
 
   // Contact selector modal
   const [showContactModal, setShowContactModal] = useState(false);
@@ -964,7 +983,15 @@ export default function BlastCampaignDetailPage() {
   // Check if there are unsaved changes
   const hasUnsavedChanges =
     (templateDraft !== null && templateDraft !== campaign?.template_message) ||
-    (deviceDraft !== null && deviceDraft !== campaign?.device_id) ||
+    (deviceDraft !== null &&
+      JSON.stringify(deviceDraft) !==
+        JSON.stringify(
+          campaign?.device_ids?.length
+            ? campaign.device_ids
+            : campaign?.device_id
+              ? [campaign.device_id]
+              : [],
+        )) ||
     (delayDraft !== null && delayDraft !== campaign?.delay_between_ms) ||
     (humanMinDraft !== null &&
       humanMinDraft !== campaign?.human_delay_min_ms) ||
@@ -1006,7 +1033,11 @@ export default function BlastCampaignDetailPage() {
   const buildUpdatePayload = () => {
     const payload: Record<string, unknown> = { id: campaignId };
     if (templateDraft !== null) payload.template_message = templateDraft;
-    if (deviceDraft !== null) payload.device_id = deviceDraft;
+    if (deviceDraft !== null) {
+      payload.device_ids = deviceDraft;
+      // keep device_id in sync with the first selected for backward compatibility
+      payload.device_id = deviceDraft[0] ?? "";
+    }
     if (delayDraft !== null) payload.delay_between_ms = delayDraft;
     if (humanMinDraft !== null) payload.human_delay_min_ms = humanMinDraft;
     if (humanMaxDraft !== null) payload.human_delay_max_ms = humanMaxDraft;
@@ -1214,13 +1245,21 @@ export default function BlastCampaignDetailPage() {
               <SummaryStat
                 label="Device"
                 value={
-                  selectedDeviceConnected
-                    ? currentDevice
-                    : `${currentDevice} offline`
+                  currentDeviceIds.length === 0
+                    ? "Belum dipilih"
+                    : currentDeviceIds.length === 1
+                      ? selectedDeviceConnected
+                        ? (selectedDevices[0]?.name ?? currentDeviceIds[0])
+                        : `${selectedDevices[0]?.name ?? currentDeviceIds[0]} offline`
+                      : `${currentDeviceIds.length} devices (rotating)`
                 }
                 hint={
-                  selectedDeviceDetails?.phoneNumber ||
-                  "Pilih device aktif untuk kirim"
+                  currentDeviceIds.length === 1
+                    ? selectedDevices[0]?.phoneNumber ||
+                      "Pilih device aktif untuk kirim"
+                    : currentDeviceIds.length > 1
+                      ? `${connectedSelectedDevices.length} connected`
+                      : "Pilih device aktif untuk kirim"
                 }
               />
               <SummaryStat
@@ -1797,9 +1836,13 @@ export default function BlastCampaignDetailPage() {
                   : "bg-amber-100 text-amber-700 dark:bg-amber-900/30 dark:text-amber-300",
               )}
             >
-              {selectedDeviceConnected
-                ? `${currentDevice} connected`
-                : `${currentDevice} offline`}
+              {currentDeviceIds.length === 0
+                ? "No device"
+                : currentDeviceIds.length > 1
+                  ? `${currentDeviceIds.length} devices rotating`
+                  : selectedDeviceConnected
+                    ? `${selectedDevices[0]?.name ?? currentDeviceIds[0]} connected`
+                    : `${selectedDevices[0]?.name ?? currentDeviceIds[0]} offline`}
             </span>
             <span className="rounded-full bg-gray-100 px-2 py-1 text-[11px] font-medium text-gray-500 dark:bg-gray-800 dark:text-gray-400">
               {currentScheduleEnabled ? "Scheduler on" : "Scheduler off"}
@@ -1838,9 +1881,13 @@ export default function BlastCampaignDetailPage() {
                 title="Device aktif"
                 description="Pengirim"
                 value={
-                  selectedDeviceConnected
-                    ? `${currentDevice}${selectedDeviceDetails?.phoneNumber ? ` · ${selectedDeviceDetails.phoneNumber}` : ""}`
-                    : `${currentDevice} belum connected`
+                  currentDeviceIds.length === 0
+                    ? "Belum dipilih"
+                    : currentDeviceIds.length > 1
+                      ? `${connectedSelectedDevices.length}/${currentDeviceIds.length} connected (rotating)`
+                      : selectedDeviceConnected
+                        ? `${selectedDevices[0]?.name ?? currentDeviceIds[0]}${selectedDevices[0]?.phoneNumber ? ` · ${selectedDevices[0].phoneNumber}` : ""}`
+                        : `${selectedDevices[0]?.name ?? currentDeviceIds[0]} belum connected`
                 }
               />
               <SettingHintCard
@@ -1877,42 +1924,83 @@ export default function BlastCampaignDetailPage() {
                     <label className="mb-1.5 flex items-center gap-1.5 text-xs font-medium text-gray-700 dark:text-gray-300">
                       <Smartphone className="h-3.5 w-3.5" />
                       WhatsApp Device
-                    </label>
-                    <select
-                      value={currentDevice}
-                      onChange={(e) => setDeviceDraft(e.target.value)}
-                      disabled={!canEditCampaign}
-                      className="w-full rounded-xl border border-gray-300 px-3 py-2 text-sm dark:border-gray-600 dark:bg-gray-900 dark:text-gray-100 focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500 disabled:opacity-60"
-                    >
-                      {myDevices.length === 0 && (
-                        <option value="" disabled>
-                          Belum ada device — setup di halaman WhatsApp
-                        </option>
+                      {currentDeviceIds.length > 1 && (
+                        <span className="ml-1 text-indigo-500 font-normal text-[11px]">
+                          rotating {currentDeviceIds.length} devices
+                        </span>
                       )}
-                      {myDevices.map((dev) => {
-                        const isConnected = dev.connectionState === "connected";
-                        return (
-                          <option key={dev.id} value={dev.id}>
-                            {dev.name}
-                            {dev.phoneNumber
-                              ? ` (${dev.phoneNumber})`
-                              : ""}{" "}
-                            {isConnected ? "✓ Connected" : "✗ Offline"}
-                          </option>
-                        );
-                      })}
-                    </select>
-                    {connectedDevices.length === 0 ? (
-                      <p className="mt-2 text-[11px] text-amber-500">
+                    </label>
+                    {myDevices.length === 0 ? (
+                      <p className="text-[11px] text-amber-500">
+                        Belum ada device — setup di halaman WhatsApp.
+                      </p>
+                    ) : (
+                      <div className="space-y-1.5">
+                        {myDevices.map((dev) => {
+                          const isConnected =
+                            dev.connectionState === "connected";
+                          const checked = currentDeviceIds.includes(dev.id);
+                          return (
+                            <label
+                              key={dev.id}
+                              className={cn(
+                                "flex items-center gap-2.5 px-3 py-2 rounded-xl border cursor-pointer transition-all select-none text-sm",
+                                checked
+                                  ? "border-indigo-500 bg-indigo-50 dark:bg-indigo-900/20"
+                                  : "border-gray-200 dark:border-gray-700 hover:border-gray-300 dark:hover:border-gray-600",
+                                (!canEditCampaign || !isConnected) &&
+                                  "opacity-60",
+                              )}
+                            >
+                              <input
+                                type="checkbox"
+                                checked={checked}
+                                disabled={!canEditCampaign}
+                                onChange={() => {
+                                  if (!canEditCampaign) return;
+                                  setDeviceDraft(
+                                    checked
+                                      ? currentDeviceIds.filter(
+                                          (id) => id !== dev.id,
+                                        )
+                                      : [...currentDeviceIds, dev.id],
+                                  );
+                                }}
+                                className="accent-indigo-600 w-4 h-4 flex-shrink-0"
+                              />
+                              <span
+                                className={cn(
+                                  "w-2 h-2 rounded-full flex-shrink-0",
+                                  isConnected ? "bg-green-500" : "bg-gray-400",
+                                )}
+                              />
+                              <span className="flex-1 font-medium text-gray-800 dark:text-gray-200 truncate">
+                                {dev.name}
+                              </span>
+                              {dev.phoneNumber && (
+                                <span className="text-xs text-gray-400 flex-shrink-0">
+                                  {dev.phoneNumber}
+                                </span>
+                              )}
+                              {!isConnected && (
+                                <span className="text-[11px] text-amber-500 flex-shrink-0">
+                                  offline
+                                </span>
+                              )}
+                            </label>
+                          );
+                        })}
+                      </div>
+                    )}
+                    {connectedDevices.length === 0 && myDevices.length > 0 && (
+                      <p className="mt-1.5 text-[11px] text-amber-500">
                         Belum ada device yang connected. Hubungkan device dulu
                         dari halaman WhatsApp.
                       </p>
-                    ) : (
-                      <p className="mt-2 text-[11px] text-gray-500 dark:text-gray-400">
-                        Device terpilih:{" "}
-                        {selectedDeviceDetails?.phoneNumber ||
-                          "nomor belum tersedia"}
-                        .
+                    )}
+                    {currentDeviceIds.length === 0 && myDevices.length > 0 && (
+                      <p className="mt-1.5 text-[11px] text-red-500">
+                        Pilih minimal 1 device.
                       </p>
                     )}
                   </div>
