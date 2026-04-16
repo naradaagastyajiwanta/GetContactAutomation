@@ -3230,6 +3230,7 @@ async def get_pipeline_status() -> dict:
     return {
         "pending": status_counts.get("pending", 0),
         "ig_found": status_counts.get("ig_found", 0),
+        "bem_discovered": status_counts.get("bem_discovered", 0),
         "ig_scraped": status_counts.get("ig_scraped", 0),
         "contacted": status_counts.get("contacted", 0),
         "got_number": status_counts.get("got_number", 0),

@@ -20,6 +20,6 @@ export function truncate(str: string, length: number): string {
   return str.slice(0, length) + '...'
 }
 
-export function formatNumber(num: number): string {
-  return new Intl.NumberFormat('id-ID').format(num)
+export function formatNumber(num: number | undefined | null): string {
+  return new Intl.NumberFormat('id-ID').format(num ?? 0)
 }
