@@ -158,7 +158,7 @@ deploy:
       fi
       echo "--- Permissions ---"
       sshpass -p "$VPS_PASSWORD" ssh -o StrictHostKeyChecking=no -p "$VPS_PORT" "$VPS_USER@$VPS_HOST" \
-        "mkdir -p $DEPLOY_DIR/data $DEPLOY_DIR/data/audiensi_docs $DEPLOY_DIR/data/templates $DEPLOY_DIR/data/ig_sessions $DEPLOY_DIR/data/pw_sessions && mkdir -p $DEPLOY_DIR/whatsapp-service/auth_store $DEPLOY_DIR/whatsapp-service/auth_store_backup && mkdir -p $DEPLOY_DIR/whatsapp-service/auth_store_device_1 $DEPLOY_DIR/whatsapp-service/auth_store_device_2 $DEPLOY_DIR/whatsapp-service/auth_store_device_3 $DEPLOY_DIR/whatsapp-service/auth_store_device_4 $DEPLOY_DIR/whatsapp-service/auth_store_device_5 $DEPLOY_DIR/whatsapp-service/data && ls $DEPLOY_DIR/.env.production && echo env_exists || echo env_missing"
+        "mkdir -p $DEPLOY_DIR/data $DEPLOY_DIR/data/audiensi_docs $DEPLOY_DIR/data/templates $DEPLOY_DIR/data/ig_sessions $DEPLOY_DIR/data/pw_sessions && mkdir -p $DEPLOY_DIR/whatsapp-service/auth_store $DEPLOY_DIR/whatsapp-service/auth_store_backup && mkdir -p $DEPLOY_DIR/whatsapp-service/auth_store_device_1 $DEPLOY_DIR/whatsapp-service/auth_store_device_2 $DEPLOY_DIR/whatsapp-service/auth_store_device_3 $DEPLOY_DIR/whatsapp-service/auth_store_device_4 $DEPLOY_DIR/whatsapp-service/auth_store_device_5 $DEPLOY_DIR/whatsapp-service/auth_store_u195 $DEPLOY_DIR/whatsapp-service/auth_store_u90 $DEPLOY_DIR/whatsapp-service/auth_store_u195_1 $DEPLOY_DIR/whatsapp-service/auth_store_u195_2 $DEPLOY_DIR/whatsapp-service/auth_store_u195_3 $DEPLOY_DIR/whatsapp-service/auth_store_u195_4 $DEPLOY_DIR/whatsapp-service/auth_store_u195_5 $DEPLOY_DIR/whatsapp-service/data && ls $DEPLOY_DIR/.env.production && echo env_exists || echo env_missing"
       echo "--- Build & Up (with SENTRY_RELEASE=$CI_COMMIT_SHORT_SHA) ---"
       # SENTRY_RELEASE is passed via an env-prefix so docker compose
       # substitutes ${SENTRY_RELEASE:-} in docker-compose.prod.yml → the
@@ -174,8 +174,26 @@ deploy:
       # runtime re-resolution, but we still force a restart here so
       # the FIRST request after deploy hits a warm cache instead of
       # waiting for the `valid=10s` TTL to refresh.
+      #
+      # WA session protection: the whatsapp container is ONLY rebuilt and
+      # restarted when whatsapp-service/ or Dockerfile.whatsapp actually
+      # changed. Otherwise we rebuild only orchestrator+frontend so Baileys
+      # sessions survive the deploy without needing a QR re-scan.
       sshpass -p "$VPS_PASSWORD" ssh -o StrictHostKeyChecking=no -p "$VPS_PORT" "$VPS_USER@$VPS_HOST" \
-        "cd $DEPLOY_DIR && SENTRY_RELEASE=$CI_COMMIT_SHORT_SHA docker compose -f docker-compose.prod.yml build && SENTRY_RELEASE=$CI_COMMIT_SHORT_SHA docker compose -f docker-compose.prod.yml up -d --remove-orphans && docker compose -f docker-compose.prod.yml restart nginx && docker system prune -f --filter until=72h 2>/dev/null || true"
+        "cd $DEPLOY_DIR && \
+         WA_CHANGED=\$(git log --name-only --format='' HEAD~5..HEAD -- whatsapp-service/ Dockerfile.whatsapp 2>/dev/null | grep -c . || echo 0); \
+         echo \"WA service changed: \$WA_CHANGED files\"; \
+         if [ \"\$WA_CHANGED\" -gt \"0\" ]; then \
+           echo 'Rebuilding ALL services (whatsapp changed)'; \
+           SENTRY_RELEASE=$CI_COMMIT_SHORT_SHA docker compose -f docker-compose.prod.yml build; \
+           SENTRY_RELEASE=$CI_COMMIT_SHORT_SHA docker compose -f docker-compose.prod.yml up -d --remove-orphans; \
+         else \
+           echo 'Rebuilding orchestrator+frontend only (whatsapp unchanged — sessions preserved)'; \
+           SENTRY_RELEASE=$CI_COMMIT_SHORT_SHA docker compose -f docker-compose.prod.yml build orchestrator frontend; \
+           SENTRY_RELEASE=$CI_COMMIT_SHORT_SHA docker compose -f docker-compose.prod.yml up -d orchestrator frontend nginx --remove-orphans; \
+         fi && \
+         docker compose -f docker-compose.prod.yml restart nginx && \
+         docker system prune -f --filter until=72h 2>/dev/null || true"
       echo "--- Status ---"
       sshpass -p "$VPS_PASSWORD" ssh -o StrictHostKeyChecking=no -p "$VPS_PORT" "$VPS_USER@$VPS_HOST" \
         "cd $DEPLOY_DIR && docker compose -f docker-compose.prod.yml ps"
