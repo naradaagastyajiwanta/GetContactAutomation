@@ -434,16 +434,15 @@ CREATE TABLE IF NOT EXISTS blast_recipients (
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     UNIQUE(campaign_id, phone_number)
 );
-"""
 
 CREATE TABLE IF NOT EXISTS wa_blast_log (
     id          INTEGER PRIMARY KEY AUTOINCREMENT,
-    blast_id    TEXT    NOT NULL,          -- UUID shared by all phones in the same blast session
+    blast_id    TEXT    NOT NULL,
     phone       TEXT    NOT NULL,
     device_id   TEXT    NOT NULL,
-    mode        TEXT    NOT NULL DEFAULT 'text',  -- 'text' | 'document'
-    preview     TEXT,                      -- first 80 chars of message, or file_name for docs
-    triggered_by TEXT,                     -- user email / identifier
+    mode        TEXT    NOT NULL DEFAULT 'text',
+    preview     TEXT,
+    triggered_by TEXT,
     created_at  TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 """
