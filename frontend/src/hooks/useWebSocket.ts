@@ -890,10 +890,14 @@ function connectWs() {
   wsInstance = new WebSocket(getWsUrl());
   wsInstance.onopen = () => {
     publishConnectionState(true);
-    if (queryClientInstance)
+    if (queryClientInstance) {
       queryClientInstance.invalidateQueries({
         queryKey: queryKeys.pipeline.status,
       });
+      queryClientInstance.invalidateQueries({
+        queryKey: queryKeys.dashboard,
+      });
+    }
   };
   wsInstance.onmessage = onMessage;
   wsInstance.onclose = (e) => {
