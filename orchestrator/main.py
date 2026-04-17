@@ -613,10 +613,18 @@ async def _require_blast_campaign_access(campaign_id: int) -> dict[str, Any]:
     return campaign
 
 
-async def _require_email_campaign_access(campaign_id: int) -> dict[str, Any]:
+async def _require_email_campaign_access(
+    campaign_id: int, request: Request | None = None
+) -> dict[str, Any]:
     campaign = await email_blast.get_campaign_status(campaign_id)
     if not campaign:
         raise HTTPException(status_code=404, detail="Campaign not found")
+    if request is not None:
+        user = await get_request_user(request)
+        if not has_permission(user, "admin"):
+            owner_id = campaign.get("created_by_dms_user_id")
+            if owner_id is not None and owner_id != user.get("dms_user_id"):
+                raise HTTPException(status_code=403, detail="Access denied")
     return campaign
 
 
@@ -6289,7 +6297,7 @@ async def get_email_campaign(campaign_id: int, request: Request):
 @app.patch("/email-blast/campaigns/{campaign_id}")
 async def update_email_campaign(campaign_id: int, payload: dict, request: Request):
     """Update email campaign details."""
-    await _require_email_campaign_access(campaign_id)
+    await _require_email_campaign_access(campaign_id, request)
 
     expected_revision = payload.get("expected_revision")
     current_campaign = await email_blast.get_campaign_status(campaign_id)
@@ -6343,7 +6351,7 @@ async def add_all_recipients_to_email_campaign(
     payload: dict | None = None,
 ):
     """Add all universities with emails as recipients."""
-    await _require_email_campaign_access(campaign_id)
+    await _require_email_campaign_access(campaign_id, request)
 
     provinces = payload.get("provinces") if payload else None
     count = await email_blast.add_all_emails_to_campaign(campaign_id, provinces)
@@ -6360,7 +6368,7 @@ async def add_selected_recipients(
     Body: { university_ids: [...] }  — specific universities
     OR:   { group_ids: [...] } — all universities from these groups
     """
-    await _require_email_campaign_access(campaign_id)
+    await _require_email_campaign_access(campaign_id, request)
 
     university_ids = payload.get("university_ids", [])
     group_ids = payload.get("group_ids", [])
@@ -6384,7 +6392,7 @@ async def upload_external_recipients(
     file: UploadFile = FastAPIFile(...),
 ):
     """Upload external recipients from spreadsheet without writing to universities."""
-    await _require_email_campaign_access(campaign_id)
+    await _require_email_campaign_access(campaign_id, request)
 
     filename = (file.filename or "").strip()
     ext = filename.lower().rsplit(".", 1)[-1] if "." in filename else ""
@@ -6434,7 +6442,7 @@ async def import_external_recipients(
     request: Request,
 ):
     """Import already-mapped external recipients directly into campaign recipients."""
-    await _require_email_campaign_access(campaign_id)
+    await _require_email_campaign_access(campaign_id, request)
 
     rows = [row.model_dump() for row in payload.rows]
     if not rows:
@@ -6457,7 +6465,7 @@ async def import_external_recipients(
 async def start_email_campaign(campaign_id: int, payload: EmailBlastStartRequest, request: Request):
     """Start email blast campaign."""
     current_user = await get_request_user(request)
-    await _require_email_campaign_access(campaign_id)
+    await _require_email_campaign_access(campaign_id, request)
 
     async with get_db() as db:
         await db.execute(
@@ -6493,7 +6501,7 @@ async def start_email_campaign(campaign_id: int, payload: EmailBlastStartRequest
 @app.post("/email-blast/campaigns/{campaign_id}/pause")
 async def pause_email_campaign(campaign_id: int, request: Request):
     """Pause email campaign."""
-    await _require_email_campaign_access(campaign_id)
+    await _require_email_campaign_access(campaign_id, request)
 
     await email_blast.pause_campaign(campaign_id)
     return {"success": True, "message": "Campaign paused"}
@@ -6502,7 +6510,7 @@ async def pause_email_campaign(campaign_id: int, request: Request):
 @app.post("/email-blast/campaigns/{campaign_id}/cancel")
 async def cancel_email_campaign(campaign_id: int, request: Request):
     """Cancel email campaign."""
-    await _require_email_campaign_access(campaign_id)
+    await _require_email_campaign_access(campaign_id, request)
 
     await email_blast.cancel_campaign(campaign_id)
     return {"success": True, "message": "Campaign cancelled"}
@@ -6512,7 +6520,7 @@ async def cancel_email_campaign(campaign_id: int, request: Request):
 async def retry_failed_email_campaign(campaign_id: int, payload: EmailBlastStartRequest, request: Request):
     """Retry sending emails to failed recipients in a campaign."""
     current_user = await get_request_user(request)
-    await _require_email_campaign_access(campaign_id)
+    await _require_email_campaign_access(campaign_id, request)
 
     async with get_db() as db:
         await db.execute(
@@ -6565,7 +6573,7 @@ async def sync_email_blast_counters(campaign_id: int, request: Request):
     """Force-recalculate sent_count, failed_count, and total_recipients from the actual
     recipient table. Use when counters have drifted from reality (e.g. after a crash or
     concurrent run). Returns the corrected counters."""
-    await _require_email_campaign_access(campaign_id)
+    await _require_email_campaign_access(campaign_id, request)
 
     result = await email_blast.sync_campaign_counters(campaign_id)
     return {"success": True, "campaign_id": campaign_id, **result}
@@ -6584,7 +6592,7 @@ class EmailBlastTestEmailRequest(BaseModel):
 @app.post("/email-blast/campaigns/{campaign_id}/test-email")
 async def send_test_email(campaign_id: int, payload: EmailBlastTestEmailRequest, request: Request):
     """Send a test email to validate campaign template and SMTP connection."""
-    await _require_email_campaign_access(campaign_id)
+    await _require_email_campaign_access(campaign_id, request)
 
     success, message = await email_blast.send_test_email(
         campaign_id,
@@ -6645,7 +6653,7 @@ async def delete_email_recipient(campaign_id: int, recipient_id: int, request: R
     """Delete a recipient from campaign"""
     from orchestrator.email_blast import delete_recipient
 
-    await _require_email_campaign_access(campaign_id)
+    await _require_email_campaign_access(campaign_id, request)
 
     success = await delete_recipient(recipient_id, campaign_id=campaign_id)
     if success:
@@ -6952,7 +6960,7 @@ async def upload_attachment(
     """Upload DOCX template and set variables for campaign"""
     from orchestrator.email_blast import TEMPLATE_DIR, extract_docx_variables, save_campaign_attachment
 
-    await _require_email_campaign_access(campaign_id)
+    await _require_email_campaign_access(campaign_id, request)
 
     original_filename = (file.filename or "").strip()
     if not original_filename:
